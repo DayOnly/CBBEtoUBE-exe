@@ -13012,4 +13012,22 @@ PAIRS = (
          tests=('tests/test_reconcile_loaded_mesh.py',),
          expect=('test_the_copy_the_game_loads_is_loose_by_priority_then_archived',),
     ),
+    Pair('RLM-m', "an unreadable game copy is blamed on one of our converted NIFs",
+         edits=(
+             ('src/ube_patcher.py',
+              '            unreadable.append(model_path)\n            return None\n',
+              '            raise  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_reconcile_loaded_mesh.py',),
+         expect=('test_an_unreadable_game_copy_is_named_as_another_mods',),
+    ),
+    Pair('RLM-n', "a staging folder the reconcile made is left in the output",
+         edits=(
+             ('src/ube_patcher.py',
+              '                made.rmdir()\n',
+              '                pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_reconcile_loaded_mesh.py',),
+         expect=('test_an_archived_copy_is_read_from_a_temporary_file_that_is_removed',),
+    ),
 )

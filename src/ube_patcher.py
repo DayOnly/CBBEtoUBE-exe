@@ -562,8 +562,12 @@ def _loaded_mesh_names(hit, stage_dir) -> "list[str]":
     from . import nif_io
     path, data = hit
     tmp = None
+    made = None                          # a staging folder this call created
     if path is None:
-        Path(stage_dir).mkdir(parents=True, exist_ok=True)
+        sd = Path(stage_dir)
+        if not sd.exists():
+            made = sd
+        sd.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(stage_dir), prefix=".reconcile-",
                                    suffix=".nif")
         with os.fdopen(fd, "wb") as fh:
@@ -579,6 +583,11 @@ def _loaded_mesh_names(hit, stage_dir) -> "list[str]":
         if tmp is not None:
             try:
                 os.unlink(tmp)
+            except OSError:
+                pass
+        if made is not None:             # leave the output as it was
+            try:
+                made.rmdir()
             except OSError:
                 pass
 
@@ -1090,6 +1099,7 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
     _game_copy: "dict[str, frozenset[str]]" = {}
     _set_repeats: "dict[str, set[str]]" = {}   # model key -> names a set repeats
     nowhere: "list[str]" = []
+    unreadable: "list[str]" = []         # another mod's copy that would not load
     _look: list = []                     # the lookup, built on first need
 
     def loaded_shapes(model_path: str, key: str):
@@ -1099,7 +1109,13 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
         if hit is None:
             nowhere.append(model_path)
             return None
-        names = _loaded_mesh_names(hit, meshes_root.parent / "_bsa_staging")
+        try:
+            names = _loaded_mesh_names(hit, meshes_root.parent / "_bsa_staging")
+        except Exception:
+            # Not our conversion: said on its own line below, never as one of
+            # ours that failed to load. The set stays as authored.
+            unreadable.append(model_path)
+            return None
         twice = Counter(str(n or "").lower() for n in names)
         _game_copy[key] = frozenset(n for n, c in twice.items() if c > 1)
         return {s: i for i, s in enumerate(names)}
@@ -1227,11 +1243,17 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
                   f"read or is not the mesh converted -> the colour-variant "
                   f"entries of those layers were dropped (they keep their "
                   f"base colour): {unmatched[:5]}", file=_s.stderr)
-    if _game_copy or nowhere:
+    if _game_copy or nowhere or unreadable:
         print(f"  alt-texture reconcile: {len(_game_copy)} model(s) not in "
               f"this output indexed against the copy the game loads (another "
               f"mod's); {len(set(nowhere))} found nowhere -> kept as authored"
               + (f": {sorted(set(nowhere))[:5]}" if nowhere else ""),
+              file=_s.stderr)
+    if unreadable:
+        print(f"  !! alt-texture reconcile: {len(set(unreadable))} model(s) not "
+              f"in this output: the copy the game loads (another mod's) could not "
+              f"be read -> its colour-variant indices kept as authored (variant "
+              f"textures may misalign): {sorted(set(unreadable))[:5]}",
               file=_s.stderr)
     for (piece, e), n in zip(loaded, fixed):
         if n:

@@ -216,7 +216,36 @@ def test_an_archived_copy_is_read_from_a_temporary_file_that_is_removed(
     up.reconcile_alt_texture_indices(plugin, tmp_path / "out" / "meshes")
     assert _mo3s(plugin)[0] == ("Skirt", RED, 12)
     staging = tmp_path / "out" / "_bsa_staging"
-    assert not staging.exists() or list(staging.iterdir()) == []
+    assert not staging.exists(), "a staging folder it made is removed again"
+
+
+@needs_pynifly
+def test_an_existing_staging_folder_is_kept(monkeypatch, tmp_path):
+    build = build_skinned_shapes_nif(tmp_path / "builder" / REL, _shapes(BUILD))
+    _game_loads(monkeypatch, (None, build.read_bytes()))
+    plugin = _plugin(tmp_path / "out", SET)
+    staging = tmp_path / "out" / "_bsa_staging"
+    staging.mkdir(parents=True)
+    (staging / "keep.nif").write_bytes(b"x")
+    up.reconcile_alt_texture_indices(plugin, tmp_path / "out" / "meshes")
+    assert sorted(p.name for p in staging.iterdir()) == ["keep.nif"]
+
+
+def test_an_unreadable_game_copy_is_named_as_another_mods(
+        monkeypatch, tmp_path, capsys):
+    """Another mod's copy that will not load is not one of our converted NIFs:
+    it gets its own line, and the set stays as authored."""
+    junk = tmp_path / "builder" / REL
+    junk.parent.mkdir(parents=True, exist_ok=True)
+    junk.write_bytes(b"not a nif")
+    _game_loads(monkeypatch, (junk, None))
+    plugin = _plugin(tmp_path / "out", SET)
+    before = plugin.read_bytes()
+    assert up.reconcile_alt_texture_indices(plugin, tmp_path / "out" / "meshes") == 0
+    assert plugin.read_bytes() == before
+    err = capsys.readouterr().err
+    assert "the copy the game loads (another mod's) could not be read" in err
+    assert "converted NIF(s) failed to load" not in err
 
 
 # --- the copy the game loads: the coverage step's own lookup ------------------
