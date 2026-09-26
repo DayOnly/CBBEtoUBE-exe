@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**95** problem warnings and **7** notes.
+**96** problem warnings and **7** notes.
 
 ## src/auto_convert.py
 
@@ -87,8 +87,11 @@ at run time), what it means for the run, and what to do next.
 - `!! could not write the conversion manifest (…) -- …`
   - means: the next run cannot tell which old conversions are ours, so it moves none of this run's
   - fix: check that the output folder is writable and run again
-- `NOTE: stale-output sweep: put back the old conversions an interrupted run had moved to …\…`
-  - means: that run stopped before its merge confirmed the moves, so its Combined plugin may have named missing meshes until now; they are back where it expects them
+- `!! stale-output sweep: could not check … for moves an interrupted run left (…: …)`
+  - means: files a stopped run moved aside may still be missing from meshes\!UBE; this run converts as usual
+  - fix: look in … and send the log if files are missing
+- `NOTE: …`
+  - means: …
 - `!! the merged plugin "…" gets no SkyPatcher lines`
   - means: its file name holds a comma or semicolon, which SkyPatcher reads as a separator; every line names it, so none is written and the converted pieces are invisible on UBE actors
   - fix: choose a merged plugin name without that character (--merged-name) and run the converter again

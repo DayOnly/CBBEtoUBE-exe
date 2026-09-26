@@ -95,7 +95,8 @@ MOVED_NOT_PUT_BACK = {
     "stale sweep put back failed": (
         "old meshes this tool had moved to _superseded\\ could not all be put "
         "back, so a plugin may use a mesh that is missing and crash the game; "
-        "move the files listed back by hand before you play"),
+        "the run log names the _superseded\\ folder they are in and every "
+        "file -- move them back into meshes\\!UBE before you play"),
 }
 
 # Every FAILED kind worded by itself rather than as "did NOT convert".

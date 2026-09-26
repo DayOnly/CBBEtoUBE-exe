@@ -6157,13 +6157,29 @@ def _stale_recover_at_start(args, output) -> int:
         return 0
     output = Path(output)
     warns = 0
-    for stamp, failed in stale_sweep.recover_interrupted(output):
+    try:
+        recovered = stale_sweep.recover_interrupted(output)
+    except Exception as e:  # noqa: BLE001 -- a start-of-run step must not kill the run
+        warn(f"stale-output sweep: could not check {stale_sweep.SUPERSEDED_DIR} for "
+             f"moves an interrupted run left ({type(e).__name__}: {e})",
+             consequence="files a stopped run moved aside may still be missing from "
+                         "meshes\\!UBE; this run converts as usual",
+             fix=f"look in {output / stale_sweep.SUPERSEDED_DIR} and send the "
+                    "log if files are missing")
+        _record_failure("stale sweep recovery failed", output,
+                        stale_sweep.SUPERSEDED_DIR, f"{type(e).__name__}: {e}",
+                        severity="warning")
+        return 1
+    for stamp, failed in recovered:
         sdir = output / stale_sweep.SUPERSEDED_DIR / stamp
         warn(f"stale-output sweep: put back the old conversions an interrupted run "
-             f"had moved to {stale_sweep.SUPERSEDED_DIR}\\{stamp}",
+             f"had moved to {stale_sweep.SUPERSEDED_DIR}\\{stamp}"
+             + (f" ({len(failed)} could not go back)" if failed else ""),
              consequence="that run stopped before its merge confirmed the moves, so "
                          "its Combined plugin may have named missing meshes until "
-                         "now; they are back where it expects them",
+                         "now; " + ("the files listed below are still missing"
+                                    if failed else
+                                    "they are back where it expects them"),
              level=NOTE)
         _record_failure("stale sweep put back after an interrupted run", output,
                         f"{stale_sweep.SUPERSEDED_DIR}\\{stamp}",

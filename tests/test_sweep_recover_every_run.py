@@ -211,6 +211,57 @@ def test_a_file_that_cannot_go_back_is_a_problem_and_keeps_its_record(
     assert w.manifest()["bases"][OLD] == "Old Mod"
 
 
+def test_the_note_says_which_files_did_not_go_back(killed, monkeypatch, capsys):
+    """Review of 736122f: the NOTE said 'they are back' even when a file was
+    not; it now counts the ones that could not go back and says so."""
+    w = killed
+    _locked(monkeypatch, "cuirass_1.nif")
+    ac._stale_recover_at_start(_args(w, [_vanilla(w)], all_mods=False), w.out)
+    out = capsys.readouterr().out
+    assert "(1 could not go back)" in out and "still missing" in out, out
+    assert "they are back where it expects them" not in out, out
+
+
+def _journal(w):
+    [j] = sorted((w.out / ss.SUPERSEDED_DIR).glob("*/" + ss.JOURNAL_NAME))
+    return j
+
+
+def test_a_journal_this_tool_did_not_write_is_left_alone(killed):
+    """Review of 736122f: a journal whose `planned` is not a list (hand-edited,
+    or another tool's) crashed every run at its start. It is left alone like a
+    torn one: nothing moves, the journal is untouched, the manifest writes."""
+    import json
+    w = killed
+    j = _journal(w)
+    d = json.loads(j.read_text(encoding="utf-8"))
+    d["planned"] = None
+    j.write_text(json.dumps(d), encoding="utf-8")
+    before = j.read_bytes()
+    results = [_vanilla(w)]
+    args = _args(w, results, all_mods=False)
+    assert ac._stale_recover_at_start(args, w.out) == 0
+    assert j.read_bytes() == before and not w.has(OLD)
+    assert ss.stranded_files(w.out) == (set(), set())
+    _finish(w, results, args)
+    assert w.manifest()["bases"].get(IRON) == "vanilla"
+
+
+def test_a_recovery_that_raises_is_a_counted_warning_not_a_dead_run(
+        killed, monkeypatch):
+    """Anything else going wrong in the start-of-run recovery is one counted
+    problem line; the run goes on to convert."""
+    w = killed
+
+    def _boom(output):
+        raise OSError("disk went away")
+    monkeypatch.setattr(ss, "recover_interrupted", _boom)
+    n = user_warnings.problem_count()
+    assert ac._stale_recover_at_start(_args(w, [_vanilla(w)]), w.out) == 1
+    assert user_warnings.problem_count() == n + 1
+    assert _kinds() == ["stale sweep recovery failed"]
+
+
 def test_a_base_wholly_stranded_keeps_its_record(killed, monkeypatch):
     """No file of the base came back, so it is not on disk at all."""
     w = killed

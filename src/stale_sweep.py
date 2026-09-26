@@ -580,8 +580,11 @@ def recover_interrupted(output) -> "list[tuple[str, list[str]]]":
             continue
         if not isinstance(d, dict) or d.get("status") not in _UNSETTLED:
             continue
+        planned = d.get("planned", [])
+        if not isinstance(planned, list):
+            continue  # not a journal this tool wrote: leave it, like torn JSON
         pairs = [(Path(output) / rel, j.parent / rel)
-                 for rel in d.get("planned", []) if isinstance(rel, str)]
+                 for rel in planned if isinstance(rel, str)]
         failed = put_back(pairs)
         update_journal(j, status=("partly put back after an interrupted run"
                                   if failed else "put back after an interrupted run"))
@@ -616,7 +619,8 @@ def stranded_files(output) -> "tuple[set[str], set[str]]":
             continue
         if not isinstance(d, dict) or not _stranded(d.get("status")):
             continue
-        for rel in d.get("planned", []):
+        planned = d.get("planned", [])
+        for rel in planned if isinstance(planned, list) else []:
             if not isinstance(rel, str) or not (j.parent / rel).is_file():
                 continue
             s = rel.replace("\\", "/")
