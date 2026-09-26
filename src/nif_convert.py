@@ -1839,12 +1839,21 @@ PHASE1_ANTIPOKE = (
 # wrapper the authoring tool never opened. XML forbids non-whitespace after the
 # document element, so every strict parser rejects the file outright.
 #
-# WHAT IT COSTS TODAY. `_read_source_hdt_xml_text` hands that text to every
-# collider / soft-body / validation consumer, and the destination copy is a
-# VERBATIM `atomic_copy`, so the damage ships. Measured on the shipped pack:
-# **94 of 3673 NIFs reference an unparseable XML** and get no physics
-# processing at all -- and an empty collider set is the condition BUG-00
-# recorded as disarming every guard at once.
+# WHAT IT DOES NOT FIX (corrected 2026-09-25; an earlier note here claimed 94
+# NIFs "get no physics processing at all"). Nothing in the converter or the game
+# is blinded by the junk. Every converter consumer of these files is REGEX-based
+# (the collider / soft-body sets, the finalize rewriters: harden, chest
+# collider, static chains, bust split, butt / skirt proxies) and reads the same
+# declarations with or without the tail -- probed: identical collider, soft-body
+# and bone sets. FSMP stops reading at `</system>` and never tokenises the tail;
+# in game the junk-XML loincloth swings. The measured shipped population is 20
+# NIFs (10 garments), not 94 (that census counted by filename and included BOM
+# and namespaced files, which parse).
+#
+# WHAT IT IS FOR: hygiene and diagnostics. The shipped file then passes strict
+# tools, and the audit's unparseable-XML count stops sitting at a permanent 10
+# that would hide a real regression. `validate_armor_hdt_xml` tolerates the tail
+# on its own now, so the converter's checks run on these pieces either way.
 #
 # The repair drops 8-16 bytes per file and is verified on all ten: the
 # per-vertex-shape / per-triangle-shape / bone declarations are IDENTICAL
@@ -1853,7 +1862,8 @@ PHASE1_ANTIPOKE = (
 # BUG-12 double-encoded a BOM -- and returns the input unchanged unless the
 # repaired text parses AND keeps the same root tag.
 #
-# DEFAULT OFF pending a verdict: it changes what ships for those pieces.
+# DEFAULT OFF pending the user's call: it changes what ships for those pieces
+# (8-16 trailing bytes each). A repair is recorded as a pass EFFECT.
 HDT_XML_SANITISE = _flag("CBBE2UBE_HDT_XML_SANITISE", False)
 
 # --- Phase-2 source-standoff conform (#phase2-conform) --------------------
@@ -4947,9 +4957,14 @@ def convert_nif(
                     )
             atomic_nif_save(dst_nif_for_fit, dst_nif_for_fit.filepath)
 
-        # Hand/foot slots are rigid — never cloth. HDT-SMP on gauntlets/boots
-        # collapses them at runtime even though the static mesh looks fine.
-        # Gold-standard UBE gauntlets carry no HDT XML; enforce the same here.
+        # Hand/foot slots get no physics pointer, found or generated. WHY: never
+        # let the generator or the missing-bone regen below put a soft body on
+        # an extremity -- a generated, unconstrained soft body on a glove drape
+        # is the one glove-physics failure seen in game (it exploded). Authored
+        # extremity chains are untested; one piece on the reference load order
+        # has one. NOT because "SMP collapses gauntlets": that 2026-06-01 theory
+        # was refuted the same day -- the invisible gauntlet was a missing `_0`
+        # weight partner. Phase 2 applies the same gate (#finalize-repoint).
         if biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT):
             hdt_xml = None
         else:
@@ -6014,7 +6029,10 @@ def _finalize_physics_and_motion_match(dst_path, src_path, biped_slots) -> None:
     # extra-data survives them. NOT literally last: the passes below use
     # the in-place load+save pattern and preserve it — any NEW pass added
     # after this point must do the same (a rebuild drops it). Skip
-    # hand/foot: cloth physics collapses them.
+    # hand/foot: no soft body from the generator or the regen may land on an
+    # extremity, and authored extremity chains are untested (one piece on the
+    # reference load order). The older "cloth physics collapses gauntlets"
+    # reason was refuted on 2026-06-01 (a missing `_0` partner). See phase 1.
     if not (biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT)):
         try:
             _finalize_hdt_physics(dst_path, src_path)
@@ -6154,7 +6172,9 @@ from .nif_convert_physics import (  # noqa: E402
     _add_skirt_collider_proxy,
     _audit_registered_shape_declared_bones,
     _cluster_decimate,
+    _dst_xml_stem_scan,
     _finalize_hdt_physics,
+    _finalize_repoint,
     _find_hdt_xml_for_armor,
     _generate_hdt_xml_for_dst,
     _hdt_collider_shape_names,
@@ -6926,13 +6946,16 @@ def _conform_skip_keys(piece_has_hdt_xml=None) -> tuple:
     return _CONFORM_SKIP_NAMES
 
 
-def _piece_has_hdt_xml(path, nif=None) -> bool:
+def _piece_has_hdt_xml(path, nif=None, stem_scan: bool = True) -> bool:
     """Does this piece declare an HDT-SMP physics XML that actually resolves?
 
     False for a piece driven by a runtime-global config (nothing to read) -- which is
-    precisely the population the draping-name skip exists to protect. #drape-xml-gate"""
+    precisely the population the draping-name skip exists to protect. #drape-xml-gate
+    A caller holding a DESTINATION path passes `stem_scan=_dst_xml_stem_scan()`
+    (#dst-xml-no-stem-scan)."""
     try:
-        return bool(_read_source_hdt_xml_text(Path(path), nif=nif))
+        return bool(_read_source_hdt_xml_text(Path(path), nif=nif,
+                                              stem_scan=stem_scan))
     except Exception:
         return False        # unreadable -> treat as "no XML" -> keep the guard
 
@@ -8489,7 +8512,8 @@ def _selfint_overrides(nf, dst_path, src_path) -> dict:
     if body is None:
         return {}
     Vb, Nb, tree = body
-    collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
+    collider_names = _hdt_collider_shape_names(
+        dst_path, nif=nf, stem_scan=_dst_xml_stem_scan())
     src_shapes: dict = {}
     try:
         snf = _open_source_nif(src_path)   # #dup-shape-names
@@ -9090,7 +9114,8 @@ def _conform_collider_to_body(dst_path) -> int:
         nf = pyn.NifFile(filepath=str(p))
     except Exception:
         return 0
-    collider_names = _hdt_collider_shape_names(p, nif=nf)
+    collider_names = _hdt_collider_shape_names(
+        p, nif=nf, stem_scan=_dst_xml_stem_scan())
     if not collider_names:
         return 0
     base = ube_body_shape(nf)
@@ -15241,8 +15266,14 @@ def convert_nif_phase2(
     # this same extra-data on root.
     hdt_injected = False     # True ONLY after the source XML ref is attached
     _hdt_inject_err = None    # set if a FOUND source XML failed to attach
+    # Hand/foot: no physics pointer, found or generated -- the same gate phase 1
+    # applies. The shared finalize skips these slots, so a pointer attached here
+    # would ship the SOURCE mod's XML with no finalize at all. #finalize-repoint
+    _hdt_extremity = (bool(biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT))
+                      and _finalize_repoint())
     try:
-        hdt_xml_path = _find_hdt_xml_for_armor(src_path)
+        hdt_xml_path = (None if _hdt_extremity
+                        else _find_hdt_xml_for_armor(src_path))
         # If source XML references chain bones we stripped, clear it so the
         # post-save generator builds a fresh soft-body XML on standard bones.
         if hdt_xml_path is not None:
@@ -15365,7 +15396,8 @@ def convert_nif_phase2(
     # until the save above). Skip auto-gen only if the block above
     # actually ATTACHED a source HDT reference (we prefer hand-authored);
     # if it found one but failed to attach it, fall through and regen.
-    if not hdt_injected:
+    # Never for a hand/foot piece (#finalize-repoint, as above).
+    if not hdt_injected and not _hdt_extremity:
         try:
             generated_xml_path = _generate_hdt_xml_for_dst(dst_path, only_loose=True)
             if generated_xml_path:

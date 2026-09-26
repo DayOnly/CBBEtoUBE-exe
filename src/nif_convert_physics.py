@@ -29,7 +29,7 @@ from .nif_convert_skinframe import (  # noqa: E402
     _verts_skin_to_world,
     _verts_world_to_skin,
 )
-from .nif_convert_telemetry import _note_pass_failure  # noqa: E402
+from .nif_convert_telemetry import _note_pass_effect, _note_pass_failure  # noqa: E402
 from .nif_convert_trigen import (  # noqa: E402
     _cached_body_morph_amplitude,
     _pick_bodytri_carriers,
@@ -90,6 +90,10 @@ def _audit_registered_shape_declared_bones(dst_path, src_path) -> int:
         # wrong-but-active guard and an inactive guard are both wrong, and
         # swapping one for the other is not a fix. #hdt-xml-race, second
         # instance -- it needs its own decision, with that number attached.
+        # Since #dst-xml-no-stem-scan (2026-09-25) every OTHER destination
+        # query refuses the fallback, so on a pointer-less piece this guard's
+        # `registered` can name a shape the weight passes no longer protect.
+        # It still only reports; the decision above stands until re-measured.
         txt = _read_source_hdt_xml_text(dst_path, nif=dn)
         declared = set(re.findall(r'<bone\s+name="([^"]+)"', txt or ""))
         if not declared:
@@ -1551,7 +1555,7 @@ def _lift_chain_roots_off_body(chain: dict, src_nif, dst_path=None) -> int:
         moved += 1
     return moved
 
-def _seed_flat_chain_anchors(dst_nif, src_nif) -> int:
+def _seed_flat_chain_anchors(dst_nif, src_nif, stem_scan: bool = True) -> int:
     """Pre-create physics-chain ANCHOR bones (and their source ancestors) at their
     SOURCE GLOBAL transform, flat-parented, into a still-EMPTY dst NIF.
     #anchor-global-fix
@@ -1596,7 +1600,8 @@ def _seed_flat_chain_anchors(dst_nif, src_nif) -> int:
         try:
             sp = getattr(src_nif, "filepath", None)
             if sp:
-                xt = _read_source_hdt_xml_text(Path(sp), nif=src_nif)
+                xt = _read_source_hdt_xml_text(Path(sp), nif=src_nif,
+                                               stem_scan=stem_scan)
                 if xt:
                     allb |= {b for b in _xml_referenced_bone_names(xt)
                              if b in src_nodes}
@@ -1685,7 +1690,8 @@ def _seed_flat_chain_anchors(dst_nif, src_nif) -> int:
         _note_pass_failure("_seed_flat_chain_anchors", _e)
         return 0
 
-def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
+def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names,
+                                  stem_scan: bool = True) -> int:
     """Recreate, in `dst_nif`, the node sub-trees for any armor-specific
     (non-skeleton) physics bones a shape is skinned to — INCLUDING their
     unweighted parent-chain bones up to the standard skeleton bone they
@@ -1733,7 +1739,8 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
         try:
             _sp = getattr(src_nif, "filepath", None)
             if _sp:
-                _xt = _read_source_hdt_xml_text(Path(_sp), nif=src_nif)
+                _xt = _read_source_hdt_xml_text(Path(_sp), nif=src_nif,
+                                                stem_scan=stem_scan)
                 if _xt:
                     for _xb in _xml_referenced_bone_names(_xt):
                         if _xb in src_nodes and not _actor_can_resolve_bone(_xb):
@@ -2798,8 +2805,9 @@ def _ensure_cloth_body_collider(xml_path: Path, nif) -> bool:
     tag the cloth collides with, so the simulated cloth rests on the whole UBE
     body (breast/belly/butt) -- exactly what the XML GENERATOR already emits for
     cloth-only NIFs (`pick_body_collision_shape_name`). No NEW geometry is added
-    (BaseShape is already the visible body), so there is no double-body/equip-CTD
-    risk.
+    (BaseShape is already the visible body), so there is no double-body risk. It
+    DECLINES an XML that declares no constraint: that collider would make the
+    unconstrained-collision-pair equip CTD (#body-collider-constraint-gate).
 
     DEFAULT OFF (opt-in `CBBE2UBE_BODY_COLLIDER=1`): in-game this DESTABILISED the
     sim -- a custom-race body (head/chest/butt) collapsed to the floor. A
@@ -2857,6 +2865,23 @@ def _ensure_cloth_body_collider(xml_path: Path, nif) -> bool:
                                    for t in re.findall(r'<tag>([^<]+)</tag>', cblock)}
     need = cloth_body_tags - chest_covered_tags
     if not need or "</system>" not in text:
+        return False
+    # #body-collider-constraint-gate: NEVER on an unconstrained XML. A per-vertex cloth + a per-triangle body
+    # collider + no constraint is the unconstrained-collision-pair equip CTD
+    # (`_is_unconstrained_collision_pair`; `validate_armor_hdt_xml` says the
+    # same of adding body collision): the cloth has no spring force, diverges,
+    # and FSMP's collision SIMD reads out of bounds. Refuse, and say so.
+    _ctags = (hdt_xml_gen._CONSTRAINT_TAGS if hdt_xml_gen._constraint_group_scan()
+              else ("generic-constraint",))
+    if not re.search(r"<(?:%s)\b" % "|".join(map(re.escape, _ctags)), text):
+        print(f"    [body-collider] {Path(xml_path).name}: DECLINED -- the XML "
+              f"has no constraint, and a body collider on unconstrained cloth "
+              f"is the equip-CTD pattern", file=sys.stderr)
+        # The user opted in and gets no chest collider: the conversion report
+        # must say why, as the bust-split decline does. #change-attribution
+        _note_pass_effect("#body-collider-constraint-gate",
+                          f"DECLINED {Path(xml_path).name} (no constraint)",
+                          getattr(nif, "filepath", None) or xml_path)
         return False
     tag = sorted(need)[0]
     block = (f'\t<per-triangle-shape name="{body_name}">\n'
@@ -3012,6 +3037,161 @@ def _select_framework_bone_carriers(xml_bones, present_bones, source_shapes, *,
             work -= hit
     return carriers
 
+def _nif_header_layout(data: bytes):
+    """Where a Skyrim NIF's header string table and blocks lie, or None when the
+    header is not the 20.2.0.7 layout read here: a dict with `nstr_at` (Num
+    Strings; Max String Length follows it), `maxlen_at`, `entries` [(entry
+    offset, bytes)], `table_end` and `blocks` [(type name, offset, size)].
+    Layout per nif.xml: after the Bethesda header come the block types (sized
+    strings), the per-block type index (u16) and size (u32), then Num Strings,
+    Max String Length and the strings (u32 length + bytes), then Num Groups and
+    the groups (u32 each), then the blocks back to back. Blocks refer to a
+    string by its INDEX, so an entry can be rewritten without touching them."""
+    import struct
+    try:
+        i = data.index(b"\n") + 1
+        ver, = struct.unpack_from("<I", data, i)
+        if ver != 0x14020007:
+            return None
+        i += 4 + 1 + 4                                 # version, endian, user
+        nblocks, bsver = struct.unpack_from("<II", data, i)
+        i += 8
+
+        def _export_string(j):
+            return j + 1 + data[j]
+        i = _export_string(i)                          # author
+        if bsver > 130:
+            i += 4
+        if bsver < 131:
+            i = _export_string(i)                      # process script
+        i = _export_string(i)                          # export script
+        if bsver >= 103:
+            i = _export_string(i)                      # max filepath
+        ntypes, = struct.unpack_from("<H", data, i)
+        i += 2
+        types = []
+        for _ in range(ntypes):
+            n, = struct.unpack_from("<I", data, i)
+            types.append(data[i + 4:i + 4 + n])
+            i += 4 + n
+        type_of = struct.unpack_from("<%dH" % nblocks, data, i)
+        i += 2 * nblocks
+        sizes = struct.unpack_from("<%dI" % nblocks, data, i)
+        i += 4 * nblocks
+        nstr_at = i
+        nstr, = struct.unpack_from("<I", data, i)
+        i += 8
+        entries = []
+        for _ in range(nstr):
+            n, = struct.unpack_from("<I", data, i)
+            if i + 4 + n > len(data):
+                return None
+            entries.append((i, data[i + 4:i + 4 + n]))
+            i += 4 + n
+        table_end = i
+        ngroups, = struct.unpack_from("<I", data, i)
+        i += 4 + 4 * ngroups
+        blocks = []
+        for t, size in zip(type_of, sizes):
+            blocks.append((types[t & 0x7FFF], i, size))
+            i += size
+        if i > len(data):
+            return None
+        return {"nstr_at": nstr_at, "maxlen_at": nstr_at + 4,
+                "entries": entries, "table_end": table_end, "blocks": blocks}
+    except Exception:
+        return None
+
+_PHYSICS_POINTER_NAME = "HDT Skinned Mesh Physics Object"
+
+def _pointer_only_variant(data: bytes, lay, k: int, new_b: bytes):
+    """The NIF with ONLY its pointer block changed: `new_b` appended to the
+    header string table and the pointer block's string index moved to it, so
+    every other block still refers to entry `k`. None unless exactly one
+    NiStringExtraData block is the pointer (its name the pointer name, its
+    string entry `k`); in 20.2.0.7 that block is two u32 string indices."""
+    import struct
+    entries = lay["entries"]
+    names = [j for j, (_o, s) in enumerate(entries)
+             if s == _PHYSICS_POINTER_NAME.encode("utf-8")]
+    ptr = [off for t, off, size in lay["blocks"]
+           if t == b"NiStringExtraData" and size == 8 and len(names) == 1
+           and struct.unpack_from("<II", data, off) == (names[0], k)]
+    if len(ptr) != 1:
+        return None
+    out = bytearray(data)
+    struct.pack_into("<I", out, ptr[0] + 4, len(entries))
+    struct.pack_into("<II", out, lay["nstr_at"], len(entries) + 1,
+                     max([len(new_b)] + [len(s) for _o, s in entries]))
+    at = lay["table_end"]
+    return bytes(out[:at]) + struct.pack("<I", len(new_b)) + new_b + bytes(out[at:])
+
+def _nifly_resave(data: bytes, beside: Path) -> bytes:
+    """`data` as nifly reads it back: loaded and saved by pynifly through a
+    temp file beside `beside` (the orphan-temp sweep's name pattern). nifly
+    rebuilds the header string table from what the blocks it knows refer to,
+    so two NIFs whose blocks carry the same strings re-save to the same bytes."""
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=str(beside.parent),
+                               prefix=beside.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        nf = _nc()._pynifly().NifFile(filepath=tmp)
+        nf.save()
+        del nf
+        return Path(tmp).read_bytes()
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+def _repoint_physics_pointer(dst_path, old: str, new: str) -> bool:
+    """#finalize-repoint: rewrite the NIF's physics pointer string `old` -> `new`
+    in place. pynifly cannot set an existing string extra-data block (nifly's
+    setBlock is unimplemented for it), so the header string-table entry the
+    block refers to is rewritten instead. nifly writes a string once however
+    many blocks use it, so that entry can also be another block's name or
+    string (a shape's extra-data, a node): rewriting it would change those too.
+    The guard: build the NIF with ONLY the pointer block moved to the new string
+    (`_pointer_only_variant`), and write the in-place rewrite only when nifly
+    reads the two back identically -- no other block it knows refers to the
+    entry. Refused otherwise, and when the entry or the pointer block is not
+    found exactly once; a refusal leaves the file untouched. Returns True when
+    repointed; every refusal is recorded as a pass failure."""
+    import struct
+    p = Path(dst_path)
+    try:
+        data = p.read_bytes()
+        lay = _nif_header_layout(data)
+        entries = lay["entries"] if lay else []
+        old_b, new_b = old.encode("utf-8"), new.encode("utf-8")
+        hits = [k for k, (_o, s) in enumerate(entries) if s == old_b]
+        if len(hits) != 1:
+            raise RuntimeError(f"{p.name}: the pointer {old!r} is not one "
+                               f"header string ({len(hits)} found); left as is")
+        maxlen_at = lay["maxlen_at"]
+        off, s = entries[hits[0]]
+        out = (data[:off] + struct.pack("<I", len(new_b)) + new_b
+               + data[off + 4 + len(s):])
+        longest = max([len(new_b)] + [len(x) for k, (_o, x) in enumerate(entries)
+                                      if k != hits[0]])
+        out = out[:maxlen_at] + struct.pack("<I", longest) + out[maxlen_at + 4:]
+        alone = _pointer_only_variant(data, lay, hits[0], new_b)
+        if alone is None:
+            raise RuntimeError(f"{p.name}: no single pointer block refers to "
+                               f"{old!r}; left as is")
+        if _nifly_resave(out, p) != _nifly_resave(alone, p):
+            raise RuntimeError(f"{p.name}: another block shares the pointer's "
+                               f"string {old!r}; left as is")
+        atomic_write_bytes(p, out)
+        _note_pass_effect("#finalize-repoint", f"{old} -> {new}", p)
+        return True
+    except Exception as _re:
+        _note_pass_failure("_finalize_hdt_physics/repoint", _re, p)
+        return False
+
 def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
     """FINAL physics pass — runs AFTER every other NIF round-trip (merge,
     VirtualBody-hide, partition-normalize) so the HDT-SMP extra-data can't
@@ -3058,6 +3238,7 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
             # bones against what actually resolves AT RUNTIME, not against
             # the NIF/source bone sets available here.
             pass
+        wrote_sibling = False      # THIS call wrote <stem>.xml from the source
         if src_xml is not None:
             # (an authored-XML breast-chain bone remap was an unproven opt-in and was removed -- refuted; see git history. verbatim copy is the long-standing default.)
             try:
@@ -3075,8 +3256,14 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                             _done = True
                     except Exception:
                         _done = False
+                    if _done:
+                        # A repair is a CHANGE this pass made, not a failure.
+                        _note_pass_effect("#hdt-xml-sanitise",
+                                          f"{Path(src_xml).name}: {_note}",
+                                          dst_path)
                 if not _done:
                     atomic_copy(str(src_xml), str(dst_xml_disk))
+                wrote_sibling = True
             except Exception as _e:
                 # A failed copy leaves the piece with no physics XML and the
                 # caller discards the bool this function returns.
@@ -3097,14 +3284,25 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
 
         nf = pyn.NifFile(filepath=str(dst_path))
         dirty = False
-        has = any(getattr(ed, "name", None) == "HDT Skinned Mesh Physics Object"
-                  for ed in nf.rootNode.extra_data())
-        if not has:
+        repoint_from = None
+        ptr = next((ed for ed in nf.rootNode.extra_data()
+                    if getattr(ed, "name", None) == "HDT Skinned Mesh Physics Object"),
+                   None)
+        if ptr is None:
             from pyn.pynifly import NiStringExtraData  # type: ignore
             NiStringExtraData.New(
                 nf, name="HDT Skinned Mesh Physics Object",
                 string_value=rel, parent=nf.rootNode)
             dirty = True
+        elif (wrote_sibling and _finalize_repoint()
+              and _pointer_differs(getattr(ptr, "string_data", "") or "", rel)):
+            # #finalize-repoint: an earlier phase set this pointer (a keyword or
+            # stem match, or the author's own string kept by a verbatim copy),
+            # so it names the SOURCE mod's file. Every edit below lands in the
+            # sibling just written; point the NIF at the file that gets them.
+            # Rewritten on disk after the save below: pynifly cannot set an
+            # existing string extra-data block.
+            repoint_from = getattr(ptr, "string_data", "") or ""
 
         # Collision-proxy preservation: the converter drops textureless proxies
         # (Col_Pants, Col_Strips, ...) so HDT-SMP chains self-intersect.
@@ -3229,6 +3427,8 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
             # last save and must restore it itself.
             _nc()._hide_virtual_body(nf)
             atomic_nif_save(nf, dst_path)
+        if repoint_from is not None:
+            _repoint_physics_pointer(dst_path, repoint_from, rel)
 
         # Give a simulated cloth the CHEST body collider it lacks (authored XMLs
         # that only ship a lower-body collider let the UBE breast poke through).
@@ -3266,7 +3466,8 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
             _tb.print_exc()
         return False
 
-def _hdt_softbody_shape_names(src_nif_path: Path, nif=None) -> set:
+def _hdt_softbody_shape_names(src_nif_path: Path, nif=None,
+                              stem_scan: bool = True) -> set:
     """Shape names the armor's HDT-SMP XML drives as PER-VERTEX soft-bodies
     (free-swinging cloth, e.g. a hand-authored UBE armor's `soft-body cloth shape`). These must KEEP
     their authored skin weighting: the converter's body-fit reskin (AND the
@@ -3277,7 +3478,7 @@ def _hdt_softbody_shape_names(src_nif_path: Path, nif=None) -> set:
     (reskin proceeds as normal). `nif` reuses an already-loaded NifFile."""
     if _nc().CHAIN_TO_SOFTBODY:
         return set()  # soft-body mode: nothing is preserved; reskin all cloth
-    txt = _read_source_hdt_xml_text(src_nif_path, nif=nif)
+    txt = _read_source_hdt_xml_text(src_nif_path, nif=nif, stem_scan=stem_scan)
     if not txt:
         return _hdt_protect_all_or_none(src_nif_path, nif=nif)
     return set(re.findall(r'<per-vertex-shape\s+name="([^"]+)"', txt))
@@ -3378,6 +3579,61 @@ def _hdt_sanitise(data: bytes) -> "tuple[bytes, str | None]":
         return sanitise_hdt_xml_bytes(data)
     except Exception:
         return data, None
+
+def _dst_xml_stem_scan() -> bool:
+    """#dst-xml-no-stem-scan (2026-09-25): may a query about a DESTINATION NIF
+    take the filename fallback? No, by default -- this returns the `stem_scan`
+    every destination-side caller passes.
+
+    The bust-split callers stopped taking it on 2026-09-09 (#hdt-xml-race); every
+    other destination query still did: the collider / soft-body sets read by the
+    body-follow weight passes, the drape-skip XML gate, the re-author's
+    authored-skin set, the collider conform, the bust-plate sync, the self-
+    intersection overrides and the chain-anchor seeding of a re-authored or
+    split NIF. For a destination with no physics pointer, the fallback globs the
+    OUTPUT mod -- a tree the run is still writing, never cleaned between runs,
+    and memoised per worker -- and takes another garment's same-stem or
+    keyword-matched XML. Any shape of the piece that XML happens to name was then
+    exempt from every body-follow pass, or not, depending on write order and on
+    what an earlier run left behind.
+
+    A destination that declares a pointer is unaffected: the pointer is read
+    first, and an unresolved one still recovers from the source-bound copy or
+    fails closed. The declared-bone guard (`_audit_registered_shape_declared_bones`)
+    keeps its own recorded decision and still scans; it only reports.
+    CBBE2UBE_NO_DST_XML_NO_STEM_SCAN=1 restores the fallback everywhere."""
+    return _flag("CBBE2UBE_NO_DST_XML_NO_STEM_SCAN", False)
+
+def _finalize_repoint() -> bool:
+    r"""#finalize-repoint (2026-09-25): does the physics finalize own the NIF's
+    physics pointer? Yes, by default.
+
+    `_finalize_hdt_physics` copies the authored XML to `<stem>.xml` beside the
+    NIF, and every later XML pass edits THAT file: the sanitiser, the chest
+    body collider, the FSMP hardening, static chains, the bust split, the
+    butt / skirt collider proxies. It only ever ADDED the pointer, though, so
+    a pointer an earlier step had set survived: the phase-1 or phase-2
+    keyword / stem match (`_find_hdt_xml_for_armor`, which names the SOURCE
+    mod's file) or the author's own string kept by a verbatim copy. FSMP then
+    loaded the untouched author file and every one of those edits was
+    unreferenced. Now, when this call wrote the sibling, a pointer naming any
+    other file is repointed at it. A piece whose sibling was not written this
+    run keeps its pointer.
+
+    The same switch covers the phase-2 hand/foot gate: phase 1 never gives a
+    slot-33/37 piece a physics pointer (found or generated) and the finalize
+    skips them, but phase 2 still attached one, which then never met a
+    finalize at all.
+    CBBE2UBE_NO_FINALIZE_REPOINT=1 restores both old behaviours."""
+    return not _flag("CBBE2UBE_NO_FINALIZE_REPOINT", False)
+
+def _pointer_differs(current: str, rel: str) -> bool:
+    """#finalize-repoint: does the pointer `current` name a file other than
+    `rel`? Case and slash direction do not count (the game's paths ignore
+    both), so a pointer that already names the sibling is left byte-identical."""
+    def _n(s: str) -> str:
+        return s.strip().replace("/", "\\").lower()
+    return _n(current) != _n(rel)
 
 def _read_source_hdt_xml_text(src_nif_path: Path, nif=None,
                               stem_scan: bool = True) -> "str | None":
@@ -3489,17 +3745,21 @@ def _read_source_hdt_xml_text_uncached(src_nif_path: Path, nif=None,
         _fixed, _note = _hdt_sanitise(_raw)
         if _note is None:
             return xml_disk.read_text(errors="ignore")
-        _note_pass_failure(
-            "hdt_xml_sanitised", RuntimeError(
-                f"{Path(xml_disk).name}: repaired malformed authored XML -- "
-                f"{_note}"), src_nif_path)
+        # A successful repair is an EFFECT. Recorded as a pass failure it read
+        # "PASS FAILED" in the pack summary's "the pass did not do its job"
+        # block for a pass that had just done its job.
+        _note_pass_effect(
+            "#hdt-xml-sanitise",
+            f"{Path(xml_disk).name}: repaired malformed authored XML -- {_note}",
+            src_nif_path)
         import locale as _locale
         return _fixed.decode(_locale.getpreferredencoding(False),
                              errors="ignore")
     except Exception:
         return None
 
-def _hdt_collider_shape_names(src_nif_path: Path, nif=None) -> set:
+def _hdt_collider_shape_names(src_nif_path: Path, nif=None,
+                              stem_scan: bool = True) -> set:
     """Shape names the armor's HDT-SMP XML uses as PER-TRIANGLE colliders -- the
     body/ground collision proxies the soft-body cloth bounces off (e.g. a source
     outfit's own `...Col...` body). Like the soft-bodies, these must KEEP their
@@ -3508,8 +3768,11 @@ def _hdt_collider_shape_names(src_nif_path: Path, nif=None) -> set:
     one outfit's skirt collider), so on UBE the collider deforms violently with
     the body physics and destabilises the cloth it is meant to be a STABLE
     collider for (skirt implodes / cloth sinks through the floor). Leave colliders
-    exactly as the source authored them. #smp-collider-graft"""
-    txt = _read_source_hdt_xml_text(src_nif_path, nif=nif)
+    exactly as the source authored them. #smp-collider-graft
+
+    `stem_scan`: see `_read_source_hdt_xml_text`. A caller holding a
+    DESTINATION path passes `_dst_xml_stem_scan()`."""
+    txt = _read_source_hdt_xml_text(src_nif_path, nif=nif, stem_scan=stem_scan)
     if not txt:
         return _hdt_protect_all_or_none(src_nif_path, nif=nif)
     return set(re.findall(r'<per-triangle-shape\s+name="([^"]+)"', txt))

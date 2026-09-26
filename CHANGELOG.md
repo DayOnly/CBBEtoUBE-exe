@@ -127,6 +127,60 @@ failed control each fail the gate by name, and every worktree is removed when
 the run ends, fails or is interrupted. Each shard costs about 1.5 GB of commit
 charge. Without `--jobs` the gate runs exactly as before.
 
+### Fixed — a converted piece loads the physics file the tool fixed up
+
+The tool copies each armour's physics file next to the converted mesh and then
+adjusts that copy: it removes references to parts the converted mesh no longer
+has, and adds or renames the colliders that keep cloth off the body. Some meshes
+already pointed at the ORIGINAL physics file in the armour mod before that step,
+and the tool left the link alone, so the game loaded the original and none of the
+adjustments. Now the mesh is pointed at the adjusted copy. On the reported
+modlist this affects both weights of one skirt, whose copy happens to be identical
+to the original today, so nothing changes in game for it yet. Gloves and boots
+also no longer get a physics link on the body-replacement path, matching the
+other path. Before changing the link, the tool checks that no other part of the
+mesh uses the same text; if one does, the mesh is left exactly as it was and the
+conversion report says why (no mesh on the reported modlist is like that).
+`CBBE2UBE_NO_FINALIZE_REPOINT=1` (set to 1) restores the old behaviour.
+
+### Fixed — the optional chest collider never builds the equip-crash pattern
+
+The optional chest collider (`CBBE2UBE_BODY_COLLIDER=1`, off by default) now
+refuses a physics file that has no constraints, because a body collider on cloth
+that nothing holds together is the pattern that crashes the game on equip. It says
+so in the log and in the conversion report. Default conversions are unchanged.
+
+### Changed — physics files with stray text after the end are checked too
+
+A few armour mods ship a physics file with stray text after the end of the
+document, or with an extra namespace on it. The game reads both fine, but the
+tool's own checks skipped those files entirely. They are now checked like every
+other file, so the conversion report can show new warnings for them (on the
+reported modlist: 34 meshes, mostly bones the physics file drives that the mesh
+does not have). The report also notes the stray text. Only the report changes.
+The "Repair broken physics files" setting is still off by default; its
+description no longer claims it fixes armour that does not move -- it only tidies
+the file. When it does trim a file, the report lists that as a change, not as a
+failure.
+
+### Fixed — a garment without its own physics file converts the same way every run
+
+A converted garment that has no physics file of its own could borrow one from a
+different garment whose physics file had the same name in the output folder. If
+that other file named one of this garment's parts, the tool treated that part as
+physics-driven and handled its body-following differently. Whether that
+happened depended on the order the run wrote its files in and on what an
+earlier run had left in the output folder, so the same garment could come out
+differently from one run to the next. Now only a garment's own physics link
+counts. Measured on the reported modlist: 58 of 3,342 converted meshes could
+borrow such a file; re-converting 44 of them (the rest have no loose source),
+only 2 come out different -- both weights of one skirt whose panties part had
+borrowed another skirt's physics. Their shapes are unchanged; the panties now follow the butt about half
+as much as in the last release, and the skirt layers' weights shift slightly
+where they meet the panties -- the same result a run into an empty output folder
+already gave. `CBBE2UBE_NO_DST_XML_NO_STEM_SCAN=1` (set to 1) restores the old
+behaviour.
+
 ### Fixed — a garment whose layers share one name keeps every layer
 
 Some garments are built from several layers the author gave the same name, for

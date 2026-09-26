@@ -20,9 +20,11 @@ OUTSIDE the root element, and repair NOTHING else.
 TEN authored XMLs in the reference modlist end with junk after the root close
 (`</system>undefined</xml>` or `</system></xml>`). XML forbids non-whitespace
 after the document element, so a strict parser rejects the whole file; the
-converter then copies it VERBATIM, and 94 shipped NIFs referenced an XML that
-nothing could read. An empty collider set is the condition BUG-00 recorded as
-disarming every physics guard at once.
+converter then copies it VERBATIM (20 shipped NIFs point at one). FSMP stops at
+`</system>` and the converter's consumers are regex-based, so nothing is blinded
+by the tail (corrected 2026-09-25): the repair is hygiene, and when it runs it is
+recorded as a pass EFFECT, never as a PASS FAILED. The validator tolerates the
+tail (and a default xmlns) on its own, so its checks run either way.
 
 WHAT THESE TESTS HOLD, in order of what would hurt most if it broke:
   * a well-formed file is returned UNCHANGED and unflagged -- the pass must be

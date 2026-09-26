@@ -1043,14 +1043,16 @@ SETTINGS: "tuple[Setting, ...]" = (
             "Repair broken physics files some armour mods ship",
             "Armor", "Physics", default=False,
             env="CBBE2UBE_HDT_XML_SANITISE", invert=False,
-            hint="For armour that has physics but does not move.",
+            hint="Tidies the file only; physics in game does not change.",
             tooltip="A few armour mods ship a physics file with stray text "
                     "after the end of the document. That is not valid XML, so "
-                    "anything reading it strictly rejects the whole file -- and "
-                    "the converter copies it across unchanged, so the broken "
-                    "file ships. Measured on this pack: ten such files, and 94 "
-                    "meshes point at one, which means those pieces get no "
-                    "physics handling at all. This trims the stray text and "
+                    "strict checking tools reject the whole file, and the "
+                    "converter copies it across unchanged. The game's physics "
+                    "stops reading at the end of the document and never sees "
+                    "the stray text, and the converter reads these files the "
+                    "same way with or without it, so the armour moves the same "
+                    "either way. Measured on this pack: ten such files, used by "
+                    "20 meshes. This trims the stray text and "
                     "nothing else. It only ever removes characters AFTER the "
                     "document ends, keeps the file byte-for-byte otherwise, and "
                     "leaves the file alone entirely unless the result is valid "

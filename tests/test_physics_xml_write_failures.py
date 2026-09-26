@@ -51,6 +51,8 @@ _CLOTH_XML = (
     '\t\t<tag>Fabric</tag>\n'
     '\t\t<can-collide-with-tag>ColBody</can-collide-with-tag>\n'
     '\t</per-vertex-shape>\n'
+    # constrained, or the body collider declines (#body-collider-constraint-gate)
+    '\t<generic-constraint bodyA="Cloth 1" bodyB="NPC Spine [Spn0]"/>\n'
     '</system>\n'
 )
 

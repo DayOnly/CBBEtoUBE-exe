@@ -85,7 +85,7 @@ def test_the_carve_out_is_the_butt_and_only_the_butt():
 def _regions(monkeypatch, *, names, flag=True, has_xml=False):
     calls = []
 
-    def _xml(path, nif=None):
+    def _xml(path, nif=None, stem_scan=True):
         calls.append(path)
         return has_xml
     monkeypatch.setattr(nc, "LAYERED_CLOTH_BUTT_JIGGLE", flag)

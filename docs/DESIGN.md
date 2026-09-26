@@ -1131,6 +1131,137 @@ on them: registered-shape protection, collider split clones, and re-imported
 hidden collision shapes (a cloak's `VirtualBody`, which is CBBE-shaped).
 `CBBE2UBE_NO_PHYSICS_DATA_PREFIX=1` restores the old miss.
 
+### A destination query never takes the filename fallback (`#dst-xml-no-stem-scan`, default ON)
+
+`_read_source_hdt_xml_text` falls back, when a NIF has no pointer, to a same-stem
+or keyword-matched XML anywhere in the mod tree the NIF lives in
+(`_find_hdt_xml_for_armor`). Against a SOURCE mod that is useful and static.
+Against the OUTPUT mod it is a race (`#hdt-xml-race`): the run is still writing
+XMLs there, the folder is never cleaned between runs, and `_mod_xml_index`
+memoises whatever each worker saw first. The bust-split callers stopped taking it
+on 2026-09-09; every other destination query still did, so a pointer-less piece
+could take another garment's XML as its collider / soft-body sets and the
+body-follow passes skipped whichever of its shapes that XML named -- or not,
+depending on write order.
+
+Every destination-side query now passes `stem_scan=_dst_xml_stem_scan()`: the
+collider / soft-body sets of the five body-follow weight passes, the drape-skip
+XML gate and the layered-cloth jiggle gate (`_piece_has_hdt_xml`), the
+re-author's authored-skin set and its chain-anchor seed and chain precreate
+(threaded through `_copy_shape` -> `_install_skin` as `xml_stem_scan`), the
+bust-split clone's chain read, `_sync_bust_plate_follow_postwrite`,
+`_conform_collider_to_body` and `_selfint_overrides`. The destination's own
+pointer is still read first; an unresolved one still recovers from the
+source-bound copy (`#xml-source-of-truth`) or fails closed. The declared-bone
+guard (`_audit_registered_shape_declared_bones`) keeps its recorded decision and
+still scans; it only reports.
+
+Live (read-only census of the 3,342 output NIFs): 58 pointer-less NIFs answered
+differently, 2 of them in their collider / soft-body sets (one skirt pair, whose
+`panties` another skirt's XML registered) and 56 only in the drape / layered-cloth
+XML question. 22 of those garments have a loose source (the other 7 are
+archive-only) and were converted into an empty output tree and into one seeded
+with the live XMLs: the parent differed between the two on the skirt pair only,
+and the lane gave identical bytes in both on 22 of 22. The lane also equals the
+parent's empty-tree output on 22 of 22, measured in two steps: 9 when the change
+was made (the parent's empty-tree arm ran on those 9 only, although the commit
+message says all), and the other 13 in a later same-day session (parent empty
+and seeded trees plus the lane's empty tree, all byte-identical, and equal to
+the lane's earlier runs of both trees).
+`CBBE2UBE_NO_DST_XML_NO_STEM_SCAN=1` restores the fallback.
+
+### The finalize owns the physics pointer (`#finalize-repoint`, default ON)
+
+`_finalize_hdt_physics` copies the authored XML to `<stem>.xml` beside the NIF,
+and every later XML edit lands in that copy: the sanitiser, the opt-in chest body
+collider, the FSMP hardening, static chains, the bust split, the butt and skirt
+collider proxies. The finalize only ever ADDED the `HDT Skinned Mesh Physics
+Object` string, though, so a pointer an earlier step had set survived it: the
+phase-1 or phase-2 keyword / stem match (`_find_hdt_xml_for_armor`, which names
+the SOURCE mod's file) or the author's own string kept by a verbatim copy. FSMP
+then loaded the untouched author file and ignored every edit.
+
+Now, when THIS call wrote the sibling, a pointer naming any other file is
+repointed at it. A pointer already naming the sibling (case and slash direction
+do not count) is left byte-identical, and a sibling the call did not write (no
+authored source XML, a failed copy, a leftover from an earlier run) never
+captures the pointer. pynifly cannot set an existing string extra-data block
+(nifly's `setBlock` is unimplemented for it), and FSMP reads only the FIRST
+pointer, so adding a second one is no answer either: the header string-table
+entry the block refers to is rewritten in place (`_repoint_physics_pointer`).
+It is refused unless exactly one entry spells the old pointer, and the table's
+max-length field is updated.
+
+nifly writes each string once however many blocks use it, so that entry can also
+be another block's string: a shape's extra-data, a node's name, a second root
+extra-data. Rewriting it would change those blocks too. The first guard re-read
+only shape names and root extra-data after the write, so a shape-level string
+sharing the entry was rewritten and reported as a success. pynifly offers no way
+to list every string field of every block type, so the guard asks nifly instead:
+`_pointer_only_variant` builds the same NIF with ONLY the pointer block moved to
+a new, appended string (in 20.2.0.7 a `NiStringExtraData` is two u32 string
+indices, and the header's block-size table locates it), and `_nifly_resave`
+loads and saves both through nifly, which rebuilds the string table from what its
+blocks refer to. The in-place rewrite is written only when the two re-save to the
+same bytes, i.e. no other block nifly knows refers to the entry. Otherwise, or
+when the pointer block is not found exactly once, the NIF is left untouched and
+the refusal is recorded as a pass failure. The re-save temps sit beside the NIF
+under the orphan-temp sweep's name pattern and are removed. Live (read-only, the
+306 pointer NIFs of the 3,342): the check passes on all 306, and an independent
+pynifly walk of every node / shape name and extra-data string finds no other use
+of any pointer string, so default output is unchanged.
+
+The same switch gates phase 2's physics pointer on hand/foot pieces. Phase 1 never
+gives a slot-33/37 piece a pointer, found or generated, and the shared tail skips
+the finalize for them; phase 2 still attached one, which then shipped the source
+mod's XML with no finalize at all. Now phase 2 applies the same gate to the found
+XML and to the generator.
+
+Live (read-only census of the 3,342 output NIFs): 306 carry a pointer, 304 name
+their own sibling, and 2 (both weights of one skirt) name the source mod's XML
+while the finalized sibling sits unreferenced beside them. The validator already
+said so in the report ("HDT XML referenced but not found on disk"). No hand/foot
+NIF carries a pointer today. `CBBE2UBE_NO_FINALIZE_REPOINT=1` restores both old
+behaviours.
+
+### The opt-in chest body collider needs a constraint (`#body-collider-constraint-gate`)
+
+`_ensure_cloth_body_collider` (opt-in, `CBBE2UBE_BODY_COLLIDER=1`) registers
+BaseShape as a per-triangle collider for a per-vertex cloth that names a body tag
+no chest-height collider carries. It never looked for a constraint, so on an XML
+with none it built exactly the unconstrained-collision-pair equip CTD
+(`_is_unconstrained_collision_pair`; `validate_armor_hdt_xml` says the same of
+adding body collision). It now declines an XML that declares no
+`generic-constraint` / `stiffspring-constraint` / `conetwist-constraint` (the
+`#constraint-group-scan` set), and says so: on stderr, and as a
+`#body-collider-constraint-gate` DECLINED line in the piece's conversion record
+(`_note_pass_effect`), the way the bust-split decline is recorded -- a user who
+opted in gets no chest collider and the report says why. Default output is
+unchanged: the collider is off by default.
+
+### The validator reads past a junk tail and a default xmlns
+
+`validate_armor_hdt_xml` parsed strictly, so an authored XML with text after
+`</system>` ("failed to parse") or a default `xmlns` on `<system>` ("root tag !=
+'system'") skipped every bone and collision check, though FSMP reads both files
+fine. It now strips the tail with `sanitise_hdt_xml_bytes` before parsing (and
+names it in one warning), and drops the `{uri}` prefix from every tag. Damage
+INSIDE the root still fails to parse. Report text only.
+
+Live, over the 306 pointer NIFs: 34 NIFs gain their checks (20 junk-tail, 14
+namespaced), and 272 read exactly as before. The new warnings are 546 "references
+bone ... in NEITHER the NIF nor the actor skeleton" (the 20 junk-tail NIFs; their
+shared author XMLs drive chain bones those pieces lack), 24 "body shape has no
+can-collide-with-tag", 20 tail notes, 8 "no per-triangle-shape" and 4 "cloth shape
+declares no body-ish can-collide-with-tag".
+
+`#hdt-xml-sanitise` itself stays opt-in (a user call). Its stated reason was
+wrong and is corrected in the code, the GUI and the tests: every converter
+consumer of these files is regex-based and FSMP stops at `</system>`, so the
+junk blinds nothing; the flag is hygiene and diagnostics. A successful repair is
+now recorded as a pass EFFECT at both sites, not as "PASS FAILED
+hdt_xml_sanitised".
+
 ### A constraint counts wherever it sits (`#constraint-group-scan`, default ON)
 
 FSMP has three constraint elements (`generic-constraint`,
