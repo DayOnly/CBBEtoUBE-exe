@@ -554,6 +554,46 @@ def _remove_empty_planned_folders(made: list) -> int:
     return removed
 
 
+# --- #plan-order-results: a report lists pieces in plan order --------------
+
+def _plan_order_results() -> bool:
+    """#plan-order-results (2026-09-26): list a source's NIF results in the
+    order its pieces were planned, and its patch notes where one source at a
+    time writes them? Yes, by default. CBBE2UBE_NO_PLAN_ORDER_RESULTS=1 keeps
+    the order the answers arrived in."""
+    return not _flag("CBBE2UBE_NO_PLAN_ORDER_RESULTS", False)
+
+
+def _in_plan_order(nif_results: list, work_items) -> None:
+    """Sort `nif_results` in place into the order of `work_items`.
+
+    The answers arrive in completion order: a race among the workers one
+    source at a time, and the largest-first schedule's order on the
+    batch-wide one. Every report list built from them (`pass_effects`,
+    `pass_failure_pieces`, the per-source summary) inherited that order.
+    A result is placed by its destination, else its source file (an error or
+    a skipped piece names no destination); results that tie on both are
+    ordered by status and reason, so the order never depends on arrival.
+    #plan-order-results"""
+    by_dst: dict = {}
+    by_src: dict = {}
+    for i, it in enumerate(work_items):
+        by_dst.setdefault(Path(it[1]), i)
+        by_src.setdefault(Path(it[0]), i)
+    last = len(work_items)
+
+    def _key(r):
+        at = None
+        dst = getattr(r, "dst_path", None)
+        if dst:
+            at = by_dst.get(Path(dst))
+        if at is None and getattr(r, "src_path", None):
+            at = by_src.get(Path(r.src_path))
+        return (last if at is None else at, str(getattr(r, "status", "")),
+                str(getattr(r, "reason", "")))
+    nif_results.sort(key=_key)
+
+
 # A worker's peak commit tracks the size of the mesh it converts: about 0.36 GB
 # of floor plus about 236 MB per source MB (measured 2026-09-11 against the full
 # pack: the largest source, 14 MB, peaked at 3.79 GB). The pool is sized so each
@@ -1055,6 +1095,10 @@ _FINGERPRINT_PLUMBING_WHY = {
                                    "the worker (#planned-folders): only how a "
                                    "NEW folder's name is capitalised; no NIF's "
                                    "bytes depend on it",
+    "CBBE2UBE_NO_PLAN_ORDER_RESULTS": "the order a source's pieces and patch "
+                                      "notes are listed in the reports "
+                                      "(#plan-order-results); no NIF's bytes "
+                                      "depend on it",
 }
 _FINGERPRINT_PLUMBING = frozenset(_FINGERPRINT_PLUMBING_WHY)
 
@@ -2956,6 +3000,9 @@ def _auto_convert_mod_steps(
         body_mesh_rel_paths=body_mesh_rel_paths,
         bsa_mesh_rel_paths=bsa_mesh_rel_paths,
         converted_rel_paths=converted_rel_paths)
+    # Where this source's patch notes go in its notes: here, where one source
+    # at a time writes the patch. #plan-order-results
+    _patch_notes_at = len(result.notes)
     if not batch_schedule:
         _write_source_patches(result, output_dir, src_esps, **_patch_args)
 
@@ -3231,11 +3278,21 @@ def _auto_convert_mod_steps(
                 f"{elapsed:.1f}s ({rate:.1f}/s) with {nif_workers} worker(s)")
         if planned_folders is None and not batch_schedule:
             _remove_empty_planned_folders(_own_folders)   # #planned-folders
+        if _plan_order_results():
+            _in_plan_order(result.nif_results, work_items)
 
     if batch_schedule:
         # This source's NIFs are all written now: only now may its patch and
         # snapshot name them. #global-schedule
+        _n_before = len(result.notes)
         _write_source_patches(result, output_dir, src_esps, **_patch_args)
+        if _plan_order_results():
+            # Its notes where one source at a time has them: before the
+            # planning notes that follow the patch and the NIF notes.
+            # #plan-order-results
+            _patch_notes = result.notes[_n_before:]
+            del result.notes[_n_before:]
+            result.notes[_patch_notes_at:_patch_notes_at] = _patch_notes
 
     # --- textures ---
     # Sweep: never texture-copy from the Data dir (same usvfs merged-view /

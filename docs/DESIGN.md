@@ -309,6 +309,26 @@ both sit inside the 15 units one source at a time starts together, and the
 parent's `Armor` was that race's outcome. With the switch set, each schedule
 named the folder the way the parent did on that schedule.
 
+#### Report order (`#plan-order-results`)
+
+A source's NIF results arrive in completion order. One source at a time that
+order is a worker race. On the batch-wide schedule it is the largest-first
+order. The report lists built from these results inherited the arrival order:
+`pass_effects`, `pass_failure_pieces` and the per-source piece lists. And
+because the batch-wide schedule writes a source's patch at its finish, the
+patch validator's notes landed after the NIF notes. Now each source's results
+are sorted into plan order once its NIFs are in (`_in_plan_order`). A result
+is placed by its destination, or by its source file when it names no
+destination. Ties are broken by status and reason. On the batch-wide schedule
+the patch notes are moved to where one source at a time writes them.
+`CBBE2UBE_NO_PLAN_ORDER_RESULTS=1` keeps the arrival order. Measured on the
+same six arms: `conversion_report.json`, the failures file and every
+per-source report are identical between the two schedules (run stamps and
+timing notes aside). With the switch set, `conversion_report.json` matched the
+parent's on each schedule. The per-source piece lists differed in order
+between two runs of the parent's own code path, which is the race this
+change removes.
+
 ---
 
 ## The fit contract (1.2)

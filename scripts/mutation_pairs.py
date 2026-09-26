@@ -13021,4 +13021,43 @@ PAIRS = (
          expect=('test_a_folder_a_skipped_piece_made_keeps_its_spelling_for_a_later_source[one-schedule]',
                  'test_a_folder_a_skipped_piece_made_keeps_its_spelling_for_a_later_source[one-source-at-a-time]'),
     ),
+    # #plan-order-results: a source's results in plan order, its patch notes
+    # where one source at a time writes them.
+    Pair('SFU-m', 'the results keep their arrival order',
+         edits=(
+             ('src/auto_convert.py',
+              '            _in_plan_order(result.nif_results, work_items)\n',
+              '            pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_plan_order_results.py',),
+         expect=('test_the_results_and_the_effects_list_are_in_plan_order[one-schedule]',),
+    ),
+    Pair('SFU-n', 'results that tie on the plan keep their arrival order',
+         edits=(
+             ('src/auto_convert.py',
+              '        return (last if at is None else at, str(getattr(r, "status", "")),\n'
+              '                str(getattr(r, "reason", "")))\n',
+              '        return last if at is None else at  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_plan_order_results.py',),
+         expect=('test_the_sort_places_by_destination_then_source_then_reason',),
+    ),
+    Pair('SFU-o', "the batch-wide schedule's patch notes come last",
+         edits=(
+             ('src/auto_convert.py',
+              '            result.notes[_patch_notes_at:_patch_notes_at] = _patch_notes\n',
+              '            result.notes.extend(_patch_notes)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_plan_order_results.py',),
+         expect=('test_the_patch_notes_sit_where_one_source_at_a_time_puts_them',),
+    ),
+    Pair('SFU-p', 'a result is placed by its source file alone',
+         edits=(
+             ('src/auto_convert.py',
+              '            at = by_dst.get(Path(dst))\n',
+              '            at = None  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_plan_order_results.py',),
+         expect=('test_the_sort_places_by_destination_then_source_then_reason',),
+    ),
 )

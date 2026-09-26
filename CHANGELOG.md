@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed — the reports list armour pieces in the same order every run
+
+`conversion_report.json` and each mod's report list armour pieces, for
+example the pieces each fix changed. They used to list them in the order the
+pieces happened to finish converting, which changed from run to run and
+between converting one mod at a time and all mods together. They now list
+the pieces in the order the tool planned them, so two runs of the same
+conversion give the same reports. Each mod's notes are also in the same
+order both ways. Nothing that is converted changes.
+`CBBE2UBE_NO_PLAN_ORDER_RESULTS=1` (set to 1) turns it off.
+
 ### Changed — folder names in a new output no longer depend on which piece was written first
 
 Sometimes two armour pieces spell the same folder with different capital
