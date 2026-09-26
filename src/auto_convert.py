@@ -5110,6 +5110,14 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
     except Exception:
         _ow = None
     loose_dirs = ([Path(_ow)] if _ow is not None else []) + dirs
+    # #reconcile-loaded-winner: the positions in `loose_dirs` of the folders
+    # whose loose files outrank our output in MO2 -- the overwrite and every
+    # enabled mod above it. None when our output is not an enabled mod.
+    _out_pos = next((i for i, n in enumerate(order) if n.lower() == out_name),
+                    None)
+    _ow_n = 1 if _ow is not None else 0
+    above = (frozenset(range(_ow_n + _out_pos)) if _out_pos is not None
+             else None)
     dirs += [Path(d) for d in (lay.game_data_dirs or []) if Path(d) not in dirs]
     loose_dirs += [d for d in dirs if d not in loose_dirs]
     bsa = _BsaMeshIndex(dirs, None,
@@ -5196,6 +5204,20 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
             return loose_dirs[i] / "meshes" / rel, None
         data = bsa.read_bytes(rel)
         return (None, data) if data else None
+
+    def outranks_output(model: str) -> bool:
+        """#reconcile-loaded-winner: does the game load another mod's LOOSE
+        copy of `model` over our output's own? A loose file in the overwrite
+        or in a mod above our output in MO2 wins; an archive never beats a
+        loose file, so our copy wins over every archive. False when our
+        output is not an enabled mod."""
+        rel = str(model or "").replace("\\", "/").lstrip("/").lower()
+        if rel.startswith("meshes/"):
+            rel = rel[7:]
+        if not rel or above is None:
+            return False
+        return _loose_first(rel) in above
+    loaded_copy.outranks_output = outranks_output
     exists.body_fit = body_fit
     exists.unfitted_skin = unfitted_skin
     exists.loaded_copy = loaded_copy

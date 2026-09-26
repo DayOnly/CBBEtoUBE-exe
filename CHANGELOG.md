@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed — colour variants follow your own UBE build also when our older copy is still there
+
+The colour-variant fix (see "colour variants of a piece left to your own UBE
+build recolour the right layer" below) read the game's copy of a mesh only when
+our own converted copy was gone. Our copy can stay behind -- for example when
+a file was in use and could not be moved, or when your build ships only part of
+an outfit -- and if your BodySlide output sits above this tool's output in MO2,
+the game still draws your build. The fix now asks MO2's order which copy the
+game loads and matches the colour variants to that one. Measured on the
+reported modlist: 2 meshes of one travel outfit are in this situation today;
+their layers happen to be in the same order in both copies, so the result is
+unchanged, and the run takes about 4 seconds longer to look the order up.
+`CBBE2UBE_NO_RECONCILE_LOADED_WINNER=1` (set to 1) turns it off.
+
 ### Fixed — colour variants of a piece whose mesh two mods' archives both ship
 
 When two mods ship the same armour mesh inside their `.bsa` archives, the tool

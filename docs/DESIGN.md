@@ -2199,6 +2199,30 @@ of 12). Replayed on a copy of that run's Combined pieces with its meshes: the
 fixed than the parent's replay); with `CBBE2UBE_NO_RECONCILE_LOADED_MESH=1`
 the pieces are byte-identical to the parent's (76a9b3c) replay.
 
+**Our NIF on disk, another mod's copy on top: `#reconcile-loaded-winner`.**
+`#reconcile-loaded-mesh` asked for the game's copy only when our NIF was
+missing, trusting `#skip-built-ube-path` to have moved ours out. Ours stays in
+`meshes\` for a base the global schedule holds, a base a builder ships only
+part of (`_built_ube_twins` leaves a base only when every planned variant has
+a twin), a supersede move that fails, `CBBE2UBE_NO_SKIP_BUILT_UBE_PATH=1`, or
+an earlier run's copy no source plans -- and a UBE BodySlide output is often
+ABOVE our output in MO2 (it is on the reported modlist), so the game draws the
+build while the set was indexed against ours. Now a `!UBE\` model whose NIF
+our output ships is indexed against the game's copy too when
+`loaded_copy.outranks_output(model)` says a loose copy in the overwrite or in an
+enabled mod above our output holds it (the lookup's own loose index, our output
+left out; an archive never beats our loose file; our output not an enabled mod:
+never). Such a model binds by name exactly as a missing one does, and the run
+log counts it apart ("N model(s) this output ships but another mod's copy
+outranks in MO2"). Nested under `#reconcile-loaded-mesh`.
+`CBBE2UBE_NO_RECONCILE_LOADED_WINNER=1` uses our NIF whenever it exists. Live
+(09-24 output, replayed on a copy of its Combined pieces with its meshes
+read-only): 242 `!UBE\` models ranked, 2 outranked (one travel outfit's torso
+and first-person model, by the user's BodySlide output), both indexed against
+the build; the build's shape order equals ours today, so both pieces are
+byte-identical to the parent's replay, default and switched off. Cost: one
+listing of the loose `meshes` folders, about 4 s on that modlist.
+
 **The layout guess, behind the switch: `#alttex-family-strict`.** Without the
 source the reconcile cannot know which shapes the rename made;
 the first cut took any `name` beside a `name:k` and bound by rank in NIF order.

@@ -533,11 +533,35 @@ def _reconcile_loaded_mesh_on() -> bool:
     entries bind by name, and the entries of a name it carries twice (or in
     two spellings), or that a set repeats, are dropped. A path found nowhere
     keeps its entries as authored, as before, and is counted. Our output's
-    own NIF, when present, is used exactly as before.
+    own NIF, when present, is used exactly as before -- unless another mod's
+    loose copy outranks it (#reconcile-loaded-winner).
 
     CBBE2UBE_NO_RECONCILE_LOADED_MESH=1 leaves a set whose NIF is not in our
     output untouched, as before."""
     return not _flag("CBBE2UBE_NO_RECONCILE_LOADED_MESH", False)
+
+
+def _reconcile_loaded_winner_on() -> bool:
+    r"""#reconcile-loaded-winner (2026-09-26): when our output DOES have a NIF
+    at one of our `!UBE\` paths but another mod's loose copy outranks it in
+    MO2, is the colour set indexed against that copy -- the one the game
+    loads? Yes, by default (read only with #reconcile-loaded-mesh on).
+
+    #reconcile-loaded-mesh asked for the game's copy only when our NIF was
+    missing: its premise was that #skip-built-ube-path always moves our copy
+    out of `meshes\` first. It does not always: a base the global schedule
+    holds, a base a builder ships only part of, a supersede move that fails
+    (a file in use), CBBE2UBE_NO_SKIP_BUILT_UBE_PATH=1, or an earlier run's
+    copy no source plans. And a user's UBE BodySlide output often sits ABOVE
+    our output in MO2 (it does on the reported modlist). Then the set was
+    indexed against our copy while the game draws the build's, which can
+    order its shapes differently. Now such a path is indexed against the copy
+    the game loads, as a missing one is (`loaded_copy.outranks_output`: a
+    loose copy in the overwrite or a mod above our output; an archive never
+    beats our loose file). Our output not an enabled mod: unchanged.
+    CBBE2UBE_NO_RECONCILE_LOADED_WINNER=1 uses our own NIF whenever it exists,
+    as before."""
+    return not _flag("CBBE2UBE_NO_RECONCILE_LOADED_WINNER", False)
 
 
 def _alttex_source_winner_on() -> bool:
@@ -1137,6 +1161,19 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root, problems=None) -> int:
     nowhere: "list[str]" = []
     unreadable: "list[str]" = []         # another mod's copy that would not load
     _look: list = []                     # the lookup, built on first need
+    # #reconcile-loaded-winner: model keys our output ships but another mod's
+    # loose copy outranks -- indexed against that copy, as a missing one is.
+    # Asked only under `loaded_on` (`shapes_for`).
+    winner_on = _reconcile_loaded_winner_on()
+    shadowed: "set[str]" = set()
+
+    def outranked(model_path: str) -> bool:
+        if not winner_on:
+            return False
+        if not _look:
+            _look.append(_loaded_mesh_lookup(meshes_root))
+        test = getattr(_look[0], "outranks_output", None)
+        return bool(test is not None and test(model_path))
 
     def loaded_shapes(model_path: str, key: str):
         if not _look:
@@ -1163,10 +1200,13 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root, problems=None) -> int:
         idx = None
         try:
             p = meshes_root / model_path.replace("/", "\\")
-            if (loaded_on and not p.is_file()
-                    and _alttex_source_rel(model_path) is not None):
+            ours = p.is_file()
+            if (loaded_on and _alttex_source_rel(model_path) is not None
+                    and (not ours or outranked(model_path))):
+                if ours:
+                    shadowed.add(key)
                 idx = loaded_shapes(model_path, key)
-            elif p.is_file():
+            elif ours:
                 nf = nif_io.load_nif(p)
                 idx = {s.name: i for i, s in enumerate(nf.shapes)}
                 if exact and (_split_name_candidates(idx) or key in _repeats
@@ -1286,9 +1326,13 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root, problems=None) -> int:
         elif unmatched:
             problems.append((ALTTEX_ENTRIES_DROPPED, unmatched))
     if _game_copy or nowhere or unreadable:
-        print(f"  alt-texture reconcile: {len(_game_copy)} model(s) not in "
-              f"this output indexed against the copy the game loads (another "
-              f"mod's); {len(set(nowhere))} found nowhere -> kept as authored"
+        _over = len(shadowed & set(_game_copy))    # #reconcile-loaded-winner
+        print(f"  alt-texture reconcile: {len(_game_copy) - _over} model(s) not "
+              f"in this output indexed against the copy the game loads (another "
+              f"mod's); "
+              + (f"{_over} model(s) this output ships but another mod's copy "
+                 f"outranks in MO2, indexed against that copy; " if _over else "")
+              + f"{len(set(nowhere))} found nowhere -> kept as authored"
               + (f": {sorted(set(nowhere))[:5]}" if nowhere else ""),
               file=_s.stderr)
     if unreadable and _say:
