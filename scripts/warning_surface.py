@@ -36,10 +36,14 @@ counted from the run's record (`_record_failure` and its helpers), not from
 what was printed, so a problem line with no entry lets a run end "all clear".
 `tally_rows` finds, for each problem-level call, whether a recorder call
 follows it on the same path: later in the same block, or as the statement
-right after the if/elif chain it sits in. Everything else is either recorded
-somewhere this cannot see (by a caller, at the tally) or not recorded at all;
-tests/test_one_tally_scan.py holds that list, each entry with its reason, and
-fails on a call that is in neither.
+right after the if/elif chain it sits in. Only a record that is plausibly THAT
+warning's counts: the first one on its path, at most RECORD_WINDOW lines below
+it, with no other warn() call in between (that one's record is not this
+one's). Everything else is either recorded somewhere this cannot see (by a
+caller, at the tally) or not recorded at all; tests/test_one_tally_scan.py
+holds that list, each entry keyed by function, words and occurrence (so a
+second warning with the same words is not hidden by the first's entry) with
+its reason, and fails on a call that is in neither.
 
 DEVELOPMENT TOOL -- not part of the shipped converter.
 """
@@ -108,34 +112,50 @@ def scan(repo: Path = _REPO) -> list[dict]:
 
 #: The calls that put an entry in the run's record. #one-tally
 RECORDERS = frozenset({"_record_failure", "_record_class_once", "_record_once",
-                       "_record_sweep_retried"})
+                       "_record_sweep_retried", "_record_vc_sweep_failed"})
 
 
-def _calls_recorder(node) -> bool:
-    """True if the expression parts of `node` call a recorder."""
+#: A record more than this many lines below the end of a warning is not taken
+#: for that warning's. On the 2026-09-26 inventory every record that is one
+#: sits at most 10 lines below its warning; a record further down belongs to
+#: something else the function does (review of d93b3c0: a record in a later
+#: `try` body, any distance down, counted).
+RECORD_WINDOW = 12
+
+
+def _recorder_lines(node) -> "list[int]":
+    """The lines of the recorder calls in the expression parts of `node`."""
+    out = []
     for n in ast.walk(node):
         if isinstance(n, ast.Call):
             f = n.func
             name = f.id if isinstance(f, ast.Name) else (
                 f.attr if isinstance(f, ast.Attribute) else None)
             if name in RECORDERS:
-                return True
-    return False
+                out.append(n.lineno)
+    return out
 
 
-def _records(stmt) -> bool:
-    """True if `stmt` records whenever it runs: a recorder called by the
-    statement itself, or in the body of a loop, `with` or `try` it opens (the
-    body a warning's own list feeds). Never inside an `if` or `except`: a
-    record in another branch is not on the warning's path."""
+def _first_record(stmt) -> "int | None":
+    """The line of the first recorder call that runs whenever `stmt` runs: one
+    the statement itself makes, or the first in the body of a loop, `with` or
+    `try` it opens (the body a warning's own list feeds). Never inside an `if`
+    or `except`: a record in another branch is not on the warning's path."""
     if isinstance(stmt, (ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith)):
-        return any(_records(s) for s in stmt.body)
-    if isinstance(stmt, ast.Try):
-        return any(_records(s) for s in stmt.body + stmt.finalbody)
-    if isinstance(stmt, (ast.If, ast.FunctionDef, ast.AsyncFunctionDef,
-                         ast.ClassDef)):
-        return False
-    return _calls_recorder(stmt)
+        body = stmt.body
+    elif isinstance(stmt, ast.Try):
+        body = stmt.body + stmt.finalbody
+    elif isinstance(stmt, (ast.If, ast.FunctionDef, ast.AsyncFunctionDef,
+                           ast.ClassDef)):
+        return None
+    else:
+        lines = _recorder_lines(stmt)
+        return min(lines) if lines else None
+    for s in body:
+        line = _first_record(s)
+        if line is not None:
+            return line
+    return None
 
 
 def _block_of(node, parents):
@@ -148,43 +168,72 @@ def _block_of(node, parents):
     return None, -1
 
 
-def _recorded_on_path(call, parents) -> str:
+def _is_warn(node) -> bool:
+    return (isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "warn")
+
+
+def _recorded_on_path(call, parents, warns=None) -> str:
     """How a warn() call is recorded on its own path, or "" when it is not:
-    "block" -- a recorder call follows it in the same block (at any depth of a
-    later statement); "chain" -- the statement right after the if/elif chain it
-    sits in records it (one record for the branches' warnings)."""
+    "block" -- the first recorder call on its path follows it in the same block
+    (in a later statement, or the body of a loop, `with` or `try` one opens);
+    "chain" -- the statement right after the if/elif chain it sits in records
+    it (one record for the branches' warnings). Either way the record must be
+    plausibly THIS warning's: at most RECORD_WINDOW lines below it, with no
+    other warn() between them on its path (`warns`, every warn() call of the
+    module; a warning in between owns the record that follows it)."""
+    warns = warns or ()
     stmt = call
     while stmt in parents and not isinstance(stmt, ast.stmt):
         stmt = parents[stmt]
     block, i = _block_of(stmt, parents)
     if block is None:
         return ""
-    if any(_records(s) for s in block[i + 1:]):
-        return "block"
+    end = getattr(call, "end_lineno", None) or call.lineno
+
+    def _mine(line, between) -> bool:
+        return (line - end <= RECORD_WINDOW
+                and not any(end < w.lineno < line for w in between))
+
+    for s in block[i + 1:]:
+        line = _first_record(s)
+        if line is not None:                     # the first record on its path
+            return "block" if _mine(line, warns) else ""
     top = parents.get(stmt)
     if not isinstance(top, ast.If):
         return ""
     while (isinstance(parents.get(top), ast.If)
            and parents[top].orelse == [top]):
         top = parents[top]                       # climb the elif chain
+    rest = block[i + 1:]
     block, j = _block_of(top, parents)
-    if block is not None and j + 1 < len(block) and _records(block[j + 1]):
-        return "chain"
-    return ""
+    if block is None or j + 1 >= len(block):
+        return ""
+    line = _first_record(block[j + 1])
+    if line is None:
+        return ""
+    # On its path between it and the record: the rest of its own branch and the
+    # recording statement. The other branches of the chain are not.
+    between = [n for s in rest + [block[j + 1]] for n in ast.walk(s)
+               if _is_warn(n)]
+    return "chain" if _mine(line, between) else ""
 
 
 def tally_rows(repo: Path = _REPO) -> list[dict]:
     """Every PROBLEM-level `warn(...)` call in MODULES, with the function it is
-    in and how it is recorded on its own path ("" = not seen). #one-tally"""
+    in, how it is recorded on its own path ("" = not seen), and `nth`: its
+    occurrence among the calls of the same function with the same words (0 for
+    the first), so a list keyed on (function, what, nth) names ONE call and a
+    second warning with the same words is not hidden by the first's entry.
+    #one-tally"""
     rows = []
     for rel in MODULES:
         src = (repo / rel).read_text(encoding="utf-8")
         tree = ast.parse(src)
         parents = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
-        for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call)
-                    and getattr(node.func, "id", None) == "warn"):
-                continue
+        warns = sorted((n for n in ast.walk(tree) if _is_warn(n)),
+                       key=lambda n: (n.lineno, n.col_offset))
+        for node in warns:
             level = "!!"
             for kw in node.keywords:
                 if kw.arg == "level":
@@ -200,11 +249,20 @@ def tally_rows(repo: Path = _REPO) -> list[dict]:
                 if isinstance(p, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     fn = p.name
                     break
+            what = _static(node.args[0]) if node.args else ""
+            nth = sum(1 for r in rows if r["module"] == rel
+                      and r["function"] == fn and r["what"] == what)
             rows.append({"module": rel, "line": node.lineno, "function": fn,
-                         "what": _static(node.args[0]) if node.args else "",
-                         "recorded": _recorded_on_path(node, parents)})
+                         "what": what, "nth": nth,
+                         "recorded": _recorded_on_path(node, parents, warns)})
     rows.sort(key=lambda r: (MODULES.index(r["module"]), r["line"]))
     return rows
+
+
+def tally_key(row: dict) -> tuple:
+    """How a list of unrecorded warnings names one call: (function, words,
+    occurrence). #one-tally"""
+    return (row["function"], row["what"], row["nth"])
 
 
 def render_tally(rows: list[dict], reasons: "dict | None" = None) -> str:
@@ -213,8 +271,7 @@ def render_tally(rows: list[dict], reasons: "dict | None" = None) -> str:
     reasons = reasons or {}
     out = [f"{'module':<26} {'line':>5}  {'function':<34} {'recorded':<10} what"]
     for r in rows:
-        how = r["recorded"] or ("listed" if (r["function"], r["what"]) in reasons
-                                else "NO")
+        how = r["recorded"] or ("listed" if tally_key(r) in reasons else "NO")
         out.append(f"{r['module']:<26} {r['line']:>5}  {r['function']:<34} "
                    f"{how:<10} {r['what'][:70]}")
     n_rec = sum(1 for r in rows if r["recorded"])

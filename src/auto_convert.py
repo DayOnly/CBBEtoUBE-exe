@@ -2654,6 +2654,102 @@ def _record_sweep_retried(why) -> None:
                     "again without the worker pool succeeded", severity="warning")
 
 
+def _vc_sweep_failure_fails() -> bool:
+    r"""#vc-sweep-failure (2026-09-26): does an end-of-run vertex-colour sweep
+    that stopped with an error fail the run, as a CTD-class mesh issue? Yes, by
+    default.
+
+    The sweep (`sanitize_output_vertex_color_flags`) is the ONE place a
+    Vertex_Colors / Vertex_Alpha shader flag is cleared from a shape that
+    carries no colour buffer -- the rebuild paths copy the source's shader
+    flags, and the writer clears none of them -- and such a shape crashes the
+    game when the model is built (on equip; at load for worn gear). The sweep
+    reads each file and saves it itself, after every file is written, so an
+    error that stops it leaves each file it did not reach exactly as the writer
+    left it: nothing else clears the flag, and no write is skipped that would
+    have. That is an output this run cannot vouch for, in the one respect that
+    crashes the game, so it counts as a failure (exit 2), under the kind the
+    popup words as "can crash the game when equipped". It was a warning with
+    exit 0. The measured rate is low (full runs of 3,200 meshes: the sweep
+    fixed 0 shapes, since the writer carries colour buffers across), which is
+    why this is rare, not why it is safe. An error inside the sweep's pool
+    falls back to one file at a time and is not this. `CBBE2UBE_NO_VC_SWEEP_FAILURE=1`
+    records it as the warning it was, with exit 0."""
+    return not _flag("CBBE2UBE_NO_VC_SWEEP_FAILURE", False)
+
+
+def _report_writer_pass_failures(source, nif_results) -> None:
+    """Three outcomes of the mesh writer, which runs in a worker: its partition
+    pass died on a mesh (partitions left as written, over-cap checks not run),
+    it could not split a shape over the vertex cap (the parent's load check
+    counts bones, not verts, so it never sees that one), or a re-author could
+    not copy a shape and kept the previous complete file. The worker's own
+    warning goes to a stderr the parent never shows, so none reached the log's
+    count or the run's record. The piece's `reason` carries each pass-failure
+    label home; each is printed here and recorded as one warning per source
+    with its count. Message and tally only. #one-tally"""
+    from .nif_convert_writer import (WRITER_PASS_PARTITIONS,
+                                     WRITER_PASS_REAUTHOR_DROP,
+                                     WRITER_PASS_VERT_SPLIT)
+    pieces = count_pass_failure_pieces(nif_results)
+    parts = pieces.get(WRITER_PASS_PARTITIONS) or []
+    splits = pieces.get(WRITER_PASS_VERT_SPLIT) or []
+    drops = pieces.get(WRITER_PASS_REAUTHOR_DROP) or []
+    if parts:
+        warn(f"partition pass FAILED on {len(parts)} NIF(s)",
+             consequence="their skin partitions were left as written and the "
+                         "over-cap checks did not run; the load check at the end "
+                         "reports a shape over the bone cap, not one over the "
+                         "vertex cap",
+             fix="convert the mod again; if it repeats, report the NIF(s) named",
+             indent="    ")
+        _record_failure("partition pass failed", source,
+                        f"{len(parts)} mesh(es)",
+                        "their skin partitions were left as written; "
+                        + _first_few(parts), severity="warning", count=len(parts))
+    if splits:
+        warn(f"{len(splits)} NIF(s) keep a shape over the vertex cap in one "
+             "partition",
+             consequence="the split failed; such a shape may crash the game "
+                         "when equipped",
+             fix="convert the mod again; if it repeats, report the NIF(s) named "
+                 "and do not equip them",
+             indent="    ")
+        _record_failure("over-cap shape not split", source,
+                        f"{len(splits)} mesh(es)",
+                        "a shape over the vertex cap stays in one partition and "
+                        "may crash the game when equipped; " + _first_few(splits),
+                        severity="warning", count=len(splits))
+    if drops:
+        warn(f"re-author dropped a shape on {len(drops)} NIF(s)",
+             consequence="the fix that re-authors the mesh was not applied; each "
+                         "keeps the complete file written before it",
+             fix="convert the mod again; if it repeats, report the NIF(s) named",
+             indent="    ")
+        _record_failure("re-author dropped a shape", source,
+                        f"{len(drops)} mesh(es)",
+                        "the re-author was not applied and the complete file "
+                        "before it was kept; " + _first_few(drops),
+                        severity="warning", count=len(drops))
+
+
+def _record_vc_sweep_failed(why) -> None:
+    """The run's entry for a vertex-colour sweep that stopped with an error:
+    a CTD-class mesh issue (a failure), or with the switch set the warning it
+    was. #vc-sweep-failure #one-tally"""
+    if _vc_sweep_failure_fails():
+        _record_failure("CTD-class mesh issue", "output mod",
+                        "vertex-colour sweep did not finish",
+                        f"{plain_error(why)}; a mesh whose shader asks for vertex "
+                        "colours it does not carry may be left that way -- "
+                        "convert again, the sweep checks every output mesh")
+        return
+    _record_failure("vertex-colour sweep failed", "output mod",
+                    "end-of-run sweep", f"{plain_error(why)}; vertex-colour "
+                    "flags were left as the source had them",
+                    severity="warning")
+
+
 def _record_class_once(kind: str, source, item, detail: str = "",
                        severity: str = "warning") -> None:
     """One entry for a class that can repeat within a run: the first time
@@ -7711,6 +7807,10 @@ def _cmd_convert(args):
     # ESP-only refresh. #selection-winner-playable
     batch_winner_np = (None if getattr(args, "plugins_only", False)
                        else _batch_armo_winner_nonplayable())
+    if getattr(args, "plugins_only", False):
+        # The ESP-only refresh asks for no playability map, so the cache hit
+        # that records selection's warning again never happens. #one-tally
+        _record_selection_playability_warning()
 
     # Meshes another mod already ships BUILT for UBE at the path we would write
     # are left to it. The same lookup coverage points at them with, so an
@@ -8169,6 +8269,8 @@ def _cmd_convert(args):
                             f"{r.nif_partial} mesh(es)",
                             "see conversion report, PARTIAL section",
                             count=r.nif_partial)
+        # What the mesh writer reported from the worker. #one-tally
+        _report_writer_pass_failures(src.name, r.nif_results)
         # Validator warnings: surfaced loudly but don't block the merge or fail exit.
         validator_hits = []
         for stats in (r.esp_stats_list or
@@ -8331,11 +8433,13 @@ def _cmd_convert(args):
                                 severity="warning")
         except Exception as e:
             warn(f"vertex-color sanitize failed: {plain_error(e)}",
-                 consequence="vertex colours were left as the source had them", indent="")
-            _record_failure("vertex-colour sweep failed", "output mod",
-                            "end-of-run sweep", f"{plain_error(e)}; vertex-colour "
-                            "flags were left as the source had them",
-                            severity="warning")   # #one-tally
+                 consequence="the output meshes' vertex-colour flags were not all "
+                             "checked, and a mesh whose shader asks for vertex "
+                             "colours it does not carry crashes the game when "
+                             "equipped",
+                 fix="convert again: the sweep checks every output mesh, "
+                     "--plugins-only included", indent="")
+            _record_vc_sweep_failed(e)
 
     # Did unified coverage actually run? It now lives INSIDE the merge, so
     # every path that skips the merge also skips coverage -- and coverage
@@ -8788,6 +8892,12 @@ def _cmd_convert(args):
         # same way the pool did. #commit-headroom
         workers=(args.workers if args.workers is not None
                  else default_worker_count()))
+
+    # `auto`'s nude-skin morph check: printed and recorded before the tally, so
+    # the count below and the window's list hold the same warnings. #one-tally
+    if getattr(args, "nude_morph_check", False) is True:
+        args.nude_morph_check = "done"
+        _check_ube_nude_morphs()
 
     # Counted from the record the failures file is written from. #one-tally
     overall_failures, overall_warnings = _run_tally()
@@ -10657,7 +10767,7 @@ def _batch_armo_winner_nonplayable() -> "dict[tuple[str, int], bool] | None":
                              "playable flag of the record before them")
             _ARMO_WINNER_WARNED[key] = (
                 "load order not read", "load order",
-                f"{len(bad)} plugin(s) read for armour playability", _names
+                f"{len(bad)} plugin(s) not read for armour playability", _names
                 + "; an armour they override keeps the playable flag of the "
                   "record before them")
             _record_once(*_ARMO_WINNER_WARNED[key])
@@ -10674,9 +10784,25 @@ def _batch_armo_winner_nonplayable() -> "dict[tuple[str, int], bool] | None":
             _ARMO_WINNER_CACHE.clear()
             _ARMO_WINNER_CACHE[key] = None
             _ARMO_WINNER_WARNED.clear()
-            _ARMO_WINNER_WARNED[key] = _rec
+        # Kept under the key it had, or None when the read failed before one
+        # was known: a cache hit looks up only a cached key, and an ESP-only
+        # refresh records what is kept. #one-tally
+        _ARMO_WINNER_WARNED[key] = _rec
         _record_once(*_rec)
         return None
+
+
+def _record_selection_playability_warning() -> None:
+    """`--plugins-only`: the convert step asks for no playability map, so the
+    cache hit that records source selection's warning again after
+    `_cmd_convert` clears the record never happens, and a warning the log
+    printed was in neither the tally nor the window's list. Records what the
+    last read kept, reading nothing; nothing when the rule is switched off.
+    #one-tally #selection-winner-playable"""
+    if not _selection_winner_playable():
+        return
+    for rec in list(_ARMO_WINNER_WARNED.values()):
+        _record_once(*rec)
 
 
 def _female_slot_pairs_on() -> bool:
@@ -12146,6 +12272,32 @@ def _list_overlays_only(args, output, lay, overlay_transfer) -> int:
     return 0
 
 
+def _check_ube_nude_morphs() -> None:
+    """`auto`'s pre-flight of the UBE nude skin: missing hands/feet .tri makes
+    them stay CBBE-shaped while the body morphs UBE (built without 'Build
+    Morphs'). Printed and recorded as one warning. Never raises.
+
+    Run by `_cmd_convert` just before it prints its tally: run after it (as it
+    was until 2026-09-26), the log's "=== N failure(s), M warning(s) ===" left
+    this warning out while the list the window opens named it. #one-tally"""
+    try:
+        morph_warns = nif_convert.check_ube_nude_morph_files()
+        if morph_warns:
+            warn("UBE nude-skin morph check:",
+                 consequence="listed below: a nude part without its morph file stays at "
+                             "base shape while the body morphs",
+                 fix="rebuild that part in BodySlide with 'Build Morphs' checked",
+                 indent="\n  ")
+            for w in morph_warns:
+                print(f"     - {w}")
+            _record_failure("nude-skin morph missing", "UBE body",
+                            f"{len(morph_warns)} nude part(s)",
+                            _first_few(morph_warns) + "; rebuild each in BodySlide "
+                            "with 'Build Morphs' checked", severity="warning")
+    except Exception:
+        pass
+
+
 def _cmd_auto(args):
     """One-click full pipeline (no args required): auto-discover the modpack,
     find ALL CBBE/3BA armor mods, convert them into one output mod, merge into
@@ -12373,6 +12525,9 @@ def _cmd_auto(args):
                      "started": _sos_started, "mods_root": str(mr),
                      "enabled": None if enabled is None else sorted(enabled),
                      "excluded": sorted(exclude)},
+        # `auto` checks the UBE nude skin's morph files; the convert step runs
+        # the check before it prints its tally and marks it "done". #one-tally
+        nude_morph_check=True,
     )
     try:
         rc = _cmd_convert(conv)
@@ -12441,26 +12596,11 @@ def _cmd_auto(args):
             _record_failure("overlay transfer failed", "body overlays",
                             "every selected overlay", plain_error(e))
 
-    # Pre-flight: missing hands/feet .tri makes them stay CBBE-shaped while the
-    # body morphs UBE (built without 'Build Morphs'). Surface the warning loudly.
-    try:
-        morph_warns = nif_convert.check_ube_nude_morph_files()
-        if morph_warns:
-            warn("UBE nude-skin morph check:",
-                 consequence="listed below: a nude part without its morph file stays at "
-                             "base shape while the body morphs",
-                 fix="rebuild that part in BodySlide with 'Build Morphs' checked",
-                 indent="\n  ")
-            for w in morph_warns:
-                print(f"     - {w}")
-            # After `_cmd_convert` wrote the failures file, which is written
-            # again below with this in it. #one-tally
-            _record_failure("nude-skin morph missing", "UBE body",
-                            f"{len(morph_warns)} nude part(s)",
-                            _first_few(morph_warns) + "; rebuild each in BodySlide "
-                            "with 'Build Morphs' checked", severity="warning")
-    except Exception:
-        pass
+    # The nude-skin morph check ran inside `_cmd_convert`, before its tally; a
+    # convert that returned before its tally did not run it, so it runs here.
+    # #one-tally
+    if conv.nude_morph_check != "done":
+        _check_ube_nude_morphs()
 
     _enable = f"'{output.name}' + its Combined ESP(s)"
     post_merge_failures = _run_tally()[0] - _failures_at_convert_end
@@ -12572,8 +12712,32 @@ def _cmd_merge(args):
                   "(invisible/cosmetic, non-fatal)")
     except Exception as _pfe:
         warn(f"postflight validation skipped: {plain_error(_pfe)}",
-             consequence="the plugin was not checked for load-breaking issues")
+             consequence="the plugin was not checked for load-breaking issues; "
+                         "`merge` exits 1",
+             fix="run `validate` on the merged plugin's folder before enabling it")
+        # `merge` keeps no run record: its exit code is its result, so a plugin
+        # nobody checked is not reported as a clean merge. #merge-unverified-exit
+        return 1 if _merge_unverified_exit() else 0
     return 0
+
+
+def _merge_unverified_exit() -> bool:
+    r"""#merge-unverified-exit (2026-09-26): does the standalone `merge` exit 1
+    when its postflight check of the merged plugin could not run? Yes, by
+    default.
+
+    `merge` has no run record, no tally and no failures file; the exit code is
+    the only result a caller can read, and it was 0 for a plugin the check
+    never saw -- the same 0 as a checked clean one. Exit 2 stays "checked and
+    NOT safe to load"; 1 is "written, not checked".
+
+    A failed master re-sort does NOT change the exit code: the merge already
+    tier-sorts the masters (the re-sort only repairs a stale plugin, and is a
+    no-op on a fresh one), and the postflight that follows checks the master
+    order as a load-breaking issue -- a mis-sort left behind exits 2 there, and
+    a re-sort failure with the postflight skipped exits 1 through this.
+    CBBE2UBE_NO_MERGE_UNVERIFIED_EXIT=1 exits 0, as before."""
+    return not _flag("CBBE2UBE_NO_MERGE_UNVERIFIED_EXIT", False)
 
 
 def _cmd_validate(args):

@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**100** problem warnings and **7** notes.
+**103** problem warnings and **7** notes.
 
 ## src/auto_convert.py
 
@@ -24,6 +24,15 @@ at run time), what it means for the run, and what to do next.
   - fix: set the UBE body reference explicitly if the wrong body is picked
 - `NOTE: … option(s) were added to this build since your settings were last saved.`
 - `NOTE: your saved settings predate new-option tracking, so an option added later`
+- `!! partition pass FAILED on … NIF(s)`
+  - means: their skin partitions were left as written and the over-cap checks did not run; the load check at the end reports a shape over the bone cap, not one over the vertex cap
+  - fix: convert the mod again; if it repeats, report the NIF(s) named
+- `!! … NIF(s) keep a shape over the vertex cap in one partition`
+  - means: the split failed; such a shape may crash the game when equipped
+  - fix: convert the mod again; if it repeats, report the NIF(s) named and do not equip them
+- `!! re-author dropped a shape on … NIF(s)`
+  - means: the fix that re-authors the mesh was not applied; each keeps the complete file written before it
+  - fix: convert the mod again; if it repeats, report the NIF(s) named
 - `!! could not write the failures file (…)`
   - means: … recorded failure(s) will not appear there
   - fix: check that the folder beside the exe is writable
@@ -183,7 +192,8 @@ at run time), what it means for the run, and what to do next.
   - means: the vertex-colour sweep fell back to running one file at a time and finished; nothing was lost
   - fix: if this repeats, lower the worker count in Settings
 - `!! vertex-color sanitize failed: …`
-  - means: vertex colours were left as the source had them
+  - means: the output meshes' vertex-colour flags were not all checked, and a mesh whose shader asks for vertex colours it does not carry crashes the game when equipped
+  - fix: convert again: the sweep checks every output mesh, --plugins-only included
 - `!! female-model restore failed: …`
   - means: continuing with male fallbacks
 - `!! [unified] coverage empty/incomplete (ok=…, targets=…, body=…)`
@@ -243,13 +253,13 @@ at run time), what it means for the run, and what to do next.
 - `!! could not locate armour meshes across the enabled mods (…) -- …`
   - means: a mod whose armour meshes are in another mod (a BodySlide build, a replacer, a patch) is not converted this run; the convert step tries again for the rest
   - fix: look for an over-long path or a broken link in the mods folder, then run again
+- `!! UBE nude-skin morph check:`
+  - means: listed below: a nude part without its morph file stays at base shape while the body morphs
+  - fix: rebuild that part in BodySlide with 'Build Morphs' checked
 - `!! vanilla sweep DISABLED this run: …`
   - means: vanilla armour that no mod overrides stays unlinked, so it is invisible on UBE actors until a run with the sweep
 - `!! overlay transfer FAILED: …`
   - means: overlays were not transferred this run
-- `!! UBE nude-skin morph check:`
-  - means: listed below: a nude part without its morph file stays at base shape while the body morphs
-  - fix: rebuild that part in BodySlide with 'Build Morphs' checked
 - `!! … post-convert phase(s) FAILED`
   - means: see the errors above; the run is reported as failed
 - `!! master re-sort failed: …`
@@ -258,7 +268,8 @@ at run time), what it means for the run, and what to do next.
 - `!! POSTFLIGHT CTD on merged output: … load-breaking issue(s)`
   - means: NOT safe to load; listed below
 - `!! postflight validation skipped: …`
-  - means: the plugin was not checked for load-breaking issues
+  - means: the plugin was not checked for load-breaking issues; `merge` exits 1
+  - fix: run `validate` on the merged plugin's folder before enabling it
 - `!! …`
   - means: … warning(s), listed below
 

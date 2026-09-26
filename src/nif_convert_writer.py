@@ -48,6 +48,14 @@ from .nif_convert_weights import (  # noqa: E402
     _is_scale_bone,
 )
 
+# The pass-failure labels (`_note_pass_failure`) of two writer outcomes the
+# parent records as run warnings: they ride home in the piece's `reason`, the
+# only channel a pool worker has, and `auto_convert` reads them by these names.
+# #one-tally
+WRITER_PASS_PARTITIONS = "_normalize_partitions_on_disk"
+WRITER_PASS_VERT_SPLIT = "_normalize_partitions_on_disk/vert-split"
+WRITER_PASS_REAUTHOR_DROP = "_reauthor_nif_fresh/dropped-shape"
+
 
 def _nc():
     """The monolith, resolved at call time (never at import: circular)."""
@@ -610,6 +618,12 @@ def _normalize_partitions_on_disk(dst_path: Path,
                          "-vert morph-rebuild cap) and could NOT be split into partitions",
                          where=f"in {dst_path.name}",
                          consequence="may CTD on equip", file=_sys.stderr)
+                    # The parent's load check counts bones per partition, not
+                    # verts, so it would not find this: carried home in the
+                    # piece's `reason` for the parent to record. #one-tally
+                    _note_pass_failure(WRITER_PASS_VERT_SPLIT, RuntimeError(
+                        f"{s.name}: {len(s.verts)} verts left in one "
+                        "partition"), dst_path)
                 continue
             if _nc()._normalize_partitions(s):
                 changed += 1
@@ -629,6 +643,10 @@ def _normalize_partitions_on_disk(dst_path: Path,
              where=f"on {Path(dst_path).name}",
              consequence="partitions left as-is, over-cap checks NOT run",
              file=sys.stderr)
+        # This runs in a worker, whose stderr and module state the parent never
+        # sees: the piece's `reason` carries the fact home, and the parent
+        # records it. #one-tally
+        _note_pass_failure(WRITER_PASS_PARTITIONS, _pe, dst_path)
         return 0
 
 def _shape_has_vertex_colors(shape) -> bool:
@@ -2578,6 +2596,11 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
                  f"{[n for n, _ in copy_failed]}",
                  consequence="kept the prior complete file (no partial commit)",
                  file=_sys.stderr)
+            # Carried home in the piece's `reason` for the parent to record,
+            # like the partition pass's failure. #one-tally
+            _note_pass_failure(WRITER_PASS_REAUTHOR_DROP, RuntimeError(
+                f"shape(s) {[n for n, _ in copy_failed]} could not be copied, "
+                "so the prior complete file was kept"), dst_path)
             return False
         for s in new.shapes:
             if s.name in hidden_names:

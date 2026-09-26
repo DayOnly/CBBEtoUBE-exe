@@ -27,9 +27,14 @@ it merges.
 
 The scan (`warning_surface.tally_rows`) sees a record that follows the warning
 on its own path: later in the same block, or right after the if/elif chain it
-sits in. ALLOWED is everything else, each with its reason. A new unrecorded
-problem warning fails here until it is recorded or listed; a listed one that is
-now recorded, or gone, fails too, so the list stays true.
+sits in -- and only one that is plausibly that warning's: the first on its
+path, within RECORD_WINDOW lines, with no other warn() between them (review of
+d93b3c0: any later record in a later `try` body counted, related or not).
+ALLOWED is everything else, each keyed by (function, words, occurrence) -- a
+key without the occurrence let one entry hide a second warning with the same
+words -- and each with its reason. A new unrecorded problem warning fails here
+until it is recorded or listed; a listed one that is now recorded, or gone,
+fails too, so the list stays true.
 """
 import concurrent.futures as cf
 import sys
@@ -50,83 +55,92 @@ REPO = Path(__file__).resolve().parent.parent
 #: through the piece's result and the parent's read-back of what was written.
 WORKER_MODULES = {
     "src/nif_convert_writer.py": (
-        "runs inside convert_nif: an over-cap shape left unsplit, or a skipped "
-        "partition pass, is found again by the parent's postflight read-back and "
-        "recorded as a CTD-class mesh issue; a re-author that drops a shape keeps "
-        "the previous complete file"),
+        "runs inside convert_nif: a shape over the bone cap left unsplit is found "
+        "again by the parent's load check and recorded as a CTD-class mesh "
+        "issue; a failed partition pass, a shape over the vertex cap left "
+        "unsplit and a re-author that drops a shape note a pass failure the "
+        "piece's `reason` carries home, and _report_writer_pass_failures "
+        "records each as a warning"),
 }
 
-#: (function, warning as `tally_rows` renders it) -> why no record follows it.
+#: (function, warning as `tally_rows` renders it, occurrence among that
+#: function's calls with those words) -> why no record follows it.
 ALLOWED = {
-    ("_nif_convert_worker", "…: conversion raised"):
+    ("_nif_convert_worker", "…: conversion raised", 0):
         "runs in a worker; the piece comes back with status 'error' and the "
         "parent records it as 'mesh failed'",
-    ("_failed", "conversion failed: …"):
+    ("_failed", "conversion failed: …", 0):
         "the error rides home in the batch's results; _cmd_convert records it "
         "once as 'source failed' when it lists the results",
-    ("_write_failures_file", "could not write the failures file (…)"):
+    ("_write_failures_file", "could not write the failures file (…)", 0):
         "the record could not be written: an entry would land nowhere, and the "
         "tally was already printed",
-    ("_emit_unified_coverage_patches", "unified coverage emission failed: …"):
+    ("_emit_unified_coverage_patches", "unified coverage emission failed: …", 0):
         "returns ok=False; the caller records it as 'coverage' (winner-scan "
         "incomplete)",
     ("_cmd_convert", "no MO2 mods folder: cannot check other mods for existing "
-                     "UBE patches"):
+                     "UBE patches", 0):
         "recorded at the tally as 'check skipped' (_ube_scan_skipped)",
-    ("_cmd_convert", "could not scan for existing UBE patches (…)"):
+    ("_cmd_convert", "could not scan for existing UBE patches (…)", 0):
         "recorded at the tally as 'check skipped' (_ube_scan_skipped)",
-    ("_cmd_convert", "conversion failed: …"):
+    ("_cmd_convert", "conversion failed: …", 0):
         "the error is kept in the results; the tally loop records it as "
         "'source failed' or 'vanilla sweep failed'",
-    ("_cmd_convert", "PATCH VALIDATOR: … warning(s)"):
+    ("_cmd_convert", "PATCH VALIDATOR: … warning(s)", 0):
         "one 'patch validator' entry for the whole batch, recorded after the loop",
     ("_cmd_convert", "POSTFLIGHT: … load-breaking + … other issue(s) on the FINAL "
-                     "Combined"):
+                     "Combined", 0):
         "each half is recorded under its own `if` below it: load-breaking issues "
         "as a failure, the others as a warning",
     ("_mesh_index_unreadable_warnings", "… mod folder(s) could not be fully read "
-                                        "while locating armour meshes"):
+                                        "while locating armour meshes", 0):
         "returns one record per folder; both callers record them",
     ("_find_armor_mod_dirs_uncached", "could not read which vanilla armour meshes "
-                                      "to locate (…)"):
+                                      "to locate (…)", 0):
         "source selection runs before the record starts; kept in "
         "_SELECTION_RUN_WARNINGS and recorded by _cmd_convert",
     ("_find_armor_mod_dirs_uncached", "could not locate armour meshes across the "
-                                      "enabled mods (…)"):
+                                      "enabled mods (…)", 0):
         "source selection runs before the record starts; kept in "
         "_SELECTION_RUN_WARNINGS and recorded by _cmd_convert",
-    ("_cmd_auto", "… post-convert phase(s) FAILED"):
+    ("_cmd_auto", "… post-convert phase(s) FAILED", 0):
         "a sum of failures already recorded after the convert step",
     # Printed before `_cmd_convert` starts the run's record (and clears it).
     # Lane tally-encoding-0926 (635e67e) carries it in as `carried_failures`.
-    ("_cmd_auto", "vanilla sweep DISABLED this run: …"):
+    ("_cmd_auto", "vanilla sweep DISABLED this run: …", 0):
         "printed by auto before _cmd_convert clears the record; carried into the "
         "record by lane tally-encoding-0926 (635e67e, carried_failures)",
     # Recorded by lane tally-encoding-0926 (635e67e): these two entries go when
     # it merges -- this test then says they are recorded.
     ("_auto_convert_mod_steps", "… piece(s) from an earlier run could not be moved "
-                                "out of meshes\\ (a file is in use): …"):
+                                "out of meshes\\ (a file is in use): …", 0):
         "recorded by lane tally-encoding-0926 (635e67e); drop this entry at its merge",
     ("_auto_convert_mod_steps", "… piece(s) from an earlier run were only partly "
-                                "moved out of meshes\\ and could not be put back: …"):
+                                "moved out of meshes\\ and could not be put back: …", 0):
         "recorded by lane tally-encoding-0926 (635e67e); drop this entry at its merge",
-    # Standalone subcommands: no run record, no tally and no failures file; the
-    # exit code is their result.
-    ("_cmd_merge", "master re-sort failed: …"):
-        "`merge` keeps no run record; its exit code is the result",
-    ("_cmd_merge", "POSTFLIGHT CTD on merged output: … load-breaking issue(s)"):
+    # Standalone subcommands: no run record, no tally and no failures file. The
+    # exit code is their only result: 2 = checked and not safe, 1 = not
+    # checked (#merge-unverified-exit), 0 = checked clean.
+    ("_cmd_merge", "master re-sort failed: …", 0):
+        "`merge` keeps no run record, and this does not move its exit code: the "
+        "merge already tier-sorts the masters, and the postflight that follows "
+        "checks the order as a load-breaking issue (exit 2 on a mis-sort); with "
+        "the postflight skipped too, `merge` exits 1",
+    ("_cmd_merge", "POSTFLIGHT CTD on merged output: … load-breaking issue(s)", 0):
         "`merge` keeps no run record; exits 2",
-    ("_cmd_merge", "postflight validation skipped: …"):
-        "`merge` keeps no run record; its exit code is the result",
-    ("_cmd_validate", "…"):
+    ("_cmd_merge", "postflight validation skipped: …", 0):
+        "`merge` keeps no run record; exits 1, written but not checked "
+        "(#merge-unverified-exit; 0 with CBBE2UBE_NO_MERGE_UNVERIFIED_EXIT=1)",
+    ("_cmd_validate", "…", 0):
         "`validate` keeps no run record; exits 1 when any plugin has an issue",
 }
 
 
-def _unlisted(rows):
+def _unlisted(rows, allowed=None):
+    allowed = ALLOWED if allowed is None else allowed
     return [r for r in rows if not r["recorded"]
             and r["module"] not in WORKER_MODULES
-            and (r["function"], r["what"]) not in ALLOWED]
+            and ws.tally_key(r) not in allowed]
 
 
 # --- the scan -----------------------------------------------------------------------
@@ -146,7 +160,7 @@ def test_every_parent_problem_warning_is_recorded_or_listed():
 
 def test_the_list_holds_no_stale_or_recorded_entry():
     rows = ws.tally_rows()
-    unrec = {(r["function"], r["what"]) for r in rows if not r["recorded"]}
+    unrec = {ws.tally_key(r) for r in rows if not r["recorded"]}
     stale = sorted(k for k in ALLOWED if k not in unrec)
     assert not stale, ("listed but now recorded on its own path, or gone -- "
                        f"remove from ALLOWED: {stale}")
@@ -234,6 +248,92 @@ def test_a_record_further_down_the_function_does_not_count(tmp_path):
         "    print('x')\n"
         "    _record_failure('k', 's', 'i')\n"))
     assert got == {"early": ""}, got
+
+
+def test_a_record_far_down_a_later_try_body_is_not_this_warnings(tmp_path):
+    """Review of d93b3c0: any recorder inside a later `try` body counted,
+    however far down and whatever it recorded."""
+    filler = "".join(f"    x{n} = {n}\n" for n in range(ws.RECORD_WINDOW + 2))
+    got = _planted(tmp_path, (
+        "def f(a):\n"
+        "    warn('far above a try that records', consequence='c')\n"
+        + filler +
+        "    try:\n"
+        "        g()\n"
+        "        _record_failure('other', 's', 'i')\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "\n"
+        "def g(a):\n"
+        "    warn('just above a try that records', consequence='c')\n"
+        "    try:\n"
+        "        h()\n"
+        "        _record_failure('k', 's', 'i')\n"
+        "    except Exception:\n"
+        "        pass\n"))
+    assert got == {"far above a try that records": "",
+                   "just above a try that records": "block"}, got
+
+
+def test_a_record_after_another_warning_is_that_ones(tmp_path):
+    """A warn() between a warning and the next record owns that record; the
+    other branches of an if/elif chain are not between them."""
+    got = _planted(tmp_path, (
+        "def f(a):\n"
+        "    warn('first of two', consequence='c')\n"
+        "    warn('second of two', consequence='c')\n"
+        "    _record_failure('k', 's', 'i')\n"
+        "\n"
+        "def g(a):\n"
+        "    warn('before a guarded warning', consequence='c')\n"
+        "    if a:\n"
+        "        warn('the guarded warning', consequence='c')\n"
+        "    _record_failure('k', 's', 'i')\n"
+        "\n"
+        "def h(a):\n"
+        "    warn('before a note', consequence='c')\n"
+        "    warn('a note', level=NOTE)\n"
+        "    _record_failure('k', 's', 'i')\n"
+        "\n"
+        "def k(c):\n"
+        "    if c:\n"
+        "        warn('then another in its branch', consequence='c')\n"
+        "        warn('the other in its branch', consequence='c')\n"
+        "    else:\n"
+        "        warn('the else branch', consequence='c')\n"
+        "    _record_once('k', 's', 'i')\n"))
+    assert got == {"first of two": "", "second of two": "block",
+                   "before a guarded warning": "",
+                   "the guarded warning": "chain",
+                   "before a note": "",
+                   "then another in its branch": "",
+                   "the other in its branch": "chain",
+                   "the else branch": "chain"}, got
+
+
+def _planted_rows(tmp_path, body: str):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "auto_convert.py").write_text(body, encoding="utf-8")
+    (tmp_path / "src" / "nif_convert_writer.py").write_text("", encoding="utf-8")
+    return ws.tally_rows(tmp_path)
+
+
+def test_a_listed_warning_does_not_hide_a_second_with_the_same_words(tmp_path):
+    """Review of d93b3c0: the list was keyed on (function, words), so one entry
+    hid every unrecorded warning of that function with those words."""
+    rows = _planted_rows(tmp_path, (
+        "def f(a):\n"
+        "    if a:\n"
+        "        warn('same words', consequence='c')\n"
+        "        return\n"
+        "    warn('same words', consequence='c')\n"
+        "    warn('same words', consequence='c')\n"
+        "    _record_failure('k', 's', 'i')\n"))
+    assert [(r["line"], r["nth"], r["recorded"]) for r in rows] == [
+        (3, 0, ""), (5, 1, ""), (6, 2, "block")], rows
+    left = _unlisted(rows, {("f", "same words", 0): "listed"})
+    assert [(r["line"], r["nth"]) for r in left] == [(5, 1)], left
+    assert _unlisted(rows, {("f", "same words", 0): "a", ("f", "same words", 1): "b"}) == []
 
 
 # --- what the new records do --------------------------------------------------------

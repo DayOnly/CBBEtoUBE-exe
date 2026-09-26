@@ -3732,6 +3732,50 @@ reported through `_report_coverage_holds`:
   `_cmd_convert` clears the record; failed warm-up tasks are one class entry.
   Coverage-validator hits are one entry carrying `count`, like the per-source
   validator's.
+  **Round 2** (review of d93b3c0). The scan took ANY later recorder inside a
+  later loop/`with`/`try` body as the warning's record, and the list was keyed
+  on (function, words), so one entry hid a second warning with the same words.
+  A record now counts only if it is the FIRST on the warning's path, at most
+  `RECORD_WINDOW` (12) lines below it, with no other `warn()` between them on
+  that path (for the chain rule, the chain's other branches are not between);
+  the list is keyed on (function, words, occurrence). The inventory on the
+  round-1 tree was unchanged by the stricter rule (every true record sits at
+  most 10 lines below its warning). Fixed with it: the nude-skin morph check
+  ran in `auto` AFTER `_cmd_convert` printed its tally -- `auto` now passes
+  `nude_morph_check=True` and the convert step runs it just before the tally
+  (and marks it "done"; a convert that returned early leaves it to `auto`);
+  under `--plugins-only` the convert step never asks for the playability map,
+  so selection's cached warning is recorded from `_ARMO_WINNER_WARNED` (kept
+  under key None too when the read failed before it knew the load order); the
+  mesh writer's failed partition pass, unsplit over-VERTEX-cap shape (the
+  parent's load check counts bones per partition, not verts) and dropped
+  re-author shape now note a pass failure the piece's `reason` carries home,
+  and `_report_writer_pass_failures` prints and records each as a warning per
+  source.
+  **A vertex-colour sweep that stopped is a CTD-class failure**
+  (`#vc-sweep-failure`). `sanitize_output_vertex_color_flags` is the only
+  place a Vertex_Colors/Vertex_Alpha flag is cleared from a shape with no
+  colour buffer (the rebuild paths copy the source's shader flags; nothing at
+  write time clears them), and such a shape crashes the engine when it builds
+  the model. The sweep reads and saves each file itself after every file is
+  written, so an error that stops it leaves each file it did not reach as the
+  writer left it -- no write is skipped and no other pass clears the flag. It
+  was a warning with exit 0; it is now a "CTD-class mesh issue" failure (exit
+  2). Measured on three full runs of the deployed build: 3,200 meshes, 0
+  shapes fixed, because the writer carries colour buffers across -- which
+  makes this rare, not safe. A pool error that falls back to serial and
+  finishes stays the "worker pool died" warning.
+  `CBBE2UBE_NO_VC_SWEEP_FAILURE=1` records the old warning.
+  **`merge` exits 1 when its postflight could not run**
+  (`#merge-unverified-exit`). The standalone `merge` has no record, tally or
+  failures file: its exit code is its only result, and it was 0 for a plugin
+  nothing checked. 2 stays "checked, not safe to load". A failed master
+  re-sort does NOT move the exit code: `merge_patches` already tier-sorts the
+  masters with the same rule (the re-sort only repairs a stale plugin and is a
+  no-op on a fresh one), and the postflight that follows treats
+  `master-ordering` as load-breaking, so a mis-sort left behind exits 2 there,
+  and with the postflight skipped too it exits 1.
+  `CBBE2UBE_NO_MERGE_UNVERIFIED_EXIT=1` exits 0.
 - **Dry run writes nothing** (`#dry-run-writes-nothing`). `auto
   --overlays-only --list-only` ran the overlay transfer: the overlays-only branch
   returned before the list-only check. It now lists what would be remapped
