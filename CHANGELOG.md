@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed — moving an old mesh no longer takes a current mesh's physics and morph files with it
+
+Some armour folders hold two pieces whose names differ only by an extra `_1`
+(`robe_0.nif`/`robe_1.nif` and `robe_1_0.nif`/`robe_1_1.nif`). Each piece has its
+own physics file (`.xml`) and body-morph file (`.tri`). When a full run moved the
+first piece aside as an old conversion, it wrongly took the second piece's
+physics and morph files too, so the piece still in use lost its cloth physics
+and body morphs in game. Each piece's files now move only with that piece.
+Nothing changes on the reported modlist, where no such pair is converted.
+`CBBE2UBE_NO_SWEEP_SIDECAR_BASE=1` (set to 1) turns it off.
+
 ### Fixed — meshes moved aside by a cancelled run come back on the next run of any kind
 
 When a full run moves old converted meshes into `_superseded\`, it keeps them

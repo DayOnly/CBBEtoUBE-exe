@@ -2496,6 +2496,19 @@ lost piece from a dropped one. What ships (`src/stale_sweep.py`, glue in
   moves only when its recorded source is gone, or was not selected, claims nothing and
   all its recorded bases move; never in the root-write mode. The brake: more than
   max(10, 2.5% of the output's bases) is report-only (live: 37 of 1,973, limit 49).
+- **A sidecar moves with the base it was named from** (`#sweep-sidecar-base`). The
+  converter names a piece's `.tri` and `.xml` after the NIF stem with ONE `_0`/`_1`
+  taken off (`_finalize_hdt_physics`, `_generate_hdt_xml_for_dst`, the phase-1
+  `tri_stem`), so `x_1_0.nif`/`x_1_1.nif` (base `x_1`) own `x_1.tri`/`x_1.xml`.
+  `stale_sweep.base_key` read a sidecar's stem back as the mesh `<stem>.nif` and
+  so took a SECOND suffix off, filing `x_1.xml` under `x` (of `x_0.nif`/`x_1.nif`).
+  In a folder holding both bases (sources ship that), moving a stale `x` took the
+  live `x_1` piece's physics XML and morph TRI with it -- no SMP and no body morphs
+  in game -- and a stale `x_1` left its own behind. The stem is now read back as
+  `<stem>_1.nif`, the key of the NIFs the converter derives the sidecar from.
+  `x.nif.tri` still goes with `x.nif_1.nif`. Live: the output holds no double-suffix
+  mesh, so the inventory (1,973 bases, 5,469 files) is identical either way.
+  `CBBE2UBE_NO_SWEEP_SIDECAR_BASE=1`: the old reading.
 - **No per-source patch left in place names a moved mesh**
   (`stale_sweep.hold_for_staying_patches`). A patch set this run did not write and
   does not move is merged by any later run whose coverage fails, in a run that has no

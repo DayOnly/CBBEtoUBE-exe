@@ -118,16 +118,26 @@ def recover_every_run() -> bool:
     return not _flag("CBBE2UBE_NO_SWEEP_RECOVER_EVERY_RUN", False)
 
 
+def sidecar_base_on() -> bool:
+    r"""#sweep-sidecar-base: a `.tri`/`.xml` belongs to the weight base the
+    converter named it from -- its stem is the mesh stem with ONE `_0`/`_1`
+    taken off, so `x_1.xml` goes with `x_1_0.nif`/`x_1_1.nif`, never with
+    `x_0.nif`/`x_1.nif`. CBBE2UBE_NO_SWEEP_SIDECAR_BASE=1: the stem is read as
+    a mesh and loses one more suffix, as before."""
+    return not _flag("CBBE2UBE_NO_SWEEP_SIDECAR_BASE", False)
+
+
 def base_key(rel: str) -> str:
     r"""The weight base of a file below `meshes\!UBE`: the key the planner
     claims (`_weight_base_key`), with a `.tri` or `.xml` mapped to its mesh's.
-    The converter names them after the mesh's stem without `_0`/`_1`, so
-    `x.tri` goes with `x_1.nif` and `x.nif.tri` with `x.nif_1.nif`: the stem
-    is read back as the mesh `<stem>.nif`."""
+    The converter names them after the mesh's stem without ONE `_0`/`_1`, so
+    `x.tri` goes with `x_1.nif`, `x_1.tri` with `x_1_1.nif` and `x.nif.tri`
+    with `x.nif_1.nif`: the stem is read back as the mesh `<stem>_1.nif`.
+    #sweep-sidecar-base"""
     from .auto_convert import _weight_base_key
     s = rel.replace("\\", "/")
     if s.lower().endswith((".tri", ".xml")):
-        s = s[:-4] + ".nif"
+        s = s[:-4] + ("_1.nif" if sidecar_base_on() else ".nif")
     return _weight_base_key(s)
 
 

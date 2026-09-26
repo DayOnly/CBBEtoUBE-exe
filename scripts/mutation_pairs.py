@@ -8264,7 +8264,7 @@ PAIRS = (
     Pair('SOS-b', "a morph file is grouped apart from the mesh it was named after",
          edits=(
              ('src/stale_sweep.py',
-              '        s = s[:-4] + ".nif"',
+              '        s = s[:-4] + ("_1.nif" if sidecar_base_on() else ".nif")',
               '        s = s[:-4]  # MUTATED', 1),
          ),
          tests=('tests/test_stale_output_sweep.py',),
@@ -13341,5 +13341,41 @@ PAIRS = (
          tests=('tests/test_sweep_recover_every_run.py',),
          expect=('test_the_stranded_files_are_the_ones_still_in_the_stamp_folder',
                  'test_a_base_wholly_stranded_keeps_its_record'),
+    ),
+    # #sweep-sidecar-base (2026-09-26): a .tri/.xml belongs to the weight base
+    # of `<its stem>_1.nif`, the one the converter named it from.
+    Pair('SSB-a', 'a sidecar loses a second weight suffix and joins the wrong base',
+         edits=(
+             ('src/stale_sweep.py',
+              '        s = s[:-4] + ("_1.nif" if sidecar_base_on() else ".nif")',
+              '        s = s[:-4] + ".nif"  # MUTATED', 1),
+         ),
+         tests=('tests/test_sweep_sidecar_base.py',),
+         expect=('test_each_base_holds_the_sidecars_named_from_it',
+                 'test_moving_a_stale_base_leaves_the_live_bases_physics_and_morphs',
+                 'test_moving_a_stale_double_suffix_base_takes_its_own_sidecars',
+                 'test_a_sidecar_keys_to_the_mesh_stem_one_suffix_longer'
+                 '[clothes/outfit/robe_1.xml-clothes/outfit/robe_1]'),
+    ),
+    Pair('SSB-b', 'the off-switch no longer switches anything off',
+         edits=(
+             ('src/stale_sweep.py',
+              '    return not _flag("CBBE2UBE_NO_SWEEP_SIDECAR_BASE", False)',
+              '    return True  # MUTATED', 1),
+         ),
+         tests=('tests/test_sweep_sidecar_base.py',),
+         expect=('test_switched_off_the_sidecar_loses_a_second_suffix',),
+    ),
+    Pair('SSB-c', 'the physics XML is filed apart from the mesh it serves',
+         edits=(
+             ('src/stale_sweep.py',
+              '    if s.lower().endswith((".tri", ".xml")):',
+              '    if s.lower().endswith((".tri",)):  # MUTATED', 1),
+         ),
+         tests=('tests/test_sweep_sidecar_base.py',),
+         expect=('test_a_sidecar_keys_to_the_mesh_stem_one_suffix_longer'
+                 '[clothes/outfit/robe_1.xml-clothes/outfit/robe_1]',
+                 'test_each_base_holds_the_sidecars_named_from_it',
+                 'test_moving_a_stale_double_suffix_base_takes_its_own_sidecars'),
     ),
 )
