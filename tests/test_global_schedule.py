@@ -387,6 +387,39 @@ def test_the_sweeps_planning_failure_self_heals_serially(tmp_path, monkeypatch, 
     assert rc == 0, log
 
 
+@pytest.mark.parametrize("sweep_fails", [True, False], ids=["retried", "clean"])
+@pytest.mark.parametrize("switched_off", [False, True],
+                         ids=["one-schedule", "switched-off"])
+def test_a_sweep_the_serial_retry_saved_is_counted(tmp_path, monkeypatch, capsys,
+                                                   switched_off, sweep_fails):
+    """#one-tally. The sweep's first failure prints a problem line even when
+    the serial retry then converts it; the tally and the failures file never
+    carried that line. Recorded now, as a warning, on both schedules; a clean
+    sweep records nothing (the control)."""
+    from tests.test_vanilla_sweep import _mk_data_dir
+    if switched_off:
+        monkeypatch.setenv(SWITCH, "1")
+    mod = tmp_path / "SomeMod"
+    mod.mkdir()
+    data = _mk_data_dir(tmp_path, [], [])
+    ns = _setup_batch(tmp_path, monkeypatch, _Pool(), [mod, data])
+    monkeypatch.setattr(ac, "_auto_convert_mod_steps", _steps_recording(
+        [], lambda n: [_item(n + "_piece")],
+        fail_planning=lambda n, kw: (sweep_fails and n == "Data"
+                                     and kw.get("nif_pool") is not None)))
+    rc = ac._cmd_convert(ns)
+    log = capsys.readouterr().out
+    assert ("serial retry SUCCEEDED" in log) is sweep_fails, log
+    ours = [e for e in ac._RUN_FAILURES if e["kind"] == "vanilla sweep retried"]
+    if sweep_fails:
+        assert len(ours) == 1, ac._RUN_FAILURES
+        assert ours[0]["severity"] == "warning"
+        assert "BrokenPipeError" in ours[0]["detail"], ours[0]
+    else:
+        assert ours == [], ac._RUN_FAILURES
+    assert rc == 0, log
+
+
 # ------------------------------------------------------------ the supersede guard
 
 def test_a_base_an_earlier_source_claimed_is_held_back(tmp_path):
@@ -586,6 +619,45 @@ def test_a_run_killed_mid_phase_reports_how_far_its_nifs_got(tmp_path, monkeypat
     assert rep["nif_phase"] == {"files_done": 2, "files_total": 3,
                                 "sources_nifs_done": ["ModB"]}, rep
     assert [f["name"] for f in rep["failed_mods"]] == ["ModC"]
+
+
+def test_the_results_tab_says_how_far_the_nif_phase_got(tmp_path, monkeypatch):
+    """The Results tab is the only reader of the checkpoint. It read
+    `source_mods` alone, so a run stopped in the NIF phase -- where nearly no
+    source can have finished yet -- read as barely started. The row it paints
+    for the checkpoint a killed run leaves says how many pieces were in."""
+    rep = _run_killed_batch(tmp_path, monkeypatch, kill_on="a2")
+    line = gui._unfinished_run_text(rep)
+    assert "2 of 3 pieces were converted" in line, line
+    assert "1 mod(s) had all of theirs" in line, line
+    assert "1 of 3 planned mods" in line, line
+
+
+def test_a_run_stopped_after_the_nif_phase_does_not_read_as_mid_phase():
+    """The batch-wide checkpoint keeps the finished `nif_phase` through the
+    ESP merge and coverage patches. A run cancelled there had every piece in,
+    so the row must not say it stopped while converting them."""
+    rep = {"source_mods": 9, "sources_planned": 9,
+           "nif_phase": {"files_done": 762, "files_total": 762,
+                         "sources_nifs_done": ["M%d" % i for i in range(9)]}}
+    line = gui._unfinished_run_text(rep)
+    assert "All 762 armour pieces were converted" in line, line
+    assert "stopped while converting" not in line, line
+    assert "9 of 9 planned mods" in line, line
+    rep["nif_phase"]["files_done"] = 761
+    assert "stopped while converting" in gui._unfinished_run_text(rep)
+
+
+def test_a_checkpoint_without_a_nif_phase_keeps_the_old_row():
+    """Control: one source at a time (or a report from an older build) there
+    is no `nif_phase`, and a torn one is not trusted."""
+    old = ("This run did not finish: the report covers 3 of 7 planned mods, "
+           "then the run stopped. The run log says why.")
+    assert gui._unfinished_run_text({"source_mods": 3, "sources_planned": 7}) == old
+    for torn in ({"files_done": "x", "files_total": 5}, {"files_done": 1},
+                 {"files_done": 0, "files_total": 0}, ["not", "a", "dict"]):
+        rep = {"source_mods": 3, "sources_planned": 7, "nif_phase": torn}
+        assert gui._unfinished_run_text(rep) == old, torn
 
 
 # ------------------------------------------------------------ the window

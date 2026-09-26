@@ -496,6 +496,104 @@ def _global_schedule() -> bool:
     return not _flag("CBBE2UBE_NO_GLOBAL_SCHEDULE", False)
 
 
+# --- #planned-folders: a folder is spelled by the plan, not by a race -------
+#
+# Windows keeps the spelling a folder was created with, and a worker creates
+# its piece's folder when it starts writing. Two sources that spell one folder
+# differently (`Armor\` in a mod, `armor\` in the vanilla sweep) therefore got
+# the spelling of whichever piece reached it first: an earlier source's, one
+# source at a time, and the largest piece's on the batch-wide schedule
+# (measured on a fresh output: 485 files under `meshes\!UBE\armor` against
+# `\Armor`, every byte the same). Each source now creates its pieces' folders
+# at the end of its planning, in plan order, so the first source to plan a
+# folder spells it on both schedules, whatever converts first. A folder this
+# made that is still empty once the batch is done (only a skipped piece asked
+# for it) is removed again.
+
+def _planned_folders() -> bool:
+    """#planned-folders (2026-09-26): create each source's destination folders
+    in plan order before its NIFs convert? Yes, by default.
+    CBBE2UBE_NO_PLANNED_FOLDERS=1 leaves them to the workers again."""
+    return not _flag("CBBE2UBE_NO_PLANNED_FOLDERS", False)
+
+
+def _make_planned_folders(work_items, made: list) -> None:
+    """Create the folder of every work item's destination, in list order, and
+    append to `made` each folder this call created (ancestors first). A folder
+    that already exists keeps its spelling; one that cannot be created is left
+    to the worker, which reports its own error. #planned-folders"""
+    for it in work_items:
+        d = Path(it[1]).parent
+        if d.is_dir():
+            continue
+        missing = []
+        p = d
+        while not p.exists() and p.parent != p:
+            missing.append(p)
+            p = p.parent
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        made.extend(reversed(missing))
+
+
+def _remove_empty_planned_folders(made: list) -> int:
+    """Remove every folder in `made` that is empty, deepest first (one that
+    only a skipped piece asked for), and forget them all. Only when no NIF
+    is being written: a worker creates its folder at the start and writes at
+    the end. Returns how many were removed. #planned-folders"""
+    removed = 0
+    for d in sorted(set(made), key=lambda p: len(p.parts), reverse=True):
+        try:
+            d.rmdir()             # refuses a folder that is not empty
+            removed += 1
+        except OSError:
+            pass
+    made.clear()
+    return removed
+
+
+# --- #plan-order-results: a report lists pieces in plan order --------------
+
+def _plan_order_results() -> bool:
+    """#plan-order-results (2026-09-26): list a source's NIF results in the
+    order its pieces were planned, and its patch notes where one source at a
+    time writes them? Yes, by default. CBBE2UBE_NO_PLAN_ORDER_RESULTS=1 keeps
+    the order the answers arrived in."""
+    return not _flag("CBBE2UBE_NO_PLAN_ORDER_RESULTS", False)
+
+
+def _in_plan_order(nif_results: list, work_items) -> None:
+    """Sort `nif_results` in place into the order of `work_items`.
+
+    The answers arrive in completion order: a race among the workers one
+    source at a time, and the largest-first schedule's order on the
+    batch-wide one. Every report list built from them (`pass_effects`,
+    `pass_failure_pieces`, the per-source summary) inherited that order.
+    A result is placed by its destination, else its source file (an error or
+    a skipped piece names no destination); results that tie on both are
+    ordered by status and reason, so the order never depends on arrival.
+    #plan-order-results"""
+    by_dst: dict = {}
+    by_src: dict = {}
+    for i, it in enumerate(work_items):
+        by_dst.setdefault(Path(it[1]), i)
+        by_src.setdefault(Path(it[0]), i)
+    last = len(work_items)
+
+    def _key(r):
+        at = None
+        dst = getattr(r, "dst_path", None)
+        if dst:
+            at = by_dst.get(Path(dst))
+        if at is None and getattr(r, "src_path", None):
+            at = by_src.get(Path(r.src_path))
+        return (last if at is None else at, str(getattr(r, "status", "")),
+                str(getattr(r, "reason", "")))
+    nif_results.sort(key=_key)
+
+
 # A worker's peak commit tracks the size of the mesh it converts: about 0.36 GB
 # of floor plus about 236 MB per source MB (measured 2026-09-11 against the full
 # pack: the largest source, 14 MB, peaked at 3.79 GB). The pool is sized so each
@@ -771,6 +869,7 @@ def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
         claimed_dst_paths.difference_update(own_claims)
         r = convert_serial(src)
         print("  vanilla sweep serial retry SUCCEEDED")
+        _record_sweep_retried(why)
         return r
 
     for i, src in enumerate(sources, 1):
@@ -992,6 +1091,14 @@ _FINGERPRINT_PLUMBING_WHY = {
     "CBBE2UBE_NO_ESL_CHUNK_DEDUP": "how the coverage plugin is cut into ESL "
                                    "pieces (#esl-chunk-dedup); the plugins are "
                                    "rebuilt every run and no NIF depends on it",
+    "CBBE2UBE_NO_PLANNED_FOLDERS": "who creates a piece's folder, the plan or "
+                                   "the worker (#planned-folders): only how a "
+                                   "NEW folder's name is capitalised; no NIF's "
+                                   "bytes depend on it",
+    "CBBE2UBE_NO_PLAN_ORDER_RESULTS": "the order a source's pieces and patch "
+                                      "notes are listed in the reports "
+                                      "(#plan-order-results); no NIF's bytes "
+                                      "depend on it",
 }
 _FINGERPRINT_PLUMBING = frozenset(_FINGERPRINT_PLUMBING_WHY)
 
@@ -1043,6 +1150,14 @@ _FINGERPRINT_HASHED_GROUPS = {
         "names": ("CBBE2UBE_RAY_CHUNK", "CBBE2UBE_NO_ZEROED_PROBE_MEMO"),
         "why": "how the ray casts are batched and whether a body probe is "
                "remembered: no test proves the NIF bytes the same"},
+    # Read through `_flag`, but the mesh maths is the same either way: proven
+    # byte-identical NIF for NIF (#global-schedule parity runs).
+    "which files stay": {
+        "names": ("CBBE2UBE_NO_GLOBAL_SCHEDULE",),
+        "why": "one schedule for the batch or one source at a time: every NIF "
+               "comes out the same, but a base an earlier source converted this "
+               "run is held in meshes\\ on one and moved to _superseded\\ on the "
+               "other when a later source leaves it to its builder"},
 }
 
 
@@ -1929,6 +2044,31 @@ def _record_failure(kind: str, source, item, detail: str = "",
     _RUN_FAILURES.append(entry)
 
 
+def _record_sweep_retried(why) -> None:
+    """The vanilla sweep's first attempt failed and its serial retry converted
+    it. The first failure printed a problem line, which the tally and the
+    failures file never carried; this is its entry, on both schedules.
+    (A retry that fails too is recorded once, as the sweep's failure.)
+    #one-tally"""
+    _record_failure("vanilla sweep retried", "Vanilla sweep (base game + DLC)",
+                    "whole source",
+                    f"the first attempt failed ({plain_error(why)}); converting it "
+                    "again without the worker pool succeeded", severity="warning")
+
+
+def _record_class_once(kind: str, source, item, detail: str = "",
+                       severity: str = "warning") -> None:
+    """One entry for a class that can repeat within a run: the first time
+    it is recorded, every later time its `count` goes up by one, so the tally
+    still counts each printed line and the popup names the class once.
+    #one-tally"""
+    for e in _RUN_FAILURES:
+        if e.get("kind") == kind:
+            e["count"] = int(e.get("count", 1)) + 1
+            return
+    _record_failure(kind, source, item, detail, severity=severity)
+
+
 def _run_tally() -> "tuple[int, int]":
     """(failures, warnings) of this run, counted from the record. #one-tally"""
     from . import failure_summary
@@ -2580,6 +2720,12 @@ def _auto_convert_mod_steps(
     # earlier source claimed in this run is held, not superseded. False (one
     # source at a time) -> the order the steps always had. #global-schedule
     batch_schedule: bool = False,
+    # The folders this source creates for its pieces before they convert are
+    # appended here, SHARED across the batch by `_cmd_convert`, which removes
+    # the ones still empty once no NIF is being written. None -> this call
+    # removes its own after its NIFs (one source at a time only; on the
+    # batch-wide schedule another source may still be writing). #planned-folders
+    planned_folders: "list | None" = None,
 ):
     """Run the full M2 + M3 phase 1 pipeline on a single CBBE armor mod.
 
@@ -2854,6 +3000,9 @@ def _auto_convert_mod_steps(
         body_mesh_rel_paths=body_mesh_rel_paths,
         bsa_mesh_rel_paths=bsa_mesh_rel_paths,
         converted_rel_paths=converted_rel_paths)
+    # Where this source's patch notes go in its notes: here, where one source
+    # at a time writes the patch. #plan-order-results
+    _patch_notes_at = len(result.notes)
     if not batch_schedule:
         _write_source_patches(result, output_dir, src_esps, **_patch_args)
 
@@ -3056,6 +3205,12 @@ def _auto_convert_mod_steps(
             nif_workers = default_worker_count()
         nif_workers = max(1, min(nif_workers, len(work_items)))
 
+        # This source's folders, spelled by its plan, before any of its pieces
+        # (or a later source's) converts. #planned-folders
+        _own_folders = [] if planned_folders is None else planned_folders
+        if _planned_folders():
+            _make_planned_folders(work_items, _own_folders)
+
         # THE PAUSE. Everything above decided what this source converts and
         # where (claims, the patch ESP); everything below the batch only reads
         # this source's own outputs. The batch-wide schedule converts the work
@@ -3121,11 +3276,23 @@ def _auto_convert_mod_steps(
             result.notes.append(
                 f"NIF conversion: {len(work_items)} files in "
                 f"{elapsed:.1f}s ({rate:.1f}/s) with {nif_workers} worker(s)")
+        if planned_folders is None and not batch_schedule:
+            _remove_empty_planned_folders(_own_folders)   # #planned-folders
+        if _plan_order_results():
+            _in_plan_order(result.nif_results, work_items)
 
     if batch_schedule:
         # This source's NIFs are all written now: only now may its patch and
         # snapshot name them. #global-schedule
+        _n_before = len(result.notes)
         _write_source_patches(result, output_dir, src_esps, **_patch_args)
+        if _plan_order_results():
+            # Its notes where one source at a time has them: before the
+            # planning notes that follow the patch and the NIF notes.
+            # #plan-order-results
+            _patch_notes = result.notes[_n_before:]
+            del result.notes[_n_before:]
+            result.notes[_patch_notes_at:_patch_notes_at] = _patch_notes
 
     # --- textures ---
     # Sweep: never texture-copy from the Data dir (same usvfs merged-view /
@@ -3777,6 +3944,11 @@ def _checkpoint_report(output_dir, results, *, planned, workers,
              where=f"under {output_dir}",
              consequence="a run that dies now leaves no report",
              fix="check that the output folder is writable and not open elsewhere")
+        # Printed as a problem, so counted: one entry however many times it
+        # happens this run. #one-tally
+        _record_class_once("report checkpoint not written", "conversion_report.json",
+                           str(output_dir),
+                           "a run that died then would have left no report")
     return out
 
 
@@ -6861,6 +7033,9 @@ def _cmd_convert(args):
     _stamp_run_start(output, planned=len(sources), workers=_planned_workers,
                      orphan_temps_removed=_orphans_removed)
     results = []
+    # Every folder a source creates for its pieces before they convert; the
+    # ones still empty are removed once the batch is done. #planned-folders
+    planned_folders: list = []
 
     def _source_kwargs(_pool, _workers):
         return dict(
@@ -6886,6 +7061,7 @@ def _cmd_convert(args):
             npc_worn_armos=batch_npc_worn,
             armo_winner_nonplayable=batch_winner_np,
             built_ube_twin=batch_built_ube,
+            planned_folders=planned_folders,
         )
 
     def _convert_one(_src, *, _pool, _workers):
@@ -6954,6 +7130,7 @@ def _cmd_convert(args):
                     claimed_dst_paths.update(_claims_before)
                     r = _convert_one(src, _pool=None, _workers=1)
                     print("  vanilla sweep serial retry SUCCEEDED")
+                    _record_sweep_retried(_e1)
                 results.append((src, r, None))
             except Exception as e:
                 results.append((src, None, e))
@@ -6977,6 +7154,8 @@ def _cmd_convert(args):
         # live state, not on top of it. #postflight-release
         gc.collect()
 
+    # The pool is down, so no piece is being written. #planned-folders
+    _remove_empty_planned_folders(planned_folders)
     print(f"\n=== batch auto-conversion done ({len(results)} mod(s)) ===")
     _sos_warns = problem_count()   # warnings up to the end of the batch #stale-output-sweep
 

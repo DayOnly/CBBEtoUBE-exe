@@ -275,6 +275,64 @@ The finishes all land at the end (every source's smallest unit runs last):
 first finish 1718 s into a 1756 s schedule, which is why the checkpoint
 records the phase itself and a source's patch waits for its finish.
 
+#### Folder spelling (`#planned-folders`)
+
+Windows keeps the spelling a folder was created with, and a worker used to
+create its piece's folder when it started converting it. When pieces spell one
+folder differently, the folder was named by whichever piece reached it first,
+on both schedules. For example, a loose mod file sits under `meshes\Armor\`
+while an archive's pieces sit under lowercase `armor\`. One source at a time,
+it depended on which of a source's concurrently started pieces made the
+folder first. Both measured one-at-a-time runs gave `Armor`, but nothing
+fixed that order, so both schedules now follow plan order rather
+than copying one observed spelling. On the batch-wide
+schedule it was the largest-first order across sources. Now each source
+creates its pieces' folders at the end of its planning
+(`_make_planned_folders`), in plan order, before any NIF converts. The first
+source to plan a folder (sources plan highest MO2 priority first, the
+vanilla sweep last) spells it, and within a source the first piece in plan
+order does. Both schedules plan every source in source order, so they spell
+every folder alike on every run. A folder that exists already keeps its
+spelling. A folder the plan made that is still empty once the batch is done
+(only a skipped piece asked for it) is removed then, not at its source's
+finish. On the batch-wide schedule another source may still be writing into
+it, and a later source must find it spelled as planned.
+`CBBE2UBE_NO_PLANNED_FOLDERS=1` leaves folder creation to the workers again.
+No NIF's bytes depend on it, so the `--incremental` fingerprint leaves it out.
+
+**Measured 2026-09-26**, subset runs into fresh scratch outputs, 6 sources
+including the vanilla sweep, 767 NIFs, 15 workers, PYTHONHASHSEED=1. All six
+arms have the same 1303 compared files byte for byte and the same 164 folders.
+The parent named `meshes\!UBE\armor` (485 files) in lowercase on the batch-wide
+schedule and `Armor` one source at a time. Now both schedules name it `armor`,
+which matches the parent's batch-wide run, and every file path and folder
+matches case-sensitively. The sweep plans 304 pieces there: 296 spell it
+`armor` (archive paths) and 8 spell it `Armor` (one loose-file set). The first
+planned piece is lowercase (unit 1). The first `Armor` piece is unit 12, so
+both sit inside the 15 units one source at a time starts together, and the
+parent's `Armor` was that race's outcome. With the switch set, each schedule
+named the folder the way the parent did on that schedule.
+
+#### Report order (`#plan-order-results`)
+
+A source's NIF results arrive in completion order. One source at a time that
+order is a worker race. On the batch-wide schedule it is the largest-first
+order. The report lists built from these results inherited the arrival order:
+`pass_effects`, `pass_failure_pieces` and the per-source piece lists. And
+because the batch-wide schedule writes a source's patch at its finish, the
+patch validator's notes landed after the NIF notes. Now each source's results
+are sorted into plan order once its NIFs are in (`_in_plan_order`). A result
+is placed by its destination, or by its source file when it names no
+destination. Ties are broken by status and reason. On the batch-wide schedule
+the patch notes are moved to where one source at a time writes them.
+`CBBE2UBE_NO_PLAN_ORDER_RESULTS=1` keeps the arrival order. Measured on the
+same six arms: `conversion_report.json`, the failures file and every
+per-source report are identical between the two schedules (run stamps and
+timing notes aside). With the switch set, `conversion_report.json` matched the
+parent's on each schedule. The per-source piece lists differed in order
+between two runs of the parent's own code path, which is the race this
+change removes.
+
 ---
 
 ## The fit contract (1.2)

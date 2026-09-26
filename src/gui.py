@@ -301,6 +301,47 @@ def _nif_status(mod: dict, nif_done: int, nif_total: int, run_eta: str,
     return head + f"{left} for this mod" + (f" — {run_eta}" if run_eta else "")
 
 
+def _unfinished_run_text(rep: dict) -> str:
+    """The Results tab's first row for a report marked incomplete: how far the
+    run got. #report-checkpoint
+
+    On the batch-wide schedule a mod finishes (its patch written) only once
+    its own pieces and every earlier mod's are in, so nearly every mod
+    finishes at the end of the NIF phase. A run stopped inside that phase
+    therefore read "covers 2 of 9 planned mods" with most of its pieces
+    already written. The checkpoint says how far the phase got (`nif_phase`:
+    files_done, files_total, sources_nifs_done); this says it too.
+    #global-schedule"""
+    finished = rep.get("source_mods", "?")
+    planned = rep.get("sources_planned", "?")
+    phase = rep.get("nif_phase")
+    try:
+        done = int(phase["files_done"])
+        total = int(phase["files_total"])
+        whole = len(phase.get("sources_nifs_done") or [])
+    except (TypeError, KeyError, ValueError, AttributeError):
+        total = 0
+    if total > 0 and done >= total:
+        # The checkpoint keeps the finished phase through the plugin and
+        # patch work that follows it, so a run stopped there has every
+        # piece in; saying it stopped mid-phase would be wrong.
+        return (f"This run did not finish. All {total} armour pieces were "
+                "converted; it stopped after that, while finishing the mods "
+                f"and building their patches. The report covers the "
+                f"{finished} of {planned} planned mods that were finished, "
+                "patches included. The run log says why.")
+    if total > 0:
+        return (f"This run did not finish. It stopped while converting the "
+                f"armour pieces of all mods together: {done} of {total} "
+                f"pieces were converted, and {whole} mod(s) had all of "
+                f"theirs. The report covers the {finished} of {planned} "
+                "planned mods that were finished, patches included. The run "
+                "log says why.")
+    return (f"This run did not finish: the report covers {finished} of "
+            f"{planned} planned mods, then the run stopped. The run log "
+            "says why.")
+
+
 def _eta_step(eta: dict, done: int, total: int, now: float,
               alpha: float = 0.25) -> str:
     """Advance the per-mod ETA on a progress marker and return a 'time left'
@@ -2940,11 +2981,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         except Exception:
             _res_head.configure(text=_head)
         if _unfinished:
-            ttk.Label(content,
-                      text=(f"This run did not finish: the report covers "
-                            f"{rep.get('source_mods', '?')} of "
-                            f"{rep.get('sources_planned', '?')} planned mods, "
-                            "then the run stopped. The run log says why."),
+            ttk.Label(content, text=_unfinished_run_text(rep),
                       style="Hint.TLabel", wraplength=520,
                       justify="left").pack(anchor="w", pady=(0, 8))
         wp = (data or {}).get("weight_partner_warnings")
