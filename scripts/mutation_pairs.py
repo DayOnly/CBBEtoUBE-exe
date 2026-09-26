@@ -3190,7 +3190,11 @@ PAIRS = (
               '                _probe = path  # MUTATED\n', 1),
          ),
          tests=('tests/test_coverage_female_guard.py',),
-         expect=('test_the_lookup_gets_a_non_ascii_path_as_the_game_reads_it',),
+         # Since #arma-path-bytes `path` is a cp1252 read by default, so this
+         # edit changes what the lookup is asked only with that switch off:
+         # the test runs both ways and the switch-off case is the one named.
+         # MISSED from 475bd19 until 2026-09-26.
+         expect=('test_the_lookup_gets_a_non_ascii_path_as_the_game_reads_it[utf8_round_trip]',),
     ),
     Pair('EOC-l', 'an excluded folder name with a comma withholds nothing',
          edits=(
