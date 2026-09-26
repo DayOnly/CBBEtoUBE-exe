@@ -3955,3 +3955,18 @@ Runtime physics (SMP cloth goes where the simulation puts it), BodyMorph/OBody
 inflation beyond the fitted body, and equip-time instability. A full breast slider
 takes exposure 4.5% -> 12.1% on a piece whose pose behaviour is clean — the morph path
 is a separate, unexamined class, and on that piece it is the larger one.
+
+### Never compare a clearance across CBBE and UBE on the full crotch band
+
+The two bodies are not the same surface there. UBE models a dense midline slit
+(16% of the covered crotch-band vertices on 1.3% of the area, sideways normals,
+self-contact); the 3BA body ships its vulva and anus as separate companion shapes
+and is open there without them. A body -> nearest-garment-vertex clearance reads
+any CBBE-shaped cloth 0.5-0.9u "deeper" on UBE with no conversion error: a perfect
+warped shell reads ours - author p05 -0.50u. A number that subtracts the author's
+crotch clearance from ours is only meaningful on skin both bodies can show --
+`single_swing_census` scores band skin whose normal ray leaves the body, on a
+source body closed with its companion shapes, and refuses to report unless a
+closed shell pushed through the converter's own warp reads ~0 there (see
+METRICS.md, 2026-09-26). On that skin the shipped pack is slightly looser than the
+author (p05 +0.15u), not deeper.

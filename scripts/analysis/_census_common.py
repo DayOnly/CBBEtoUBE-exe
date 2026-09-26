@@ -202,6 +202,44 @@ def baked_verts(shape):
     return v
 
 
+def visible_skin(V, T, N, sel, reach: float = 6.0):
+    """True where a vertex in `sel` is VISIBLE skin: its outward normal ray,
+    cast from just off the surface, leaves the body without crossing the body
+    itself within `reach`. A body-only mask -- no garment, no offset -- so it is
+    the same rule on any two bodies and cannot be tuned by the thing it judges.
+
+    WHY IT EXISTS. A body->nearest-garment-vertex clearance compared across two
+    bodies is only as fair as the two surfaces are alike. UBE models a dense
+    midline slit at the crotch (16% of the covered band vertices on 1.3% of the
+    area, normals pointing sideways, self-contact); CBBE does not. Any
+    CBBE-shaped cloth carried onto UBE reads -0.5..-0.9u there with no
+    conversion error at all. The slit walls see each other, not the outside,
+    so this mask drops them on UBE and the matching occluded skin on CBBE.
+
+    Measured 2026-09-26 (zeroed bodies, band z55-75 |x|<8): an ideal garment
+    reads 0.3% exposed here, a must-fail inward copy 85%.
+
+    Triangles are pre-filtered to those whose bounding box meets the selected
+    vertices' box grown by `reach`; nothing outside it can be hit by a ray of
+    that length, so the filter changes cost, never a result.
+    """
+    from scripts.analysis.mesh_penetration import ray_exposure
+    V = np.asarray(V, float)
+    T = np.asarray(T, np.int64).reshape(-1, 3)
+    N = np.asarray(N, float)
+    sel = np.asarray(sel, bool)
+    out = np.zeros(len(V), bool)
+    idx = np.flatnonzero(sel)
+    if not len(idx) or not len(T):
+        return out
+    lo = V[idx].min(0) - reach
+    hi = V[idx].max(0) + reach
+    tv = V[T]
+    near = np.all((tv.max(1) >= lo) & (tv.min(1) <= hi), axis=1)
+    out[idx] = ray_exposure(V[idx] + 0.01 * N[idx], N[idx], V, T[near], tmax=reach)
+    return out
+
+
 def face_normals(v, t):
     n = np.cross(v[t[:, 1]] - v[t[:, 0]], v[t[:, 2]] - v[t[:, 0]])
     a = np.linalg.norm(n, axis=1)

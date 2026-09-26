@@ -20,6 +20,7 @@ so one leg swinging drags them into the buttock and the inner thigh.
 
     python scripts/analysis/single_swing_census.py [--out rows.jsonl] [--limit N]
                                                    [--workers N] [--pack <meshes/!UBE>]
+    python scripts/analysis/single_swing_census.py --self-check
 
 WHY THIS AND NOT THE POSE SET. The multipose harness judges a whole pose on a
 sampled region with an all-triangle ray test; a crotch panel that swings 2.5u
@@ -48,6 +49,37 @@ source pieces over 1u 66 -> 39 (converted 38), so "better after conversion
 (-0.3u)" fell 60 -> 37 and "worse (+0.3u)" rose 11 -> 28. The converted side
 did not move.
 
+TWO BANDS, AND WHY THE FULL ONE MUST NOT BE COMPARED ACROSS BODIES (2026-09-26).
+Every arm is scored twice:
+
+  full band (the row's top-level keys) -- LEGACY, unchanged byte for byte. The
+      source arm is the main body shape ALONE. Never subtract it across CBBE and
+      UBE: UBE models a dense midline slit (16% of the covered band vertices on
+      1.3% of the area, sideways normals, 59.5% of band vertices in self-contact
+      against 23% on CBBE), and a body->nearest-garment-vertex clearance reads
+      any CBBE-shaped cloth -0.5..-0.9u there with NO conversion error. A
+      perfect warped shell reads ours-author p05 -0.50u on this band. The crotch
+      band 'we bury it deeper than the author' lead was this artefact.
+  visible band (the row's `vis` block) -- the same census over band skin whose
+      outward normal ray leaves the body within 6u (`_census_common.
+      visible_skin`: body-only, one rule on both bodies). The source body is
+      CLOSED first: the zeroed 3BA body ships the vulva and anus as separate
+      COMPANION shapes (`<body>_Vagina` 1905 verts, `<body>_Anus` 201), so the
+      main shape alone is open there and its rim reads as skin nothing covers.
+
+THE SELF-CHECK runs on every invocation, before any piece is read, and the
+tool REFUSES to report (exit 4) when it fails. A CLOSED shell 0.5u off the
+source body's crotch region (holes capped with a fan, so it spans the vulva as
+a garment does) is pushed through the converter's OWN warp
+(`_cached_cbbe_to_ube_delta` + `warp_armor_by_body_delta`) and scored on UBE:
+that is a perfect conversion by construction, so the visible band must read
+ours - author within 0.15u at p05 and p50; and the same shell pushed 0.5u into
+UBE must read at least 0.3u deeper at p50, or the instrument cannot see burial.
+Measured 2026-09-26: perfect -0.056 / -0.026, buried -0.28 / -0.51; a shell
+not warped at all -0.35 / -0.31, scaled 2% -0.31 / +0.18 -- every planted
+wrong warp fails. The census's older control (the UBE body shifted along its
+OWN normals) passed on the artefact: no CBBE garment can follow the slit.
+
 Read-only. Needs a skeleton NIF (CBBE2UBE_SKELETON_NIF, else the discovered
 XPMSSE skeleton) -- an armour NIF's bone list is flat, so without a real
 skeleton nothing below the hip poses and every piece reads clean.
@@ -75,6 +107,7 @@ as its own change with an old-vs-new comparison.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -97,7 +130,8 @@ from scripts.analysis.posed_clip_test import (                      # noqa: E402
     read_skin, bone_parents, build_pose, apply_pose, DEFAULT_SKELETON)
 from scripts.analysis.pose_set import LT, RT                         # noqa: E402
 from scripts.analysis.canonical_body import (                        # noqa: E402
-    converted_garment_names, find_source, canonical_cbbe)
+    converted_garment_names, find_source, canonical_cbbe, canonical_ube)
+from scripts.analysis._census_common import visible_skin             # noqa: E402
 
 LTH, RTH, PEL = "NPC L Thigh [LThg]", "NPC R Thigh [RThg]", "NPC Pelvis [Pelv]"
 BAND_Z = (55.0, 75.0)
@@ -106,6 +140,21 @@ REACH = 6.0
 SWING_DEG = 45.0
 _PAR = None
 _CBBE = None
+
+# The self-check: a closed shell SHELL_D off the source crotch region, warped by
+# the converter, must read ours - author within SELF_CHECK_TOL on the visible
+# band; buried SELF_CHECK_BURY into UBE it must read SELF_CHECK_MUST_FAIL or
+# deeper at p50. A failure exits SELF_CHECK_EXIT before any piece is read.
+SHELL_D = 0.5
+SHELL_Z = (45.0, 85.0)
+SHELL_X = 16.0
+HOLE_MARGIN = 2.0
+SELF_CHECK_TOL = 0.15
+SELF_CHECK_BURY = 0.5
+SELF_CHECK_MUST_FAIL = -0.3
+SELF_CHECK_EXIT = 4
+COVER_SHARE = 0.9
+_VIS: dict = {}
 
 
 def _skeleton() -> str:
@@ -126,28 +175,66 @@ def _normals(V, T):
     return N / ln
 
 
-def measure(body_shape, garments) -> "dict | None":
-    """One body shape + its visible garment shapes -> the census row, or None when
-    fewer than 50 band vertices are covered (a gauntlet has no crotch)."""
-    global _PAR
-    if _PAR is None:
-        _PAR = bone_parents(pynifly.NifFile(_skeleton()))
-    bV, _, bW = read_skin(body_shape)
-    bT = np.asarray(body_shape.tris, np.int64)
-    if len(bT) == 0:
-        return None
+def band_mask(V):
+    z, x = V[:, 2], V[:, 0]
+    return (z >= BAND_Z[0]) & (z <= BAND_Z[1]) & (np.abs(x) < BAND_X)
+
+
+def body_shapes(nif, name):
+    """The body shape `name` first, then its COMPANION shapes: every shape in the
+    same file named `<name>_<anything>`. The zeroed 3BA body carries the vulva
+    and the anus that way; a body without companions returns just itself."""
+    main = [s for s in nif.shapes if s.name == name]
+    return main + [s for s in nif.shapes if s.name.startswith(name + "_")]
+
+
+def merged_skin(shapes):
+    """`read_skin` over several shapes as ONE mesh: verts and tris concatenated,
+    each bone's weights zero outside the shapes that carry it. A bone's bind
+    origin (the pose pivot) is taken from the first shape that has it -- the
+    main body, which `body_shapes` puts first."""
+    parts = [read_skin(s) for s in shapes]
+    if len(parts) == 1:
+        return parts[0]
+    n = sum(len(p[0]) for p in parts)
+    W: dict = {}
+    Vs, Ts, off = [], [], 0
+    for v, t, w in parts:
+        for bone, (wt, origin) in w.items():
+            if bone not in W:
+                W[bone] = (np.zeros(n), origin)
+            W[bone][0][off:off + len(v)] = wt
+        Vs.append(v)
+        Ts.append(np.asarray(t, np.int64).reshape(-1, 3) + off)
+        off += len(v)
+    return np.concatenate(Vs), np.concatenate(Ts), W
+
+
+def visible_band(V, T, N=None):
+    """Band vertices of this body whose normal ray escapes the body (cached per
+    body; the ray cast costs seconds and every piece shares a few bodies)."""
+    V = np.ascontiguousarray(V, np.float64)
+    T = np.ascontiguousarray(T, np.int64)
+    key = hashlib.sha1(V.tobytes() + T.tobytes()).hexdigest()
+    m = _VIS.get(key)
+    if m is None:
+        if N is None:
+            N = _normals(V, T)
+        m = visible_skin(V, T, N, band_mask(V), reach=REACH)
+        _VIS[key] = m
+    return m
+
+
+def _score(bV, bT, bW, gd, sel, par) -> "dict | None":
+    """The census numbers over the body vertices in `sel`, or None when fewer
+    than 50 of them are covered. `gd` is [(verts, tris, weights)] per garment
+    shape; `par` the skeleton's parent map (empty: nothing poses)."""
     BN = _normals(bV, bT)
-    gd = [read_skin(s) for s in garments]
-    gd = [(v, t, w) for (v, t, w) in gd if len(v) >= 200]
-    if not gd:
-        return None
     GV = np.concatenate([d[0] for d in gd])
     gL = np.concatenate([d[2].get(LTH, (np.zeros(len(d[0])), None))[0] for d in gd])
     gR = np.concatenate([d[2].get(RTH, (np.zeros(len(d[0])), None))[0] for d in gd])
     bP = bW.get(PEL, (np.zeros(len(bV)), None))[0]
-    z, x = bV[:, 2], bV[:, 0]
-    band = (z >= BAND_Z[0]) & (z <= BAND_Z[1]) & (np.abs(x) < BAND_X)
-    idx0 = np.flatnonzero(band)
+    idx0 = np.flatnonzero(sel)
     if len(idx0) < 50:
         return None
     tree = cKDTree(GV)
@@ -169,7 +256,7 @@ def measure(body_shape, garments) -> "dict | None":
     if len(idx) < 50:
         return None
     origins = {b: o for b, (w, o) in bW.items()}
-    ident = float(np.abs(apply_pose(bV, bW, build_pose(_PAR, origins, [])) - bV).max())
+    ident = float(np.abs(apply_pose(bV, bW, build_pose(par, origins, [])) - bV).max())
     out = {"n": int(len(idx)), "identity": round(ident, 6),
            "bind_c_p05": round(float(np.percentile(c0, 5)), 3),
            "bind_c_p50": round(float(np.percentile(c0, 50)), 3)}
@@ -181,7 +268,7 @@ def measure(body_shape, garments) -> "dict | None":
     else:
         out["asym_p90_over_pelvis_only"] = None
     for name, pl in (("L45", [(LT, 'x', SWING_DEG)]), ("R45", [(RT, 'x', SWING_DEG)])):
-        acc = build_pose(_PAR, origins, pl)
+        acc = build_pose(par, origins, pl)
         PB = apply_pose(bV, bW, acc)
         PG = np.concatenate([apply_pose(v, w, acc) for (v, t, w) in gd])
         PN = _normals(PB, bT)
@@ -192,6 +279,195 @@ def measure(body_shape, garments) -> "dict | None":
         out[f"{name}_newly_inside_pct"] = round(100.0 * float(newly_in.mean()), 2)
         out[f"{name}_over0p5_pct"] = round(100.0 * float((loss > 0.5).mean()), 2)
     return out
+
+
+def measure(body_shape, garments, companions=(), par=None) -> "dict | None":
+    """One body shape + its visible garment shapes -> the census row, or None when
+    fewer than 50 band vertices are covered (a gauntlet has no crotch).
+
+    The top-level keys are the LEGACY full band on `body_shape` alone. `vis` is
+    the same census over VISIBLE band skin of the body closed with its
+    `companions` (None when fewer than 50 visible vertices are covered).
+    `par` defaults to the real skeleton's parent map."""
+    global _PAR
+    if par is None:
+        if _PAR is None:
+            _PAR = bone_parents(pynifly.NifFile(_skeleton()))
+        par = _PAR
+    bV, _, bW = read_skin(body_shape)
+    bT = np.asarray(body_shape.tris, np.int64)
+    if len(bT) == 0:
+        return None
+    gd = [read_skin(s) for s in garments]
+    gd = [(v, t, w) for (v, t, w) in gd if len(v) >= 200]
+    if not gd:
+        return None
+    band = band_mask(bV)
+    out = _score(bV, bT, bW, gd, band, par)
+    if out is None:
+        return None
+    out["band_n"] = int(band.sum())
+    if companions:
+        cV, cT, cW = merged_skin([body_shape, *companions])
+    else:
+        cV, cT, cW = bV, bT, bW
+    vm = visible_band(cV, cT)
+    vis = _score(cV, cT, cW, gd, vm, par)
+    if vis is not None:
+        vis["band_n"] = int(band_mask(cV).sum())
+        vis["visible_n"] = int(vm.sum())
+    out["vis"] = vis
+    return out
+
+
+# ------------------------------------------------------------------ self-check
+
+def closed_shell(V, T, d=SHELL_D):
+    """A CLOSED garment `d` off the body's crotch region: the region's triangles
+    (z SHELL_Z, |x| < SHELL_X) welded, every HOLE capped with a fan from its
+    centroid, each vertex moved `d` along the welded normal. A hole is a closed
+    boundary loop lying at least HOLE_MARGIN inside the region box -- the loops
+    where the region was cut out of the body all touch the box. Returns
+    (verts, tris, holes capped)."""
+    V = np.asarray(V, float)
+    T = np.asarray(T, np.int64).reshape(-1, 3)
+    reg = (V[:, 2] > SHELL_Z[0]) & (V[:, 2] < SHELL_Z[1]) & (np.abs(V[:, 0]) < SHELL_X)
+    _, inv = np.unique(np.round(V, 4), axis=0, return_inverse=True)
+    inv = np.asarray(inv).ravel()
+    P = np.zeros((inv.max() + 1, 3))
+    P[inv] = V
+    WT = inv[T[np.all(reg[T], axis=1)]]
+    WT = WT[(WT[:, 0] != WT[:, 1]) & (WT[:, 1] != WT[:, 2]) & (WT[:, 0] != WT[:, 2])]
+    directed = WT[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2)
+    und = np.sort(directed, axis=1)
+    _, which, counts = np.unique(und, axis=0, return_inverse=True, return_counts=True)
+    which = np.asarray(which).ravel()
+    nxt = {int(a): int(b) for a, b in directed[counts[which] == 1]}
+    loops, seen = [], set()
+    for s in list(nxt):
+        if s in seen:
+            continue
+        lp = [s]
+        seen.add(s)
+        c = nxt[s]
+        while c != s and c in nxt and c not in seen:
+            lp.append(c)
+            seen.add(c)
+            c = nxt[c]
+        if c == s and len(lp) >= 3:
+            loops.append(lp)
+    holes = []
+    for lp in loops:
+        q = P[lp]
+        if (q[:, 2].min() > SHELL_Z[0] + HOLE_MARGIN and q[:, 2].max() < SHELL_Z[1] - HOLE_MARGIN
+                and np.abs(q[:, 0]).max() < SHELL_X - HOLE_MARGIN):
+            holes.append(lp)
+    used = np.unique(WT)
+    remap = -np.ones(len(P), np.int64)
+    remap[used] = np.arange(len(used))
+    SV = P[used].copy()
+    tris = [remap[WT]]
+    for lp in holes:
+        ci = len(SV)
+        SV = np.vstack([SV, P[lp].mean(0)])
+        # the boundary runs the way its own face winds; the cap runs it backwards
+        tris.append(np.array([(remap[lp[(i + 1) % len(lp)]], remap[lp[i]], ci)
+                              for i in range(len(lp))], np.int64))
+    ST = np.vstack(tris)
+    return SV + d * _normals(SV, ST), ST, len(holes)
+
+
+def self_check(src_main, src_closed, ube, warp, d=SHELL_D) -> dict:
+    """Score a perfect conversion by construction and a buried one.
+
+    src_main: (V, T) of the source body shape the warp is keyed to;
+    src_closed: (V, T) of that body with its companion shapes;
+    ube: (V, T) of the UBE body; warp: (garment verts, tris) -> warped verts.
+    Returns the readings plus `ok` and the reasons it is not."""
+    sV, sT = src_main
+    cV, cT = src_closed
+    uV, uT = (np.asarray(x) for x in ube)
+    uV = uV.astype(float)
+    G, GT, holes = closed_shell(sV, sT, d)
+    W = np.asarray(warp(G, GT), float)
+    uN = _normals(uV, np.asarray(uT, np.int64))
+
+    def score(bV, bT, X, sel):
+        return _score(np.asarray(bV, float), np.asarray(bT, np.int64), {}, [(X, GT, {})], sel, {})
+
+    a = score(cV, cT, G, visible_band(cV, cT))
+    o = score(uV, uT, W, visible_band(uV, uT, uN))
+    _, nn = cKDTree(uV).query(W)
+    b = score(uV, uT, W - SELF_CHECK_BURY * uN[nn], visible_band(uV, uT, uN))
+    la = score(sV, sT, G, band_mask(np.asarray(sV, float)))
+    lo = score(uV, uT, W, band_mask(uV))
+    res = {"holes_capped": holes, "shell_verts": int(len(G)), "why": []}
+    if a is None or o is None or b is None:
+        res["why"].append("the visible band covered fewer than 50 vertices on an arm -- 0/0 is not a pass")
+    else:
+        res["author"] = (a["n"], a["bind_c_p05"], a["bind_c_p50"])
+        res["ours"] = (o["n"], o["bind_c_p05"], o["bind_c_p50"])
+        res["dp05"] = round(o["bind_c_p05"] - a["bind_c_p05"], 3)
+        res["dp50"] = round(o["bind_c_p50"] - a["bind_c_p50"], 3)
+        res["buried_dp05"] = round(b["bind_c_p05"] - a["bind_c_p05"], 3)
+        res["buried_dp50"] = round(b["bind_c_p50"] - a["bind_c_p50"], 3)
+        if abs(res["dp05"]) > SELF_CHECK_TOL or abs(res["dp50"]) > SELF_CHECK_TOL:
+            res["why"].append(
+                f"a perfect warped shell reads ours - author p05 {res['dp05']:+.3f} p50 "
+                f"{res['dp50']:+.3f}u on visible skin (allowed {SELF_CHECK_TOL}u): the warp, "
+                "the bodies or the mask is wrong")
+        if res["buried_dp50"] > SELF_CHECK_MUST_FAIL:
+            res["why"].append(
+                f"a shell buried {SELF_CHECK_BURY}u reads only p50 {res['buried_dp50']:+.3f}u "
+                f"(must be {SELF_CHECK_MUST_FAIL} or deeper): the instrument cannot see burial")
+    if la is not None and lo is not None:
+        res["legacy_dp05"] = round(lo["bind_c_p05"] - la["bind_c_p05"], 3)
+        res["legacy_dp50"] = round(lo["bind_c_p50"] - la["bind_c_p50"], 3)
+    res["ok"] = not res["why"]
+    return res
+
+
+def _self_check_inputs(mods_root):
+    """The real bodies and the converter's own warp, at weight 1."""
+    cp, cname = canonical_cbbe(str(mods_root) if mods_root else None)
+    up, uname = canonical_ube()
+    cnf = pynifly.NifFile(str(cp))
+    shapes = body_shapes(cnf, cname)
+    sV, sT, _ = read_skin(shapes[0])
+    cV, cT, _ = merged_skin(shapes)
+    ushape = next(s for s in pynifly.NifFile(str(up)).shapes if s.name == uname)
+    uV, uT, _ = read_skin(ushape)
+    bV, delta = nc._cached_cbbe_to_ube_delta(Path(cp), Path(up))
+    if bV is None or len(bV) != len(sV):
+        raise RuntimeError("the converter's body delta is not keyed to the canonical source body")
+    ubN = nc._body_normals_or_compute(ushape)
+
+    def warp(G, GT):
+        return nc.warp_armor_by_body_delta(
+            G, bV, delta, ube_body_verts=uV, ube_body_normals=ubN,
+            min_standoff=nc.ARMOR_TO_SKIN_BUFFER, tris=GT).astype(float)
+    return (sV, sT), (cV, cT), (uV, uT), warp
+
+
+def _print_self_check(res):
+    print(f"SELF-CHECK: a closed shell {SHELL_D}u off the source crotch "
+          f"({res['holes_capped']} holes capped, {res['shell_verts']} verts) through the warp, "
+          "scored on visible band skin")
+    if "dp05" in res:
+        print(f"  perfect: ours - author p05 {res['dp05']:+.3f} p50 {res['dp50']:+.3f}u "
+              f"(author n={res['author'][0]}, ours n={res['ours'][0]}; allowed +-{SELF_CHECK_TOL})")
+        print(f"  buried {SELF_CHECK_BURY}u: p05 {res['buried_dp05']:+.3f} p50 {res['buried_dp50']:+.3f}u "
+              f"(p50 must be {SELF_CHECK_MUST_FAIL} or deeper)")
+    if "legacy_dp05" in res:
+        print(f"  legacy FULL band on the same perfect shell: p05 {res['legacy_dp05']:+.3f} "
+              f"p50 {res['legacy_dp50']:+.3f}u -- the floor of the cross-body artefact")
+    print("  SELF-CHECK " + ("PASS" if res["ok"] else "FAIL: " + "; ".join(res["why"])))
+
+
+# ------------------------------------------------------------------ the census
+
+def _seed_vis(masks):
+    _VIS.update(masks)
 
 
 def _one(args):
@@ -216,10 +492,11 @@ def _one(args):
                 if _CBBE is None:
                     _CBBE = canonical_cbbe(str(mods_root))
                 cb = pynifly.NifFile(str(_CBBE[0]))
-                cbody = next(s for s in cb.shapes if s.name == _CBBE[1])
+                cbody, *companions = body_shapes(cb, _CBBE[1])
                 snf = pynifly.NifFile(str(src))
                 sshapes = {s.name: s for s in snf.shapes}
-                row["src"] = measure(cbody, [sshapes[n] for n in gnames if n in sshapes])
+                row["src"] = measure(cbody, [sshapes[n] for n in gnames if n in sshapes],
+                                     companions)
             except Exception as e:                       # noqa: BLE001
                 row["src_error"] = repr(e)[:120]
         return row
@@ -227,17 +504,92 @@ def _one(args):
         return {"piece": rel, "error": repr(e)[:160]}
 
 
-def main() -> int:
-    argv = sys.argv[1:]
+def _worst(arm):
+    return max(arm["L45_loss_p90"], arm["R45_loss_p90"])
+
+
+def _loss_block(scored, get, label):
+    rows = [r for r in scored if get(r["conv"]) is not None]
+    print(f"\n{label}: n={len(rows)} of {len(scored)} scored")
+    if not rows:
+        print("  nothing covered on this band")
+        return
+    worst = np.array([_worst(get(r["conv"])) for r in rows])
+    asym = np.array([get(r["conv"])["asym_p90_over_pelvis_only"]
+                     if get(r["conv"])["asym_p90_over_pelvis_only"] is not None else np.nan
+                     for r in rows])
+    print(f"  CONVERTED, single {SWING_DEG:.0f}-degree thigh swing, band z{BAND_Z[0]:.0f}-{BAND_Z[1]:.0f} |x|<{BAND_X:.0f}")
+    print(f"  loss p90 (worse side): p50 {np.median(worst):.2f} p90 {np.percentile(worst, 90):.2f} max {worst.max():.2f}u")
+    print(f"  pieces over 1.0u: {int((worst > 1.0).sum())}   over 0.5u: {int((worst > 0.5).sum())}")
+    ok = np.isfinite(asym)
+    if ok.any():
+        hi, lo = ok & (asym > 0.3), ok & (asym <= 0.3)
+        print(f"  one-sided thigh weight over pelvis-only skin, p90 > 0.3: {int(hi.sum())} pieces, "
+              f"median loss {np.median(worst[hi]) if hi.any() else float('nan'):.2f}u; "
+              f"the rest {int(lo.sum())} pieces, median loss {np.median(worst[lo]) if lo.any() else float('nan'):.2f}u")
+    both = [r for r in rows if r.get("src") and get(r["src"]) is not None]
+    if both:
+        sw = np.array([_worst(get(r["src"])) for r in both])
+        cw = np.array([_worst(get(r["conv"])) for r in both])
+        print(f"  SOURCE on the canonical CBBE/3BA body vs CONVERTED, n={len(both)}: "
+              f"loss p90 src p50 {np.median(sw):.2f} / conv p50 {np.median(cw):.2f}; "
+              f"src over 1u {int((sw > 1).sum())}, conv over 1u {int((cw > 1).sum())}; "
+              f"worse after conversion (+0.3u) {int(((cw - sw) > 0.3).sum())}, better (-0.3u) {int(((sw - cw) > 0.3).sum())}")
+    print("  TOP 15 by loss p90 (worse side):")
+    for k in np.argsort(-worst)[:15]:
+        c = get(rows[k]["conv"])
+        print(f"    {worst[k]:5.2f}u  L {c['L45_loss_p90']:5.2f} R {c['R45_loss_p90']:5.2f}  "
+              f"newly inside {max(c['L45_newly_inside_pct'], c['R45_newly_inside_pct']):5.1f}%  "
+              f"asym {c['asym_p90_over_pelvis_only']}  {rows[k]['piece']}")
+
+
+def _bind_block(scored):
+    """ours - author bind clearance per piece, both arms covering at least
+    COVER_SHARE of their full band (the filter the recorded numbers used)."""
+    pairs = [r for r in scored if r.get("src")
+             and r["src"]["n"] >= COVER_SHARE * r["src"]["band_n"]
+             and r["conv"]["n"] >= COVER_SHARE * r["conv"]["band_n"]]
+    print(f"\nBIND ours - author, both arms >= {COVER_SHARE:.0%} band cover: n={len(pairs)}")
+    for label, get in (("FULL band (legacy; NOT comparable across CBBE and UBE)", lambda a: a),
+                       ("VISIBLE band (closed source body, body-only mask)", lambda a: a.get("vis"))):
+        q = [(get(r["conv"]), get(r["src"])) for r in pairs
+             if get(r["conv"]) is not None and get(r["src"]) is not None]
+        if not q:
+            print(f"  {label}: nothing paired")
+            continue
+        d05 = np.array([c["bind_c_p05"] - s["bind_c_p05"] for c, s in q])
+        d50 = np.array([c["bind_c_p50"] - s["bind_c_p50"] for c, s in q])
+        print(f"  {label}: n={len(q)}  p05 {np.median(d05):+.3f} "
+              f"(deeper/shallower by 0.1u {int((d05 < -0.1).sum())}/{int((d05 > 0.1).sum())})  "
+              f"p50 {np.median(d50):+.3f} (closer/looser {int((d50 < -0.1).sum())}/{int((d50 > 0.1).sum())})")
+
+
+def main(argv=None, self_check_inputs=None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
 
     def opt(f, d=None):
         return argv[argv.index(f) + 1] if f in argv else d
 
+    lay = paths.discover_layout()
+    mods_root = lay.mods_root
+    if self_check_inputs is None:
+        try:
+            self_check_inputs = _self_check_inputs(mods_root)
+        except Exception as e:                           # noqa: BLE001
+            print(f"REFUSED: the self-check could not load its bodies or the warp ({e!r:.200}). "
+                  "Without it no number from this census is sound -- set CBBE2UBE_MO2_INI.")
+            return 4                                     # SELF_CHECK_EXIT, literal for tool_map
+    res = self_check(*self_check_inputs)
+    _print_self_check(res)
+    if not res["ok"]:
+        print("REFUSED: the self-check failed, so nothing below would mean anything.")
+        return 4                                         # SELF_CHECK_EXIT
+    if "--self-check" in argv:
+        return 0
+
     out = Path(opt("--out", "single_swing_census.jsonl"))
     limit = int(opt("--limit", "0") or 0)
     workers = int(opt("--workers", "6"))
-    lay = paths.discover_layout()
-    mods_root = lay.mods_root
     pack = Path(opt("--pack", "")) if opt("--pack") else (
         (mods_root / os.environ.get("CBBE2UBE_OUT_MOD", "CBBEtoUBE Auto") / "meshes" / "!UBE")
         if mods_root else None)
@@ -252,7 +604,8 @@ def main() -> int:
     t0 = time.time()
     tally: Counter = Counter()
     scored = []
-    with out.open("w", encoding="utf-8") as fh, Pool(workers) as pool:
+    with out.open("w", encoding="utf-8") as fh, \
+            Pool(workers, initializer=_seed_vis, initargs=(dict(_VIS),)) as pool:
         for row in pool.imap_unordered(_one, [(str(p), pack, mods_root) for p in files], chunksize=4):
             key = ("skip: " + row["skip"] if "skip" in row
                    else "error" if "error" in row else "scored")
@@ -265,33 +618,12 @@ def main() -> int:
     if not scored:
         print("  NOTHING WAS SCORED -- 0/0 is not a clean result")
         return 2
-    worst = np.array([max(r["conv"]["L45_loss_p90"], r["conv"]["R45_loss_p90"]) for r in scored])
-    asym = np.array([r["conv"]["asym_p90_over_pelvis_only"]
-                     if r["conv"]["asym_p90_over_pelvis_only"] is not None else np.nan
-                     for r in scored])
-    print(f"\nCONVERTED, single {SWING_DEG:.0f}-degree thigh swing, band z{BAND_Z[0]:.0f}-{BAND_Z[1]:.0f} |x|<{BAND_X:.0f}: n={len(scored)}")
-    print(f"  loss p90 (worse side): p50 {np.median(worst):.2f} p90 {np.percentile(worst, 90):.2f} max {worst.max():.2f}u")
-    print(f"  pieces over 1.0u: {int((worst > 1.0).sum())}   over 0.5u: {int((worst > 0.5).sum())}")
-    ok = np.isfinite(asym)
-    if ok.any():
-        hi, lo = ok & (asym > 0.3), ok & (asym <= 0.3)
-        print(f"  one-sided thigh weight over pelvis-only skin, p90 > 0.3: {int(hi.sum())} pieces, "
-              f"median loss {np.median(worst[hi]) if hi.any() else float('nan'):.2f}u; "
-              f"the rest {int(lo.sum())} pieces, median loss {np.median(worst[lo]) if lo.any() else float('nan'):.2f}u")
-    both = [r for r in scored if r.get("src")]
-    if both:
-        sw = np.array([max(r["src"]["L45_loss_p90"], r["src"]["R45_loss_p90"]) for r in both])
-        cw = np.array([max(r["conv"]["L45_loss_p90"], r["conv"]["R45_loss_p90"]) for r in both])
-        print(f"\nSOURCE on the canonical CBBE/3BA body vs CONVERTED, n={len(both)}: "
-              f"loss p90 src p50 {np.median(sw):.2f} / conv p50 {np.median(cw):.2f}; "
-              f"src over 1u {int((sw > 1).sum())}, conv over 1u {int((cw > 1).sum())}; "
-              f"worse after conversion (+0.3u) {int(((cw - sw) > 0.3).sum())}, better (-0.3u) {int(((sw - cw) > 0.3).sum())}")
-    print("\nTOP 15 by loss p90 (worse side):")
-    for k in np.argsort(-worst)[:15]:
-        c = scored[k]["conv"]
-        print(f"  {worst[k]:5.2f}u  L {c['L45_loss_p90']:5.2f} R {c['R45_loss_p90']:5.2f}  "
-              f"newly inside {max(c['L45_newly_inside_pct'], c['R45_newly_inside_pct']):5.1f}%  "
-              f"asym {c['asym_p90_over_pelvis_only']}  {scored[k]['piece']}")
+    _loss_block(scored, lambda a: a,
+                "FULL BAND (legacy; the source body is its main shape alone -- "
+                "never subtract across CBBE and UBE)")
+    _loss_block(scored, lambda a: a.get("vis"),
+                "VISIBLE BAND (normal ray escapes the body; source body closed with its companion shapes)")
+    _bind_block(scored)
     return 0
 
 

@@ -2058,3 +2058,97 @@ returned ABSENT on the previous build.
 
 **Owed: an acceptance-gate run on a full pack conversion, and the in-game
 verdict.** Nothing here has one.
+
+# 2026-09-26 — the crotch band on visible skin: never quote the full-band bind across CBBE and UBE
+
+`single_swing_census` scored its bind clearance (body vertex -> nearest garment
+vertex, along the body normal) over the band z55-75 |x|<8 of EACH ARM'S OWN BODY
+and subtracted author from ours. That subtraction is unsound across CBBE and UBE.
+UBE models a dense midline slit: 16% of the covered band vertices on 1.3% of the
+area, normals pointing sideways, 59.5% of UBE band vertices in self-contact
+against 23% on CBBE. A nearest-VERTEX rule reads any CBBE-shaped cloth negative on
+those walls with no conversion error at all, and the author arm was scored on the
+3BA main shape ALONE, which is open at the vulva and anus (they ship as companion
+shapes). The "ours - author p05 -0.86u, we bury it deeper than the author" lead
+was this artefact. The census's own control -- the UBE body shifted along its OWN
+normals -- passed, and was the wrong control: no CBBE garment follows the slit.
+
+**RULE: never quote the full-band bind (or its ours - author difference) across
+CBBE and UBE.** Use the visible band below, or a CLOSED warped-shell control.
+
+## What the census does now (tool-only; src/ untouched)
+
+* Every arm is scored twice. The row's top-level keys are the LEGACY full band,
+  byte-identical to the old tool (control below). A new `vis` block scores the
+  same census over band skin whose outward normal ray leaves the body within 6u
+  (`_census_common.visible_skin`: body-only, no garment, one rule on both bodies).
+* The source body is CLOSED first: the body shape plus its companion shapes
+  (`<body>_*` in the same file). Band vertices, zeroed weight-1 bodies:
+
+      CBBE main shape alone   2979 band   1896 visible (63.6%)
+      CBBE closed             5085 band   2365 visible (46.5%)
+      UBE                     7189 band   2305 visible (32.1%)
+
+* A SELF-CHECK runs on every invocation before any piece is read: a closed shell
+  0.5u off the source crotch region (its 2 genital holes capped with a fan) is
+  pushed through the converter's own warp (`_cached_cbbe_to_ube_delta` +
+  `warp_armor_by_body_delta`) and scored on UBE. It must read ours - author
+  within 0.15u at p05 and p50 on visible skin, and 0.5u deeper at p50 when the
+  warped shell is pushed 0.5u into UBE. Otherwise the tool exits 4 and prints
+  nothing else. `--self-check` runs it alone.
+
+      perfect warped shell, visible band     p05 -0.057  p50 -0.026   PASS
+      same shell buried 0.5u                 p05 -0.280  p50 -0.511   (must be <= -0.3)
+      same perfect shell, LEGACY full band   p05 -0.503  p50 -0.204   <- the artefact's floor
+      planted wrong warps (prototype):  no warp -0.35 / -0.31, 2% scale -0.31 / +0.18,
+                                        0.5u inward -0.28 / -0.51: all fail
+
+## Re-measured on the deployed pack (read-only, `_1`, 1030 NIFs)
+
+Control: the parent tool (77975b2) and this one, same pack and skeleton: all 1030
+rows and 433 scored arms carry IDENTICAL legacy keys (229 converted, 204 source;
+788 no injected body, 13 no covered band).
+
+Bind, ours - author, both arms covering >= 90% of their full band, n=102:
+
+                        p05      deeper/shallower 0.1u    p50      closer/looser
+    FULL (legacy)      -0.861        94 / 6              -0.103       55 / 13
+    VISIBLE            +0.145        12 / 55             +0.101       16 / 51
+
+On visible skin the conversion sits slightly LOOSER than the author, not deeper;
+the self-check's own floor is -0.06u. (The reviewer's mask on the OPEN 3BA shape
+read p05 +0.002, 32/39; closing the source body adds visible vulva skin the
+author's cloth lies tight over, which lowers the author arm.)
+
+Single 45-degree thigh swing, converted, loss p90 on the worse side (n=229):
+
+                        p50    p90    max    over 1u   over 0.5u   src vs conv (n=204)
+    FULL (legacy)       0.37   1.14   3.01      37        93       src>1u 40, conv 36; worse 22 / better 41
+    VISIBLE             0.42   1.17   2.72      34        94       src>1u 71, conv 31; worse 14 / better 64
+
+The posed loss is NOT inflated on UBE by the slit the way the bind was: the
+class size barely moves. The source side grows on visible skin because the
+closed source body adds the vulva, exactly where a one-thigh gusset swings.
+
+## Does "single-swing class exhausted, 1 clean residual" (09-19) still hold?
+
+Same split as 09-19 -- converter's own gate (`_piece_has_hdt_xml` +
+`_conform_skip_keys`) for reachability, discriminator asym > 0.3, then drop
+pieces whose band-covering shape is draping-exempt and pieces negative at bind:
+
+                                     FULL (legacy)   VISIBLE
+    over 1u                                37            34
+    every shape skipped                    14            13
+    reachable, asym > 0.3                  10            11
+      covering shape draping-exempt         7             6
+      bind-negative (p05 -0.74..-0.97)      2             0
+      CLEAN RESIDUAL                        1             5
+
+The legacy split reproduces the recorded 1 on this pack. On visible skin the 2
+bind-negative pieces (and one draping one) drop under 1u, and 4 pieces surface:
+three variants of one steel cuirass (1.19-1.21u, asym 0.44-0.46, bind
+p05 +0.29..+0.49; their source loses 0.90-0.93u, so ~0.3u introduced) and one
+body piece with no matched source (1.02u). The old residual (a dress, 1.49u) is
+inherited (source 1.55u). So the count moves 1 -> 5 pieces from 3 meshes, all
+within 0.2u of the 1u line and none bind-negative: no new mechanism, the class
+verdict (closed; no single-piece fixes) stands.

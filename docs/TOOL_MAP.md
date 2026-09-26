@@ -47,7 +47,7 @@ Two more tracked scripts are excluded as doc GENERATORS rather than measurements
 | `scripts/analysis/registered_bone_audit.py` | 1, 2 | yes | POST-RECONVERT GATE: XML-registered shapes carrying bones WE ADDED that the piece's own physics XML never declares. |
 | `scripts/analysis/scan_morph_issues.py` | 1 | yes | Programmatic scan of converted NIFs for morph issues across the whole output mod |
 | `scripts/analysis/scan_nude_skin_chain.py` | 3 | — | COMPLETE scan: what governs nude hands/feet/body rendering on a UBE race |
-| `scripts/analysis/single_swing_census.py` | 2 | yes | PACK CENSUS of the SINGLE-THIGH SWING class: garment vertices over the crotch and gluteal band that carry ONE thigh's weight over skin that moves with neither, so one leg swinging drags them into the buttock and the inner thigh |
+| `scripts/analysis/single_swing_census.py` | 2, 4 | yes | PACK CENSUS of the SINGLE-THIGH SWING class: garment vertices over the crotch and gluteal band that carry ONE thigh's weight over skin that moves with neither, so one leg swinging drags them into the buttock and the inner thigh |
 | `scripts/analysis/snugness_census.py` | 2 | yes | IS THE CLOTHING AS SNUG AS ITS AUTHOR MADE IT? -- author-relative, per path |
 | `scripts/analysis/source_delta_census.py` | — | yes | What did the CONVERTER make worse? Source-vs-converted pose delta, pack-wide |
 | `scripts/analysis/stage_morph_ledger.py` | 3 | — | WHICH PASS creates the clip that only appears UNDER A BODY PRESET. |
@@ -258,6 +258,7 @@ Only tools whose docstring carries a `python ...` line. A tool missing from this
   - `python seat_error_vs_author.py <arm-root> [<arm-root> ...]         [--source-root <converted mod dir>]`
 - `scripts/analysis/single_swing_census.py`
   - `python scripts/analysis/single_swing_census.py [--out rows.jsonl] [--limit N]`
+  - `python scripts/analysis/single_swing_census.py --self-check`
 - `scripts/analysis/source_delta_census.py`
   - `python scripts/analysis/source_delta_census.py [--out FILE] [--limit N] [--sample N]`
 - `scripts/analysis/stage_morph_ledger.py`

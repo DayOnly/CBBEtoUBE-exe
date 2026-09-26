@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Development only — the crotch-swing census compares the two bodies on skin both can show
+
+The census that measures how far crotch cloth sinks into the body when one leg
+swings compared our conversion with the original armour by subtracting their
+clearances over the crotch. The two bodies are not the same surface there: UBE
+models a narrow slit that CBBE does not, and the original body leaves an opening
+that it fills with separate pieces. Measured by nearest point, any armour shaped
+for CBBE reads about 0.9 units "deeper" on UBE even when it was converted
+perfectly, and that difference was being reported as armour we bury deeper than
+its author did.
+
+The census now also scores only skin that can be seen from outside the body, on
+an original body with its separate pieces put back, beside the old numbers under
+a label that says not to compare them across bodies. Each run first pushes a
+perfect test garment through the converter's own warp and refuses to report if
+that garment does not read close to zero. On the reported pack the conversion is
+slightly looser than the original there (0.15 units at the tightest 5%), not
+deeper; the leg-swing numbers barely move (34 pieces over 1 unit instead of 37).
+Guarded by `tests/test_single_swing_census_visibility.py` and mutation pairs
+`SSV-a`..`SSV-l`. No converter behaviour changes.
+
 ### Fixed — Check setup sees a UBE body you pick while the window is open
 
 The window looked up the reference bodies once and kept that answer until it
