@@ -14441,4 +14441,73 @@ PAIRS = (
          tests=('tests/test_settings_parity.py',),
          expect=('test_an_overlays_only_run_passes_no_armour_exclusions',),
     ),
+    # #nif-library-one-search (2026-09-26): nif_io reads NIFs with the library
+    # the conversion uses, and the zeroed-body probe says when it has none.
+    Pair('NLS-a', 'nif_io never retries a failed library import',
+         edits=(
+             ('src/nif_io.py',
+              '    if pynifly is not None or _RETRIED or not NIF_LIBRARY_RETRY:\n',
+              '    if True:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_nif_library_one_search.py',),
+         expect=('test_a_stale_library_path_still_reads_nifs_with_the_conversions_library',),
+    ),
+    Pair('NLS-b', 'the switch no longer keeps the single import',
+         edits=(
+             ('src/nif_io.py',
+              '    if pynifly is not None or _RETRIED or not NIF_LIBRARY_RETRY:\n',
+              '    if pynifly is not None or _RETRIED:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_nif_library_one_search.py',),
+         expect=('test_the_switch_keeps_the_single_import',),
+    ),
+    Pair('NLS-c', 'the retry does not search the vendored library folder',
+         edits=(
+             ('src/nif_io.py',
+              '            sys.path.insert(0, pn)\n',
+              '            pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_nif_library_one_search.py',),
+         expect=('test_a_stale_library_path_still_reads_nifs_with_the_conversions_library',),
+    ),
+    Pair('NLS-d', 'opening a NIF uses the import-time binding again',
+         edits=(
+             ('src/nif_io.py',
+              '            return library().NifFile(filepath=path_str)',
+              '            return pynifly.NifFile(filepath=path_str)  # MUTATED', 1),
+         ),
+         tests=('tests/test_nif_library_one_search.py',),
+         expect=('test_a_stale_library_path_still_reads_nifs_with_the_conversions_library',),
+    ),
+    Pair('NLS-e', 'a missing library is reported as an unreadable body',
+         edits=(
+             ('src/zeroed_body.py',
+              '        if nif_io.library() is None:\n'
+              '            raise ZeroedBodyError(\n',
+              '        if False:  # MUTATED\n'
+              '            raise ZeroedBodyError(\n', 1),
+         ),
+         tests=('tests/test_nif_library_one_search.py',),
+         expect=('test_a_missing_library_is_not_reported_as_an_unreadable_body',),
+    ),
+    Pair('NLS-f', 'every failed body read blames the library',
+         edits=(
+             ('src/zeroed_body.py',
+              '        if nif_io.library() is None:\n'
+              '            raise ZeroedBodyError(\n',
+              '        if True:  # MUTATED\n'
+              '            raise ZeroedBodyError(\n', 1),
+         ),
+         tests=('tests/test_nif_library_one_search.py',),
+         expect=('test_with_the_library_loaded_a_failed_read_is_an_unreadable_body',),
+    ),
+    Pair('NLS-g', 'the body list calls a missing library an unreadable file',
+         edits=(
+             ('src/zeroed_body.py',
+              '            if nif_io.library() is None:        # #nif-library-one-search\n',
+              '            if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_nif_library_one_search.py',),
+         expect=('test_the_body_list_says_the_library_is_missing',),
+    ),
 )

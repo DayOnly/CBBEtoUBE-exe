@@ -51,8 +51,54 @@ else:
     _IMPORT_ERROR = None
 
 
+# #nif-library-one-search (2026-09-26): the import above looks ONLY in
+# PYNIFLY_PATH when that variable is set, while nif_convert._pynifly() -- which
+# the conversion itself uses -- looks in the repo's `.pynifly/`. A source run
+# with a PYNIFLY_PATH that no longer holds the library therefore converted
+# (nif_convert found it) while every read through this module failed with
+# "'NoneType' object has no attribute 'NifFile'": the zeroed-body check called
+# the game's bodies "unreadable" and the run fell back to finding bodies by
+# name (no CBBE body at all, a UBE body picked by folder name), the Reference
+# bodies dialog listed every body as unreadable, and the zeroed garment source
+# switched off. `library()` retries ONCE the other search -- the same one
+# nif_convert._pynifly() makes -- so both halves read NIFs with the same
+# library. Frozen builds bundle `pyn` and never reach the retry.
+# CBBE2UBE_NO_NIF_LIBRARY_RETRY=1 keeps the one import above.
+from .envflags import flag as _flag  # noqa: E402
+
+NIF_LIBRARY_RETRY = not _flag("CBBE2UBE_NO_NIF_LIBRARY_RETRY", default=False)
+_RETRIED = False
+
+
+def library():
+    """The pynifly module this module reads NIFs with, or None when it cannot
+    be imported (`import_error()` then says why)."""
+    global pynifly, _IMPORT_ERROR, _RETRIED
+    if pynifly is not None or _RETRIED or not NIF_LIBRARY_RETRY:
+        return pynifly
+    _RETRIED = True
+    if not getattr(sys, "frozen", False):
+        pn = str(Path(__file__).resolve().parent.parent / ".pynifly")
+        if pn not in sys.path:
+            sys.path.insert(0, pn)
+    try:
+        from pyn import pynifly as mod  # type: ignore
+    except ImportError as e:
+        _IMPORT_ERROR = e
+        return None
+    pynifly = mod
+    _IMPORT_ERROR = None
+    return mod
+
+
+def import_error() -> str:
+    """Why `library()` is None, as one line ("" when it is loaded)."""
+    e = _IMPORT_ERROR
+    return f"{type(e).__name__}: {e}" if e is not None else ""
+
+
 def _require_pynifly() -> None:
-    if pynifly is None:
+    if library() is None:
         raise RuntimeError(
             "pynifly is not importable. Install it from "
             "https://github.com/BadDogSkyrim/PyNifly and either drop it into "
@@ -100,7 +146,7 @@ def open_nif_retry(path_str: str, attempts: int = 5, base_delay: float = 0.08):
     last: "Exception | None" = None
     for i in range(max(1, attempts)):
         try:
-            return pynifly.NifFile(filepath=path_str)  # type: ignore[attr-defined]
+            return library().NifFile(filepath=path_str)  # type: ignore[union-attr]
         except Exception as e:  # noqa: BLE001 - transient IO; retried below
             last = e
             if i < attempts - 1:

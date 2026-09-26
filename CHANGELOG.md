@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed — running from source with an outdated `PYNIFLY_PATH` no longer loses the reference bodies
+
+This affects running the tool from its source code only; the exe carries its
+own copy of the mesh library and was never affected. When the `PYNIFLY_PATH`
+variable pointed at a folder that no longer held the library, the conversion
+still found the library in the tool's own folder, but the check of the
+reference bodies did not: it called both bodies "unreadable" and fell back to
+finding them by folder name, so a run could warp with no CBBE body at all. Both
+now use the same library. When the library is missing altogether, the message
+now says that instead of calling the body file unreadable.
+`CBBE2UBE_NO_NIF_LIBRARY_RETRY=1` (set to 1) turns the fix off.
+
 ### Fixed — Check setup sees a UBE body you pick while the window is open
 
 The window looked up the reference bodies once and kept that answer until it
