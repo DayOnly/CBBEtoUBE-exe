@@ -7708,7 +7708,7 @@ PAIRS = (
     Pair('TIW-h', 'the coverage step does not hand over the plugin files',
          edits=(
              ('src/auto_convert.py',
-              '                plugin_index=paths.plugin_file_index(_uba_lay),',
+              '                plugin_index=_winner_walk_plugin_index(_uba_lay),',
               '                plugin_index=None,  # MUTATED', 1),
          ),
          tests=('tests/test_third_party_ini_slot_check.py',),
@@ -7717,7 +7717,7 @@ PAIRS = (
     Pair('TIW-i', 'the conversion planner does not hand over the plugin files',
          edits=(
              ('src/auto_convert.py',
-              '                plugin_index=paths.plugin_file_index(_skip_ube_lay),',
+              '                plugin_index=_winner_walk_plugin_index(_skip_ube_lay),',
               '                plugin_index=None,  # MUTATED', 1),
          ),
          tests=('tests/test_third_party_ini_slot_check.py',),
@@ -7776,6 +7776,65 @@ PAIRS = (
          ),
          tests=('tests/test_third_party_ini_slot_check.py',),
          expect=('test_slots_that_cannot_be_read_keep_the_ube_addon_trusted',),
+    ),
+    Pair('TIW-p', 'every unreadable plugin makes the slots unknown',
+         edits=(
+             ('src/auto_convert.py',
+              '                if _ms is None or t[0] == Path(p).name.lower() or t[0] in _ms:',
+              '                if True:  # MUTATED', 1),
+         ),
+         tests=('tests/test_third_party_ini_slot_check.py',),
+         expect=('test_an_unreadable_plugin_that_cannot_hold_the_record_is_passed_over',),
+    ),
+    Pair('TIW-q', "an unreadable plugin mastering the armour's plugin is passed over",
+         edits=(
+             ('src/auto_convert.py',
+              '                if _ms is None or t[0] == Path(p).name.lower() or t[0] in _ms:',
+              '                if _ms is None or t[0] == Path(p).name.lower():  # MUTATED', 1),
+         ),
+         tests=('tests/test_third_party_ini_slot_check.py',),
+         expect=('test_an_unreadable_plugin_mastering_the_owner_is_not_passed_over',),
+    ),
+    # #winner-walk-root-index (2026-09-25): the winner walk resolves load-order
+    # names through the root-only index whatever the index switch says.
+    Pair('WWR-a', 'the winner walk takes the recursive index under its switch',
+         edits=(
+             ('src/auto_convert.py',
+              '    return paths._plugin_file_index_root(lay)\n',
+              '    return paths.plugin_file_index(lay)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_third_party_ini_slot_check.py',),
+         expect=('test_an_unloaded_copy_of_the_owner_plugin_is_not_the_winner',
+                 'test_the_coverage_step_hands_over_the_loaded_files_under_the_index_switch',
+                 'test_the_conversion_planner_hands_over_the_loaded_files_under_the_index_switch'),
+    ),
+    Pair('WWR-b', 'the off-switch no longer switches anything off',
+         edits=(
+             ('src/auto_convert.py',
+              '    if paths.root_plugin_index_on() or _flag("CBBE2UBE_NO_WINNER_WALK_ROOT_INDEX",\n'
+              '                                             False):',
+              '    if paths.root_plugin_index_on():  # MUTATED', 1),
+         ),
+         tests=('tests/test_third_party_ini_slot_check.py',),
+         expect=('test_switched_off_the_walk_takes_the_index_switch_s_files',),
+    ),
+    Pair('WWR-c', 'the coverage step hands over the index the switch selects',
+         edits=(
+             ('src/auto_convert.py',
+              '                plugin_index=_winner_walk_plugin_index(_uba_lay),',
+              '                plugin_index=paths.plugin_file_index(_uba_lay),  # MUTATED', 1),
+         ),
+         tests=('tests/test_third_party_ini_slot_check.py',),
+         expect=('test_the_coverage_step_hands_over_the_loaded_files_under_the_index_switch',),
+    ),
+    Pair('WWR-d', 'the conversion planner hands over the index the switch selects',
+         edits=(
+             ('src/auto_convert.py',
+              '                plugin_index=_winner_walk_plugin_index(_skip_ube_lay),',
+              '                plugin_index=paths.plugin_file_index(_skip_ube_lay),  # MUTATED', 1),
+         ),
+         tests=('tests/test_third_party_ini_slot_check.py',),
+         expect=('test_the_conversion_planner_hands_over_the_loaded_files_under_the_index_switch',),
     ),
     # #vanilla-links-delivered (2026-09-25): with the winner-scan coverage as the
     # sole generator the delivered vanilla link count decides the warning.

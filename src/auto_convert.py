@@ -3240,6 +3240,27 @@ def _skypatcher_forms(value: str):
             continue
 
 
+def _winner_walk_plugin_index(lay) -> dict:
+    r"""#winner-walk-root-index (2026-09-25): the plugin files both callers hand
+    `_third_party_ube_covered_armos` for its #third-party-ini-winner-slots walk
+    -- always the files the game loads (`paths._plugin_file_index_root`).
+
+    `paths.plugin_file_index` is that index only while #root-plugin-index is on.
+    With CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN=1 it is the legacy recursive
+    walk, which can resolve a plugin name to an unloaded copy of the same name
+    in a higher-priority mod's subfolder (`optional\`, `_unmerged_patches\`).
+    The walk read no record there, took the armour's slots as unknown and
+    trusted a cape-only `!UBE\` addon to hide the cuirass: no body on UBE
+    actors, where the slot check before the winner walk covered it. The walk is
+    a question about the load order, so it asks the root index whatever that
+    switch says. CBBE2UBE_NO_WINNER_WALK_ROOT_INDEX=1 hands over
+    `paths.plugin_file_index` again."""
+    if paths.root_plugin_index_on() or _flag("CBBE2UBE_NO_WINNER_WALK_ROOT_INDEX",
+                                             False):
+        return paths.plugin_file_index(lay)     # the root index while it is on
+    return paths._plugin_file_index_root(lay)
+
+
 def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                                    skip_mods=(), halves=("ini", "esp"),
                                    active_plugins=None, plugin_index=None,
@@ -3307,9 +3328,9 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
     no mod overrides (vanilla or DLC, in the game's Data folder) read as
     "slots unknown" and was covered again -- two bodies on UBE actors. Now the
     slots are the load-order WINNER's: `active_plugins` in order, each name
-    resolved to its file through `plugin_index` (`paths.plugin_file_index`:
-    overwrite > enabled mods > game Data), our own output skipped. When the
-    winning record still cannot be read (no load order or index, the record
+    resolved to its file through `plugin_index` (`_winner_walk_plugin_index`,
+    the root-only index: overwrite > enabled mods > game Data), our own
+    output skipped. When the winning record still cannot be read (no load order or index, the record
     in no loaded plugin, an unreadable plugin that may hold it, no BOD2), a
     target a `!UBE\` addon names is excluded as before the slot check and
     listed in `unchecked`; one only a UBE-race addon names stays covered, as
@@ -4983,8 +5004,9 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
                 # #third-party-ini-slot-check: an INI addon counts only
                 # when its plugin is loaded
                 active_plugins=paths.active_plugins_ordered(_uba_lay),
-                # #third-party-ini-winner-slots: the files the game loads
-                plugin_index=paths.plugin_file_index(_uba_lay),
+                # #third-party-ini-winner-slots: the files the game loads,
+                # whatever the index switch says (#winner-walk-root-index)
+                plugin_index=_winner_walk_plugin_index(_uba_lay),
                 unchecked=_uba_unchecked)
         except Exception as _e:
             # Detection failure must never stop coverage -- but say so, or a
@@ -5438,7 +5460,7 @@ def _cmd_convert(args):
                 skip_mods={Path(output).name},
                 # #third-party-ini-slot-check
                 active_plugins=paths.active_plugins_ordered(_skip_ube_lay),
-                plugin_index=paths.plugin_file_index(_skip_ube_lay),
+                plugin_index=_winner_walk_plugin_index(_skip_ube_lay),
                 unchecked=_skip_unchecked)
             if batch_ube_covered:
                 print(f"  {len(batch_ube_covered)} armor(s) already UBE-patched "

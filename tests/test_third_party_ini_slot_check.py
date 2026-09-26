@@ -268,6 +268,43 @@ def test_an_unreadable_plugin_above_the_record_is_not_skipped(tmp_path):
     assert unchecked == [VANILLA]
 
 
+def _broken_mod_plugin(mods, masters):
+    """A plugin in a mod folder whose TES4 header reads and whose body does not."""
+    p = mods / "Broken Mod" / "Broken.esp"
+    _save(p, masters, [])
+    with open(p, "ab") as f:
+        f.write(b"JUNK" * 6)     # no top-level group here: the load raises
+    with pytest.raises(ValueError):
+        ESP.load(p)
+    return p
+
+
+def test_an_unreadable_plugin_that_cannot_hold_the_record_is_passed_over(tmp_path):
+    """A broken plugin late in the load order whose header neither is nor
+    masters the armour's plugin cannot override it: the walk goes on down to
+    Skyrim.esm, and a cape-only refit keeps the cuirass covered. One broken
+    plugin must not make every INI target's slots unknown."""
+    mods, index, order = _vanilla(tmp_path, {0x800: _ube(CAPE, "cape")})
+    broken = _broken_mod_plugin(mods, ["Update.esm"])
+    unchecked = []
+    assert VANILLA not in _covered(mods, active_plugins=order + ["Broken.esp"],
+                                   plugin_index={**index, "broken.esp": broken},
+                                   unchecked=unchecked)
+    assert unchecked == []
+
+
+def test_an_unreadable_plugin_mastering_the_owner_is_not_passed_over(tmp_path):
+    """Negative control: the same broken plugin with Skyrim.esm as a master may
+    hold the winning override, so the slots are unknown."""
+    mods, index, order = _vanilla(tmp_path, {0x800: _ube(CAPE, "cape")})
+    broken = _broken_mod_plugin(mods, ["Skyrim.esm"])
+    unchecked = []
+    assert VANILLA in _covered(mods, active_plugins=order + ["Broken.esp"],
+                               plugin_index={**index, "broken.esp": broken},
+                               unchecked=unchecked)
+    assert unchecked == [VANILLA]
+
+
 def test_our_own_output_is_not_the_winner(tmp_path):
     """Our merged plugin may override the armour; the slots are the ones the
     third-party refit was made for."""
@@ -369,6 +406,63 @@ def test_the_load_order_keys_the_cache(tmp_path):
     assert TARGET not in _covered(tmp_path, active_plugins=["owner.esp"])
 
 
+# ------------------------------------------------ #winner-walk-root-index
+
+DRAWN_OFF = "CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN"
+ROOT_OFF = "CBBE2UBE_NO_WINNER_WALK_ROOT_INDEX"
+
+
+def _shadowed_owner(tmp_path):
+    """The owner mod's cuirass (BODY) gets a cape-only `!UBE\\` addon, and a
+    higher-priority mod carries an unloaded copy of Owner.esp in its
+    `optional` subfolder. -> (covered?, unchecked), through the index the
+    callers hand over."""
+    inst = tmp_path / "inst"
+    mods = inst / "mods"
+    _modlist(mods, addons={0x800: _ube(CAPE, "cape")})
+    opt = mods / "Higher Mod" / "optional"
+    opt.mkdir(parents=True)
+    (opt / "Owner.esp").write_bytes((mods / "Owner Mod" / "Owner.esp").read_bytes())
+    prof = inst / "profiles" / "P"
+    prof.mkdir(parents=True)
+    (prof / "modlist.txt").write_text("+Higher Mod\n+Patch UBE\n+Owner Mod\n",
+                                      encoding="utf-8")
+    order = ["Skyrim.esm", "UBE_AllRace.esp", "Owner.esp", "Patch.esp"]
+    (prof / "plugins.txt").write_text("".join("*" + n + "\n" for n in order),
+                                      encoding="utf-8")
+    (prof / "loadorder.txt").write_text("".join(n + "\n" for n in order),
+                                        encoding="utf-8")
+    lay = ac.paths.Layout(mods_root=mods, instance_dir=inst, selected_profile="P")
+    unchecked = []
+    got = TARGET in _covered(mods, enabled_names=ac.paths.enabled_mods(lay),
+                             active_plugins=ac.paths.active_plugins_ordered(lay),
+                             plugin_index=ac._winner_walk_plugin_index(lay),
+                             unchecked=unchecked)
+    return got, unchecked
+
+
+def test_an_unloaded_copy_of_the_owner_plugin_is_not_the_winner(tmp_path,
+                                                                 monkeypatch):
+    """With the legacy recursive index selected for everything else, the walk
+    still resolves Owner.esp to the file the game loads: the cuirass's slots
+    are read, and a cape-only refit leaves it covered (a body on UBE actors)."""
+    monkeypatch.setenv(DRAWN_OFF, "1")
+    assert _shadowed_owner(tmp_path) == (False, [])
+
+
+def test_by_default_the_owner_plugin_is_the_loaded_one(tmp_path):
+    assert _shadowed_owner(tmp_path) == (False, [])
+
+
+def test_switched_off_the_walk_takes_the_index_switch_s_files(tmp_path,
+                                                              monkeypatch):
+    """Both switches: the recursive index's copy is read, nothing is found and
+    the `!UBE\\` addon is trusted whole, as before this fix."""
+    monkeypatch.setenv(DRAWN_OFF, "1")
+    monkeypatch.setenv(ROOT_OFF, "1")
+    assert _shadowed_owner(tmp_path) == (True, [TARGET])
+
+
 # ------------------------------------------------------------------ callers
 
 def test_the_coverage_step_hands_over_the_load_order(tmp_path, monkeypatch):
@@ -392,8 +486,20 @@ def test_the_coverage_step_reports_the_unchecked_ones(tmp_path, monkeypatch, cap
     assert "1 of them not slot-checked" in out
 
 
-def test_the_conversion_planner_hands_over_the_load_order(tmp_path, monkeypatch,
-                                                         capsys):
+def test_the_coverage_step_hands_over_the_loaded_files_under_the_index_switch(
+        tmp_path, monkeypatch):
+    """#winner-walk-root-index: with the legacy recursive index selected, our
+    own unloaded copy of the name (in the higher-priority output) is not what
+    the winner walk is handed."""
+    from tests.test_coverage_third_party_drawn import _emit
+    monkeypatch.setenv(DRAWN_OFF, "1")
+    seen, _m, theirs = _emit(tmp_path, monkeypatch, real_index=True)
+    assert seen["index"][0]["x ube patch.esp"] == theirs
+
+
+def _plan(tmp_path, monkeypatch, files, root_files=None):
+    """Run the conversion planner with the exclusion scan stubbed; return
+    [the load order, the plugin files] it handed the scan."""
     mods = tmp_path / "mods"
     mods.mkdir()
     monkeypatch.delenv("CBBE2UBE_MODS_ROOT", raising=False)
@@ -405,8 +511,10 @@ def test_the_conversion_planner_hands_over_the_load_order(tmp_path, monkeypatch,
     monkeypatch.setattr(ac.paths, "enabled_mods", lambda lay: None)
     monkeypatch.setattr(ac.paths, "active_plugins_ordered",
                         lambda lay: ["Loaded.esp"])
-    files = {"loaded.esp": tmp_path / "Loaded.esp"}
     monkeypatch.setattr(ac.paths, "plugin_file_index", lambda lay: files)
+    if root_files is not None:
+        monkeypatch.setattr(ac.paths, "_plugin_file_index_root",
+                            lambda lay: root_files)
     got = []
 
     def _record(*a, **k):
@@ -429,6 +537,24 @@ def test_the_conversion_planner_hands_over_the_load_order(tmp_path, monkeypatch,
         merged_name="CBBE_to_UBE_Combined.esp", render_previews=False,
         mods_root=None, no_winner_rebase=True, armo_winner_index=None,
         incremental=False, plugins_only=False))
+    return got
+
+
+def test_the_conversion_planner_hands_over_the_loaded_files_under_the_index_switch(
+        tmp_path, monkeypatch):
+    """#winner-walk-root-index: the planner's winner walk gets the root index
+    even when the legacy recursive one is selected."""
+    monkeypatch.setenv(DRAWN_OFF, "1")
+    legacy = {"loaded.esp": tmp_path / "Higher" / "optional" / "Loaded.esp"}
+    root = {"loaded.esp": tmp_path / "Loaded.esp"}
+    got = _plan(tmp_path, monkeypatch, legacy, root_files=root)
+    assert got[1] is root
+
+
+def test_the_conversion_planner_hands_over_the_load_order(tmp_path, monkeypatch,
+                                                         capsys):
+    files = {"loaded.esp": tmp_path / "Loaded.esp"}
+    got = _plan(tmp_path, monkeypatch, files)
     assert got and got[0] == ["Loaded.esp"]
     assert got[1] is files
     assert "1 of them not slot-checked" in capsys.readouterr().out

@@ -1436,6 +1436,21 @@ follower (converted male Ebony boots on her UBE body):
   their winner, 0 unchecked, 0 armours move.
   `CBBE2UBE_NO_THIRD_PARTY_INI_WINNER_SLOTS=1` restores the mod-folder union and
   covers a target whose slots are unknown.
+  **The walk always reads the root index** (`#winner-walk-root-index`,
+  2026-09-25). Both callers handed over `paths.plugin_file_index`, which is the
+  root-only index only while `#root-plugin-index` is on; with
+  `CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN=1` it is the legacy recursive walk,
+  which can resolve a name to an unloaded copy in a higher-priority mod's
+  subfolder (`optional\`, `_unmerged_patches\`). `_records_of` reads nothing from
+  a mod-folder file the scan did not read, so the winner was missed, the slots
+  were unknown, and a cape-only `!UBE\` addon hid its cuirass. Now both callers
+  pass `_winner_walk_plugin_index`: `paths.plugin_file_index` while the root
+  index is on (the same files), `paths._plugin_file_index_root` otherwise.
+  Unreadable plugins above the record: one whose TES4 header reads and neither
+  is nor masters the armour's plugin cannot hold the record and is passed over;
+  otherwise the slots are unknown. Defaults are unchanged by construction.
+  `CBBE2UBE_NO_WINNER_WALK_ROOT_INDEX=1` hands over `paths.plugin_file_index`
+  again.
 - **What another mod's UBE armature on the winning record already draws**
   (`#coverage-third-party-drawn`, with `#root-plugin-index` and
   `#coverage-keep-better-first-person`, 2026-09-25). Both passes used to skip an

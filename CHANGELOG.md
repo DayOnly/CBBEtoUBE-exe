@@ -17,7 +17,11 @@ same way). When that version cannot be read, the item is left alone as before,
 and the run says how many items that was. Measured on the reported modlist: no
 item changes. `CBBE2UBE_NO_THIRD_PARTY_INI_SLOT_CHECK=1` (set to 1) turns the
 whole check off; `CBBE2UBE_NO_THIRD_PARTY_INI_WINNER_SLOTS=1` reads the slots
-from mods' own plugins only and covers an item whose slots are unknown.
+from mods' own plugins only and covers an item whose slots are unknown. That
+version is always looked up in the plugin files the game loads, also with
+`CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN=1` set: with that setting it could be
+looked up in an unused copy of the plugin in a mod's subfolder, so a UBE cape
+could hide a cuirass. `CBBE2UBE_NO_WINNER_WALK_ROOT_INDEX=1` turns that off.
 
 ### Fixed — the warning for missing vanilla armour now checks what the game loads
 
