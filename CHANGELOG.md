@@ -446,6 +446,124 @@ variable you set yourself still wins, and the log's top says which settings came
 from the file. `CBBE2UBE_NO_HEADLESS_SETTINGS=1` (set to 1) makes a run without
 the window ignore the file, as before.
 
+### Fixed — armour you built with BodySlide into Mod Organizer's overwrite folder is found
+
+When BodySlide runs through Mod Organizer without an output mod, it saves its
+builds in the overwrite folder, and the game loads them from there. The tool's
+search for armour meshes never looked in that folder, so an armour that exists
+only as BodySlide builds there was not converted, and a clean (zeroed) build there
+could not be used as the conversion source the way one in a BodySlide output mod
+is. The overwrite folder is now searched and treated like a BodySlide output mod:
+a mesh that only it has is converted from it, an armour mod's own mesh still comes
+first, and a verified zeroed build there is taken as for an output mod. The reported
+modlist has no meshes in its overwrite folder, so its result does not change.
+`CBBE2UBE_NO_OVERWRITE_MESH_INDEX=1` (set to 1) leaves the folder out.
+
+### Fixed — plugins this tool's patches build on are read from the copy the game loads
+
+To build its patches, the tool reads the plugins they depend on. It looked for
+them in the base game folder first and then in every mod folder in alphabetical
+order -- disabled mods included, and the first mod it converts left out. So it
+could read an old or disabled copy of a plugin instead of the one the game loads,
+miss a plugin only that first mod ships, and (had one been present) add a
+disabled mod's UBE race plugin to the merged plugin as a requirement the game
+cannot meet. It now looks in the order the game does: Mod Organizer's overwrite
+folder, the enabled mods from highest priority down, then the game folder.
+Measured on the reported modlist: 32 of the 637 plugins involved now come from
+the copy the game loads (31 were read from another copy, 1 was not found); the
+merged plugin comes out byte for byte the same. `CBBE2UBE_NO_MASTER_SEARCH_LOAD_ORDER=1`
+(set to 1) restores the old search.
+
+### Fixed — a missing female mesh for the third-person view keeps the male one, even when the first-person one exists
+
+The tool converts only the female version of a piece, unless the female mesh
+is missing: then it converts the male version, so the piece has something to
+show on a UBE body. It checked the third-person and first-person female meshes
+together, so a piece whose third-person female mesh is missing but whose
+first-person one exists never converted the male third-person mesh. Each view
+is now checked on its own; nothing converted before is dropped. Measured on the
+reported modlist: 6 more pieces (12 mesh files) of one clothing replacer.
+`CBBE2UBE_NO_FEMALE_SLOT_PAIRS=1` (set to 1) turns it off.
+Not changed (left for you to decide): a piece with no first-person female
+mesh at all still skips the male first-person mesh the game shows in its place;
+`CBBE2UBE_FEMALE_SLOT_ABSENT_KEEPS_MALE=1` converts it too (7 more pieces on the
+reported modlist, mostly first-person arms and torsos, one of them a base-game
+gauntlet).
+
+### Fixed — only the copy of a plugin the game loads is converted
+
+Mod Organizer loads a plugin only from the top of a mod's folder, and when two
+mods ship a plugin with the same name, only the one higher in the mod list. The
+tool still read every copy: one packed a folder too deep inside its own mod, and
+the base-mod copy a hotfix or tweak replaces. The copy that ran last -- the one
+the game does NOT load -- also wrote the tool's per-plugin patch and its notes.
+Now only the loaded copy is read, the log names every copy it leaves out and why,
+and within one run a later mod never overwrites a patch an earlier one wrote.
+Measured on the reported modlist: 4 unloaded copies (2 with armour) are no longer
+read, and 2 mods whose only armour plugin was such a copy are no longer sources;
+their armour is still converted, from the copy the game loads, so the converted
+armour and the merged plugin are unchanged. `CBBE2UBE_NO_LOADED_SOURCE_PLUGINS=1`
+(set to 1) reads every copy again.
+
+Each plugin belongs to one mod, and every part of a run uses that same answer:
+the highest mod in the mod list that has the plugin at the top of its folder.
+That is the mod the game loads the plugin from -- or, when Mod Organizer's
+overwrite folder holds a copy (a plugin cleaned or edited and saved there), the
+mod whose copy it replaces. Only that mod's copy is converted, never another
+mod's, even if this run does not convert that mod (you did not pick it in Select
+mods, or its armour is already built for UBE): a patch made from another copy
+would override the plugin the game loads. Excluding a mod leaves alone the armour
+of the plugins that belong to it, and only those: a plugin that belongs to a mod
+you did not exclude is converted and covered as usual, even when the excluded mod
+ships a losing copy of it. This is the same in All mods and Select mods runs and
+for `convert --exclude-mods`. When a plugin belongs to a mod the tool does not
+convert -- a body mod, or a mod it skips by its name, such as child clothing or
+BodySlide output -- its armour is not converted from another mod's copy either,
+since the game loads that mod's version; the log lists each such plugin when the
+conversion starts. When the game loads an overwrite copy whose armour differs
+from the copy converted, the log says so. Measured on the reported modlist: its
+overwrite folder holds no plugins, nothing is excluded, and in each of the 85
+cases where a mod's plugin loses to another mod's copy the plugin belongs to a
+mod the tool reads plugins from, so nothing changes.
+`CBBE2UBE_NO_ONE_PLUGIN_OWNER=1` (set to 1) goes back to deciding the two apart:
+a lower mod's copy is then read when the loaded copy is in overwrite, a body mod
+or a mod skipped by its name, and an exclusion also holds back the armour of a
+plugin whose copy in the excluded mod is not the one that counts.
+`CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE=1` (set to 1) turns that off too and goes
+back to reading the mod's own copy when an All mods run excludes the mod the game
+loads the plugin from; `CBBE2UBE_NO_LOADED_COPY_READER=1` (set to 1) turns it off
+too and leaves the mod's copy out in every case.
+
+### Fixed — the run log and the per-mod reports name the right plugin for each patch
+
+A mod with several plugins, some of them without armour, was listed with each
+patch next to the wrong plugin ("a quest plugin -> an armour set's patch"), and the
+per-mod report printed one plugin's numbers under another plugin's name. Each patch
+is now listed with the plugin it was made from, and the report says how many of the
+plugins found were patched. Only the log and report text change; the converted
+armour and plugins are the same.
+
+### Fixed — a failed search for armour meshes is reported instead of hidden
+
+Before converting, the tool searches every enabled mod for the armour meshes the
+game actually loads (a BodySlide build, a replacer, a patch). If that search hit
+an error -- one folder with an over-long path or a broken link was enough -- the
+tool acted as if no mod had those meshes, said nothing, and converted each armour
+from its own copy instead of the one the game loads; armour whose meshes live in
+another mod was left out and listed as "found nowhere". Now an unreadable folder
+costs only its own meshes, the run names it in a warning, and a search that fails
+outright is a named warning in the end-of-run count and the failures list; the
+convert step then searches again rather than reusing the empty result. A failure
+to read which vanilla armour meshes to search for is a warning too. On a modlist
+where the search works, the output is unchanged, with one exception: a folder
+whose name ends in `.nif` is no longer taken for a mesh (it used to hide a real
+mesh of that name in a lower-priority mod, and the piece then failed to load). A
+folder that stays unreadable no longer makes every Refresh repeat the whole
+search (1.5-3 minutes): the result is kept, the warning is given again each time,
+and the search runs afresh as soon as the folder can be read, or once you have
+deleted or renamed it (then no warning names a folder that is gone). A search
+that also could not read which vanilla armour meshes to look for is not kept.
+
 ### Fixed — a garment whose layers share one name keeps every layer
 
 Some garments are built from several layers the author gave the same name, for

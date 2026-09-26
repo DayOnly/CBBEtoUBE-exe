@@ -828,7 +828,8 @@ class _GlobalNifSchedule:
 
 
 def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
-                            make_steps, convert_serial, checkpoint):
+                            make_steps, convert_serial, checkpoint,
+                            claimed_patch_paths=None):
     """#global-schedule: plan every source, convert all their NIFs on one
     schedule, then finish each source in source order. Appends
     (source, result, error) to `results` in source order.
@@ -843,7 +844,11 @@ def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
     phase so far ({files_done, files_total, sources_nifs_done}) or None. It is
     called when a planning failure happens, when a source's last NIF is in,
     and after each finish -- a run that dies in the NIF phase leaves a report
-    that says how far it got."""
+    that says how far it got.
+
+    `claimed_patch_paths`: the batch's per-source patch names; a source claims
+    its names at its finish, so a sweep whose finish fails gives back the names
+    it claimed there before its serial retry writes them. #loaded-source-plugins"""
     n = len(sources)
     slots: list = []
     phase_rec: dict = {}          # the NIF phase so far, once it has begun
@@ -861,12 +866,14 @@ def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
              consequence="the run stopped; the log above says where",
              fix="fix the cause and run again", indent="")
 
-    def _sweep_serial_retry(src, why, own_claims):
+    def _sweep_serial_retry(src, why, own_claims, own_patch_claims=()):
         warn(f"vanilla sweep failed ({plain_error(why)})",
              consequence="retrying SERIALLY (no worker pool; slower, but "
                          "immune to pool-environment failures)...",
              indent="")
         claimed_dst_paths.difference_update(own_claims)
+        if claimed_patch_paths is not None:     # #loaded-source-plugins
+            claimed_patch_paths.difference_update(own_patch_claims)
         r = convert_serial(src)
         print("  vanilla sweep serial retry SUCCEEDED")
         _record_sweep_retried(why)
@@ -963,13 +970,19 @@ def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
                     f"{workers} worker(s)")
                 print(f"  [{k + 1}/{n}] '{slot['disp']}': {m} NIF(s) converted "
                       f"({last_done.get(k, 0.0):.0f}s into the schedule)")
+            # The patch names this finish claims. #loaded-source-plugins
+            p_before = (set(claimed_patch_paths)
+                        if claimed_patch_paths is not None else set())
             try:
                 r = _resume_source_steps(slot["steps"], run_nifs=False)
             except Exception as e1:
                 r = None
                 if slot["sweep"]:
                     try:
-                        r = _sweep_serial_retry(slot["src"], e1, slot["claims"])
+                        r = _sweep_serial_retry(
+                            slot["src"], e1, slot["claims"],
+                            (set(claimed_patch_paths) - p_before
+                             if claimed_patch_paths is not None else ()))
                     except Exception as e2:
                         err = e2
                 else:
@@ -1266,19 +1279,11 @@ def _body_mod_names(mods_root: Path) -> "set[str]":
     itself fell out of the exclusion and its collision-body NIFs entered
     All-mods runs; and a Reference bodies pick changed which mods converted,
     while the GUI's mod list (built without the pick) could not show it."""
-    from . import zeroed_body as _zb
-    out = set()
     try:
         dirs = [d for d in mods_root.iterdir() if d.is_dir()]
     except OSError:
-        return out
-    for kind, (out_path, out_file, _verts, _label) in _zb.KINDS.items():
-        for w in ("_0", "_1"):
-            parts = [p for p in f"{out_path}/{out_file}{w}.nif".split("/") if p]
-            for d in dirs:
-                if _zb._ci_join(d, parts) is not None:
-                    out.add(d.name)
-    return out
+        return set()
+    return {d.name for d in dirs if _ships_a_body(d)}
 
 
 def _find_ube_body_ref(search_roots: list[Path] | None = None) -> Path | None:
@@ -1556,10 +1561,16 @@ class AutoConvertResult:
     source_esp: Path | None = None
     output_esp: Path | None = None
     esp_stats: dict = field(default_factory=dict)
-    # All source ESPs + corresponding output patches (same length, same order).
+    # Every source plugin FOUND, and the patches actually written with their
+    # stats. NOT the same length: a plugin with no armour or a failed one gets
+    # no patch, so zipping source_esps with output_esps pairs a plugin with a
+    # later plugin's patch. `esp_patched` holds (source plugin, patch, stats),
+    # one per patch written -- read that to say which plugin made which patch.
+    # #esp-report-pairing
     source_esps: list[Path] = field(default_factory=list)
     output_esps: list[Path] = field(default_factory=list)
     esp_stats_list: list[dict] = field(default_factory=list)
+    esp_patched: "list[tuple[Path, Path, dict]]" = field(default_factory=list)
     nif_results: list[nif_convert.ConvertResult] = field(default_factory=list)
     textures_copied: int = 0
     notes: list[str] = field(default_factory=list)
@@ -1658,10 +1669,14 @@ class AutoConvertResult:
             f"source : {self.source_dir}",
             f"output : {self.output_dir}",
             "",
-            f"ESP ({len(self.source_esps)} patched)",
+            (f"ESP ({len(self.esp_patched)} patched of "
+             f"{len(self.source_esps)} plugin(s) found)"
+             if self.source_esps else
+             f"ESP ({1 if self.source_esp is not None else 0} patched)"),
         ]
+        # Each patch with the plugin that made it. #esp-report-pairing
         esps_to_report = (
-            list(zip(self.source_esps, self.output_esps, self.esp_stats_list))
+            list(self.esp_patched)
             if self.source_esps else (
                 [(self.source_esp, self.output_esp, self.esp_stats)]
                 if self.source_esp is not None else []
@@ -1765,6 +1780,19 @@ class AutoConvertResult:
         path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _esp_patch_log_lines(r: "AutoConvertResult") -> "list[str]":
+    """The run log's per-source plugin lines: how many plugins were found, and
+    each patch written with the plugin that made it. A plugin with no armour
+    (238 in one bundle mod) or a failed one writes no patch, so the old zip of
+    every plugin found with every patch written shifted each later pair onto
+    the wrong plugin. #esp-report-pairing"""
+    lines = [f"    source ESPs: {len(r.source_esps)} "
+             f"({len(r.esp_patched)} patched)"]
+    for i, (src_e, out_e, _stats) in enumerate(r.esp_patched):
+        lines.append(f"      [{i}] {Path(src_e).name} -> {Path(out_e).name}")
+    return lines
+
+
 def _find_meshes_root(source_dir: Path) -> Path | None:
     """Locate the `meshes/` directory inside a source mod folder.
 
@@ -1864,6 +1892,63 @@ def _warn_unseen_settings() -> None:
         pass          # never let a diagnostic line break a run
 
 
+def _master_search_load_order_on() -> bool:
+    r"""#master-search-load-order (2026-09-25): are masters and UBE race plugins
+    looked up in the game's order -- overwrite, ENABLED mods highest priority
+    first, then the game Data folder? Yes, by default.
+
+    `_discover_master_data_dirs` returned the game Data folder, then every
+    folder in the mods root in directory order: alphabetical, disabled mods
+    included, and the source folder it was asked about left out. The master
+    lookup is first-folder-wins, so a master resolved to the base game's copy
+    or an alphabetically first, possibly losing or disabled copy -- the copy
+    whose records and ESM/ESL flag the patches then read -- and one that only
+    the first source ships was not found. The UBE race scan read every plugin
+    there, so a disabled mod's UBE race plugin would have become a master of
+    the patches (a merged plugin with a master the game never loads fails to
+    load). CBBE2UBE_NO_MASTER_SEARCH_LOAD_ORDER=1 restores the old list."""
+    return not _flag("CBBE2UBE_NO_MASTER_SEARCH_LOAD_ORDER", False)
+
+
+def _load_order_master_dirs(source_dir: Path,
+                            data_dirs: "list[Path]") -> "list[Path] | None":
+    """The master search folders in the game's order for `source_dir` -- a mod
+    folder (or a made-up name) in the discovered modlist's mods root, or its
+    game Data folder: overwrite, the enabled mods highest priority first (the
+    source's own folder included), then the game Data folder(s) -- the
+    layout's, then `data_dirs` found by walking up. Existing folders only.
+    None when `source_dir` is not in that modlist or its mod order cannot be
+    read (the caller keeps the old list). #master-search-load-order"""
+    lay = paths.discover_layout()
+    if lay.mods_root is None:
+        return None
+    order = paths.enabled_mods_ordered(lay)
+    if order is None:
+        return None
+    mods_root = Path(lay.mods_root)
+    game = [Path(d) for d in (lay.game_data_dirs or [])]
+    sd = Path(source_dir)
+    if not (_same_path(sd.parent, mods_root)
+            or any(_same_path(sd, d) for d in game)):
+        return None
+    ow = paths.overwrite_dir(lay)
+    out: "list[Path]" = []
+    seen: "set[str]" = set()
+    for d in (([Path(ow)] if ow is not None else [])
+              + [mods_root / n for n in order] + game + list(data_dirs)):
+        k = os.path.normcase(os.path.abspath(str(d)))
+        if k in seen:
+            continue
+        try:
+            if not d.is_dir():
+                continue
+        except OSError:
+            continue
+        seen.add(k)
+        out.append(d)
+    return out
+
+
 def _discover_master_data_dirs(source_dir: Path) -> list[Path]:
     """Auto-discover directories that may contain master ESMs and UBE race plugins.
 
@@ -1872,6 +1957,8 @@ def _discover_master_data_dirs(source_dir: Path) -> list[Path]:
     UBE race plugins (KhajiitUBE.esp, etc.) are found.
 
     Returns existing directories in priority order; empty list if none found.
+    For a folder of the discovered modlist (or its game Data folder) that order
+    is the game's: `_load_order_master_dirs`. #master-search-load-order
     """
     candidates: list[Path] = []
     for parent_depth in range(1, 4):
@@ -1886,6 +1973,10 @@ def _discover_master_data_dirs(source_dir: Path) -> list[Path]:
             if d.is_dir() and (d / "Skyrim.esm").is_file():
                 if d not in candidates:
                     candidates.append(d)
+    if _master_search_load_order_on():
+        _lo = _load_order_master_dirs(source_dir, candidates)
+        if _lo is not None:
+            return _lo
     # Sibling mod folders so UBE race discovery sees KhajiitUBE.esp etc.
     try:
         mods_root = source_dir.parent
@@ -1899,13 +1990,502 @@ def _discover_master_data_dirs(source_dir: Path) -> list[Path]:
     return candidates
 
 
-def _find_source_esps(source_dir: Path) -> list[Path]:
+def _loaded_source_plugins_on() -> bool:
+    r"""#loaded-source-plugins (2026-09-25): are a mod's source plugins only the
+    copies the game loads? Yes, by default.
+
+    `_find_source_esps` read every plugin anywhere in a mod folder. MO2 loads
+    only plugins at a mod's ROOT, and of several root copies of one name only
+    the highest-priority one (`paths._plugin_file_index_root`). A nested copy
+    (a mod packed one folder too deep inside itself) or a losing duplicate (a
+    base mod's plugin that its hotfix or a tweak replaces) was still read: its
+    armatures were planned, and its per-source patch -- named by the plugin
+    stem alone, in one shared folder -- was written by whichever copy ran LAST,
+    the lowest-priority one. Now, for a folder of the modlist's mods root, a
+    plugin in a subfolder and a root plugin whose name the game loads from
+    another folder are not sources. A folder outside the modlist (a plain
+    `convert` of a download), or no readable mod order, keeps every plugin.
+    CBBE2UBE_NO_LOADED_SOURCE_PLUGINS=1 reads every copy again."""
+    return not _flag("CBBE2UBE_NO_LOADED_SOURCE_PLUGINS", False)
+
+
+# {(mods root, mod order, overwrite, game Data): (mods root, root plugin index,
+# {plugin name lower -> every enabled mod's root copy, highest priority first})}.
+# One entry; cleared when a selection or a convert batch starts, so a GUI
+# session reads the plugin files as they are then. #loaded-source-plugins
+# #one-plugin-owner
+_LOADED_PLUGIN_INDEX: dict = {}
+
+
+def _loaded_plugin_entry() -> "tuple[Path, dict[str, Path], dict[str, list[Path]]] | None":
+    lay = paths.discover_layout()
+    if lay.mods_root is None:
+        return None
+    order = paths.enabled_mods_ordered(lay)
+    if order is None:
+        return None
+    key = (str(lay.mods_root), tuple(order), str(paths.overwrite_dir(lay)),
+           tuple(str(d) for d in (lay.game_data_dirs or ())))
+    hit = _LOADED_PLUGIN_INDEX.get(key)
+    if hit is None:
+        copies: "dict[str, list[Path]]" = {}
+        idx = paths._plugin_file_index_root(lay, copies)
+        hit = (Path(lay.mods_root), idx, copies)
+        _LOADED_PLUGIN_INDEX.clear()
+        _LOADED_PLUGIN_INDEX[key] = hit
+    return hit
+
+
+def _loaded_plugin_index() -> "tuple[Path, dict[str, Path]] | None":
+    """(mods root, {plugin name lower -> the file the game loads}) for the
+    discovered modlist, or None without a mods root or a readable mod order
+    (then nothing says which copy loads). Built once per key (~0.7 s on a
+    3,254-plugin modlist). #loaded-source-plugins"""
+    hit = _loaded_plugin_entry()
+    return None if hit is None else (hit[0], hit[1])
+
+
+def _plugin_copies(mods_root) -> "dict[str, list[Path]] | None":
+    """{plugin name lower -> every enabled mod folder's ROOT copy of it, highest
+    MO2 priority first} for the discovered modlist when `mods_root` is its mods
+    folder; None without a readable mod order or for another folder (then no
+    one is known to own a plugin). The same index, built in the same walk, as
+    `_loaded_plugin_index`. A modlist it cannot read is None too: coverage asks
+    this, and must never fail for it. #one-plugin-owner"""
+    try:
+        hit = _loaded_plugin_entry()
+    except Exception:
+        return None
+    if hit is None or not _same_path(hit[0], mods_root):
+        return None
+    return hit[2]
+
+
+def _plugin_owner(name: str, mods_root) -> "Path | None":
+    r"""#one-plugin-owner: the ONE mod folder that owns plugin `name` this run,
+    for every question the run asks about it: whose copy a source reads, and
+    whose armour an exclusion withholds.
+
+    It is the highest-priority ENABLED mod folder with a root copy of that
+    name. When that copy is the one the game loads, the owner is the mod the
+    game loads the plugin from. When MO2's overwrite folder holds a copy, the
+    game loads that one, but overwrite is no mod: it holds what tools run
+    through MO2 saved there (a plugin cleaned or edited in xEdit, a
+    patcher's output), and the copy it shadows -- the one the game would load
+    with overwrite emptied -- names the mod the plugin comes from. A copy only
+    in the game's Data folder loses to every mod copy, so a plugin some mod
+    ships is never owned by Data; one no enabled mod ships has no owner
+    (None), as without a readable mod order."""
+    copies = _plugin_copies(mods_root)
+    if not copies:
+        return None
+    c = copies.get(str(name).lower())
+    return c[0].parent if c else None
+
+
+def _same_path(a, b) -> bool:
+    return (os.path.normcase(os.path.abspath(str(a)))
+            == os.path.normcase(os.path.abspath(str(b))))
+
+
+def _loaded_copy_reader_on() -> bool:
+    r"""#loaded-copy-reader (2026-09-25): is a mod's root plugin left out only
+    when a conversion source reads the copy the game loads in its place? Yes,
+    by default.
+
+    #loaded-source-plugins left a root copy out whenever the game loads that
+    name from another folder. The index it asks ranks MO2's overwrite folder
+    first and holds every enabled mod, so the winning copy could sit where no
+    source ever reads it: overwrite (a cleaned or edited copy saved there), a
+    mod excluded from the run, or one the name gate refuses. Then no source
+    read the plugin at all: its armour was not planned, converted or patched,
+    where before it was converted from the mod's own copy. Now the mod's copy
+    is left out only when the winning copy is in a mod folder the selection's
+    gate admits (`_source_gate_ok`, the run's exclusions included), so that
+    source reads the game's copy; else the mod's own copy is read, as before
+    #loaded-source-plugins, and a note says when the two copies' armatures
+    differ. (A winning copy in a mod the user excluded counts as handled since
+    #excluded-copy-left-alone.) CBBE2UBE_NO_LOADED_COPY_READER=1 leaves it out
+    in every case."""
+    return not _flag("CBBE2UBE_NO_LOADED_COPY_READER", False)
+
+
+# {mods root key: (excluded names lowercased, enabled names or None)}: the gate
+# of the latest `require_arma` selection over that mods root. The convert step
+# that follows it in the same process judges the folder of a loaded plugin copy
+# by the same gate. No entry: the gate with no exclusions. #loaded-copy-reader
+_SOURCE_GATE: "dict[str, tuple[frozenset, frozenset | None]]" = {}
+
+
+def _path_key(p) -> str:
+    return os.path.normcase(os.path.abspath(str(p)))
+
+
+def _set_source_gate(mods_root: Path, extra_exclude_names, enabled_names) -> None:
+    """Remember a `require_arma` selection's gate for `_read_by_a_source`.
+    #loaded-copy-reader"""
+    _SOURCE_GATE[_path_key(mods_root)] = (
+        frozenset(n.lower() for n in (extra_exclude_names or set())),
+        None if enabled_names is None else frozenset(enabled_names))
+
+
+def _excluded_copy_left_alone_on() -> bool:
+    r"""#excluded-copy-left-alone (2026-09-25): does a plugin the game loads from
+    a mod the user excluded count as handled, so another mod's losing copy of it
+    is left out too? Yes, by default.
+
+    #loaded-copy-reader read a mod's losing copy whenever the winning copy's
+    folder failed the selection's gate, and that gate refuses the run's
+    exclusions. Excluding the mod the game loads a plugin from therefore made a
+    lower mod's copy a source again: its armour was converted and patched from
+    a copy the game does not load, while #exclude-owned-coverage in the same
+    run named the excluded mod the owner and withheld its coverage. An
+    exclusion means "leave this plugin's armour alone", so the exclusions the
+    coverage step withholds (`_RUN_USER_EXCLUSIONS`) now count as handled, and
+    any other winning copy is judged by the rest of the gate without an
+    exclusion list, the same in every entry point. A body mod (skipped by what
+    it ships, not by the user's choice) is still no source, so the mod's own
+    copy is read, as for overwrite, child content and a non-source name.
+    CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE=1 judges by the selection's gate with
+    its exclusions again."""
+    return not _flag("CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE", False)
+
+
+# The mods the user excluded for the run this process is doing, lowercased: the
+# ones the coverage step withholds (#exclude-owned-coverage). Set by each entry
+# point before it reads a plugin: `auto` (--exclude-mods and
+# --coverage-exclude-mods) and `convert` (--exclude-mods, which `auto` hands it
+# as that same union). #excluded-copy-left-alone
+_RUN_USER_EXCLUSIONS: "set[str]" = set()
+
+# {mods root key: body mod folder names lowercased}, read when a loaded copy is
+# first judged and dropped by each selection. #excluded-copy-left-alone
+_BODY_MODS_SEEN: "dict[str, frozenset]" = {}
+
+
+def _set_run_user_exclusions(names) -> None:
+    """Record the run's user exclusions, as `_armos_defined_by_mods` reads them
+    (the `vanilla` pseudo-name names no folder). #excluded-copy-left-alone"""
+    _RUN_USER_EXCLUSIONS.clear()
+    _RUN_USER_EXCLUSIONS.update(
+        n for n in (str(x).strip().lower() for x in (names or ())) if n)
+    _RUN_USER_EXCLUSIONS.discard("vanilla")
+
+
+def _body_mods_seen(mods_root: Path) -> frozenset:
+    k = _path_key(mods_root)
+    hit = _BODY_MODS_SEEN.get(k)
+    if hit is None:
+        hit = frozenset(n.lower() for n in _body_mod_names(Path(mods_root)))
+        _BODY_MODS_SEEN[k] = hit
+    return hit
+
+
+def _read_by_a_source(loaded: Path, mods_root: Path,
+                      source_dir: "Path | None" = None) -> bool:
+    """Is `loaded`, the copy of a plugin the game loads, handled by this run:
+    read by a conversion source, or left alone because the user excluded its
+    mod? Only a folder directly in the mods root that the selection's gate
+    admits is ever a source; MO2's overwrite folder and the game Data folder
+    never are. #loaded-copy-reader #excluded-copy-left-alone
+
+    By default (#one-plugin-owner) the one question is whether a mod other than
+    `source_dir`, the mod whose copy is asked about, owns the plugin: then that
+    copy is left out, whether or not the owner is converted."""
+    if not _loaded_copy_reader_on():
+        return True
+    if source_dir is not None and _one_plugin_owner_on():
+        owner = _plugin_owner(Path(loaded).name, mods_root)
+        return owner is not None and not _same_path(owner, source_dir)
+    folder = Path(loaded).parent
+    if not _same_path(folder.parent, mods_root):
+        return False
+    excl, enabled = _SOURCE_GATE.get(_path_key(mods_root), (frozenset(), None))
+    if _excluded_copy_left_alone_on():
+        if _mod_name_excluded(folder.name, _RUN_USER_EXCLUSIONS):
+            return True     # the user's exclusion: its armour is left alone
+        if folder.name.lower() in _body_mods_seen(mods_root):
+            return False    # the body: skipped by the run, not by the user
+        excl = frozenset()  # no exclusion list: the same in every entry point
+    return _source_gate_ok(folder, excl, enabled, True)
+
+
+def _one_plugin_owner_on() -> bool:
+    r"""#one-plugin-owner (2026-09-26): does every question about a plugin --
+    which copy a source reads, whose armour an exclusion withholds -- ask the
+    same owner (`_plugin_owner`)? Yes, by default.
+
+    The two passes decided apart. Sources read a losing copy whenever the
+    winner's folder was no source (overwrite, a body mod, a skipped name), while
+    #exclude-owned-coverage owned every root plugin of an excluded folder, read
+    from the copy the game loads. So an excluded mod whose copy sat under an
+    overwrite copy had its armour withheld by coverage and converted from a
+    lower mod's copy in the same run; an excluded mod whose copy LOST to mod A
+    had A's armour withheld while A was converted; and a body mod's plugin was
+    converted from another mod's copy (in `auto` and a standalone `convert`
+    alike -- f057ba9's standalone `convert` had dropped it). Now a mod's root
+    plugin is read only when that mod owns it, never
+    another mod's losing copy; coverage withholds a plugin's armour only when
+    its owner is excluded. When the owner is no source (a body mod, child
+    clothing, a skipped name), the plugin's armour is not converted from
+    another copy either: the game loads the owner's records, and a patch built
+    from other records would override them. The convert step names such plugins.
+    CBBE2UBE_NO_ONE_PLUGIN_OWNER=1 restores the two separate rules; the switch
+    of each earlier step of the chain (#loaded-source-plugins,
+    #loaded-copy-reader, #excluded-copy-left-alone) turns this off with it, so
+    each still restores its own parent in both passes."""
+    return (not _flag("CBBE2UBE_NO_ONE_PLUGIN_OWNER", False)
+            and _loaded_source_plugins_on() and _loaded_copy_reader_on()
+            and _excluded_copy_left_alone_on())
+
+
+_EXCLUDED_BY_YOU = "you excluded it"
+
+
+def _ships_a_body(mod_dir: Path) -> bool:
+    """Does this mod folder ship a race body (the test `_body_mod_names` puts
+    every folder through)? #body-mod-exclusion"""
+    from . import zeroed_body as _zb
+    for kind, (out_path, out_file, _verts, _label) in _zb.KINDS.items():
+        for w in ("_0", "_1"):
+            parts = [p for p in f"{out_path}/{out_file}{w}.nif".split("/") if p]
+            if _zb._ci_join(Path(mod_dir), parts) is not None:
+                return True
+    return False
+
+
+def _owner_not_source_why(owner: Path) -> "str | None":
+    """Why the mod that owns a plugin is no conversion source, or None when it
+    is one. The user's exclusion first; then what selection skips a folder for
+    without asking: a body, child clothing, a non-source name. #one-plugin-owner"""
+    if _mod_name_excluded(owner.name, _RUN_USER_EXCLUSIONS):
+        return _EXCLUDED_BY_YOU
+    if _ships_a_body(owner):
+        return "a body mod"
+    if _is_child_content_mod(owner.name):
+        return "child clothing"
+    if not _source_gate_ok(owner, frozenset(), None, True):
+        return "a mod skipped by its name"
+    return None
+
+
+def _owner_skip_reason(owner: Path, loaded: "Path | None") -> str:
+    """Why a mod's copy of a plugin another mod owns is not read. #one-plugin-owner"""
+    if loaded is None or _same_path(loaded.parent, owner):
+        line = f"the game loads the copy in '{owner.name}'"
+    else:
+        line = (f"the game loads the copy in '{loaded.parent}', over the copy in "
+                f"'{owner.name}', the mod it belongs to")
+    why = _owner_not_source_why(owner)
+    if why is None:
+        return line
+    if why == _EXCLUDED_BY_YOU:
+        return f"{line}, which you excluded, so its armour is left alone"
+    return (f"{line}, {why}, which this tool does not convert, so this plugin's "
+            "armour is not converted this run")
+
+
+def _left_out_why(loaded: Path, where: str, mods_root: Path) -> str:
+    """The reason logged for a mod's copy left out because the game loads
+    `loaded` (from `where`). #loaded-source-plugins #one-plugin-owner"""
+    if _one_plugin_owner_on():
+        owner = _plugin_owner(Path(loaded).name, mods_root)
+        if owner is not None:
+            return _owner_skip_reason(owner, loaded)
+    return f"the game loads the copy in '{where}'"
+
+
+def _plugins_no_source_owns() -> "list[str]":
+    """Plugins some mod ships a copy of that the tool could read, whose owner
+    (`_plugin_owner`) it does not convert for a reason of its own (a body mod,
+    child clothing, a skipped name): no copy of them is converted this run. The
+    user's exclusions are not listed -- coverage reports what they withhold.
+    #one-plugin-owner"""
+    if not _one_plugin_owner_on():
+        return []
+    hit = _loaded_plugin_entry()
+    if hit is None:
+        return []
+    _skip = {m.lower() for m in ube_patcher.VANILLA_DLC_MASTERS}
+    out: "list[str]" = []
+    for name in sorted(hit[2]):
+        c = hit[2][name]
+        if (len(c) < 2 or name in _skip or name.endswith("ube patch.esp")
+                or name.endswith(_SRC_PATCH_SUFFIX.lower())):
+            continue
+        why = _owner_not_source_why(c[0].parent)
+        if why is None or why == _EXCLUDED_BY_YOU:
+            continue
+        readers = [f.parent.name for f in c[1:]
+                   if _owner_not_source_why(f.parent) is None]
+        if readers:
+            out.append(f"{c[0].name}: owned by '{c[0].parent.name}' ({why}), "
+                       "which this tool does not convert; the copy in "
+                       + ", ".join(f"'{r}'" for r in readers)
+                       + " is not converted in its place")
+    return out
+
+
+def _note_plugins_no_source_owns() -> None:
+    """Say, once per batch, which plugins no copy of is converted because the
+    mod that owns them is no source. #one-plugin-owner"""
+    lines = _plugins_no_source_owns()
+    if not lines:
+        return
+    print(f"  plugins not converted from another mod's copy: {len(lines)} "
+          "plugin(s) belong to a mod this tool does not convert, and the game "
+          "loads that mod's records, so no other copy is converted in their place:")
+    for ln in lines:            # every one: this is the only place they are named
+        print(f"    - {ln}")
+
+
+def _armature_models(plugin: Path) -> "frozenset | None":
+    """{(defining plugin, low id, models)} of a plugin's armatures, `models`
+    being its sorted (MOD2..MOD5, path) pairs; None when it cannot be read.
+    #loaded-copy-reader"""
+    from . import esp as _esp
+    try:
+        e = _esp.ESP.load_cached(plugin)
+    except Exception:
+        return None
+    lcm = [m.lower() for m in e.header.masters]
+    out = set()
+    for g in e.groups:
+        if g.label != b"ARMA":
+            continue
+        for rec in g.records:
+            mi = rec.formid >> 24
+            owner = lcm[mi] if mi < len(lcm) else Path(plugin).name.lower()
+            models = sorted(
+                (s.decode("ascii"),
+                 d.split(b"\x00", 1)[0].decode("latin-1").lower().replace("/", "\\"))
+                for s, d in _esp.iter_subrecords(rec.payload)
+                if s in (b"MOD2", b"MOD3", b"MOD4", b"MOD5"))
+            out.add((owner, rec.formid & 0xFFFFFF, tuple(models)))
+    return frozenset(out)
+
+
+def _modlist_overwrite(mods_root: Path) -> "Path | None":
+    """MO2's overwrite folder of the discovered modlist when `mods_root` is its
+    mods folder, else None: the mesh index reads it (#overwrite-mesh-index).
+    An unreadable layout is None too: it must not fail the index it feeds."""
+    try:
+        lay = paths.discover_layout()
+    except Exception:
+        return None
+    if lay.mods_root is None or not _same_path(lay.mods_root, mods_root):
+        return None
+    return paths.overwrite_dir(lay)
+
+
+def _loaded_copies_only(source_dir: Path, plugins: "list[Path]",
+                        skipped: "list[tuple[Path, str]] | None" = None,
+                        differs: "list[tuple[Path, str]] | None" = None
+                        ) -> "list[Path]":
+    """`plugins` of the mod folder `source_dir` less the copies the game never
+    loads: one in a subfolder, and a root one whose name loads from another
+    folder that a conversion source reads or that the user excluded
+    (#excluded-copy-left-alone; #loaded-copy-reader: a copy loaded
+    from a folder no source reads keeps this mod's copy, and `differs` receives
+    (plugin, where) when the two copies' armatures differ). Unchanged for a
+    folder that is not directly in the modlist's mods root. `skipped` receives
+    (plugin, why). #loaded-source-plugins
+
+    #one-plugin-owner (by default): a root copy is left out exactly when another
+    mod owns the plugin (`_plugin_owner`), whether or not that mod is converted;
+    this mod's copy is read when it owns the plugin (under an overwrite copy
+    too) or no enabled mod does."""
+    loaded = _loaded_plugin_index()
+    if loaded is None:
+        return plugins
+    mods_root, idx = loaded
+    if not _same_path(Path(source_dir).parent, mods_root):
+        return plugins
+    keep: "list[Path]" = []
+    for p in plugins:
+        if not _same_path(p.parent, source_dir):
+            if skipped is not None:
+                skipped.append((p, "in a subfolder, which the game never loads"))
+            continue
+        w = idx.get(p.name.lower())
+        if w is not None and not _same_path(w, p):
+            _where = (w.parent.name if _same_path(w.parent.parent, mods_root)
+                      else str(w.parent))
+            if _read_by_a_source(w, mods_root, source_dir):
+                if skipped is not None:
+                    skipped.append((p, _left_out_why(w, _where, mods_root)))
+                continue
+            # No source reads the game's copy: this one is read, else nothing
+            # converts the plugin's armour. #loaded-copy-reader
+            if differs is not None:
+                mine, theirs = _armature_models(p), _armature_models(w)
+                if mine is not None and theirs is not None and mine != theirs:
+                    differs.append((p, _where))
+        keep.append(p)
+    return keep
+
+
+def _note_unread_loaded_copies(result: "AutoConvertResult",
+                               differs: "list[tuple[Path, str]]") -> None:
+    """Say which plugins are converted from this mod's copy although the game
+    loads a copy whose armatures differ, from a folder no source reads.
+    #loaded-copy-reader"""
+    for p, where in differs:
+        line = (f"{p.name}: the game loads the copy in '{where}', which is not "
+                "converted this run, and its armour differs from this mod's copy "
+                "(other pieces or other meshes); this mod's copy is converted")
+        print(f"  {line}")
+        result.notes.append(line)
+
+
+def _note_unloaded_plugins(result: "AutoConvertResult",
+                           skipped: "list[tuple[Path, str]]") -> None:
+    """Say which plugins of this mod were not read as sources, and why.
+    #loaded-source-plugins"""
+    if not skipped:
+        return
+    line = (f"{len(skipped)} plugin(s) in this mod are not the copy the game "
+            "loads, so they are not converted: "
+            + "; ".join(f"{p.name} ({why})" for p, why in skipped))
+    print(f"  {line}")
+    result.notes.append(line)
+
+
+def _patch_name_taken(out_esp: Path, claimed: "set[str] | None",
+                      src_esp: Path, result: "AutoConvertResult") -> bool:
+    """Has an earlier source written the per-source patch `out_esp` this run?
+    Sources run highest MO2 priority first, so the first writer of a name is
+    the plugin copy the game loads; a later one must not overwrite its patch or
+    sidecars. Claims the name otherwise. None = no batch to share (a single
+    call). #loaded-source-plugins"""
+    if claimed is None or not _loaded_source_plugins_on():
+        return False
+    key = os.path.normcase(os.path.abspath(str(out_esp)))
+    if key in claimed:
+        line = (f"{src_esp.name}: patch {Path(out_esp).name} was already written "
+                "this run from a higher-priority mod's plugin of the same name; "
+                "that one is kept")
+        print(f"  {line}")
+        result.notes.append(line)
+        return True
+    claimed.add(key)
+    return False
+
+
+def _find_source_esps(source_dir: Path,
+                      skipped: "list[tuple[Path, str]] | None" = None,
+                      differs: "list[tuple[Path, str]] | None" = None
+                      ) -> list[Path]:
     """Find ALL plausible CBBE armor ESPs in a mod folder.
 
     Returns every .esp/.esm/.esl not in a backup/UBE subfolder, sorted by
     (depth, name). Patching ALL of them is necessary: mods that ship multiple
     ESPs with disjoint ARMA/ARMO sets need every one covered, or some armor
     categories have no UBE armature and render invisible on UBE characters.
+    For a mod of the modlist only the copies the game loads count
+    (`_loaded_copies_only`; `skipped` receives the others with the reason,
+    `differs` a kept copy whose loaded twin no source reads and whose
+    armatures differ). #loaded-source-plugins #loaded-copy-reader
     """
     # Facegen dirs are named after the source plugin (facegeom\Plugin.esp\)
     # so rglob("*.esp") can match a directory — skip anything under these paths.
@@ -1954,6 +2534,9 @@ def _find_source_esps(source_dir: Path) -> list[Path]:
                 continue  # a plugin buried under meshes\/textures\ isn't a plugin
             candidates.append(p)
     candidates.sort(key=lambda p: (len(p.parts), p.name.lower()))
+    if _loaded_source_plugins_on():
+        candidates = _loaded_copies_only(source_dir, candidates, skipped,
+                                         differs)
     return candidates
 
 
@@ -2435,6 +3018,7 @@ def refresh_mod_esp(
     output_esp_name: "str | None" = None,
     unmerged_patch_subdir: str = "_unmerged_patches",
     master_data_dirs: "list[Path] | None" = None,
+    claimed_patch_paths: "set[str] | None" = None,
 ) -> "AutoConvertResult":
     """ESP-only refresh (`--plugins-only`): regenerate this mod's patch ESP(s)
     from the `.espgen.json` snapshots the last full run wrote, skipping ALL
@@ -2456,7 +3040,13 @@ def refresh_mod_esp(
             bsa_mesh_rel_paths = _BATCH_BSA_INDEX._index
         except Exception:
             bsa_mesh_rel_paths = None
-    src_esps = _vanilla_sweep_esps(source_dir) or _find_source_esps(source_dir)
+    _unloaded: "list[tuple[Path, str]]" = []
+    _differs: "list[tuple[Path, str]]" = []
+    src_esps = (_vanilla_sweep_esps(source_dir)
+                or _find_source_esps(source_dir, skipped=_unloaded,
+                                     differs=_differs))
+    _note_unloaded_plugins(result, _unloaded)
+    _note_unread_loaded_copies(result, _differs)
     if not src_esps:
         result.notes.append("no source ESP found — skipping ESP generation")
         return result
@@ -2500,6 +3090,8 @@ def refresh_mod_esp(
                 continue
         except Exception:
             pass
+        if _patch_name_taken(out_esp, claimed_patch_paths, src_esp, result):
+            continue
         try:
             stats = ube_patcher.generate_ube_patch(
                 src_esp, out_esp,
@@ -2511,6 +3103,7 @@ def refresh_mod_esp(
             out_path = Path(stats.get("output", out_esp))
             result.output_esps.append(out_path)
             result.esp_stats_list.append(stats)
+            result.esp_patched.append((src_esp, out_path, stats))
             if result.output_esp is None:
                 result.output_esp = out_path
                 result.esp_stats = stats
@@ -2522,7 +3115,8 @@ def refresh_mod_esp(
 def _write_source_patches(result, output_dir, src_esps, *, output_esp_name,
                           unmerged_patch_subdir, master_data_dirs,
                           body_mesh_rel_paths, bsa_mesh_rel_paths,
-                          converted_rel_paths) -> None:
+                          converted_rel_paths,
+                          claimed_patch_paths: "set[str] | None" = None) -> None:
     """One source's patch ESP(s) and, beside each, the `.espgen.json` snapshot
     `--plugins-only` replays; results and notes go to `result`.
 
@@ -2532,7 +3126,12 @@ def _write_source_patches(result, output_dir, src_esps, *, output_esp_name,
     they are written when the source finishes, after the schedule converted
     its NIFs -- so a run killed in the NIF phase leaves no patch or snapshot
     naming a NIF it had not yet written, only the previous run's.
-    #global-schedule"""
+    #global-schedule
+
+    `claimed_patch_paths`: the batch's per-source patch names written so far;
+    a name an earlier source wrote is not written again (`_patch_name_taken`).
+    Sources finish in source order on either schedule, so the first writer is
+    the highest-priority copy. #loaded-source-plugins"""
     if not src_esps:
         result.notes.append("no source ESP found — skipping ESP generation")
     else:
@@ -2568,6 +3167,8 @@ def _write_source_patches(result, output_dir, src_esps, *, output_esp_name,
                     continue
             except Exception:
                 pass  # unreadable -> let generate_ube_patch surface the real error
+            if _patch_name_taken(out_esp, claimed_patch_paths, src_esp, result):
+                continue
             try:
                 stats = ube_patcher.generate_ube_patch(
                     src_esp, out_esp,
@@ -2579,6 +3180,7 @@ def _write_source_patches(result, output_dir, src_esps, *, output_esp_name,
                 out_path = Path(stats.get("output", out_esp))
                 result.output_esps.append(out_path)
                 result.esp_stats_list.append(stats)
+                result.esp_patched.append((src_esp, out_path, stats))
                 # ESP-refresh snapshot: the per-mod inputs generate_ube_patch
                 # needs besides live master dirs. `--plugins-only` replays the
                 # ESP phase from these in minutes (no NIF work) -- safe under
@@ -2667,6 +3269,10 @@ def _auto_convert_mod_steps(
     # warning. Pass a SHARED set from `_cmd_convert` so claims persist
     # across mods. None = no protection (legacy single-source behavior).
     claimed_dst_paths: "set[Path] | None" = None,
+    # The same for per-source patch files (normcased absolute paths): a later
+    # source never overwrites a patch an earlier, higher-priority one wrote this
+    # run. None = no protection. #loaded-source-plugins
+    claimed_patch_paths: "set[str] | None" = None,
     # An externally-managed ProcessPoolExecutor to reuse across multiple
     # `auto_convert_mod` calls. Pass one from `_cmd_convert` so workers
     # stay warm across mods — the pynifly DLL, UBE body ref NIF, body
@@ -2876,8 +3482,16 @@ def _auto_convert_mod_steps(
     # set and converted its ENTIRE meshes tree instead of nothing -- more orphan
     # output than before the gate existed, with the female-only policy bypassed.
     # So gate on whether a plugin was actually READ. #esp-less-fallback-only
-    _src_esps = _sweep_esps or _find_source_esps(source_dir)
-    if _skip_esp_less_fallback(armor_bases, _src_esps):
+    _unloaded: "list[tuple[Path, str]]" = []
+    _differs: "list[tuple[Path, str]]" = []
+    _src_esps = _sweep_esps or _find_source_esps(source_dir, skipped=_unloaded,
+                                                 differs=_differs)
+    _note_unloaded_plugins(result, _unloaded)
+    _note_unread_loaded_copies(result, _differs)
+    # A mod whose every plugin is a copy the game does not load HAS a plugin:
+    # it plans nothing, never the whole folder. #loaded-source-plugins
+    if _skip_esp_less_fallback(armor_bases,
+                               _src_esps + [p for p, _ in _unloaded]):
         resolved_pairs = []
         result.notes.append(
             "vanilla sweep: no DefaultRace armour ARMAs resolved — nothing planned"
@@ -3004,7 +3618,11 @@ def _auto_convert_mod_steps(
         master_data_dirs=master_data_dirs,
         body_mesh_rel_paths=body_mesh_rel_paths,
         bsa_mesh_rel_paths=bsa_mesh_rel_paths,
-        converted_rel_paths=converted_rel_paths)
+        converted_rel_paths=converted_rel_paths,
+        # A patch name an earlier, higher-priority source wrote this run is
+        # kept: claimed at the write, on either schedule (sources finish in
+        # source order on the batch-wide one too). #loaded-source-plugins
+        claimed_patch_paths=claimed_patch_paths)
     # Where this source's patch notes go in its notes: here, where one source
     # at a time writes the patch. #plan-order-results
     _patch_notes_at = len(result.notes)
@@ -3496,9 +4114,11 @@ def _build_parser():
                          metavar="NAME",
                          help="Mods whose armour the coverage step must leave "
                               "alone (repeat the flag or comma-separate). `auto` "
-                              "passes its own --exclude-mods here; with "
-                              "`convert` the sources are named, so this only "
-                              "affects coverage.")
+                              "passes its own --exclude-mods and "
+                              "--coverage-exclude-mods here; with `convert` the "
+                              "sources are named, so this affects coverage, and "
+                              "a plugin the game loads from one of these mods is "
+                              "not read from another mod's copy either.")
     convert.add_argument("--plugins-only", action="store_true",
                          dest="plugins_only",
                          help="ESP-only refresh: regenerate patch ESPs + merge "
@@ -4717,6 +5337,12 @@ def _armos_defined_by_mods(mods_root, mod_names, ordered_plugin_paths,
     never withheld, and the `vanilla` pseudo-name (the vanilla-sweep switch) is
     ignored. Only ACTIVE plugins count, read from the copy the game loads.
 
+    #one-plugin-owner (by default): a plugin is the excluded mod's only when that
+    mod OWNS it (`_plugin_owner`, the owner the sources read by too): a copy that
+    loses to another mod's belongs to that mod, and one under an overwrite copy
+    still belongs to the mod. Without a readable mod order no owner is known and
+    every root plugin of the folder counts, as before.
+
     A folder whose name holds a comma arrives split by `_split_mod_arg` (the
     CLI's comma separator); it matches when every piece of its name was given.
     Names that match no folder are appended to `missing`, for a warning."""
@@ -4727,6 +5353,7 @@ def _armos_defined_by_mods(mods_root, mod_names, ordered_plugin_paths,
     wanted.discard("vanilla")
     if mods_root is None or not wanted:
         return owned, per_mod
+    owners = _plugin_copies(mods_root) if _one_plugin_owner_on() else None
 
     def _named(d: Path) -> bool:
         n = d.name.lower()
@@ -4749,6 +5376,10 @@ def _armos_defined_by_mods(mods_root, mod_names, ordered_plugin_paths,
     for md in folders:
         for pl in sorted(list(md.glob("*.esp")) + list(md.glob("*.esm"))
                          + list(md.glob("*.esl"))):
+            if owners is not None:
+                own = _plugin_owner(pl.name, mods_root)
+                if own is None or not _same_path(own, md):
+                    continue      # another mod owns it, or none does
             src = loaded.get(pl.name.lower())
             if src is None:
                 continue          # not active: its armour is not in the game
@@ -6744,6 +7375,9 @@ def _sweep_orphan_temps_at_start(output, run_started: float) -> int:
 
 def _cmd_convert(args):
     _RUN_FAILURES.clear()   # fresh failure record for this run
+    # The mods whose armour coverage leaves alone: a plugin the game loads from
+    # one of them is left alone by the sources too. #excluded-copy-left-alone
+    _set_run_user_exclusions(_split_mod_arg(getattr(args, "exclude_mods", None)))
     _run_started = time.time()   # temps older than this are orphans. #orphan-temps
     # Same echo `auto` prints: the verdict harnesses run THIS subcommand, and
     # a run has to say what it was carrying before anything can abort.
@@ -6863,10 +7497,22 @@ def _cmd_convert(args):
 
     # First-writer wins: shared set so later sources can't overwrite earlier outputs.
     claimed_dst_paths: set[Path] = set()
+    # The same for per-source patch files: sources run highest MO2 priority
+    # first, so the first writer of a patch name is the copy the game loads.
+    # #loaded-source-plugins
+    claimed_patch_paths: "set[str]" = set()
 
     # Resolve master/Data dirs once for the batch (result is identical per source).
     # Clearing first ensures the patcher's caches don't carry over from a prior run.
     ube_patcher.clear_batch_caches()
+    _LOADED_PLUGIN_INDEX.clear()     # #loaded-source-plugins
+    # Plugins whose owner is no source: no copy of them is converted. Said for
+    # the whole modlist, since a mod left with no plugin is no source either and
+    # never gets to say it. #one-plugin-owner
+    try:
+        _note_plugins_no_source_owns()
+    except Exception as _e:
+        print(f"  (could not list the plugins no source owns: {plain_error(_e)})")
     batch_master_data_dirs = (_discover_master_data_dirs(sources[0])
                               if sources else None)
     if batch_master_data_dirs:
@@ -6900,14 +7546,20 @@ def _cmd_convert(args):
     # MO2-priority winner across all enabled mods so BodySlide-built / replacer /
     # patch meshes in OTHER mods are found and converted.
     mesh_vfs_index = None
+    # Problems locating meshes: selection's (printed there, recorded here, after
+    # the clear above) and this step's own. Each is recorded once, and the
+    # record is what the tally counts. #vfs-index-fail-loud #one-tally
     try:
         _lay = paths.discover_layout()
         _enabled_ordered = paths.enabled_mods_ordered(_lay)
         _mr = paths.mods_root()
         # Reuse the index built during source selection (superset of selected sources).
-        # Falls back to building one when `convert` is invoked directly.
+        # Falls back to building one when `convert` is invoked directly, or when
+        # selection could not build it (None is cached then, never {}).
         if _mr is not None:
             mesh_vfs_index = _BATCH_MESH_INDEX.get(str(Path(_mr)).lower())
+            for _w in _SELECTION_RUN_WARNINGS.get(str(Path(_mr)).lower(), ()):
+                _record_failure(*_w, severity="warning")
         if mesh_vfs_index is not None:
             print(f"  VFS mesh index: reusing {len(mesh_vfs_index)} located "
                   "armour mesh path(s) from source selection "
@@ -6925,16 +7577,31 @@ def _cmd_convert(args):
                 except Exception:
                     pass
             if _target_keys:
+                _unreadable: "list[tuple[str, str]]" = []
                 mesh_vfs_index = discovery.build_mesh_index(
                     Path(_mr), _enabled_ordered,
                     target_keys=_target_keys,
-                    skip_mods={Path(output).name})
+                    skip_mods={Path(output).name},
+                    unreadable=_unreadable,
+                    overwrite=_modlist_overwrite(Path(_mr)))   # #overwrite-mesh-index
                 print(f"  VFS mesh index: located {len(mesh_vfs_index)} of "
                       f"{len(_target_keys)} referenced armour mesh path(s) "
                       f"across {len(_enabled_ordered)} enabled mods")
+                for _w in _mesh_index_unreadable_warnings(_unreadable):
+                    _record_failure(*_w, severity="warning")
     except Exception as _e:
-        print(f"  (VFS mesh index unavailable -> source-local meshes only: "
-              f"{plain_error(_e)})")
+        # Said like any other run warning, and counted: each source now converts
+        # its own or an archive copy, not the mesh the game loads.
+        warn(f"could not locate armour meshes across the enabled mods "
+             f"({plain_error(_e)})",
+             consequence="each mod converts its own copy of a mesh (or the one in "
+                         "its archive), not a replacer's or BodySlide build's copy "
+                         "the game loads",
+             fix="look for an over-long path or a broken link in the mods folder, "
+                 "then run again")
+        _record_failure("armour mesh index failed", "convert step", "every source",
+                        f"{plain_error(_e)}; each mod converted its own copy of a "
+                        "mesh, not the one the game loads", severity="warning")
         mesh_vfs_index = None
 
     # BSA fallback: when an armour mesh isn't loose anywhere, extract it from
@@ -7059,6 +7726,9 @@ def _cmd_convert(args):
             nif_pool=_pool,
             unmerged_patch_subdir=args.unmerged_patch_subdir,
             claimed_dst_paths=claimed_dst_paths,
+            # Per-source patch names, first writer wins: both schedules.
+            # #loaded-source-plugins
+            claimed_patch_paths=claimed_patch_paths,
             master_data_dirs=batch_master_data_dirs,
             mesh_vfs_index=mesh_vfs_index,
             incremental_floor=incremental_floor,
@@ -7088,7 +7758,8 @@ def _cmd_convert(args):
                     output, _view, planned=len(sources),
                     workers=_planned_workers,
                     orphan_temps_removed=_orphans_removed,
-                    progress=_progress))
+                    progress=_progress),
+                claimed_patch_paths=claimed_patch_paths)
         for i, src in enumerate(() if _one_schedule else sources, 1):
             # Vanilla sweep = its own PASS: distinct header + progress label,
             # and (below) its failure never blocks the merge -- a dead sweep
@@ -7109,7 +7780,8 @@ def _cmd_convert(args):
                     r = refresh_mod_esp(
                         src, output,
                         output_esp_name=(args.esp_name
-                                         if len(sources) == 1 else None))
+                                         if len(sources) == 1 else None),
+                        claimed_patch_paths=claimed_patch_paths)
                     results.append((src, r, None))
                     continue
                 # Sweep self-heal: snapshot output-path claims so a crashed
@@ -7117,6 +7789,7 @@ def _cmd_convert(args):
                 # retry skip its own meshes as "collisions".
                 _claims_before = (set(claimed_dst_paths)
                                   if _is_sweep_src else None)
+                _patch_claims_before = set(claimed_patch_paths)
                 try:
                     r = _convert_one(src, _pool=shared_pool,
                                      _workers=args.workers)
@@ -7133,6 +7806,9 @@ def _cmd_convert(args):
                          indent="")
                     claimed_dst_paths.clear()
                     claimed_dst_paths.update(_claims_before)
+                    # ...and its patch names. #loaded-source-plugins
+                    claimed_patch_paths.clear()
+                    claimed_patch_paths.update(_patch_claims_before)
                     r = _convert_one(src, _pool=None, _workers=1)
                     print("  vanilla sweep serial retry SUCCEEDED")
                     _record_sweep_retried(_e1)
@@ -7235,10 +7911,8 @@ def _cmd_convert(args):
                                 "whole source", plain_error(err))
             continue
         if r.source_esps:
-            print(f"    source ESPs: {len(r.source_esps)}")
-            for i, (src_e, out_e) in enumerate(
-                    zip(r.source_esps, r.output_esps)):
-                print(f"      [{i}] {src_e.name} -> {out_e.name}")
+            for _ln in _esp_patch_log_lines(r):
+                print(_ln)
         else:
             print(f"    source ESP : {r.source_esp}")
             print(f"    output ESP : {r.output_esp}")
@@ -9722,6 +10396,37 @@ def _batch_armo_winner_nonplayable() -> "dict[tuple[str, int], bool] | None":
         return None
 
 
+def _female_slot_pairs_on() -> bool:
+    r"""#female-slot-pairs (2026-09-25): does the female-only rule judge the
+    world pair (female MOD3 over male MOD2) and the first-person pair (MOD5 over
+    MOD4) each on its own for the dead-path exception? Yes, by default.
+
+    The rule skipped the male models when ANY female model resolved, MOD3 and
+    MOD5 together. An armature whose female world mesh is a dead path but whose
+    first-person female mesh ships (or the reverse) therefore never converted
+    the male of the dead pair, against the rule's own exception: a dead female
+    path keeps the male, so the armature can point at a converted male. Now a
+    pair whose female model is set and resolves nowhere keeps its male as well;
+    nothing the old rule kept is dropped. CBBE2UBE_NO_FEMALE_SLOT_PAIRS=1 judges
+    the two together again."""
+    return not _flag("CBBE2UBE_NO_FEMALE_SLOT_PAIRS", False)
+
+
+def _female_slot_absent_on() -> bool:
+    r"""#female-slot-absent (2026-09-25, OFF -- a policy call): does a slot pair
+    with NO female model keep its male when the other pair has a live female
+    model? Only with CBBE2UBE_FEMALE_SLOT_ABSENT_KEEPS_MALE=1 (and
+    #female-slot-pairs on).
+
+    The engine draws the male model of a pair whose female model is not set,
+    so a female actor in first person wears MOD4 when an armature has MOD3 but
+    no MOD5. The female-only rule skips that male today. Converting it follows
+    the rule's own male-only-piece exception per slot, but it is a new class of
+    converted mesh (mostly first-person male arms and torsos, one of them a
+    base-game gauntlet), not the dead-path fix, so it is left to the user."""
+    return _flag("CBBE2UBE_FEMALE_SLOT_ABSENT_KEEPS_MALE", False)
+
+
 def _player_armor_mesh_bases(mod_dir: Path,
                              include_candidate_slots: bool = False,
                              mesh_resolves=None,
@@ -9786,6 +10491,8 @@ def _player_armor_mesh_bases(mod_dir: Path,
     # #nude-basename-path: the nude-skin basenames mean body skin only at the
     # body's own home (see `_is_nude_body_skin_model`). Read once per call.
     _skin_by_name_alone = _flag("CBBE2UBE_NO_NUDE_BASENAME_PATH", False)
+    _slot_pairs = _female_slot_pairs_on()       # #female-slot-pairs
+    _absent_keeps_male = _female_slot_absent_on()   # #female-slot-absent
     # Vanilla sweep: the game Data dir enumerates the vanilla/DLC masters
     # (_find_source_esps skips those by design for normal mod folders).
     for ep in (_vanilla_sweep_esps(mod_dir) or _find_source_esps(mod_dir)):
@@ -9897,6 +10604,8 @@ def _player_armor_mesh_bases(mod_dir: Path,
                 edid = ""
                 female_models: "list[str]" = []   # MOD3 (world) + MOD5 (1st-person)
                 male_models: "list[str]" = []      # MOD2 (world) + MOD4 (1st-person)
+                # The same models by slot: {sig: [paths]}. #female-slot-pairs
+                by_sig: "dict[bytes, list[str]]" = {}
                 for sig, sd in _esp.iter_subrecords(rec.payload):
                     if sig == b"EDID":
                         edid = sd.rstrip(b"\x00").decode("utf-8", errors="ignore")
@@ -9907,9 +10616,11 @@ def _player_armor_mesh_bases(mod_dir: Path,
                     elif sig in (b"MOD3", b"MOD5"):
                         female_models.append(sd.rstrip(b"\x00").decode(
                             "utf-8", errors="ignore"))
+                        by_sig.setdefault(sig, []).append(female_models[-1])
                     elif sig in (b"MOD2", b"MOD4"):
                         male_models.append(sd.rstrip(b"\x00").decode(
                             "utf-8", errors="ignore"))
+                        by_sig.setdefault(sig, []).append(male_models[-1])
                 # FEMALE-ONLY conversion: UBE is a female body, so convert the FEMALE
                 # model(s) and skip the male mesh (a female actor never renders it, and
                 # refitting it to the female body would be wrong). Two exceptions keep
@@ -9920,10 +10631,31 @@ def _player_armor_mesh_bases(mod_dir: Path,
                 # ARMA gets redirected to, so it must convert. mesh_resolves==None
                 # (callers without VFS context) keeps the legacy "convert both".
                 _female_only: "list[str]" = []   # male models the rule leaves out
+                # The dead-path exception is judged per SLOT PAIR too -- world
+                # (MOD3 over MOD2) and first-person (MOD5 over MOD4) apart: a live
+                # first-person female mesh says nothing about a dead female world
+                # mesh. It only ever ADDS a male model to the old answer. A pair
+                # with NO female model keeps its male only under the opt-in
+                # #female-slot-absent rule (a policy call, off). #female-slot-pairs
                 if not female_models:
                     models = male_models
                 elif mesh_resolves is None:
                     models = female_models + male_models
+                elif _slot_pairs:
+                    _live = {m: mesh_resolves(_weight_base_key(m))
+                             for m in female_models}
+                    _all_dead = not any(_live.values())
+                    models = list(female_models)
+                    for _fs, _ms in ((b"MOD3", b"MOD2"), (b"MOD5", b"MOD4")):
+                        _fem = by_sig.get(_fs, [])
+                        if (_all_dead
+                                or (_fem and not any(_live[m] for m in _fem))
+                                or (not _fem and _absent_keeps_male)):
+                            models += by_sig.get(_ms, [])
+                        else:
+                            # The male of a pair the rule leaves out: its reason
+                            # for the stale-output sweep. #stale-output-sweep
+                            _female_only += by_sig.get(_ms, [])
                 elif any(mesh_resolves(_weight_base_key(m)) for m in female_models):
                     models = female_models
                     _female_only = male_models
@@ -10069,7 +10801,35 @@ def _nif_bytes_unfitted_skin(data: bytes) -> "bool | None":
 
 # Full-VFS mesh index built once during source selection; reused by the convert
 # step to avoid a second modlist walk. Keyed by lowercased mods_root.
-_BATCH_MESH_INDEX: "dict[str, dict]" = {}
+_BATCH_MESH_INDEX: "dict[str, dict | None]" = {}
+
+# Run warnings source selection found (the mesh index failed, a mod folder was
+# unreadable, the vanilla sweep's mesh keys could not be read), as
+# `_record_failure` arguments. Selection prints them where they happen; the
+# convert step clears the run's record first, so IT records them. Keyed by
+# lowercased mods_root; each uncached selection replaces its entry.
+# #vfs-index-fail-loud
+_SELECTION_RUN_WARNINGS: "dict[str, list[tuple[str, str, str, str]]]" = {}
+
+
+def _mesh_index_unreadable_warnings(
+        unreadable: "list[tuple[str, str]]") -> "list[tuple[str, str, str, str]]":
+    """Print ONE warning naming every mod folder the mesh index could not fully
+    read (`discovery.build_mesh_index`'s `unreadable`), and return one
+    `_record_failure` record per folder. Only the unreadable part of each was
+    skipped; every other mod was located as normal. #vfs-index-fail-loud"""
+    if not unreadable:
+        return []
+    warn(f"{len(unreadable)} mod folder(s) could not be fully read while "
+         "locating armour meshes",
+         consequence="a mesh in the unreadable part of each folder named below "
+                     "was not located; every other mod was located as normal",
+         fix="look for an over-long path or a broken link in each folder, then "
+             "run again")
+    for name, why in unreadable:
+        print(f"    - {name}: {why}")
+    return [("mod folder unreadable", name, "its meshes folder",
+             f"{why}; a mesh there was not located") for name, why in unreadable]
 
 # The lookup-only archive index source selection built to find mods whose
 # armour lives only in archives; the convert step adopts (and pops) its listing
@@ -10085,6 +10845,38 @@ _SELECTION_BSA_INDEX: "dict[str, _BsaMeshIndex]" = {}
 # the window is open is read again. #mod-scan-rescan
 _ARMOR_MOD_DIRS_CACHE: "dict[tuple, list[dict]]" = {}
 
+# A kept selection whose only problem was a folder it could not read: memo key
+# -> ((mod, error) per folder, for the warning; the folders' paths). Reused
+# while every one of those folders stays unreadable, saying the warning again
+# each time; selected afresh once one can be read. Filled from
+# _SELECTION_UNREADABLE, which each uncached selection sets. #vfs-index-fail-loud
+_ARMOR_MOD_DIRS_UNREADABLE: "dict[tuple, tuple[list, list[str]]]" = {}
+_SELECTION_UNREADABLE: "dict[str, tuple[list, list[str]]]" = {}
+
+
+def _folder_unreadable(path: str) -> bool:
+    """Does listing `path` still fail? A folder gone since (deleted or renamed:
+    the fix the warning asks for) does NOT: its memoized warning names a folder
+    that is not there, so the selection runs again. An over-long path can
+    report "not found" while it exists, so a missing folder is checked again
+    through the extended-length form before it counts as gone."""
+    try:
+        with os.scandir(path):
+            return False
+    except (FileNotFoundError, NotADirectoryError):
+        return _long_path_exists(path)
+    except OSError:
+        return True
+
+
+def _long_path_exists(path: str) -> bool:
+    """Does `path` exist, asked in Windows' extended-length form (no 260-char
+    limit)? Elsewhere: as asked."""
+    p = os.path.abspath(str(path))
+    if os.name == "nt" and not p.startswith("\\\\?\\"):
+        p = ("\\\\?\\UNC\\" + p[2:]) if p.startswith("\\\\") else ("\\\\?\\" + p)
+    return os.path.lexists(p)
+
 
 def _has_any_source_plugin(mod_dir: Path) -> bool:
     """True if the folder holds any .esp/.esm/.esl. Stops at the first match;
@@ -10099,6 +10891,38 @@ def _has_any_source_plugin(mod_dir: Path) -> bool:
                 return True
         dirs[:] = [d for d in dirs if d.lower() not in _skip]  # prune asset trees
     return False
+
+
+def _source_gate_ok(mod_dir: Path, excl: "set[str] | frozenset",
+                    enabled_names: "set[str] | frozenset | None",
+                    require_arma: bool) -> bool:
+    """The gate selection puts every mod folder through before reading its
+    plugins: enabled, not excluded (`excl`, lowercased names), no non-source
+    name, not child content, and holding a plugin. A folder it refuses is never
+    a conversion source."""
+    nl = mod_dir.name.lower()
+    if nl in excl:
+        return False
+    if enabled_names is not None and mod_dir.name not in enabled_names:
+        return False  # disabled in the active MO2 profile
+    # The beast-race hints are a TIE-BREAKER, not a veto: under
+    # `require_arma` the ARMA test is the evidence and it decides, so a
+    # khajiit ARMOUR mod is admitted while a khajiit body/fur/race mod still
+    # yields no armour base and is dropped below. The `scan` preview has no
+    # ESP parse, hence no evidence, so there the name is all we have.
+    _hints = (_NONSOURCE_NAME_HINTS_HARD if require_arma
+              else _NONSOURCE_NAME_HINTS)
+    if any(h in nl for h in _hints):
+        return False
+    if _is_child_content_mod(mod_dir.name):
+        return False  # child clothing — not armour "for the player"
+    # A source plugin can be .esp OR a bespoke-armour master/.esl (quest mods,
+    # bespoke-armor masters, ...). #179. SINGLE asset-pruned
+    # walk (stops at first plugin) -- masters/CC are excluded downstream by
+    # _find_source_esps, so a master-only folder still gets dropped.
+    if not _has_any_source_plugin(mod_dir):
+        return False
+    return True
 
 
 def _find_armor_mod_dirs(mods_root: Path,
@@ -10129,6 +10953,19 @@ def _find_armor_mod_dirs(mods_root: Path,
             # GUI refresh and the convert must not return the other list.
             # #bsa-only-sources #texture-archive-meshes #nude-basename-path
             # #npc-worn-nonplayable
+            # Which plugin copies are read decides sources too.
+            # #loaded-source-plugins
+            _loaded_source_plugins_on(), _loaded_copy_reader_on(),
+            # ...and so do the user's exclusions, through the copies they
+            # leave alone. #excluded-copy-left-alone
+            _excluded_copy_left_alone_on(), frozenset(_RUN_USER_EXCLUSIONS),
+            # ...and whether one owner decides for every copy. #one-plugin-owner
+            _one_plugin_owner_on(),
+            # The female-only rule's pairs change the mesh keys indexed.
+            # #female-slot-pairs #female-slot-absent
+            _female_slot_pairs_on(), _female_slot_absent_on(),
+            # Whether overwrite's meshes are indexed. #overwrite-mesh-index
+            discovery._overwrite_mesh_index_on(),
             _flag("CBBE2UBE_NO_BSA_ONLY_SOURCES", False),
             _flag("CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES", False),
             _flag("CBBE2UBE_NO_NUDE_BASENAME_PATH", False),
@@ -10137,14 +10974,43 @@ def _find_armor_mod_dirs(mods_root: Path,
             # plugin's -- decides sources too. #selection-winner-playable
             _selection_winner_playable())
     _cached = _ARMOR_MOD_DIRS_CACHE.get(_key)
+    _held = _ARMOR_MOD_DIRS_UNREADABLE.get(_key)
+    if _cached is not None and _held is not None and not all(
+            _folder_unreadable(d) for d in _held[1]):
+        # A folder it could not read can be read now: select again.
+        # #vfs-index-fail-loud
+        _cached = None
     if _cached is not None:
+        # A kept selection found no problem, or only folders that are still
+        # unreadable: its warning is said again for this run to record.
+        # #vfs-index-fail-loud
+        if require_arma:
+            _SELECTION_RUN_WARNINGS[_key[0]] = (
+                _mesh_index_unreadable_warnings(_held[0]) if _held else [])
+            # Its gate judges the loaded plugin copies of the convert step
+            # that follows. #loaded-copy-reader
+            _set_source_gate(mods_root, extra_exclude_names, enabled_names)
         return list(_cached)
+    _ARMOR_MOD_DIRS_CACHE.pop(_key, None)
+    _ARMOR_MOD_DIRS_UNREADABLE.pop(_key, None)
     _result = _find_armor_mod_dirs_uncached(
         mods_root, extra_exclude_names=extra_exclude_names,
         enabled_names=enabled_names, require_arma=require_arma,
         enabled_ordered=enabled_ordered, index_skip_mods=index_skip_mods,
         progress=progress)
-    _ARMOR_MOD_DIRS_CACHE[_key] = list(_result)
+    # A selection that could not build its index or read the vanilla sweep is
+    # not kept: the next refresh or convert tries again instead of reusing a
+    # list short of mods. One whose only problem is folders it could not read
+    # IS kept, with them, while they stay unreadable -- else every GUI refresh
+    # repeats the whole scan for a folder that never becomes readable.
+    # #vfs-index-fail-loud
+    _warns = _SELECTION_RUN_WARNINGS.get(_key[0]) if require_arma else None
+    _unread = _SELECTION_UNREADABLE.get(_key[0], ([], []))
+    if not _warns:
+        _ARMOR_MOD_DIRS_CACHE[_key] = list(_result)
+    elif _unread[1] and len(_warns) == len(_unread[0]):
+        _ARMOR_MOD_DIRS_CACHE[_key] = list(_result)
+        _ARMOR_MOD_DIRS_UNREADABLE[_key] = _unread
     return _result
 
 
@@ -10189,29 +11055,7 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
         return []
 
     def _name_ok(mod_dir: Path) -> bool:
-        nl = mod_dir.name.lower()
-        if nl in excl:
-            return False
-        if enabled_names is not None and mod_dir.name not in enabled_names:
-            return False  # disabled in the active MO2 profile
-        # The beast-race hints are a TIE-BREAKER, not a veto: under
-        # `require_arma` the ARMA test is the evidence and it decides, so a
-        # khajiit ARMOUR mod is admitted while a khajiit body/fur/race mod still
-        # yields no armour base and is dropped below. The `scan` preview has no
-        # ESP parse, hence no evidence, so there the name is all we have.
-        _hints = (_NONSOURCE_NAME_HINTS_HARD if require_arma
-                  else _NONSOURCE_NAME_HINTS)
-        if any(h in nl for h in _hints):
-            return False
-        if _is_child_content_mod(mod_dir.name):
-            return False  # child clothing — not armour "for the player"
-        # A source plugin can be .esp OR a bespoke-armour master/.esl (quest mods,
-        # bespoke-armor masters, ...). #179. SINGLE asset-pruned
-        # walk (stops at first plugin) -- masters/CC are excluded downstream by
-        # _find_source_esps, so a master-only folder still gets dropped.
-        if not _has_any_source_plugin(mod_dir):
-            return False
-        return True
+        return _source_gate_ok(mod_dir, excl, enabled_names, require_arma)
 
     if not require_arma:
         # scan/preview: conventional armor-path name heuristic (no ESP parse).
@@ -10234,6 +11078,20 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
                 "esps": sum(1 for _ in mod_dir.rglob("*.esp"))})
         candidates.sort(key=lambda c: c["armor_nifs"], reverse=True)
         return candidates
+
+    # Which plugin copies load is read afresh for each selection.
+    # #loaded-source-plugins
+    _LOADED_PLUGIN_INDEX.clear()
+    # ...and which mods ship a body. #excluded-copy-left-alone
+    _BODY_MODS_SEEN.clear()
+    # A loaded copy counts as read only in a folder this gate admits.
+    # #loaded-copy-reader
+    _set_source_gate(mods_root, extra_exclude_names, enabled_names)
+    # This selection's run warnings, for the convert step to record.
+    # #vfs-index-fail-loud
+    _sel_warns: "list[tuple[str, str, str, str]]" = []
+    _SELECTION_RUN_WARNINGS[str(mods_root).lower()] = _sel_warns
+    _SELECTION_UNREADABLE.pop(str(mods_root).lower(), None)
 
     def _prog(text: str) -> None:
         if progress is None:
@@ -10310,25 +11168,58 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
                         armo_winner_nonplayable=_winner_np,
                         npc_worn_armos=_npc_worn):
                     union_all.update((f"{b}_0.nif", f"{b}_1.nif", f"{b}.nif"))
-        except Exception:
-            pass
+        except Exception as _e:
+            # Said, not passed over: without these keys every vanilla piece
+            # converts from the game's archives. #vfs-index-fail-loud
+            _why = plain_error(_e)
+            warn(f"could not read which vanilla armour meshes to locate ({_why})",
+                 where="the game Data folder",
+                 consequence="vanilla armour converts from the game's archives this "
+                             "run, even where a mod replaces its mesh with a loose file",
+                 fix="check that the game Data folder and its plugins are readable, "
+                     "then run again")
+            _sel_warns.append(("vanilla mesh paths unread",
+                               "Vanilla sweep (base game + DLC)", "vanilla armour",
+                               f"{_why}; vanilla armour converted from the game's "
+                               "archives, even where a loose replacer ships its mesh"))
 
     # Build the VFS mesh index over ALL candidates so the convert step can reuse
     # it. Skip only the output mod, NOT body/BodySlide mods — those host most
     # armours' built female meshes and must be visible for mesh resolution.
     # Body-mod exclusion is a selection concern handled by `_name_ok`.
     _index_skip = {n.lower() for n in (index_skip_mods or set())}
-    vfs: "dict" = {}
+    vfs: "dict | None" = {}
+    _index_failed = ""
     if enabled_ordered and union_all:
         _prog(f"locating {len(union_all)} armour mesh path(s) across "
               f"{len(enabled_ordered)} enabled mods…")
+        _unreadable: "list[tuple[str, str]]" = []
+        _unreadable_dirs: "list[str]" = []
         try:
             vfs = discovery.build_mesh_index(
                 mods_root, enabled_ordered, target_keys=union_all,
-                skip_mods=_index_skip)
-        except Exception:
-            vfs = {}
+                skip_mods=_index_skip, unreadable=_unreadable,
+                overwrite=_modlist_overwrite(mods_root),  # #overwrite-mesh-index
+                unreadable_dirs=_unreadable_dirs)
+        except Exception as _e:
+            # NOT an empty index: {} reads as "no mod ships these meshes", and
+            # the convert step reused it, so every source converted its own or
+            # an archive copy, not the mesh the game loads, in silence. None
+            # makes the convert step build its own. #vfs-index-fail-loud
+            vfs = None
+            _index_failed = plain_error(_e)
+            warn(f"could not locate armour meshes across the enabled mods "
+                 f"({_index_failed})",
+                 where=str(mods_root),
+                 consequence="a mod whose armour meshes are in another mod (a "
+                             "BodySlide build, a replacer, a patch) is not converted "
+                             "this run; the convert step tries again for the rest",
+                 fix="look for an over-long path or a broken link in the mods "
+                     "folder, then run again")
         _BATCH_MESH_INDEX[str(mods_root).lower()] = vfs
+        _sel_warns.extend(_mesh_index_unreadable_warnings(_unreadable))
+        _SELECTION_UNREADABLE[str(mods_root).lower()] = (
+            list(_unreadable), list(_unreadable_dirs))
 
     # #bsa-only-sources (2026-09-24): a mod whose armour meshes are in no loose
     # file anywhere may still ship them in an ARCHIVE, and the convert step
@@ -10358,21 +11249,37 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
         except Exception:
             _sel_bsa = None
     _found_nowhere: "list[str]" = []
+    _located = vfs or {}
     for mod_dir, armor_bases in pending_vfs:
         c = sum(1 for b in armor_bases
-                if any(f"{b}{suf}.nif" in vfs for suf in ("_1", "_0", "")))
+                if any(f"{b}{suf}.nif" in _located for suf in ("_1", "_0", "")))
         if c == 0 and _sel_bsa is not None:
             c = sum(1 for b in armor_bases
                     if any(_sel_bsa.contains(f"{b}{suf}.nif")
                            for suf in ("_1", "_0", "")))
         if c == 0:
-            if _bsa_only:
+            if _bsa_only or _index_failed:
                 _found_nowhere.append(mod_dir.name)
             continue  # armour meshes genuinely don't exist anywhere
         candidates.append({
             "name": mod_dir.name, "path": mod_dir, "armor_nifs": c,
             "esps": sum(1 for _ in mod_dir.rglob("*.esp"))})
-    if _found_nowhere:
+    if _index_failed:
+        # Not "found nowhere": the other mods' loose files were never searched.
+        # #vfs-index-fail-loud
+        _sel_warns.append((
+            "armour mesh index failed", "source selection", str(mods_root),
+            f"{_index_failed}; {len(_found_nowhere)} mod(s) whose armour meshes "
+            "are in another mod were not converted"
+            + (": " + ", ".join(_found_nowhere) if _found_nowhere else "")))
+        if _found_nowhere:
+            print(f"  armour meshes not searched for: {len(_found_nowhere)} mod(s) "
+                  "equip armour whose meshes are not in their own folder or an "
+                  "archive, and the other mods' loose files could not be searched "
+                  "(see the warning above), so they are not converted this run:")
+            for _unsearched in _found_nowhere:
+                print(f"    - {_unsearched}")
+    elif _found_nowhere:
         print(f"  armour meshes found nowhere: {len(_found_nowhere)} mod(s) equip "
               "armour whose meshes are in no enabled mod's loose files or "
               "archives, so they are not converted:")
@@ -10950,6 +11857,11 @@ def _cmd_auto(args):
         exclude |= set(_user_excl)
         print(f"  --exclude-mods: skipping {len(_user_excl)} mod(s): "
               + ", ".join(sorted(_user_excl)))
+    # Every exclusion the coverage step withholds, the Select-mods ones too: a
+    # plugin the game loads from one of them is left alone by the sources, in
+    # this selection and in the convert step alike. #excluded-copy-left-alone
+    _set_run_user_exclusions(_user_excl + (_split_mod_arg(
+        getattr(args, "coverage_exclude_mods", None)) or []))
 
     print("  scanning mods for player-equippable armor...")
     candidates = _find_armor_mod_dirs(

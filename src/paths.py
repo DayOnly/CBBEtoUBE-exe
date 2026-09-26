@@ -470,7 +470,9 @@ def root_plugin_index_on() -> bool:
     return not _pflag("CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN", False)
 
 
-def _plugin_file_index_root(lay: "Layout") -> "dict[str, Path]":
+def _plugin_file_index_root(lay: "Layout",
+                            copies: "dict[str, list[Path]] | None" = None
+                            ) -> "dict[str, Path]":
     r"""#root-plugin-index: lowercased plugin filename -> the file MO2's virtual
     file system hands the game. Only ROOT files count -- MO2 never loads a plugin
     from a mod's subfolder (`_unmerged_patches`, `fomod`, `optional`, an `esp`
@@ -478,25 +480,34 @@ def _plugin_file_index_root(lay: "Layout") -> "dict[str, Path]":
     folder. Resolution: overwrite > enabled mods in MO2 priority order > game
     Data folder(s), first listed first. With no readable modlist every mod
     folder's root is indexed, in sorted name order, below overwrite. Insertion
-    order is priority order, highest first."""
+    order is priority order, highest first.
+
+    `copies`, when given, receives every mod folder's root copy of each name,
+    highest priority first (overwrite and game Data are not mod folders): its
+    first copy is the mod that owns the plugin (#one-plugin-owner). The index
+    returned is the same either way."""
     index: dict[str, Path] = {}
 
-    def _root(d: "Path | None") -> None:
+    def _root(d: "Path | None", mod: bool = False) -> None:
         if d is None:
             return
         try:
             ents = sorted(Path(d).iterdir())
         except OSError:
             return          # a missing or unreadable folder costs itself only
+        every = mod and copies is not None
         for f in ents:
             fl = f.name.lower()
-            if fl.endswith((".esp", ".esm", ".esl")) and fl not in index:
+            if fl.endswith((".esp", ".esm", ".esl")) and (every or fl not in index):
                 try:
                     if not f.is_file():
                         continue
                 except OSError:
                     continue
-                index[fl] = f
+                if every:
+                    copies.setdefault(fl, []).append(f)
+                if fl not in index:
+                    index[fl] = f
     _root(overwrite_dir(lay))
     if lay.mods_root is not None and lay.mods_root.is_dir():
         order = enabled_mods_ordered(lay)   # highest priority first, or None
@@ -506,7 +517,7 @@ def _plugin_file_index_root(lay: "Layout") -> "dict[str, Path]":
             except OSError:
                 order = []
         for name in order:
-            _root(lay.mods_root / name)
+            _root(lay.mods_root / name, mod=True)
     for d in (lay.game_data_dirs or []):
         _root(d)
     return index

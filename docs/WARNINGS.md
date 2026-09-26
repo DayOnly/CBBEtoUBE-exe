@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**95** problem warnings and **6** notes.
+**99** problem warnings and **6** notes.
 
 ## src/auto_convert.py
 
@@ -128,6 +128,9 @@ at run time), what it means for the run, and what to do next.
   - means: those were partial writes a killed run never finished; nothing of yours was touched
 - `!! pre-warm failed (non-fatal): …`
   - means: the first pieces pay the cold start
+- `!! could not locate armour meshes across the enabled mods (…)`
+  - means: each mod converts its own copy of a mesh (or the one in its archive), not a replacer's or BodySlide build's copy the game loads
+  - fix: look for an over-long path or a broken link in the mods folder, then run again
 - `!! incremental floor calc failed: …`
   - means: doing a full convert instead
 - `!! no MO2 mods folder: cannot check other mods for existing UBE patches`
@@ -226,6 +229,15 @@ at run time), what it means for the run, and what to do next.
   - means: an armour those plugins override keeps the playable flag of the record before them
 - `!! could not read which armour the load order makes playable (…)`
   - means: each plugin's own record decides whether its armour is playable, as before this rule, this run
+- `!! … mod folder(s) could not be fully read while locating armour meshes`
+  - means: a mesh in the unreadable part of each folder named below was not located; every other mod was located as normal
+  - fix: look for an over-long path or a broken link in each folder, then run again
+- `!! could not read which vanilla armour meshes to locate (…) -- the game Data folder`
+  - means: vanilla armour converts from the game's archives this run, even where a mod replaces its mesh with a loose file
+  - fix: check that the game Data folder and its plugins are readable, then run again
+- `!! could not locate armour meshes across the enabled mods (…) -- …`
+  - means: a mod whose armour meshes are in another mod (a BodySlide build, a replacer, a patch) is not converted this run; the convert step tries again for the rest
+  - fix: look for an over-long path or a broken link in the mods folder, then run again
 - `!! vanilla sweep DISABLED this run: …`
   - means: vanilla armour that no mod overrides stays unlinked, so it is invisible on UBE actors until a run with the sweep
 - `!! overlay transfer FAILED: …`
