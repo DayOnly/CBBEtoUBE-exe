@@ -387,6 +387,39 @@ def test_the_sweeps_planning_failure_self_heals_serially(tmp_path, monkeypatch, 
     assert rc == 0, log
 
 
+@pytest.mark.parametrize("sweep_fails", [True, False], ids=["retried", "clean"])
+@pytest.mark.parametrize("switched_off", [False, True],
+                         ids=["one-schedule", "switched-off"])
+def test_a_sweep_the_serial_retry_saved_is_counted(tmp_path, monkeypatch, capsys,
+                                                   switched_off, sweep_fails):
+    """#one-tally. The sweep's first failure prints a problem line even when
+    the serial retry then converts it; the tally and the failures file never
+    carried that line. Recorded now, as a warning, on both schedules; a clean
+    sweep records nothing (the control)."""
+    from tests.test_vanilla_sweep import _mk_data_dir
+    if switched_off:
+        monkeypatch.setenv(SWITCH, "1")
+    mod = tmp_path / "SomeMod"
+    mod.mkdir()
+    data = _mk_data_dir(tmp_path, [], [])
+    ns = _setup_batch(tmp_path, monkeypatch, _Pool(), [mod, data])
+    monkeypatch.setattr(ac, "_auto_convert_mod_steps", _steps_recording(
+        [], lambda n: [_item(n + "_piece")],
+        fail_planning=lambda n, kw: (sweep_fails and n == "Data"
+                                     and kw.get("nif_pool") is not None)))
+    rc = ac._cmd_convert(ns)
+    log = capsys.readouterr().out
+    assert ("serial retry SUCCEEDED" in log) is sweep_fails, log
+    ours = [e for e in ac._RUN_FAILURES if e["kind"] == "vanilla sweep retried"]
+    if sweep_fails:
+        assert len(ours) == 1, ac._RUN_FAILURES
+        assert ours[0]["severity"] == "warning"
+        assert "BrokenPipeError" in ours[0]["detail"], ours[0]
+    else:
+        assert ours == [], ac._RUN_FAILURES
+    assert rc == 0, log
+
+
 # ------------------------------------------------------------ the supersede guard
 
 def test_a_base_an_earlier_source_claimed_is_held_back(tmp_path):

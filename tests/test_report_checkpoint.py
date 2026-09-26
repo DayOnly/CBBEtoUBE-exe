@@ -181,3 +181,39 @@ def test_a_checkpoint_costs_milliseconds(tmp_path):
     assert p is not None and _report(out)["complete"] is False
     assert _report(out)["source_mods"] == 160
     assert dt < 2.0, f"a checkpoint took {dt:.2f} s"
+
+
+def test_a_checkpoint_that_cannot_be_written_is_counted_once_per_print(tmp_path, monkeypatch, capsys):
+    """#one-tally. The failed-checkpoint warning printed a problem line the
+    tally and the failures file never carried. Each print is counted now, in
+    ONE entry for the class, however many sources hit it."""
+    sources, out = _modlist(tmp_path, monkeypatch, n_sources=2)
+    real = ac.write_conversion_report_json
+
+    def _checkpoints_fail(*a, **k):
+        return None if k.get("complete") is False else real(*a, **k)
+
+    monkeypatch.setattr(ac, "write_conversion_report_json", _checkpoints_fail)
+    monkeypatch.setattr(ac, "auto_convert_mod", lambda s, *a, **k: _result(s, out))
+    rc = ac._cmd_convert(_ns(sources, out))
+    log = capsys.readouterr().out
+    printed = log.count("could not write the conversion_report.json checkpoint")
+    assert printed == 3, log            # the run's start and each of 2 sources
+    failures = json.loads((tmp_path / "CBBEtoUBE_last_failures.json")
+                          .read_text(encoding="utf-8"))["failures"]
+    ours = [e for e in failures if e["kind"] == "report checkpoint not written"]
+    assert len(ours) == 1, failures
+    assert ours[0]["severity"] == "warning" and ours[0]["count"] == printed
+    from src import failure_summary as fs
+    others = fs.counts([e for e in failures if e is not ours[0]])
+    assert ac._run_tally() == (others[0], others[1] + printed), ac._RUN_FAILURES
+    assert rc == 0, log
+
+
+def test_a_written_checkpoint_records_nothing(tmp_path, monkeypatch, capsys):
+    """Control for the test above."""
+    sources, out = _modlist(tmp_path, monkeypatch, n_sources=2)
+    monkeypatch.setattr(ac, "auto_convert_mod", lambda s, *a, **k: _result(s, out))
+    ac._cmd_convert(_ns(sources, out))
+    assert "could not write the conversion_report.json" not in capsys.readouterr().out
+    assert not [e for e in ac._RUN_FAILURES if "checkpoint" in e["kind"]]

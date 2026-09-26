@@ -771,6 +771,7 @@ def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
         claimed_dst_paths.difference_update(own_claims)
         r = convert_serial(src)
         print("  vanilla sweep serial retry SUCCEEDED")
+        _record_sweep_retried(why)
         return r
 
     for i, src in enumerate(sources, 1):
@@ -1935,6 +1936,31 @@ def _record_failure(kind: str, source, item, detail: str = "",
     if int(count) != 1:
         entry["count"] = int(count)
     _RUN_FAILURES.append(entry)
+
+
+def _record_sweep_retried(why) -> None:
+    """The vanilla sweep's first attempt failed and its serial retry converted
+    it. The first failure printed a problem line, which the tally and the
+    failures file never carried; this is its entry, on both schedules.
+    (A retry that fails too is recorded once, as the sweep's failure.)
+    #one-tally"""
+    _record_failure("vanilla sweep retried", "Vanilla sweep (base game + DLC)",
+                    "whole source",
+                    f"the first attempt failed ({plain_error(why)}); converting it "
+                    "again without the worker pool succeeded", severity="warning")
+
+
+def _record_class_once(kind: str, source, item, detail: str = "",
+                       severity: str = "warning") -> None:
+    """One entry for a class that can repeat within a run: the first time
+    it is recorded, every later time its `count` goes up by one, so the tally
+    still counts each printed line and the popup names the class once.
+    #one-tally"""
+    for e in _RUN_FAILURES:
+        if e.get("kind") == kind:
+            e["count"] = int(e.get("count", 1)) + 1
+            return
+    _record_failure(kind, source, item, detail, severity=severity)
 
 
 def _run_tally() -> "tuple[int, int]":
@@ -3785,6 +3811,11 @@ def _checkpoint_report(output_dir, results, *, planned, workers,
              where=f"under {output_dir}",
              consequence="a run that dies now leaves no report",
              fix="check that the output folder is writable and not open elsewhere")
+        # Printed as a problem, so counted: one entry however many times it
+        # happens this run. #one-tally
+        _record_class_once("report checkpoint not written", "conversion_report.json",
+                           str(output_dir),
+                           "a run that died then would have left no report")
     return out
 
 
@@ -6945,6 +6976,7 @@ def _cmd_convert(args):
                     claimed_dst_paths.update(_claims_before)
                     r = _convert_one(src, _pool=None, _workers=1)
                     print("  vanilla sweep serial retry SUCCEEDED")
+                    _record_sweep_retried(_e1)
                 results.append((src, r, None))
             except Exception as e:
                 results.append((src, None, e))

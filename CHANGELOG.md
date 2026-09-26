@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed — two warnings in the log now also reach the end-of-run count and list
+
+Two warnings were printed in the log but left out of the warning count at the
+end of the run and out of the list the window shows after it. The first is
+when the base game and DLC pass fails once and then succeeds when the tool
+converts it again without the worker processes. The second is when the tool
+cannot save the in-progress `conversion_report.json` it writes after each mod.
+Both are now counted and listed as warnings. The second is listed once,
+however many times it happened. Nothing that is converted changes.
+
 ### Fixed — the measurement log no longer loses or garbles lines
 
 During a conversion every worker process writes its measurements to one file,

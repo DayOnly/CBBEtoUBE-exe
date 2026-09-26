@@ -12912,4 +12912,42 @@ PAIRS = (
          tests=('tests/test_fingerprint_survey.py',),
          expect=('test_the_schedule_switch_is_hashed_for_the_files_it_keeps_not_the_maths',),
     ),
+    # #one-tally: two problem lines the record never carried -- the sweep's
+    # first failure when its serial retry saves it, and a failed checkpoint.
+    Pair('SFU-b', "one schedule: the sweep's saved failure is printed but not counted",
+         edits=(
+             ('src/auto_convert.py',
+              '        _record_sweep_retried(why)\n',
+              '        pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_global_schedule.py',),
+         expect=('test_a_sweep_the_serial_retry_saved_is_counted[one-schedule-retried]',),
+    ),
+    Pair('SFU-c', "one source at a time: the sweep's saved failure is printed but not counted",
+         edits=(
+             ('src/auto_convert.py',
+              '                    _record_sweep_retried(_e1)\n',
+              '                    pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_global_schedule.py',),
+         expect=('test_a_sweep_the_serial_retry_saved_is_counted[switched-off-retried]',),
+    ),
+    Pair('SFU-d', 'a failed checkpoint is printed but not counted',
+         edits=(
+             ('src/auto_convert.py',
+              '        _record_class_once("report checkpoint not written", "conversion_report.json",',
+              '        (lambda *a, **k: None)("report checkpoint not written", "conversion_report.json",  # MUTATED', 1),
+         ),
+         tests=('tests/test_report_checkpoint.py',),
+         expect=('test_a_checkpoint_that_cannot_be_written_is_counted_once_per_print',),
+    ),
+    Pair('SFU-e', 'a repeated class is counted once however often it printed',
+         edits=(
+             ('src/auto_convert.py',
+              '            e["count"] = int(e.get("count", 1)) + 1\n',
+              '            pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_report_checkpoint.py',),
+         expect=('test_a_checkpoint_that_cannot_be_written_is_counted_once_per_print',),
+    ),
 )
