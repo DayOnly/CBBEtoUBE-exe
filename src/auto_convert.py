@@ -68,6 +68,7 @@ from . import child_lifetime  # noqa: E402
 from .user_warnings import NOTE, plain_error, problem_count, warn  # noqa: E402
 from . import stale_sweep  # noqa: E402
 from .envflags import flag as _flag, knob as _knob  # noqa: E402
+from .bsa_strings import model_path_text as _model_path_text  # noqa: E402
 
 
 # ---------- Multiprocessing worker -------------------------------------
@@ -2672,6 +2673,59 @@ def _first_few(lines, n: int = 3) -> str:
                    if len(lines) > n else "")
 
 
+def _warn_alttex_problems(problems, source) -> None:
+    """The alt-texture reconcile's problem classes (`(class, models)` pairs
+    from `ube_patcher.reconcile_alt_texture_indices_all(problems=...)`), each
+    warned and recorded once. The reconcile used to print them itself as bare
+    `!!` lines, which the tally, the failures file and docs/WARNINGS.md never
+    saw. #one-tally"""
+    for cls, models in problems or ():
+        models = [str(m) for m in models]
+        n = len(models)
+        names = ", ".join(models[:5]) + (f" and {n - 5} more" if n > 5 else "")
+        if cls == ube_patcher.ALTTEX_ENTRIES_DROPPED:
+            warn(f"alt-texture reconcile: {n} converted NIF(s) with same-named "
+                 f"layers could not be matched to their source mesh: {names}",
+                 consequence="the colour-variant entries of those layers were "
+                             "dropped, so the layers keep their base colour in "
+                             "every colour variant",
+                 fix="check that the mod each mesh came from is installed and "
+                     "enabled, then run again")
+            kind = "alt-texture entries dropped"
+        elif cls == ube_patcher.ALTTEX_GAME_COPY_UNREADABLE:
+            warn(f"alt-texture reconcile: {n} model(s) not in this output could "
+                 f"not be read from the mod the game loads them from: {names}",
+                 consequence="their colour-variant entries are kept as the author "
+                             "wrote them, so variant textures may land on the "
+                             "wrong part",
+                 fix="check that the named mesh opens (NifSkope, Outfit Studio) "
+                     "or reinstall the mod that ships it, then run again")
+            kind = "alt-texture game copy unreadable"
+        elif cls == ube_patcher.ALTTEX_OUTRANKING_COPY_UNREADABLE:
+            # #reconcile-loaded-winner: ours is on disk, another mod's is drawn.
+            warn(f"alt-texture reconcile: {n} model(s) where another mod's copy "
+                 f"outranks ours but could not be read; indexed against ours: "
+                 f"{names}",
+                 consequence="the game draws that other copy; if its layers are "
+                             "in a different order than ours, variant textures "
+                             "may land on the wrong part",
+                 fix="check that the named mesh in the mod above this tool's "
+                     "output in MO2 opens (NifSkope, Outfit Studio) or rebuild "
+                     "it, then run again")
+            kind = "alt-texture outranking copy unreadable"
+        else:
+            warn(f"alt-texture reconcile: {n} converted NIF(s) failed to load: "
+                 f"{names}",
+                 consequence="their colour-variant entries keep the source mesh's "
+                             "indices, so variant textures may land on the "
+                             "wrong part",
+                 fix="close any program holding the files and run again; if it "
+                     "repeats, report the named meshes")
+            kind = "alt-texture mesh unreadable"
+        _record_failure(kind, source, f"{n} model(s)", _first_few(models),
+                        severity="warning")
+
+
 def _failures_file_path() -> Path:
     """Next to the run log: the one location the GUI and the frozen exe agree
     on (CBBE2UBE_RUN_LOG's dir when a parent pinned it, else exe/repo dir)."""
@@ -3808,6 +3862,10 @@ def _auto_convert_mod_steps(
                                  "UBE version in game",
                      fix="close the program holding the file (the game, NifSkope, "
                          "Outfit Studio) and run again")
+                # Recorded here, in the parent, as the stale sweep's own
+                # move-failed line is. #one-tally
+                _record_failure("built UBE supersede move failed", source_dir.name,
+                                f"{len(_left)} piece(s)", _names, severity="warning")
             if _torn:
                 _names = (", ".join(f"{s[0]} ({', '.join(s[2])})" for s in _torn[:5])
                           + (f" and {len(_torn) - 5} more" if len(_torn) > 5 else ""))
@@ -3818,6 +3876,8 @@ def _auto_convert_mod_steps(
                                  "draw with the wrong morphs",
                      fix="close the program holding the files and run again, or "
                          "move the named files back from _superseded\\")
+                _record_failure("built UBE supersede move torn", source_dir.name,
+                                f"{len(_torn)} piece(s)", _names, severity="warning")
             for s in _stuck:
                 result.notes.append(f"built UBE version elsewhere: {s[0]} not moved "
                                     f"out of meshes\\ ({s[1]})")
@@ -5037,7 +5097,7 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                         # real third-party female coverage -- which is why 226
                         # of our meshes still shadow a hand-made UBE conversion.
                         if sig == b"MOD3":
-                            s = dd.rstrip(bytes(1)).decode("cp1252", "replace")
+                            s = _model_path_text(dd, "cp1252")
                             if _is_already_ube_model(s) and _ube_mesh_resolves(s):
                                 ube_fids.add(r.formid)
                                 ube_armas.add(_abs(r.formid))
@@ -5063,7 +5123,7 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                             elif sig in (b"BOD2", b"BODT") and len(dd) >= 4:
                                 _bod = _struct.unpack_from("<I", dd)[0]
                             elif sig == b"MOD3":
-                                _m3 = dd.rstrip(bytes(1)).decode("cp1252", "replace")
+                                _m3 = _model_path_text(dd, "cp1252")
                         if _rn is not None and _rn[0] == "ube_allrace.esp":
                             race_armas[_abs(r.formid)] = (_bod, _m3)
             if ini_targets:
@@ -5699,6 +5759,14 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
     except Exception:
         _ow = None
     loose_dirs = ([Path(_ow)] if _ow is not None else []) + dirs
+    # #reconcile-loaded-winner: the positions in `loose_dirs` of the folders
+    # whose loose files outrank our output in MO2 -- the overwrite and every
+    # enabled mod above it. None when our output is not an enabled mod.
+    _out_pos = next((i for i, n in enumerate(order) if n.lower() == out_name),
+                    None)
+    _ow_n = 1 if _ow is not None else 0
+    above = (frozenset(range(_ow_n + _out_pos)) if _out_pos is not None
+             else None)
     dirs += [Path(d) for d in (lay.game_data_dirs or []) if Path(d) not in dirs]
     loose_dirs += [d for d in dirs if d not in loose_dirs]
     bsa = _BsaMeshIndex(dirs, None,
@@ -5785,6 +5853,20 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
             return loose_dirs[i] / "meshes" / rel, None
         data = bsa.read_bytes(rel)
         return (None, data) if data else None
+
+    def outranks_output(model: str) -> bool:
+        """#reconcile-loaded-winner: does the game load another mod's LOOSE
+        copy of `model` over our output's own? A loose file in the overwrite
+        or in a mod above our output in MO2 wins; an archive never beats a
+        loose file, so our copy wins over every archive. False when our
+        output is not an enabled mod."""
+        rel = str(model or "").replace("\\", "/").lstrip("/").lower()
+        if rel.startswith("meshes/"):
+            rel = rel[7:]
+        if not rel or above is None:
+            return False
+        return _loose_first(rel) in above
+    loaded_copy.outranks_output = outranks_output
     exists.body_fit = body_fit
     exists.unfitted_skin = unfitted_skin
     exists.loaded_copy = loaded_copy
@@ -7454,6 +7536,10 @@ def _sweep_orphan_temps_at_start(output, run_started: float) -> int:
 
 def _cmd_convert(args):
     _RUN_FAILURES.clear()   # fresh failure record for this run
+    # What `auto` found before this record began (a disabled vanilla sweep):
+    # printed there, recorded here, so the clear above cannot lose it. #one-tally
+    for _cf in (getattr(args, "carried_failures", None) or ()):
+        _record_failure(**_cf)
     # The mods whose armour coverage leaves alone: a plugin the game loads from
     # one of them is left alone by the sources too. #excluded-copy-left-alone
     _set_run_user_exclusions(_split_mod_arg(getattr(args, "exclude_mods", None)))
@@ -8443,14 +8529,17 @@ def _cmd_convert(args):
                     # Reconcile alt-texture 3D indices against the converted NIFs.
                     # Shape reordering during the NIF merge shifts MO2S/MO3S indices;
                     # reconcile ALL split pieces (overflow also carries alt-texture sets).
+                    _alttex_problems: list = []   # #one-tally
                     try:
                         nfix = ube_patcher.reconcile_alt_texture_indices_all(
-                            merged_out, output / "meshes")
+                            merged_out, output / "meshes",
+                            problems=_alttex_problems)
                         print(f"  alt-texture reconcile: fixed {nfix} ARMA(s)")
                     except Exception as e:
                         warn(f"alt-texture reconcile failed: {plain_error(e)}",
                              consequence="colour variants may bind to the wrong shape",
                              fix="check the affected armour's variants in game")
+                    _warn_alttex_problems(_alttex_problems, merged_out.name)
                     # Clear slot 33 (Hands) from forearm bracers that claim it but have
                     # no hand geometry — else they hide nude hands and draw nothing.
                     # Mesh-driven: real gloves/gauntlets are never touched.
@@ -10703,13 +10792,12 @@ def _player_armor_mesh_bases(mod_dir: Path,
                         rnam = _struct.unpack("<I", sd)[0]
                     elif sig in (b"BOD2", b"BODT") and len(sd) >= 4:
                         slot = _struct.unpack_from("<I", sd, 0)[0]
+                    # The paths as the game reads them. #model-path-codepage
                     elif sig in (b"MOD3", b"MOD5"):
-                        female_models.append(sd.rstrip(b"\x00").decode(
-                            "utf-8", errors="ignore"))
+                        female_models.append(_model_path_text(sd, "utf-8"))
                         by_sig.setdefault(sig, []).append(female_models[-1])
                     elif sig in (b"MOD2", b"MOD4"):
-                        male_models.append(sd.rstrip(b"\x00").decode(
-                            "utf-8", errors="ignore"))
+                        male_models.append(_model_path_text(sd, "utf-8"))
                         by_sig.setdefault(sig, []).append(male_models[-1])
                 # FEMALE-ONLY conversion: UBE is a female body, so convert the FEMALE
                 # model(s) and skip the male mesh (a female actor never renders it, and
@@ -12121,6 +12209,9 @@ def _cmd_auto(args):
     # keeps mod-source links wherever both cover the same armor.
     # CBBE2UBE_NO_VANILLA_SWEEP=1 disables. Under --only-mods, the sweep runs
     # only when named explicitly ('vanilla').
+    # Problems found here, before `_cmd_convert` starts the run's record (and
+    # clears it): it records them first thing. #one-tally
+    _carried: "list[dict]" = []
     if (not _flag("CBBE2UBE_NO_VANILLA_SWEEP", False)
             and lay.game_data_dirs
             and (not only or _sweep_only_requested)
@@ -12140,6 +12231,10 @@ def _cmd_auto(args):
             warn(f"vanilla sweep DISABLED this run: {_sw_why}",
                  consequence="vanilla armour that no mod overrides stays unlinked, so it "
                              "is invisible on UBE actors until a run with the sweep")
+            _carried.append({"kind": "vanilla sweep disabled",
+                             "source": "Vanilla sweep (base game + DLC)",
+                             "item": "whole source", "detail": str(_sw_why),
+                             "severity": "warning"})
             print("     (mod armor converts normally; vanilla armor no mod "
                   "overrides stays unconverted. Fix the game-Data path or "
                   "report this if the path looks right.)")
@@ -12180,6 +12275,7 @@ def _cmd_auto(args):
                      "started": _sos_started, "mods_root": str(mr),
                      "enabled": None if enabled is None else sorted(enabled),
                      "excluded": sorted(exclude)},
+        carried_failures=_carried,   # #one-tally
     )
     try:
         rc = _cmd_convert(conv)

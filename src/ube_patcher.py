@@ -44,6 +44,8 @@ from pathlib import Path
 from typing import Iterable, NamedTuple
 
 from . import esp
+from .bsa_strings import game_codepage_text as _game_codepage_text
+from .bsa_strings import model_path_text as _model_path_text
 from .envflags import flag as _flag
 
 
@@ -533,11 +535,54 @@ def _reconcile_loaded_mesh_on() -> bool:
     entries bind by name, and the entries of a name it carries twice (or in
     two spellings), or that a set repeats, are dropped. A path found nowhere
     keeps its entries as authored, as before, and is counted. Our output's
-    own NIF, when present, is used exactly as before.
+    own NIF, when present, is used exactly as before -- unless another mod's
+    loose copy outranks it (#reconcile-loaded-winner).
 
     CBBE2UBE_NO_RECONCILE_LOADED_MESH=1 leaves a set whose NIF is not in our
     output untouched, as before."""
     return not _flag("CBBE2UBE_NO_RECONCILE_LOADED_MESH", False)
+
+
+def _reconcile_loaded_winner_on() -> bool:
+    r"""#reconcile-loaded-winner (2026-09-26): when our output DOES have a NIF
+    at one of our `!UBE\` paths but another mod's loose copy outranks it in
+    MO2, is the colour set indexed against that copy -- the one the game
+    loads? Yes, by default (read only with #reconcile-loaded-mesh on).
+
+    #reconcile-loaded-mesh asked for the game's copy only when our NIF was
+    missing: its premise was that #skip-built-ube-path always moves our copy
+    out of `meshes\` first. It does not always: a base the global schedule
+    holds, a base a builder ships only part of, a supersede move that fails
+    (a file in use), CBBE2UBE_NO_SKIP_BUILT_UBE_PATH=1, or an earlier run's
+    copy no source plans. And a user's UBE BodySlide output often sits ABOVE
+    our output in MO2 (it does on the reported modlist). Then the set was
+    indexed against our copy while the game draws the build's, which can
+    order its shapes differently. Now such a path is indexed against the copy
+    the game loads, as a missing one is (`loaded_copy.outranks_output`: a
+    loose copy in the overwrite or a mod above our output; an archive never
+    beats our loose file). Our output not an enabled mod: unchanged.
+    CBBE2UBE_NO_RECONCILE_LOADED_WINNER=1 uses our own NIF whenever it exists,
+    as before."""
+    return not _flag("CBBE2UBE_NO_RECONCILE_LOADED_WINNER", False)
+
+
+def _alttex_source_winner_on() -> bool:
+    r"""#alttex-source-winner (2026-09-26): does the reconcile check an
+    archive-only source against the archive the convert step extracted it
+    from? Yes, by default.
+
+    `_alttex_source_paths` takes the copy the convert step staged in
+    `<output>\_bsa_staging` only while its bytes are the archive's. The convert
+    step's index picks, between two archives holding the mesh, the one whose
+    plugin loads later (#bsa-load-order-winner); the reconcile built its own
+    index without the plugin order, so it read the MO2-first archive. Where the
+    two orders disagree the bytes never matched, the source counted as
+    unreadable and every entry of a same-named layer was dropped (the layer
+    kept its base colour). Its index now takes the same plugin order
+    (`auto_convert._bsa_plugin_order`, None under
+    CBBE2UBE_NO_BSA_LOAD_ORDER_WINNER=1, as the convert step's).
+    CBBE2UBE_NO_ALTTEX_SOURCE_WINNER=1 reads the MO2-first archive again."""
+    return not _flag("CBBE2UBE_NO_ALTTEX_SOURCE_WINNER", False)
 
 
 def _loaded_mesh_lookup(meshes_root):
@@ -895,7 +940,9 @@ def _alttex_source_paths(meshes_root, keys) -> "dict[str, Path]":
     if rest:
         try:
             bsa = _ac._BsaMeshIndex(
-                _ac._load_order_bsa_dirs(mr, order, lay.game_data_dirs), None)
+                _ac._load_order_bsa_dirs(mr, order, lay.game_data_dirs), None,
+                plugin_order=(_ac._bsa_plugin_order(lay)
+                              if _alttex_source_winner_on() else None))
         except Exception:
             return out
         for k in rest:
@@ -1037,7 +1084,7 @@ def _reindex_alt_texture_payload(data: bytes,
     return out
 
 
-def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
+def reconcile_alt_texture_indices(esp_path, meshes_root, problems=None) -> int:
     """Post-conversion pass: fix stale alt-texture (MO2S/MO3S/MO4S/MO5S) 3D
     names+indices in an output ESP so color variants apply to the right shapes.
 
@@ -1047,17 +1094,35 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
     converted NIF and rewrites the alt-texture set to the surviving shapes'
     real names+indices. Returns number of ARMA records fixed.
     Run AFTER NIF conversion + merge, once, on a freshly merged plugin: an
-    entry's index is read as the SOURCE mesh's 3D index."""
-    return _reconcile_alt_texture_pieces([esp_path], meshes_root)
+    entry's index is read as the SOURCE mesh's 3D index.
+
+    `problems`: see `_reconcile_alt_texture_pieces`."""
+    return _reconcile_alt_texture_pieces([esp_path], meshes_root,
+                                         problems=problems)
 
 
-def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
+#: The reconcile's problem classes, as a `problems` list names them. #one-tally
+ALTTEX_LOAD_FAILED = "converted NIF unreadable"
+ALTTEX_ENTRIES_DROPPED = "entries dropped"
+ALTTEX_GAME_COPY_UNREADABLE = "game copy unreadable"
+#: Our output ships the NIF, another mod's copy outranks it, and that copy
+#: could not be read: indexed against ours. #reconcile-loaded-winner
+ALTTEX_OUTRANKING_COPY_UNREADABLE = "outranking copy unreadable"
+
+
+def _reconcile_alt_texture_pieces(esp_paths, meshes_root, problems=None) -> int:
     """`reconcile_alt_texture_indices` over one or more plugins taken as ONE
     view (#alttex-batch-ambiguity): every plugin's sets are scanned before
     any NIF is loaded, and the repeats, the converted NIFs, the shared names
     and the source bindings are shared by all of them. Each plugin that
     changed is saved. A plugin that does not load raises -- after the others
-    are reconciled and saved. Returns the ARMA records fixed, summed."""
+    are reconciled and saved. Returns the ARMA records fixed, summed.
+
+    `problems` (#one-tally): None prints each problem class as its own `!!`
+    line, as a standalone call always has. A list takes them instead, as
+    `(class, models)` pairs (an `ALTTEX_*` class, its sorted model paths),
+    added before anything is saved or raised; the converter warns and records
+    each, so the run's tally and failures file carry them."""
     from pathlib import Path as _Path
     from . import nif_io
     meshes_root = _Path(meshes_root)
@@ -1101,20 +1166,37 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
     nowhere: "list[str]" = []
     unreadable: "list[str]" = []         # another mod's copy that would not load
     _look: list = []                     # the lookup, built on first need
+    # #reconcile-loaded-winner: model keys our output ships but another mod's
+    # loose copy outranks -- indexed against that copy, as a missing one is.
+    # Asked only under `loaded_on` (`shapes_for`).
+    winner_on = _reconcile_loaded_winner_on()
+    shadowed: "set[str]" = set()
+    # ... of which the outranking copy could not be found or read: indexed
+    # against our own NIF, as with the rule off, and said so on its own.
+    shadow_unread: "list[str]" = []
 
-    def loaded_shapes(model_path: str, key: str):
+    def outranked(model_path: str) -> bool:
+        if not winner_on:
+            return False
+        if not _look:
+            _look.append(_loaded_mesh_lookup(meshes_root))
+        test = getattr(_look[0], "outranks_output", None)
+        return bool(test is not None and test(model_path))
+
+    def loaded_shapes(model_path: str, key: str, ours: bool = False):
         if not _look:
             _look.append(_loaded_mesh_lookup(meshes_root))
         hit = _look[0](model_path) if _look[0] is not None else None
         if hit is None:
-            nowhere.append(model_path)
+            (shadow_unread if ours else nowhere).append(model_path)
             return None
         try:
             names = _loaded_mesh_names(hit, meshes_root.parent / "_bsa_staging")
         except Exception:
             # Not our conversion: said on its own line below, never as one of
-            # ours that failed to load. The set stays as authored.
-            unreadable.append(model_path)
+            # ours that failed to load. The set stays as authored -- or, when
+            # our output ships the NIF, is indexed against ours.
+            (shadow_unread if ours else unreadable).append(model_path)
             return None
         twice = Counter(str(n or "").lower() for n in names)
         _game_copy[key] = frozenset(n for n, c in twice.items() if c > 1)
@@ -1127,10 +1209,16 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
         idx = None
         try:
             p = meshes_root / model_path.replace("/", "\\")
-            if (loaded_on and not p.is_file()
-                    and _alttex_source_rel(model_path) is not None):
-                idx = loaded_shapes(model_path, key)
-            elif p.is_file():
+            ours = p.is_file()
+            if (loaded_on and _alttex_source_rel(model_path) is not None
+                    and (not ours or outranked(model_path))):
+                if ours:
+                    shadowed.add(key)
+                idx = loaded_shapes(model_path, key, ours)
+            if idx is None and ours:
+                # Our own NIF: not outranked, or the copy that outranks it
+                # could not be read (#reconcile-loaded-winner) -- then ours is
+                # the best index there is, as with the rule off.
                 nf = nif_io.load_nif(p)
                 idx = {s.name: i for i, s in enumerate(nf.shapes)}
                 if exact and (_split_name_candidates(idx) or key in _repeats
@@ -1159,7 +1247,7 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
             models: dict[bytes, str] = {}
             for sig, data in subs:
                 if sig in (b"MOD2", b"MOD3", b"MOD4", b"MOD5"):
-                    models[sig] = data.rstrip(b"\x00").decode("latin-1", "ignore")
+                    models[sig] = _model_path_read(data)
             sets.append((r, subs, models))
             owner.append(pi)
             for sig, data in subs:
@@ -1227,34 +1315,58 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
             r.payload = new_payload
             fixed[pi] += 1
     import sys as _s
+    _say = problems is None              # else the converter warns. #one-tally
     if load_failed:
-        print(f"  !! alt-texture reconcile: {len(load_failed)} converted NIF(s) "
-              f"failed to load -> stale color-variant indices kept (variant "
-              f"textures may misalign): {sorted(set(load_failed))[:5]}",
-              file=_s.stderr)
+        if _say:
+            print(f"  !! alt-texture reconcile: {len(load_failed)} converted NIF(s) "
+                  f"failed to load -> stale color-variant indices kept (variant "
+                  f"textures may misalign): {sorted(set(load_failed))[:5]}",
+                  file=_s.stderr)
+        else:
+            problems.append((ALTTEX_LOAD_FAILED, sorted(set(load_failed))))
     if bindings:
         unmatched = sorted(k for k, b in bindings.items() if b is None)
         print(f"  alt-texture reconcile: {len(bindings) - len(unmatched)} "
               f"converted NIF(s) with same-named layers bound through their "
               f"source mesh", file=_s.stderr)
-        if unmatched:
+        if unmatched and _say:
             print(f"  !! alt-texture reconcile: {len(unmatched)} converted "
                   f"NIF(s) with same-named layers whose source mesh could not be "
                   f"read or is not the mesh converted -> the colour-variant "
                   f"entries of those layers were dropped (they keep their "
                   f"base colour): {unmatched[:5]}", file=_s.stderr)
-    if _game_copy or nowhere or unreadable:
-        print(f"  alt-texture reconcile: {len(_game_copy)} model(s) not in "
-              f"this output indexed against the copy the game loads (another "
-              f"mod's); {len(set(nowhere))} found nowhere -> kept as authored"
+        elif unmatched:
+            problems.append((ALTTEX_ENTRIES_DROPPED, unmatched))
+    if _game_copy or nowhere or unreadable or shadow_unread:
+        _over = len(shadowed & set(_game_copy))    # #reconcile-loaded-winner
+        _unr = len(set(shadow_unread))
+        print(f"  alt-texture reconcile: {len(_game_copy) - _over} model(s) not "
+              f"in this output indexed against the copy the game loads (another "
+              f"mod's); "
+              + (f"{_over} model(s) this output ships but another mod's copy "
+                 f"outranks in MO2, indexed against that copy; " if _over else "")
+              + (f"{_unr} model(s) where another mod's copy outranks ours but "
+                 f"could not be read, indexed against ours; " if _unr else "")
+              + f"{len(set(nowhere))} found nowhere -> kept as authored"
               + (f": {sorted(set(nowhere))[:5]}" if nowhere else ""),
               file=_s.stderr)
-    if unreadable:
+    if unreadable and _say:
         print(f"  !! alt-texture reconcile: {len(set(unreadable))} model(s) not "
               f"in this output: the copy the game loads (another mod's) could not "
               f"be read -> its colour-variant indices kept as authored (variant "
               f"textures may misalign): {sorted(set(unreadable))[:5]}",
               file=_s.stderr)
+    elif unreadable:
+        problems.append((ALTTEX_GAME_COPY_UNREADABLE, sorted(set(unreadable))))
+    if shadow_unread and _say:                   # #reconcile-loaded-winner
+        print(f"  !! alt-texture reconcile: {len(set(shadow_unread))} model(s) "
+              f"where another mod's copy outranks ours but could not be read -> "
+              f"indexed against ours (the game draws that copy; variant "
+              f"textures may misalign): {sorted(set(shadow_unread))[:5]}",
+              file=_s.stderr)
+    elif shadow_unread:
+        problems.append((ALTTEX_OUTRANKING_COPY_UNREADABLE,
+                         sorted(set(shadow_unread))))
     for (piece, e), n in zip(loaded, fixed):
         if n:
             e.save(piece)
@@ -1306,7 +1418,8 @@ def _combined_piece_family(primary, suffix: "str | None" = None) -> "list[Path]"
     return [f for f in found if _combined_piece_tail(f.name, p.stem, x) is not None]
 
 
-def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root) -> int:
+def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root,
+                                      problems=None) -> int:
     """Reconcile alt-texture indices across the primary merged ESP AND every
     ESL-split overflow piece (`<stem>.esp`, `<stem>2.esp`, ...).
 
@@ -1320,17 +1433,19 @@ def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root) -> int:
     set in one piece that repeats a name makes that NIF's name shared in
     every piece. With CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY=1 (or any earlier
     alt-texture switch set) each piece is reconciled on its own. Both paths
-    walk the same family."""
+    walk the same family. `problems`: see `_reconcile_alt_texture_pieces`."""
     from pathlib import Path as _Path
     p = _Path(primary_esp_path)
     pieces = _combined_piece_family(p)
     if (_alttex_dup_occurrence_on() and _alttex_exact_provenance_on()
             and _alttex_set_provenance_on() and _alttex_case_provenance_on()
             and _alttex_batch_ambiguity_on()):
-        return _reconcile_alt_texture_pieces(pieces, meshes_root)
+        return _reconcile_alt_texture_pieces(pieces, meshes_root,
+                                             problems=problems)
     total = 0
     for piece in pieces:
-        total += reconcile_alt_texture_indices(piece, meshes_root)
+        total += reconcile_alt_texture_indices(piece, meshes_root,
+                                               problems=problems)
     return total
 
 
@@ -1840,7 +1955,7 @@ def fix_spurious_hand_slot(primary_esp_path, meshes_root, *,
                 for r in g.records:
                     arma_by_fid[r.formid] = r
                     arma_models[r.formid] = [
-                        d.rstrip(b"\x00").decode("utf-8", "ignore")
+                        _model_path_text(d, "utf-8")
                         for sig, d in esp.iter_subrecords(r.payload)
                         if sig in (b"MOD3", b"MOD2", b"MOD4", b"MOD5")]
         changed = False
@@ -2096,20 +2211,42 @@ def _model_path_str(data: bytes, as_bytes: bool) -> str:
     UTF-8 read, which drops every byte that is not valid UTF-8."""
     s = data.rstrip(b"\x00")
     if as_bytes:
-        return s.decode("cp1252", "surrogateescape")
+        return _game_codepage_text(s)
     return s.decode("utf-8", errors="ignore")
+
+
+def _model_path_read(data: bytes) -> str:
+    """A MOD2-5 string of a plugin this tool WROTE, read back as it was
+    written: `_model_path_text` (the game's codepage, as #arma-path-bytes
+    writes), or UTF-8 when #arma-path-bytes is off and wrote UTF-8 -- so our
+    converted NIF at a path with a byte in 0x80-0x9F is found. The alt-texture
+    reconcile and the postflight read through it. #model-path-codepage; with
+    CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1 the old latin-1 read."""
+    from .bsa_strings import model_path_codepage
+    if model_path_codepage() and not _arma_path_bytes():
+        # UTF-8 as written; a byte the UTF-8 writer gave back from a lone
+        # surrogate (#model-path-writer) comes back as that surrogate, the
+        # very text the converted-mesh lookup was asked about -- the old
+        # `ignore` read dropped it and named a file that does not exist.
+        return data.rstrip(b"\x00").decode("utf-8", "surrogateescape")
+    return _model_path_text(data, "latin-1")
 
 
 def _model_path_zstring(path: str, as_bytes: bool) -> bytes:
     """A model path as the null-terminated string an ARMA stores: cp1252 when
     `as_bytes` and the text has a cp1252 form (every path `_model_path_str`
-    read, plus ASCII prefixes), else UTF-8 as before. #arma-path-bytes"""
+    read, plus ASCII prefixes), else UTF-8 as before. #arma-path-bytes
+
+    #model-path-writer: never raises on a byte the one decoder kept as a lone
+    surrogate (one of the five cp1252 leaves undefined): the UTF-8 write gives
+    it back as that byte, where a strict UTF-8 write raised. Any other text is
+    written exactly as before."""
     if as_bytes:
         try:
             return path.encode("cp1252", "surrogateescape") + b"\x00"
         except UnicodeEncodeError:
             pass
-    return esp.encode_zstring(path)
+    return path.encode("utf-8", "surrogateescape") + b"\x00"
 
 
 def rebuild_arma_payload(source_payload: bytes, *,
@@ -2195,6 +2332,11 @@ def rebuild_arma_payload(source_payload: bytes, *,
     # source paths also as written (the lookups above keep their cp1252 read).
     _pb = _arma_path_bytes()
     src_mod2_w = src_mod4_w = ""
+    # #model-path-writer: with #arma-path-bytes off every path of the record
+    # is written UTF-8 (as the parent did), the male path and a stand-in
+    # included, so `_model_path_read` reads them all back one way; the UTF-8
+    # writer gives a lone surrogate back as its byte instead of raising.
+    _gc = _pb
     for sig, data in esp.iter_subrecords(source_payload):
         if sig == b"RNAM":
             out += esp.encode_subrecord(b"RNAM", struct.pack("<I", new_primary_rnam))
@@ -2235,7 +2377,7 @@ def rebuild_arma_payload(source_payload: bytes, *,
                 # The lookup gets the path as the game reads it (cp1252); with
                 # CBBE2UBE_NO_ARMA_PATH_BYTES the utf-8 decode above drops
                 # non-ASCII bytes. #coverage-female-guard
-                _probe = data.rstrip(b"\x00").decode("cp1252", "replace")
+                _probe = _model_path_text(data, "cp1252")
                 _keep = female_mesh_exists is None or female_mesh_exists(_probe)
                 _named_dead = not _keep
             # #coverage-female-standin: a named female slot whose male mesh was
@@ -2245,7 +2387,7 @@ def rebuild_arma_payload(source_payload: bytes, *,
             if (not _fallback and _ask_dead and path and not converted
                     and ensure_female and sig in (b"MOD3", b"MOD5")):
                 _dead = female_mesh_exists is not None and not female_mesh_exists(
-                    data.rstrip(b"\x00").decode("cp1252", "replace"))
+                    _model_path_text(data, "cp1252"))
             _src_male = src_mod2 if sig == b"MOD3" else src_mod4
             _standin = _as_is = None
             if _dead and female_standin is not None:
@@ -2265,9 +2407,11 @@ def rebuild_arma_payload(source_payload: bytes, *,
                 # mesh's shapes, so both go. #coverage-female-standin
                 _to = (path_prefix + _standin) if _standin is not None else _as_is
                 # The male path as it was written, byte for byte. #arma-path-bytes
-                _to_w = (_to if _standin is not None or not _pb else
+                # With #arma-path-bytes off both are written UTF-8 like every
+                # other path of the record, without raising. #model-path-writer
+                _to_w = (_to if _standin is not None or not _gc else
                          src_mod2_w if sig == b"MOD3" else src_mod4_w)
-                out += esp.encode_subrecord(sig, _model_path_zstring(_to_w, _pb))
+                out += esp.encode_subrecord(sig, _model_path_zstring(_to_w, _gc))
                 if declined_log is not None:
                     declined_log.append(
                         {"slot": sig.decode(), "standin": _to, "orig": path}
@@ -2312,10 +2456,10 @@ def rebuild_arma_payload(source_payload: bytes, *,
                 elif sig == b"MOD4" and converted:
                     conv_mod4 = new_path
                 if sig == b"MOD2":
-                    src_mod2 = data.rstrip(b"\x00").decode("cp1252", "replace")
+                    src_mod2 = _model_path_text(data, "cp1252")
                     src_mod2_w = _model_path_str(data, True)
                 elif sig == b"MOD4":
-                    src_mod4 = data.rstrip(b"\x00").decode("cp1252", "replace")
+                    src_mod4 = _model_path_text(data, "cp1252")
                     src_mod4_w = _model_path_str(data, True)
         elif sig in (b"MO3S", b"MO5S") and (skip_mo3s if sig == b"MO3S" else skip_mo5s):
             # The dead female mesh's alt-textures, behind a stand-in or an as-is
@@ -2948,8 +3092,7 @@ def generate_ube_patch(
             if sig == b"EDID":
                 edid = data.rstrip(b"\x00").decode("utf-8", errors="ignore")
             elif sig in ARMA_MODEL_SIGS:
-                model_paths.append(data.rstrip(b"\x00").decode(
-                    "utf-8", errors="ignore"))
+                model_paths.append(_model_path_text(data, "utf-8"))
             elif sig == b"RNAM" and len(data) == 4:
                 src_rnam = struct.unpack("<I", data)[0]
             elif sig == ARMA_ADDITIONAL_RACE_SIG and len(data) == 4:
@@ -3096,9 +3239,9 @@ def generate_ube_patch(
         m_slots = 0
         for sig, d in esp.iter_subrecords(marec.payload):
             if sig == b"MOD3":
-                mod3 = d.rstrip(b"\x00").decode("utf-8", "ignore")
+                mod3 = _model_path_text(d, "utf-8")
             elif sig == b"MOD2":
-                mod2 = d.rstrip(b"\x00").decode("utf-8", "ignore")
+                mod2 = _model_path_text(d, "utf-8")
             elif sig == b"EDID":
                 m_edid = d.rstrip(b"\x00").decode("utf-8", "ignore")
             elif sig == b"RNAM" and len(d) == 4:
@@ -3278,7 +3421,7 @@ def generate_ube_patch(
                     if sig in (b"BOD2", b"BODT") and len(d) >= 4:
                         slots = struct.unpack_from("<I", d, 0)[0]
                     elif sig == b"MOD3":
-                        mod3 = d.rstrip(b"\x00").decode("utf-8", "ignore")
+                        mod3 = _model_path_text(d, "utf-8")
                     elif sig == b"EDID":
                         m_edid = d.rstrip(b"\x00").decode("utf-8", "ignore")
                 if mod3 is None or not (slots & _BIPED_SLOT_BODY_BIT):
@@ -3755,7 +3898,7 @@ def validate_patch(esp_path: str | Path,
                 for sig, sd in esp.iter_subrecords(r.payload):
                     if sig not in (b"MOD3", b"MOD5"):
                         continue
-                    path = sd.rstrip(b"\x00").decode("latin1", errors="ignore")
+                    path = _model_path_read(sd)       # #model-path-codepage
                     if not path:
                         continue
                     # Anything without the !UBE\ prefix is a source path. Most are
@@ -4061,7 +4204,7 @@ def _arma_model_paths(payload: bytes) -> list[str]:
     paths: list[str] = []
     for sig, data in esp.iter_subrecords(payload):
         if sig in ARMA_MODEL_SIGS:
-            paths.append(data.rstrip(b"\x00").decode("utf-8", errors="ignore"))
+            paths.append(_model_path_text(data, "utf-8"))
     return paths
 
 
@@ -4631,7 +4774,7 @@ def _excluded_piece_holds(armo_abs, records, to_mint, arma_win, armo_slots,
     for x in to_mint:
         payload = arma_win[x][0]
         bits = _arma_slot_bits(payload) or armo_slots
-        models = [(s, d.rstrip(b"\x00").decode("cp1252", "replace"))
+        models = [(s, _model_path_text(d, "cp1252"))
                   for s, d in esp.iter_subrecords(payload) if s in ARMA_MODEL_SIGS]
         if bits & _BODY_SLOT_BITS:
             return "body slot"
@@ -4997,7 +5140,7 @@ def _dead_slot_draws(standin, female_mesh_exists):
     def draws(payload: bytes) -> bool:
         male = {b"MOD3": "", b"MOD5": ""}
         for sig, d in esp.iter_subrecords(payload):
-            p = d.rstrip(b"\x00").decode("cp1252", "replace")
+            p = _model_path_text(d, "cp1252")
             if sig in (b"MOD2", b"MOD4"):
                 male[b"MOD3" if sig == b"MOD2" else b"MOD5"] = p
             elif sig in male and p and not female_mesh_exists(p):
@@ -5038,7 +5181,7 @@ def _dead_armature_judge(arma_win: dict, crp: "set[str]", *, mesh_exists,
 
     def dead(x) -> bool:
         if x not in memo:
-            models = [d.rstrip(b"\x00").decode("cp1252", "replace").strip()
+            models = [_model_path_text(d, "cp1252").strip()
                       for s, d in esp.iter_subrecords(arma_win[x][0])
                       if s in _ARMA_MODEL_SIGS]
             models = [p for p in models if p]
@@ -5113,7 +5256,7 @@ def _tpd_facts(v) -> tuple:
             if a[0] == "ube_allrace.esp" and a[1] in _TPD_UBE_RACES:
                 ube.add(a[1])
         elif s in (b"MOD2", b"MOD3", b"MOD5"):
-            mods[s] = _model_key(d.rstrip(b"\x00").decode("cp1252", "replace"))
+            mods[s] = _model_key(_model_path_text(d, "cp1252"))
         elif s in (b"BOD2", b"BODT") and len(d) >= 4:
             slots = struct.unpack_from("<I", d, 0)[0]
     return (ube, mods.get(b"MOD3") or mods.get(b"MOD2") or "", slots,
@@ -5338,9 +5481,9 @@ def _effect_world_mesh(payload: bytes) -> bool:
     mod2 = mod3 = ""
     for s, d in esp.iter_subrecords(payload):
         if s == b"MOD2":
-            mod2 = d.rstrip(b"\x00").decode("cp1252", "replace")
+            mod2 = _model_path_text(d, "cp1252")
         elif s == b"MOD3":
-            mod3 = d.rstrip(b"\x00").decode("cp1252", "replace")
+            mod3 = _model_path_text(d, "cp1252")
     p = (mod3.strip() or mod2.strip()).replace("/", "\\").lstrip("\\").lower()
     if p.startswith("meshes\\"):
         p = p[len("meshes\\"):]
@@ -5467,7 +5610,7 @@ def _female_standin_resolver(arma_win: dict, ube_exists):
     for a, v in arma_win.items():
         if not _is_vanilla_plugin(a[0]) or v[3] != default:
             continue
-        md = {s: d.rstrip(b"\x00").decode("cp1252", "replace").strip()
+        md = {s: _model_path_text(d, "cp1252").strip()
               for s, d in esp.iter_subrecords(v[0]) if s in ARMA_MODEL_SIGS}
         for male, fem in ((b"MOD2", b"MOD3"), (b"MOD4", b"MOD5")):
             if md.get(male) and md.get(fem):
@@ -5526,7 +5669,7 @@ def _nonbody_male_as_is(payload: bytes, armo_slots: int, ube_exists,
         return None
     for sig, d in esp.iter_subrecords(payload):
         if sig in ARMA_MODEL_SIGS:
-            base = d.rstrip(b"\x00").decode("cp1252", "replace")
+            base = _model_path_text(d, "cp1252")
             base = base.replace("/", "\\").rsplit("\\", 1)[-1].lower()
             if any(k in base for k in _CLOAK_MESH_KEYWORDS):
                 return None
@@ -5557,7 +5700,7 @@ def _dead_kept_why(payload: bytes, armo_slots: int, mesh_exists,
         return "body"
     if not bits or reader is None:
         return "unread"
-    names = [d.rstrip(b"\x00").decode("cp1252", "replace").replace("/", "\\")
+    names = [_model_path_text(d, "cp1252").replace("/", "\\")
              .rsplit("\\", 1)[-1].lower()
              for sig, d in esp.iter_subrecords(payload) if sig in ARMA_MODEL_SIGS]
     if any(k in n for n in names for k in _CLOAK_MESH_KEYWORDS):
@@ -5582,7 +5725,7 @@ def _ube_twin_slots(payload: bytes, crp: "set[str]", ube_twin_exists,
     for sig, d in esp.iter_subrecords(payload):
         if sig not in ARMA_MODEL_SIGS:
             continue
-        p = d.rstrip(b"\x00").decode("utf-8", "ignore")
+        p = _model_path_text(d, "utf-8")
         if not p or _converted_model_exists(p, crp, strip_meshes=strip_meshes):
             continue
         mod = ube_twin_exists(p)
@@ -6534,7 +6677,7 @@ def generate_modded_body_ube_coverage_patch(
     def _cloak_named(payload: bytes) -> bool:
         for sig, d in esp.iter_subrecords(payload):
             if sig in (b"MOD2", b"MOD3"):
-                base = d.rstrip(b"\x00").decode("cp1252", "replace")
+                base = _model_path_text(d, "cp1252")
                 base = base.replace("/", "\\").rsplit("\\", 1)[-1].lower()
                 if any(k in base for k in _CLOAK_MESH_KEYWORDS):
                     return True
@@ -6552,7 +6695,7 @@ def generate_modded_body_ube_coverage_patch(
         no body-fit bone."""
         if not (_body_cloak and _unfitted is not None) or x in beast or v[4]:
             return False
-        world = [d.rstrip(b"\x00").decode("cp1252", "replace")
+        world = [_model_path_text(d, "cp1252")
                  for sig, d in esp.iter_subrecords(v[0]) if sig in (b"MOD2", b"MOD3")]
         world = [w for w in world if w]
         return bool(world) and all(_unfitted(w) is True for w in world)
@@ -6582,12 +6725,12 @@ def generate_modded_body_ube_coverage_patch(
         conv2 = False
         for sig, d in esp.iter_subrecords(payload):
             if sig == b"MOD2":
-                conv2 = _ube_exists(d.rstrip(b"\x00").decode("utf-8", "ignore"))
+                conv2 = _ube_exists(_model_path_text(d, "utf-8"))
             elif sig == b"MOD3":
-                p = d.rstrip(b"\x00").decode("utf-8", "ignore")
+                p = _model_path_text(d, "utf-8")
                 return (bool(p) and not _ube_exists(p) and conv2
                         and (female_mesh_exists is None or female_mesh_exists(
-                            d.rstrip(b"\x00").decode("cp1252", "replace"))))
+                            _model_path_text(d, "cp1252"))))
         return False
 
     def _world_mesh_converted(payload: bytes) -> bool:
@@ -6602,15 +6745,15 @@ def generate_modded_body_ube_coverage_patch(
         male2 = ""
         for sig, d in esp.iter_subrecords(payload):
             if sig == b"MOD2":
-                conv2 = _ube_exists(d.rstrip(b"\x00").decode("utf-8", "ignore"))
-                male2 = d.rstrip(b"\x00").decode("cp1252", "replace")
+                conv2 = _ube_exists(_model_path_text(d, "utf-8"))
+                male2 = _model_path_text(d, "cp1252")
             elif sig == b"MOD3":
-                p = d.rstrip(b"\x00").decode("utf-8", "ignore")
+                p = _model_path_text(d, "utf-8")
                 if p and _ube_exists(p):
                     return True
                 if (p and _standin is not None and female_mesh_exists is not None
                         and not female_mesh_exists(
-                            d.rstrip(b"\x00").decode("cp1252", "replace"))
+                            _model_path_text(d, "cp1252"))
                         and _standin("MOD3", male2) is not None):
                     return True
                 if not (conv2 and p):
@@ -6618,20 +6761,20 @@ def generate_modded_body_ube_coverage_patch(
                 # Named, unconverted: admitted only when it exists nowhere
                 # (None = cannot tell, so it is taken to exist).
                 return mesh_exists is not None and not mesh_exists(
-                    d.rstrip(b"\x00").decode("cp1252", "replace"))
+                    _model_path_text(d, "cp1252"))
         # No MOD3: the rebuild synthesises it from the converted MOD2, wherever
         # MOD2 sits in the record.
-        return any(_ube_exists(d.rstrip(b"\x00").decode("utf-8", "ignore"))
+        return any(_ube_exists(_model_path_text(d, "utf-8"))
                    for sig, d in esp.iter_subrecords(payload) if sig == b"MOD2")
 
     def _mod3(payload: bytes) -> str:
         for sig, d in esp.iter_subrecords(payload):
             if sig == b"MOD3":
-                return d.rstrip(b"\x00").decode("cp1252", "replace")
+                return _model_path_text(d, "cp1252")
         return ""
 
     def _arma_models(payload: bytes) -> "list[str]":
-        return [d.rstrip(b"\x00").decode("utf-8", "ignore")
+        return [_model_path_text(d, "utf-8")
                 for sig, d in esp.iter_subrecords(payload)
                 if sig in (b"MOD2", b"MOD3", b"MOD4", b"MOD5")]
 

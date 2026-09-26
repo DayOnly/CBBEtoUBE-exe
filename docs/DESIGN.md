@@ -2218,7 +2218,14 @@ NIF never reads a source:
    where the convert step's source-local tier found it; else the load-order
    archives (`_BsaMeshIndex` over `_load_order_bsa_dirs`, lookup-only), read as
    the copy the convert step extracted to `<output>\_bsa_staging` and taken
-   only while its bytes are the archive's. Not searched: a source folder that
+   only while its bytes are the archive's -- the archive the convert step
+   extracted from: the index takes the same plugin order
+   (`_bsa_plugin_order`, `#bsa-load-order-winner`), so where MO2 priority and
+   plugin load order pick different archives the staged copy still matches
+   (`#alttex-source-winner`, `CBBE2UBE_NO_ALTTEX_SOURCE_WINNER`; before it the
+   MO2-first archive was read, the bytes never matched and the same-named
+   layers' entries were dropped; live: 1,088 staged meshes, 0 whose two
+   archive orders disagree). Not searched: a source folder that
    is not an enabled mod (the convert step's local tier can read one) -- that
    NIF falls back, below;
 2. read it and replay the converter's own rename on it
@@ -2498,6 +2505,41 @@ of 12). Replayed on a copy of that run's Combined pieces with its meshes: the
 fixed than the parent's replay); with `CBBE2UBE_NO_RECONCILE_LOADED_MESH=1`
 the pieces are byte-identical to the parent's (76a9b3c) replay.
 
+**Our NIF on disk, another mod's copy on top: `#reconcile-loaded-winner`.**
+`#reconcile-loaded-mesh` asked for the game's copy only when our NIF was
+missing, trusting `#skip-built-ube-path` to have moved ours out. Ours stays in
+`meshes\` for a base the global schedule holds, a base a builder ships only
+part of (`_built_ube_twins` leaves a base only when every planned variant has
+a twin), a supersede move that fails, `CBBE2UBE_NO_SKIP_BUILT_UBE_PATH=1`, or
+an earlier run's copy no source plans -- and a UBE BodySlide output is often
+ABOVE our output in MO2 (it is on the reported modlist), so the game draws the
+build while the set was indexed against ours. Now a `!UBE\` model whose NIF
+our output ships is indexed against the game's copy too when
+`loaded_copy.outranks_output(model)` says a loose copy in the overwrite or in an
+enabled mod above our output holds it (the lookup's own loose index, our output
+left out; an archive never beats our loose file; our output not an enabled mod:
+never). Such a model binds by name exactly as a missing one does, and the run
+log counts it apart ("N model(s) this output ships but another mod's copy
+outranks in MO2"). Nested under `#reconcile-loaded-mesh`.
+`CBBE2UBE_NO_RECONCILE_LOADED_WINNER=1` uses our NIF whenever it exists. Live
+(09-24 output, replayed on a copy of its Combined pieces with its meshes
+read-only): 242 `!UBE\` models ranked, 2 outranked (one travel outfit's torso
+and first-person model, by the user's BodySlide output), both indexed against
+the build; the build's shape order equals ours today, so both pieces are
+byte-identical to the parent's replay, default and switched off. Cost: one
+listing of the loose `meshes` folders, about 4 s on that modlist.
+
+An outranking copy the lookup cannot find or read is NOT a model "not in this
+output": our NIF is on disk, so the set is indexed against ours -- exactly what
+the rule switched off does -- never left in the source's shape order. The
+reconcile keeps such models apart (`shadow_unread`), counts them in the info
+line ("N model(s) where another mod's copy outranks ours but could not be read,
+indexed against ours") and reports them as their own problem class,
+`ALTTEX_OUTRANKING_COPY_UNREADABLE` (warning kind "alt-texture outranking copy
+unreadable"), not as `ALTTEX_GAME_COPY_UNREADABLE`, whose wording is about a
+model our output does not ship. So the rule's failure case equals its off
+state, and needs no switch of its own.
+
 **The layout guess, behind the switch: `#alttex-family-strict`.** Without the
 source the reconcile cannot know which shapes the rename made;
 the first cut took any `name` beside a `name:k` and bound by rank in NIF order.
@@ -2559,6 +2601,101 @@ them. The female-guard and stand-in lookups keep their cp1252 read. Live census:
 0 of 9,350 model paths the coverage passes hand over, 0 armature paths in the
 source plugins (one weapon model has such a byte), 0 in the 29 male-fallback
 sidecars; replay byte-identical. `CBBE2UBE_NO_ARMA_PATH_BYTES=1`.
+
+**Archive names and our own plugins' paths read in the same codepage**
+(`#model-path-codepage`, `CBBE2UBE_NO_MODEL_PATH_CODEPAGE`). The game matches
+a model path against an archive's folder and file names byte for byte, both
+cp1252. `BSAArchive` decoded the names as latin-1, and the alt-texture
+reconcile and the postflight missing-mesh check (`validate_patch`) read MOD2-5
+as latin-1. latin-1 and cp1252 differ only on 0x80-0x9F, where cp1252 has a
+character (0x92 is a curly apostrophe) and latin-1 a control code; for such a
+path the coverage step's existence lookup (`_mesh_exists_anywhere`) missed an
+archive-only mesh, the reconcile missed our converted NIF (stale indices, or a
+lookup of another mod's copy under the wrong name with
+`#reconcile-loaded-mesh`), and the postflight counted a false `missing-nif`.
+`BSAArchive` now decodes names as cp1252 with `surrogateescape` (`_decode_name`),
+and both ARMA readers read through `_model_path_read`, so a path is read back
+as it was written. Every `BSAArchive` user takes the one decoding; a listing
+and a `read_file` of a listed name always agree. Live census: 408 archives,
+512,578 names, 0 listings change; 8,880 model paths in the output plugins, 0
+with a byte >= 0x80.
+
+*Round 2: one decoder for every reader.* The first round left the planner
+(`_player_armor_mesh_bases`) and about a dozen coverage and patch readers
+decoding MOD2-5 as UTF-8 with errors ignored -- every byte >= 0x80 that is
+not UTF-8 (0x92, but also 0xE9 'e' with an acute) was dropped before any
+lookup, so the planner keyed such a piece under a path that exists nowhere and
+the batch extraction (`_BsaMeshIndex.extract`, asked with the planner's keys)
+never saw it -- and others decoding cp1252 with `replace` (the five bytes
+cp1252 leaves undefined became U+FFFD). Now every ARMA model-path reader in
+`src/` reads through `bsa_strings.model_path_text(data, legacy)`, whose one
+codec is `game_codepage_text` (cp1252 + `surrogateescape`; `_decode_name` and
+`_model_path_str`'s `#arma-path-bytes` branch use it too). `legacy` names the
+reader's old decode ("utf-8", "cp1252", "latin-1"), which
+`CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1` restores reader by reader. The routed
+readers: `_player_armor_mesh_bases` (the planner, MOD2-5);
+`_third_party_ube_covered_armos` (its UBE-path MOD3 test and its race-test
+MOD3); `fix_spurious_hand_slot`; `rebuild_arma_payload`'s female-guard probes
+and male source paths; `generate_ube_patch`'s source scan, its
+`_mint_xesp_ube_arma` master reads and its master body scan;
+`_arma_model_paths` (`build_nif_slot_map`, the crash guard's slot lookup);
+`_excluded_piece_holds`, `_dead_slot_draws`, `_dead_armature_judge`,
+`_tpd_facts`, `_effect_world_mesh`, `_female_standin_resolver`,
+`_nonbody_male_as_is`, `_dead_kept_why`, `_ube_twin_slots`; the body coverage
+step's `_cloak_named`, `_cloak_drapes`, `_female_world_needs_male`,
+`_world_mesh_converted`, `_mod3` and `_arma_models`; and the stale sweep's
+`_ube_models`. `_model_path_read` (reconcile, postflight) reads through it as
+well. Not model paths, left alone: EDIDs, alt-texture shape
+names (MO?S entries), NIF string tables. Live census (every active plugin, 3,254,
+plus the output): 31,108 ARMA MOD2-5 strings in the load order, 1 with a byte
+>= 0x80 (0xF3 in a creature's mesh, not planned either way), so 1 string reads
+differently from the old UTF-8 decode and 0 from the old cp1252 and latin-1
+decodes; the output's 8,880 paths hold none.
+Replays on the live modlist: planner over 1,707 plugin folders (7,512 bases),
+coverage (repro6 skipbuilt), reconcile + postflight -- all byte-identical to
+the parent, default and switched off.
+
+*The postflight row that can now fire.* `validate_patch`'s
+`unconverted-mesh-linked` row (in `_POSTFLIGHT_CTD_PREFIXES`: it fails the
+build) asks whether our output holds `!UBE\<path>` for an ARMA MOD3/MOD5 that
+still names a SOURCE path. Read as latin-1, a source path with a byte in
+0x80-0x9F named a file that never exists (`!UBE\armor\elf\x92s\...`), so the
+row could not fire for it; read as the game reads it, it finds our converted
+NIF and fires. That is correct -- the armour does wear the unconverted mesh in
+game -- and with every reader on one decoding the rebuild redirects such a
+path whenever our NIF exists, so the row fires only where the redirect really
+failed. Test: `test_a_source_path_beside_our_converted_nif_fails_the_postflight`.
+
+*Round 3: the writer agrees with the decoder (`#model-path-writer`), and each
+deciding reader is pinned.* `rebuild_arma_payload` writes a dead female slot's
+male path "as it is", or a stand-in, from text the one decoder read. With only
+`CBBE2UBE_NO_ARMA_PATH_BYTES=1` set it wrote that text through the UTF-8
+branch of `_model_path_zstring` (strict `esp.encode_zstring`), which raises on
+the lone surrogate `game_codepage_text` keeps for 0x81, 0x8D, 0x8F, 0x90 or
+0x9D. The UTF-8 branch now writes with `surrogateescape`, which gives such a
+surrogate back as its byte and writes every other text exactly as before, so
+no model-path write raises. With `#arma-path-bytes` off every path of the
+record stays UTF-8 (the male path and a stand-in too, as the parent wrote
+them), and `_model_path_read` reads that setting back as UTF-8 with
+`surrogateescape`, so what the rebuild writes is exactly what the postflight
+and the reconcile look up. (A first version wrote those two through the
+cp1252 codec with `#arma-path-bytes` off; the read-back still read UTF-8 with
+the byte dropped and named a NIF that does not exist -- a false missing-nif.)
+No new switch: the only setting that changes is `#arma-path-bytes` off with
+`#model-path-codepage` on, which round 2 introduced; with
+`CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1` (with or without
+`CBBE2UBE_NO_ARMA_PATH_BYTES=1`) the parent's bytes come back (the legacy
+cp1252 `replace` read cannot hold a surrogate). Round 2 routed about forty
+readers but most had no test that a revert to the old UTF-8 read breaks;
+`tests/test_model_path_sites.py` runs, for each reader that decides something
+(`generate_ube_patch`'s source scan -- whether a UBE ARMA is emitted --, the
+planner's male list, the body pass's `_arma_models` admit and
+`_world_mesh_converted` world-mesh tests, `_ube_twin_slots`,
+`fix_spurious_hand_slot`), the public step with a 0x92 path and the outcome
+that reader decides, and the same row switched off as the control that it must
+miss. The readers whose old decode was cp1252 `replace` agree with the codec on
+0x92 and differ only on the five undefined bytes, which no live path holds;
+they are routed but not pinned one by one.
 
 ### A plugin name SkyPatcher would split gets no line (`#skypatcher-name-guard`)
 
@@ -3709,6 +3846,20 @@ reported through `_report_coverage_holds`:
   counted wherever one is now recorded); only the log's numbers and the file
   change: an unreadable output mesh counts per file, and "merge skipped" counts.
   `auto`'s post-convert failures are the failures recorded after `_cmd_convert`.
+  Three more gaps closed later (found 2026-09-26), all warnings. `auto` prints
+  "vanilla sweep DISABLED" before `_cmd_convert` clears the record, so it hands
+  the entry over as `carried_failures` on the convert namespace and
+  `_cmd_convert` records it right after the clear. The built-UBE supersede's
+  stuck and torn pieces (#skip-built-ube-path) are recorded where they are
+  printed, in the parent, as the stale sweep's own move-failed and torn lines
+  are. The alt-texture reconcile printed its three problem classes (a converted
+  NIF that fails to load, colour-variant entries dropped, another mod's copy
+  unreadable) as bare `!!` lines on stderr; given a `problems` list it now
+  leaves them there as `(ALTTEX_* class, models)` pairs, and
+  `_warn_alttex_problems` warns (so docs/WARNINGS.md lists them) and records
+  each -- also when the reconcile raises after finding one. A standalone call
+  (no list) prints as before. One entry per printed line, so the tally still
+  counts each.
 - **Dry run writes nothing** (`#dry-run-writes-nothing`). `auto
   --overlays-only --list-only` ran the overlay transfer: the overlays-only branch
   returned before the list-only check. It now lists what would be remapped

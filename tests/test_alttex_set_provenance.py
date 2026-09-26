@@ -324,7 +324,7 @@ def test_a_key_the_batch_index_lacks_is_found_loose(monkeypatch, tmp_path, off):
         game_data_dirs = []
 
     class _NoArchives:
-        def __init__(self, dirs, staging):
+        def __init__(self, dirs, staging, **kw):
             pass
 
         def read_bytes(self, key):

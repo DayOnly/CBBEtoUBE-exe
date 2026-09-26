@@ -163,6 +163,80 @@ that is converted changes.
 - The pre-push hook also reads the files a merge commit writes itself (a
   conflict resolution, a file added in the merge), which it skipped before.
 
+### Fixed — colour variants follow your own UBE build also when our older copy is still there
+
+The colour-variant fix (see "colour variants of a piece left to your own UBE
+build recolour the right layer" below) read the game's copy of a mesh only when
+our own converted copy was gone. Our copy can stay behind -- for example when
+a file was in use and could not be moved, or when your build ships only part of
+an outfit -- and if your BodySlide output sits above this tool's output in MO2,
+the game still draws your build. The fix now asks MO2's order which copy the
+game loads and matches the colour variants to that one. Measured on the
+reported modlist: 2 meshes of one travel outfit are in this situation today;
+their layers happen to be in the same order in both copies, so the result is
+unchanged, and the run takes about 4 seconds longer to look the order up.
+If that other copy cannot be read, the colour variants are matched to our own
+copy, as before, and the run warns that another mod's copy outranks ours but
+could not be read.
+`CBBE2UBE_NO_RECONCILE_LOADED_WINNER=1` (set to 1) turns it off.
+
+### Fixed — colour variants of a piece whose mesh two mods' archives both ship
+
+When two mods ship the same armour mesh inside their `.bsa` archives, the tool
+converts the copy the game loads (the archive of the plugin that loads later).
+The colour-variant fix then checked that mesh against the other archive, found
+it different, and dropped the colour variants of any layers that share a name
+(those layers kept their base colour). It now checks against the same archive
+the conversion used. Measured on the reported modlist: none of the 1,088 meshes
+the tool took from archives is shipped differently by two archives, so nothing
+changes there today. `CBBE2UBE_NO_ALTTEX_SOURCE_WINNER=1` (set to 1) turns it
+off.
+
+### Fixed — a mesh whose file name has an accented letter, a curly apostrophe or a dash is converted
+
+Accented letters (such as é or ó), a curly apostrophe, an en or em dash and a
+trademark sign are each stored as one byte, and the tool read that byte in
+different ways in different places. The step that picks which meshes to
+convert, and most of the steps that give armour its UBE version, dropped it,
+so such an armour was planned under a file name that exists nowhere: its mesh
+was never converted, and the armour could be given a stand-in or left without
+its UBE version. The file names inside a mod's `.bsa` archive were read yet
+another way, so a mesh shipped only in an archive was missed even under the
+right name. Two later checks read the paths this tool wrote the old way too,
+so the colour-variant fix could not find our own converted mesh and the final
+check could report it as missing. Every place that reads an armour's mesh path
+or an archive's file names now reads it the way the game does. Because the
+final check now reads these paths correctly, it can also stop a run with
+"unconverted-mesh-linked" when an armour named this way still points at its
+original mesh although our converted mesh exists -- in game that armour would
+wear the unconverted mesh. With `CBBE2UBE_NO_ARMA_PATH_BYTES=1` set, an armour
+whose female mesh is missing and whose male mesh path holds one of the five
+bytes the game's codepage has no character for could stop the coverage step
+with an encoding error; it now keeps the male path exactly as the armour had
+it. Measured on the reported modlist: of 31,108 armour
+mesh paths in the load order one holds such a byte (a creature's, not converted
+either way); no archive file name and no path in the output changes, so nothing
+changes there today. `CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1` (set to 1) turns it
+off.
+
+### Fixed — six more warnings now reach the end-of-run count and list
+
+Six warnings were printed in the log but left out of the warning count at the
+end of the run and out of the list the window shows after it, so a run could
+still say "all clear":
+
+- the base game and DLC pass could not run on your game folder, so vanilla
+  armour no mod changes stays invisible on UBE characters;
+- a piece from an earlier run could not be moved out of the way of a
+  hand-made UBE version because a file was in use, or was only partly moved;
+- the colour-variant step could not read one of our converted meshes, could
+  not match a layer to the mesh it came from (so that layer keeps its base
+  colour), or could not read the copy of a mesh another mod supplies.
+
+All six are now counted and listed as warnings, and the last three are now
+written in the same shape as every other warning and listed in
+`docs/WARNINGS.md`. Nothing that is converted changes.
+
 ### Fixed — colour variants of a piece left to your own UBE build recolour the right layer
 
 Since this tool leaves a piece alone when your own UBE BodySlide build (or

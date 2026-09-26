@@ -74,6 +74,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .bsa_strings import model_path_text as _model_path_text
 from .envflags import flag as _flag
 
 MANIFEST_NAME = "_conversion_manifest.json"
@@ -673,7 +674,7 @@ def _ube_models(esp_path) -> "list[tuple[str, str]]":
             for sig, d in esp.iter_subrecords(r.payload):
                 if sig not in (b"MOD2", b"MOD3", b"MOD4", b"MOD5"):
                     continue
-                m = d.rstrip(b"\x00").decode("cp1252", "replace")
+                m = _model_path_text(d, "cp1252")
                 s = m.replace("\\", "/").lstrip("/")
                 if s.lower().startswith("meshes/"):
                     s = s[len("meshes/"):]

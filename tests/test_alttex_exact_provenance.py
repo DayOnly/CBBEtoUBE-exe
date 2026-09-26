@@ -316,7 +316,7 @@ class _Archives:
     """Stands in for the batch's archive index: lookup-only reads."""
     data = {"armor/bsa/cuirass_1.nif": b"ARCHIVED"}
 
-    def __init__(self, dirs, staging):
+    def __init__(self, dirs, staging, **kw):
         assert staging is None, "the reconcile never extracts"
 
     def read_bytes(self, key):

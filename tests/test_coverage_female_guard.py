@@ -373,14 +373,18 @@ def test_an_unreadable_folder_does_not_stop_the_lookup(tmp_path, monkeypatch):
     assert not exists(r"follower\f\missing_1.nif")
 
 
-@pytest.mark.parametrize("path_bytes", [True, False], ids=["path_bytes", "utf8_round_trip"])
-def test_the_lookup_gets_a_non_ascii_path_as_the_game_reads_it(path_bytes, monkeypatch):
-    """Model paths are cp1252; the utf-8 decode the rebuild used drops the byte,
-    and the mesh would read as dead. Since #arma-path-bytes the rebuild's own
-    path is a cp1252 read too, so only with CBBE2UBE_NO_ARMA_PATH_BYTES set does
-    the lookup's own read still decide what it is asked (the utf8_round_trip
-    case, which pair CFG-n names; the default case alone left CFG-n MISSED)."""
-    if not path_bytes:
+@pytest.mark.parametrize("utf8_rebuild", [False, True],
+                         ids=["path-bytes", "utf8-rebuild"])
+def test_the_lookup_gets_a_non_ascii_path_as_the_game_reads_it(
+        monkeypatch, utf8_rebuild):
+    """Model paths are cp1252; the utf-8 decode the rebuild uses with
+    CBBE2UBE_NO_ARMA_PATH_BYTES drops the byte, and the mesh would read as
+    dead -- the probe must not reuse that decode. Since #arma-path-bytes the
+    rebuild's own path is a cp1252 read too, so only the utf8-rebuild case
+    still decides what the lookup is asked (the case pair CFG-n names)."""
+    monkeypatch.delenv("CBBE2UBE_NO_ARMA_PATH_BYTES", raising=False)
+    monkeypatch.delenv("CBBE2UBE_NO_MODEL_PATH_CODEPAGE", raising=False)
+    if utf8_rebuild:
         monkeypatch.setenv("CBBE2UBE_NO_ARMA_PATH_BYTES", "1")
     asked = []
     p = encode_subrecord(b"EDID", encode_zstring("AA"))
