@@ -295,15 +295,27 @@ def test_a_shell_weighted_to_the_wrong_bone_on_one_arm_fails_the_self_check():
     assert abs(res["visible"]["dp05"]) <= ssc.SELF_CHECK_TOL, res["visible"]
 
 
-def test_a_perfect_shell_rides_each_body_however_it_is_painted():
-    """UBE hands the skin to the thigh later and more steeply here. A perfect
-    conversion rides the body it sits on, so it still reads ~0; the same shell
-    KEEPING the source weights on UBE is what reads the painting difference,
-    and it is reported beside the check, not failed by it."""
+def test_a_perfect_shell_rides_a_ube_body_that_hands_over_to_the_thigh_later():
+    """UBE hands the skin to the thigh from |x| = 4 over 1u here, the source
+    from |x| = 1 over 5u. A perfect conversion rides the body it sits on, so it
+    still reads ~0; the same shell KEEPING the source weights on UBE is what
+    reads the painting difference, and it is reported beside the check, not
+    failed by it. This holds over the handovers tried up to |x| = 5.5 -- not
+    for any painting (next test)."""
     res = ssc.self_check(*_inputs(_perfect, ube_handover=(4.0, 1.0)))
     assert res["ok"], res
     r = res["paired"]
     assert max(r["carried_dL"], r["carried_dR"]) > 3 * ssc.SELF_CHECK_POSED_TOL, r
+
+
+def test_a_handover_past_the_tested_range_fails_closed():
+    """A UBE handover starting at |x| = 7, near the band edge, reads the
+    perfect shell's swing ~-0.13u off its author: past the tolerance. That is
+    a false alarm, and it must be a REFUSAL (exit-4 reason), never a pass."""
+    res = ssc.self_check(*_inputs(_perfect, ube_handover=(7.0, 1.0)))
+    assert not res["ok"], res
+    assert any("swing loss" in w for w in res["why"]), res
+    assert res["paired"]["dL"] < -ssc.SELF_CHECK_POSED_TOL, res["paired"]
 
 
 def _no_thighs(arm):
@@ -388,6 +400,68 @@ def test_a_body_that_is_not_the_reference_gets_no_paired_block():
     assert ssc.pair_mask_for(cV, (cV, pc)) is not None
     assert ssc.pair_mask_for(cV + np.array([0.0, 0.01, 0.0]), (cV, pc)) is None
     assert ssc.pair_mask_for(cV, None) is None
+
+
+def test_the_reference_body_keeps_its_own_mask_across_coincident_twins():
+    """Seam twins share a position, but visibility is per vertex normal, so
+    their masks can differ. On the reference body (and a copy of it moved
+    under the match tolerance) each vertex keeps the mask at its own index;
+    the nearest-vertex query alone returns either twin."""
+    (cV, pc), _ = _pair_refs()
+    band = np.flatnonzero(ssc.band_mask(cV))[:40]
+    V = np.vstack([cV, cV[band]])                  # every twin AFTER its original
+    m = np.concatenate([pc, ~pc[band]])            # ... with the opposite mask
+    assert (ssc.pair_mask_for(V, (V, m)) == m).all()
+    assert (ssc.pair_mask_for(V + np.array([0.0, 1e-5, 0.0]), (V, m)) == m).all()
+    tw = np.vstack([cV[band], cV])                 # every twin BEFORE its original
+    mt = np.concatenate([~pc[band], pc])
+    assert (ssc.pair_mask_for(tw, (tw, mt)) == mt).all()
+
+
+def test_a_body_in_another_vertex_order_is_carried_by_nearest_vertex():
+    (cV, pc), _ = _pair_refs()
+    order = np.arange(len(cV))[::-1]
+    got = ssc.pair_mask_for(cV[order], (cV, pc))
+    assert got is not None and (got == pc[order]).all()
+
+
+def _arm(L, R):
+    return {"n": 60, "band_n": 60, "bind_c_p05": 0.1, "bind_c_p50": 0.3,
+            "L45_loss_p90": L, "R45_loss_p90": R, "L45_newly_inside_pct": 0.0,
+            "R45_newly_inside_pct": 0.0, "asym_p90_over_pelvis_only": 0.0}
+
+
+def test_source_vs_converted_is_compared_leg_by_leg():
+    """The worse sides sit on opposite legs: the source loses most on the
+    left, the conversion on the right. Worse side to worse side reads +0.03;
+    the right leg alone lost 0.33u more than the source's right leg."""
+    lc = ssc.leg_compare([("opposite_1.nif", _arm(0.36, 1.20), _arm(1.17, 0.87)),
+                          ("same_1.nif", _arm(1.00, 0.20), _arm(0.50, 0.20)),
+                          ("better_1.nif", _arm(0.20, 0.20), _arm(0.90, 0.25))])
+    assert lc["side_worse"] == 1 and lc["side_better"] == 1, lc
+    assert lc["legs_worse"] == 2 and lc["legs_better"] == 2, lc
+    assert lc["pieces_leg_worse"] == 2 and lc["pieces_leg_better"] == 2, lc
+    f = {x["piece"]: x for x in lc["flagged"]}
+    assert set(f) == {"opposite_1.nif", "same_1.nif"}
+    assert not f["opposite_1.nif"]["seen"] and f["same_1.nif"]["seen"]
+    assert f["opposite_1.nif"]["dR"] == pytest.approx(0.33)
+    assert f["opposite_1.nif"]["d_worse_side"] == pytest.approx(0.03)
+    # by any margin the counts carry no threshold at all
+    assert (lc["side_more_any"], lc["side_less_any"]) == (2, 1), lc
+    assert (lc["legs_more_any"], lc["legs_less_any"], lc["legs_equal"]) == (2, 3, 1), lc
+
+
+def test_the_paired_band_lists_a_leg_the_worse_side_line_misses():
+    rows = [{"piece": "opposite_1.nif", "conv": _arm(0.36, 1.20), "src": _arm(1.17, 0.87),
+             "src_path": "some/source_1.nif"}]
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        ssc._loss_block(rows, lambda a: a, "BAND", like_for_like=True)
+    out = buf.getvalue()
+    assert "worse after conversion by >0.3u 0" in out, out
+    assert "pieces with a leg worse by >0.3u 1 (the worse-side count has 0 of them)" in out, out
+    line = next(s for s in out.splitlines() if "opposite_1.nif" in s and "NOT in the worse-side" in s)
+    assert "R +0.33" in line and "some/source_1.nif" in line, line
 
 
 def test_only_the_paired_band_prints_a_source_vs_converted_line_as_like_for_like():

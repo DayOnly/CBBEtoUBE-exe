@@ -2248,6 +2248,10 @@ Single swing, loss p90 worse side:
 On shared skin the converted pack loses LESS than its sources in the swing, not
 more: 61 pieces better by 0.3u, 12 worse.
 
+**Corrected in round 3 (below).** Both counts compare each arm's OWN worse leg,
+which can be the other leg: leg by leg, 19 pieces have a leg worse by >0.3u
+(7 of them read as unchanged here), and by any margin 112 lose less and 89 more.
+
 ## The 09-19 residual on the paired band
 
                                      FULL (legacy)   VISIBLE   PAIRED
@@ -2275,6 +2279,11 @@ INSIDE the source main shape at bind (p05 -0.61 / -0.54 on paired skin; ours
 0.91u here. No piece in the residual shows a conversion-introduced one-thigh
 swing; the class verdict (closed; no single-piece fixes) stands on this evidence.
 
+**Withdrawn in round 3 (below).** "Inherited", "+0.03" and "+0.07" subtract a
+source maximum on the OTHER leg: the dress's 1.50u is its left leg, its source's
+1.52u its right. Leg by leg every sourced residual piece's worse leg is 0.33 to
+0.36u above the source's same leg.
+
 ## The 12 pieces worse after conversion (+0.3u, paired): mechanism
 
 Two decompositions per piece, each re-scored on the paired band: (a) the
@@ -2298,3 +2307,143 @@ bodies' weight painting under an un-reweighted garment did it.
 Eight of the twelve have no mechanism this census can show. The four skirt/wrap
 pieces lose on both legs (asym <= 0.11) and are not the single-swing class. This
 is an open lead, not a finding: nothing here says which pass moves them.
+
+(Round 3 re-derives this per leg over 19 pieces, below. The "not decomposable"
+piece was scored against a source file the converter did not read.)
+
+# 2026-09-26 (round 3) — the crotch census: source vs converted leg by leg
+
+Review of round 2 found its worse-side comparisons subtracted maxima on
+OPPOSITE legs. `loss p90 worse side = max(L45, R45)` is taken per arm, so a
+conversion that raises the leg its source kept low while the other leg falls
+reads unchanged: the steel cuirass variants are source L 1.17 R 0.87 and
+converted L 0.35 R 1.20 -- "+0.03" worse side, +0.33 on the right leg. Tool-only;
+src/ untouched.
+
+## What changed in the census
+
+* `leg_compare`: source vs converted LEFT against LEFT and RIGHT against RIGHT,
+  printed under every band's source-vs-converted line (under the NOT
+  LIKE-FOR-LIKE warning on the full and visible bands). The worse-side counts
+  stay beside it and now say what they are. On the paired band the tool lists
+  every piece with a leg worse by >0.3u, flags the ones the worse-side count
+  misses, and names the source file it was scored against. Rows carry
+  `src_path`.
+* `pair_mask_for` carries the reference mask BY INDEX on the reference body
+  (each vertex keeps its own index when the reference vertex there is as near
+  as its nearest, to 1e-3u). Nearest-vertex alone returned either member of a
+  coincident seam twin (586 source / 639 UBE band vertices have one) and
+  flipped 10 source / 6 UBE vertices against the mask the self-check
+  validated. On the pack it moves the paired blocks by at most 0.058u (any
+  loss p90 or bind p05/p50; the legacy and `vis` keys of every row are
+  identical to round 2's), and of the printed paired summary only: better by
+  0.3u 61 -> 62, bind p50 +0.175 -> +0.176, max loss 3.04 -> 3.02u, asym > 0.3
+  median loss 0.78 -> 0.77u.
+* The posed self-check's "a perfect shell rides the body" is true over the
+  painting it was tested on, not any painting: on the synthetic bodies (source
+  handover from |x| 1 over 5u) UBE handovers starting at |x| 0 to 5.5 read
+  within 0.08u; starting at |x| 6 or 7 the perfect shell reads -0.13u and the
+  census REFUSES (exit 4) -- a false alarm, but closed. The real zeroed bodies
+  read -0.011u.
+
+## Re-measured (read-only, `_1`, 1030 NIFs, paired band, n=201)
+
+                                         margin 0.3u               any margin
+    WORSE SIDE (each arm its own leg)    worse 12  better 62       more 89  less 112
+    PER LEG (402 legs)                   worse 26  better 105      more 177 less 225
+    pieces with a leg worse by >0.3u     19  (the worse-side count has 12)
+    pieces with a leg better by >0.3u    68
+
+Round 2's "61 lose less / 12 lose more" were worse-side counts at the 0.3u
+margin; by any margin the worse side reads 112 / 89. The 7 pieces the
+worse-side count misses: two slit-skirt dress variants (L +0.47 R -1.54,
+L +0.35 R -1.33), the dress of the 09-19 residual (L +0.35 R -0.67), the two
+sourced steel cuirass variants (L -0.71 R +0.36, L -0.81 R +0.33), a robe
+(L +0.41 R +0.28) and a duster (L +0.25 R +0.37). Five of them gain on one leg
+while the other falls.
+
+## Is find_source pairing a mirrored sibling? No.
+
+For each of the 19 pieces: the file find_source paired (by path and garment
+shape names), every loose mod shipping the path, the file the deployed
+converter READ (its per-mod conversion report lists each converted NIF's
+source), and the median distance from each converted garment shape to the
+paired source's shape and to its X-mirror.
+
+* 15 of the 19 paths ship from ONE loose mod or an archive, so there is no
+  second file to pick; the other 4 ship from 2-3 mods. The steel variants whose
+  numbers look mirrored (source L 1.17 R 0.87 vs two siblings' L 0.54 R 1.22)
+  are not mirrors: the siblings' band-covering shape is the SAME shape trimmed
+  (2476 of its 4290 vertices, at the same positions: median 0.000u, against
+  1.31u to its X-mirror), worn with a bra.
+* Every shape asymmetric enough to tell sits nearer the same-side source than
+  its mirror (the steel cuirass's main shape 0.52 / 0.55u vs 1.18 / 1.17u
+  mirrored; its one-sided skirt 0.001u vs 9.1u). Symmetric shapes read the
+  same both ways and cannot tell.
+* find_source's file is byte-identical to the file the converter read on 16 of
+  the 19. The other three: the residual dress (paired to the BodySlide build;
+  the converter read the mod's own mesh -- the build is older than it), a
+  vanilla cuirass (paired to the BodySlide build, whose cuirass shape sits
+  ~95u from ours; the converter read an outfit-replacer's mesh), and a vest the
+  conversion reports do not list (2 loose candidates; unresolved).
+
+Re-scored against the file the converter read: the dress stays flagged (source
+L 1.13 R 1.56: L +0.37 R -0.71); the cuirass drops under the margin (L +0.27
+R +0.25). Pack-wide, 186 of the 201 report-listed source-matched pieces pair
+the file the converter read, 15 do not (14 on the paired comparison; all 14
+have 2-3 loose candidates and find_source takes the first mod ALPHABETICALLY
+with every garment shape); 3 are not in the reports. With those 14 re-scored
+on the read file: worse side 12 -> 11 worse, 62 -> 55 better; legs 26 -> 25
+worse, 105 -> 94 better; pieces with a leg worse 19 -> 18 (11 seen), with a leg
+better 68 -> 63; the any-margin counts do not move. find_source is unchanged:
+it is shared by other census tools, it is not picking a mirror, and which file
+is "the source" (the game's winner, or what the converter read) is a question
+for the source-selection lane, not this census. `src_path` in each row names
+the file the source arm was scored on.
+
+## The 09-19 residual, leg by leg
+
+The same split as round 2 (converter gate, asym > 0.3, drop draping-covered
+and bind-negative pieces) gives the same 5 pieces on the paired band. Leg by
+leg against the same leg of the source:
+
+                               converted L / R   source L / R    per leg
+    one dress                  1.50 / 0.84       1.15 / 1.52     L +0.35  R -0.67
+                                  (the file the converter read:  1.13 / 1.56, L +0.37 R -0.71)
+    one heavy cuirass          2.13 / 2.20       1.81 / 1.85     L +0.32  R +0.35
+    steel cuirass, variant 1   0.35 / 1.20       1.17 / 0.87     L -0.81  R +0.33
+    steel cuirass, variant 2   0.45 / 1.23       1.17 / 0.87     L -0.71  R +0.36
+    steel cuirass, variant 3   0.48 / 1.25       no matched source
+
+Every sourced residual piece's worse leg is 0.33-0.36u above the source's same
+leg. Round 2's "inherited" and "+0.03 / +0.07" are withdrawn.
+
+## Per-leg decomposition of the 19 (open lead)
+
+Same two decompositions as round 2, per risen leg, against the file the
+converter read: (a) converted geometry with the source garment's weights by
+index -- the converter's re-weighting; (b) the converted piece with the UBE
+body posed on the source body's weights -- the two bodies' painting. A
+decomposition "explains" a leg when it takes back at least half the rise, "in
+part" when at least 0.1u.
+
+    25 risen legs on 18 pieces (the vanilla cuirass drops under 0.3u)
+    converter re-weighting        1 leg    a light iron armour R: 0.16 -> 0.52, source weights 0.21
+    body painting                 5 legs   the heavy cuirass (both), the two slit-skirt variants
+                                           (L), a long dress (L; body on source weights 1.92 of 2.20)
+    body painting, in part        3 legs   a robe, a common dress, the residual dress (L 1.50,
+                                           body on source weights 1.35)
+    UNEXPLAINED                  16 legs   a towel wrap and three mage-dress variants (both legs,
+                                           weights unchanged by the converter, body on source
+                                           weights WORSE), the steel variants 1 and 2 (R: source
+                                           weights 1.26-1.28, body on source weights 1.41-1.43),
+                                           a jacket, a torso, a duster, a vest, the long dress (R)
+
+The steel variants are the clearest one-leg case: the converter's re-weighting
+took their LEFT leg from 1.42 (converted geometry, source weights) down to
+0.35-0.45, and nothing this census can vary takes their RIGHT leg back from
+1.20-1.23 to the source's 0.87. That is an open lead on the converted geometry,
+not a finding: nothing here says which pass moves it. Both arms carry one-sided
+thigh weight over pelvis-only skin (asym 0.44-0.46 converted, 0.36 source).
+The census does not reopen the single-swing class and does not close it
+again: 16 of 25 risen legs have no mechanism it can show.

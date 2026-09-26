@@ -3974,3 +3974,12 @@ and its round 2). Scoring each arm on its own visible skin is not enough: the
 closed 3BA body adds vulva skin a source garment can lie inside, which UBE has no
 counterpart for. On shared skin the shipped pack is slightly looser than the
 author (p05 +0.28u), not deeper.
+
+Compare a posed loss LEG BY LEG, never worse side to worse side: each arm's
+worse leg can be the other leg, and a conversion that raises the leg its source
+kept low while the other falls then reads unchanged (7 of 201 pieces on the
+shipped pack; `single_swing_census.leg_compare`, METRICS.md round 3). And the
+source arm is only as good as its file: `find_source` pairs by path and garment
+shape names, taking the first mod alphabetically where several ship the path,
+which for 14 of those 201 pieces is not the file the converter read. Each row
+names the file it was scored on (`src_path`).

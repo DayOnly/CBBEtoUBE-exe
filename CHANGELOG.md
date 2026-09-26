@@ -20,10 +20,20 @@ converter's own warp, standing still and with one leg swung, and refuses to
 report if that garment does not read close to zero or if a garment planted to
 drag with one leg does not read clearly worse. On the reported pack the
 conversion sits slightly looser than the original there (0.28 units at the
-tightest 5%), not deeper, and in the leg swing 61 pieces lose less than their
-original and 12 lose more. Guarded by
+tightest 5%), not deeper.
+
+In the leg swing the census now compares each leg with the SAME leg of the
+original. Comparing each piece's worst leg with the original's worst leg hid
+pieces whose worst leg changed sides: 7 pieces got more than 0.3 units worse on
+one leg while that comparison read them as unchanged. Of 201 pieces with an
+original to compare, 19 have a leg more than 0.3 units worse after conversion
+and 68 have a leg more than 0.3 units better (by the worst-leg comparison: 12
+worse, 62 better; by any margin at all, 89 worse and 112 better). Most of the 19
+have no cause the census can show yet; that is being investigated, not fixed.
+The census also names the original file it compared against, since for 14 of
+the 201 that is not the file the converter read. Guarded by
 `tests/test_single_swing_census_visibility.py` and mutation pairs
-`SSV-a`..`SSV-w`. No converter behaviour changes.
+`SSV-a`..`SSV-aa`. No converter behaviour changes.
 
 ### Fixed — Check setup sees a UBE body you pick while the window is open
 

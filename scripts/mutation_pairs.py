@@ -14576,7 +14576,8 @@ PAIRS = (
          ),
          tests=('tests/test_single_swing_census_visibility.py',),
          expect=('test_a_shell_weighted_to_the_wrong_bone_on_one_arm_fails_the_self_check',
-                 'test_the_census_refuses_to_report_a_planted_posed_skew'),
+                 'test_the_census_refuses_to_report_a_planted_posed_skew',
+                 'test_a_handover_past_the_tested_range_fails_closed'),
     ),
     Pair('SSV-n', 'the self-check passes an instrument blind to a posed skew',
          edits=(
@@ -14604,7 +14605,7 @@ PAIRS = (
               '    gw_ours = gw  # MUTATED\n', 1),
          ),
          tests=('tests/test_single_swing_census_visibility.py',),
-         expect=('test_a_perfect_shell_rides_each_body_however_it_is_painted',),
+         expect=('test_a_perfect_shell_rides_a_ube_body_that_hands_over_to_the_thigh_later',),
     ),
     Pair('SSV-q', 'a UBE vertex pairs through any visible source vertex',
          edits=(
@@ -14660,13 +14661,59 @@ PAIRS = (
          tests=('tests/test_single_swing_census_visibility.py',),
          expect=('test_the_shell_knows_the_body_vertex_each_vertex_came_from',),
     ),
+    # SSV-w re-anchored when the warning prefix became `warn` (#per-leg).
     Pair('SSV-w', 'a band that is not like-for-like prints its source vs converted line bare',
          edits=(
              ('scripts/analysis/single_swing_census.py',
-              '        print(("  " if like_for_like else\n',
-              '        print(("  " if not like_for_like else\n', 1),
+              '        warn = ("  " if like_for_like else\n',
+              '        warn = ("  " if not like_for_like else\n', 1),
          ),
          tests=('tests/test_single_swing_census_visibility.py',),
          expect=('test_only_the_paired_band_prints_a_source_vs_converted_line_as_like_for_like',),
+    ),
+    # #per-leg (2026-09-26): the worse-side comparison subtracted each arm's own
+    # worse leg, which can sit on OPPOSITE legs -- 7 of 201 pieces had a leg
+    # worse by >0.3u that it read as unchanged. Source vs converted is now also
+    # compared leg by leg; the paired mask is carried by index on the
+    # reference body, so a coincident seam twin cannot swap it.
+    Pair('SSV-x', 'the paired mask is carried by nearest vertex alone, across seam twins',
+         edits=(
+             ('scripts/analysis/single_swing_census.py',
+              '    j = np.where(d_own <= d + PAIR_MATCH, idx, j)\n',
+              '    pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_single_swing_census_visibility.py',),
+         expect=('test_the_reference_body_keeps_its_own_mask_across_coincident_twins',),
+    ),
+    Pair('SSV-y', 'source vs converted crosses the legs again',
+         edits=(
+             ('scripts/analysis/single_swing_census.py',
+              '        dl = c["L45_loss_p90"] - s["L45_loss_p90"]\n'
+              '        dr = c["R45_loss_p90"] - s["R45_loss_p90"]\n',
+              '        dl = c["L45_loss_p90"] - s["R45_loss_p90"]  # MUTATED\n'
+              '        dr = c["R45_loss_p90"] - s["L45_loss_p90"]  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_single_swing_census_visibility.py',),
+         expect=('test_source_vs_converted_is_compared_leg_by_leg',
+                 'test_the_paired_band_lists_a_leg_the_worse_side_line_misses'),
+    ),
+    Pair('SSV-z', 'only pieces the worse-side line already counts are flagged',
+         edits=(
+             ('scripts/analysis/single_swing_census.py',
+              '        if max(dl, dr) > margin:\n',
+              '        if dw > margin:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_single_swing_census_visibility.py',),
+         expect=('test_source_vs_converted_is_compared_leg_by_leg',
+                 'test_the_paired_band_lists_a_leg_the_worse_side_line_misses'),
+    ),
+    Pair('SSV-aa', 'the paired band never lists the pieces with a leg worse',
+         edits=(
+             ('scripts/analysis/single_swing_census.py',
+              '        if like_for_like and lc["flagged"]:\n',
+              '        if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_single_swing_census_visibility.py',),
+         expect=('test_the_paired_band_lists_a_leg_the_worse_side_line_misses',),
     ),
 )

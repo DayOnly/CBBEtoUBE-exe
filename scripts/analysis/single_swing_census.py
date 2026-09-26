@@ -77,6 +77,13 @@ Every arm is scored three times:
       The ONLY band the source-vs-converted lines and the bind ours - author
       difference are read on; the other bands print them under a warning.
 
+SOURCE VS CONVERTED IS COMPARED PER LEG as well as per worse side (`leg_compare`).
+Each arm's worse leg can be a DIFFERENT leg: on the shipped pack (2026-09-26,
+paired band) five sourced pieces gained 0.33-0.47u on one leg while the other
+fell, and the worse-side line read them as unchanged. Each row carries `src_path`, the file the source arm
+was scored on -- find_source pairs by path and garment shape names, and where
+several mods ship the path that is not always the file the converter read.
+
 THE SELF-CHECK runs on every invocation, before any piece is read, and the
 tool REFUSES to report (exit 4) when it fails. A CLOSED shell 0.5u off the
 source body's crotch region (holes capped with a fan, so it spans the vulva as
@@ -91,7 +98,9 @@ UBE's at the warp's correspondence), so it rides the body; the single 45-degree
 swing loss p90 must read ours - author within 0.1u on each side, with the real
 skeleton, and the same shell with its midline riding one thigh on our arm only
 must read at least 0.3u worse (the "worse after conversion" line), or the
-instrument cannot see a posed skew. Measured 2026-09-26 (zeroed weight-1
+instrument cannot see a posed skew. The perfect-shell posed row holds only
+while the two bodies' thigh painting is close (see `self_check`): past the
+tested range it fails closed, never open. Measured 2026-09-26 (zeroed weight-1
 bodies, real skeleton):
 
     visible  bind perfect -0.057 / -0.026   buried -0.280 / -0.511
@@ -196,6 +205,9 @@ POSED_PLANT_X = 2.0
 # vertex means a different body, and that arm gets no paired block.
 PAIR_MATCH = 1e-3
 COVER_SHARE = 0.9
+# Source vs converted: a leg (or a worse side) "loses more" / "less" after
+# conversion when it differs by more than this.
+CMP_MARGIN = 0.3
 _VIS: dict = {}
 _PAIR: dict = {}
 
@@ -303,19 +315,36 @@ def paired_skin(sV, cV, cT, uV, uT, uN=None):
 def pair_mask_for(V, ref):
     """The paired mask `ref` = (reference verts, mask) carried onto the body `V`
     vertex for vertex, or None when `V` is not that body over the band (a
-    partial or re-shaped injected body: its skin was never paired)."""
+    partial or re-shaped injected body: its skin was never paired).
+
+    A band vertex keeps the mask of its OWN index whenever the reference vertex
+    at that index is as near as its nearest one (to PAIR_MATCH): on the
+    reference body itself that is the mask by index, exactly what the
+    self-check validated. The nearest vertex alone is not enough: 586 of the
+    closed source body's band vertices and 639 of UBE's have a COINCIDENT seam
+    twin, visibility is per vertex normal so twins can differ, and a KD query
+    returns either one -- on the reference bodies it flipped 10 source and 6
+    UBE vertices (2026-09-26). A body in another vertex order falls back to
+    the nearest vertex."""
     if ref is None:
         return None
     rV, rm = ref
+    rV = np.asarray(rV, float)
+    rm = np.asarray(rm, bool)
     V = np.asarray(V, float)
     band = band_mask(V)
     if not band.any():
         return None
-    d, j = cKDTree(rV).query(V[band])
+    idx = np.flatnonzero(band)
+    d, j = cKDTree(rV).query(V[idx])
     if float(d.max()) > PAIR_MATCH:
         return None
+    own = idx < len(rV)
+    d_own = np.full(len(idx), np.inf)
+    d_own[own] = np.linalg.norm(V[idx[own]] - rV[idx[own]], axis=1)
+    j = np.where(d_own <= d + PAIR_MATCH, idx, j)
     m = np.zeros(len(V), bool)
-    m[np.flatnonzero(band)] = np.asarray(rm, bool)[j]
+    m[idx] = rm[j]
     return m
 
 
@@ -513,7 +542,13 @@ def self_check(src_main, src_closed, ube, warp, par, d=SHELL_D) -> dict:
     skinned with the source body's own weights (each vertex those of the body
     vertex it was made from); ours with UBE's own weights, carried by the warp:
     each vertex those of the UBE vertex its source vertex corresponds to (the
-    nearest-vertex correspondence `_cached_cbbe_to_ube_delta` warps by). The
+    nearest-vertex correspondence `_cached_cbbe_to_ube_delta` warps by). That
+    reads ~0 swing difference only while the two bodies' thigh painting is
+    close enough: on the synthetic bodies (source handing the band skin to the
+    thigh from |x| = 1 over 5u) UBE handovers starting at |x| 0 to 5.5 read
+    within 0.08u, and one starting at |x| 6 or later reads -0.13u and FAILS the
+    check -- a false alarm, but closed (exit 4), never a silent pass. The real
+    zeroed bodies read -0.011u. The
     same shell keeping the SOURCE weights on UBE is reported beside it as
     information: what the two bodies' weight painting alone costs a garment the
     converter does not re-weight. Each check runs on the VISIBLE band (each arm
@@ -682,6 +717,9 @@ def _one(args):
         row = {"piece": rel, "conv": conv}
         src = find_source(rel, gnames, mods_root) if mods_root else None
         if src is not None:
+            # the file the source arm was scored on: find_source pairs by path and
+            # shape names, which is not always the file the converter read
+            row["src_path"] = str(src)
             try:
                 global _CBBE
                 if _CBBE is None:
@@ -701,6 +739,47 @@ def _one(args):
 
 def _worst(arm):
     return max(arm["L45_loss_p90"], arm["R45_loss_p90"])
+
+
+def leg_compare(pairs, margin=CMP_MARGIN) -> dict:
+    """Source vs converted PER LEG: each arm's left-swing loss p90 against the
+    other's LEFT, right against RIGHT. `pairs` = [(piece, conv arm, src arm)],
+    both arms scored on one band.
+
+    The worse-side comparison (each arm's own worse leg) can subtract maxima
+    that sit on OPPOSITE legs: a conversion that adds 0.35u to the leg its
+    source kept low while the other leg falls reads "not worse" there. Here a
+    piece counts as worse when EITHER leg loses more than `margin` more than
+    the source's same leg; `flagged` lists those pieces, `seen` saying whether
+    the worse-side count also has them. The `*_any` counts use no margin."""
+    out = {"n": len(pairs), "margin": margin, "legs_worse": 0, "legs_better": 0,
+           "pieces_leg_better": 0, "side_worse": 0, "side_better": 0,
+           "side_more_any": 0, "side_less_any": 0, "side_equal": 0,
+           "legs_more_any": 0, "legs_less_any": 0, "legs_equal": 0, "flagged": []}
+    for piece, c, s in pairs:
+        dl = c["L45_loss_p90"] - s["L45_loss_p90"]
+        dr = c["R45_loss_p90"] - s["R45_loss_p90"]
+        dw = _worst(c) - _worst(s)
+        for d in (dl, dr):
+            out["legs_worse"] += d > margin
+            out["legs_better"] += d < -margin
+            out["legs_more_any"] += d > 0
+            out["legs_less_any"] += d < 0
+            out["legs_equal"] += d == 0
+        out["side_worse"] += dw > margin
+        out["side_better"] += dw < -margin
+        out["side_more_any"] += dw > 0
+        out["side_less_any"] += dw < 0
+        out["side_equal"] += dw == 0
+        out["pieces_leg_better"] += min(dl, dr) < -margin
+        if max(dl, dr) > margin:
+            out["flagged"].append({"piece": piece, "dL": round(dl, 3), "dR": round(dr, 3),
+                                   "d_worse_side": round(dw, 3), "seen": dw > margin,
+                                   "conv": (c["L45_loss_p90"], c["R45_loss_p90"]),
+                                   "src": (s["L45_loss_p90"], s["R45_loss_p90"])})
+    out["pieces_leg_worse"] = len(out["flagged"])
+    out["flagged"].sort(key=lambda f: -max(f["dL"], f["dR"]))
+    return out
 
 
 def _loss_block(scored, get, label, like_for_like=False):
@@ -730,12 +809,33 @@ def _loss_block(scored, get, label, like_for_like=False):
     if both:
         sw = np.array([_worst(get(r["src"])) for r in both])
         cw = np.array([_worst(get(r["conv"])) for r in both])
-        print(("  " if like_for_like else
-               "  NOT LIKE-FOR-LIKE (the arms cover different skin; compare on the PAIRED band): ")
+        lc = leg_compare([(r["piece"], get(r["conv"]), get(r["src"])) for r in both])
+        m = lc["margin"]
+        warn = ("  " if like_for_like else
+                "  NOT LIKE-FOR-LIKE (the arms cover different skin; compare on the PAIRED band): ")
+        print(warn
               + f"SOURCE on the canonical CBBE/3BA body vs CONVERTED, n={len(both)}: "
               f"loss p90 src p50 {np.median(sw):.2f} / conv p50 {np.median(cw):.2f}; "
               f"src over 1u {int((sw > 1).sum())}, conv over 1u {int((cw > 1).sum())}; "
-              f"worse after conversion (+0.3u) {int(((cw - sw) > 0.3).sum())}, better (-0.3u) {int(((sw - cw) > 0.3).sum())}")
+              f"WORSE SIDE (each arm's own worse leg) worse after conversion by >{m}u "
+              f"{lc['side_worse']}, better by >{m}u {lc['side_better']}")
+        print(f"    PER LEG (left vs left, right vs right): legs worse by >{m}u {lc['legs_worse']}, "
+              f"better by >{m}u {lc['legs_better']}, of {2 * lc['n']}; pieces with a leg worse by "
+              f">{m}u {lc['pieces_leg_worse']} (the worse-side count has "
+              f"{sum(f['seen'] for f in lc['flagged'])} of them), with a leg better by >{m}u "
+              f"{lc['pieces_leg_better']}")
+        print(f"    by ANY margin: worse side loses less {lc['side_less_any']} / more "
+              f"{lc['side_more_any']} / equal {lc['side_equal']}; legs less {lc['legs_less_any']} / "
+              f"more {lc['legs_more_any']} / equal {lc['legs_equal']}")
+        if like_for_like and lc["flagged"]:
+            src_of = {r["piece"]: r.get("src_path", "?") for r in both}
+            print(f"  PIECES WITH A LEG WORSE BY >{m}u (same leg, same skin; source = the file "
+                  "find_source paired):")
+            for f in lc["flagged"]:
+                print(f"    L {f['dL']:+.2f} R {f['dR']:+.2f}  conv L {f['conv'][0]:.2f} R {f['conv'][1]:.2f}"
+                      f"  src L {f['src'][0]:.2f} R {f['src'][1]:.2f}  worse side {f['d_worse_side']:+.2f}"
+                      f"{'' if f['seen'] else '  (NOT in the worse-side count)'}  {f['piece']}"
+                      f"  <- {src_of.get(f['piece'])}")
     print("  TOP 15 by loss p90 (worse side):")
     for k in np.argsort(-worst)[:15]:
         c = get(rows[k]["conv"])
