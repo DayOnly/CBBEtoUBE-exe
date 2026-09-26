@@ -82,7 +82,12 @@ costs only its own meshes, the run names it in a warning, and a search that fail
 outright is a named warning in the end-of-run count and the failures list; the
 convert step then searches again rather than reusing the empty result. A failure
 to read which vanilla armour meshes to search for is a warning too. On a modlist
-where the search works, the output is unchanged.
+where the search works, the output is unchanged, with one exception: a folder
+whose name ends in `.nif` is no longer taken for a mesh (it used to hide a real
+mesh of that name in a lower-priority mod, and the piece then failed to load). A
+folder that stays unreadable no longer makes every Refresh repeat the whole
+search (1.5-3 minutes): the result is kept, the warning is given again each time,
+and the search runs afresh as soon as the folder can be read.
 
 ### Fixed — a garment whose layers share one name keeps every layer
 

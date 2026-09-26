@@ -8422,6 +8422,24 @@ _SELECTION_BSA_INDEX: "dict[str, _BsaMeshIndex]" = {}
 # is set on the first call and persists through cache hits.
 _ARMOR_MOD_DIRS_CACHE: "dict[tuple, list[dict]]" = {}
 
+# A kept selection whose only problem was a folder it could not read: memo key
+# -> ((mod, error) per folder, for the warning; the folders' paths). Reused
+# while every one of those folders stays unreadable, saying the warning again
+# each time; selected afresh once one can be read. Filled from
+# _SELECTION_UNREADABLE, which each uncached selection sets. #vfs-index-fail-loud
+_ARMOR_MOD_DIRS_UNREADABLE: "dict[tuple, tuple[list, list[str]]]" = {}
+_SELECTION_UNREADABLE: "dict[str, tuple[list, list[str]]]" = {}
+
+
+def _folder_unreadable(path: str) -> bool:
+    """Does listing `path` still fail? (A folder gone since reads as still
+    unreadable: it holds nothing either way.)"""
+    try:
+        with os.scandir(path):
+            return False
+    except OSError:
+        return True
+
 
 def _has_any_source_plugin(mod_dir: Path) -> bool:
     """True if the folder holds any .esp/.esm/.esl. Stops at the first match;
@@ -8482,22 +8500,40 @@ def _find_armor_mod_dirs(mods_root: Path,
             # plugin's -- decides sources too. #selection-winner-playable
             _selection_winner_playable())
     _cached = _ARMOR_MOD_DIRS_CACHE.get(_key)
+    _held = _ARMOR_MOD_DIRS_UNREADABLE.get(_key)
+    if _cached is not None and _held is not None and not all(
+            _folder_unreadable(d) for d in _held[1]):
+        # A folder it could not read can be read now: select again.
+        # #vfs-index-fail-loud
+        _cached = None
     if _cached is not None:
-        # Only a selection that found no problem is kept (below), so this one
-        # carries none. #vfs-index-fail-loud
+        # A kept selection found no problem, or only folders that are still
+        # unreadable: its warning is said again for this run to record.
+        # #vfs-index-fail-loud
         if require_arma:
-            _SELECTION_RUN_WARNINGS[_key[0]] = []
+            _SELECTION_RUN_WARNINGS[_key[0]] = (
+                _mesh_index_unreadable_warnings(_held[0]) if _held else [])
         return list(_cached)
+    _ARMOR_MOD_DIRS_CACHE.pop(_key, None)
+    _ARMOR_MOD_DIRS_UNREADABLE.pop(_key, None)
     _result = _find_armor_mod_dirs_uncached(
         mods_root, extra_exclude_names=extra_exclude_names,
         enabled_names=enabled_names, require_arma=require_arma,
         enabled_ordered=enabled_ordered, index_skip_mods=index_skip_mods,
         progress=progress)
-    # A selection that could not read everything is not kept: the next refresh
-    # or convert tries again instead of reusing a list short of mods.
+    # A selection that could not build its index or read the vanilla sweep is
+    # not kept: the next refresh or convert tries again instead of reusing a
+    # list short of mods. One whose only problem is folders it could not read
+    # IS kept, with them, while they stay unreadable -- else every GUI refresh
+    # repeats the whole scan for a folder that never becomes readable.
     # #vfs-index-fail-loud
-    if not (require_arma and _SELECTION_RUN_WARNINGS.get(_key[0])):
+    _warns = _SELECTION_RUN_WARNINGS.get(_key[0]) if require_arma else None
+    _unread = _SELECTION_UNREADABLE.get(_key[0], ([], []))
+    if not _warns:
         _ARMOR_MOD_DIRS_CACHE[_key] = list(_result)
+    elif _unread[1] and len(_warns) == len(_unread[0]):
+        _ARMOR_MOD_DIRS_CACHE[_key] = list(_result)
+        _ARMOR_MOD_DIRS_UNREADABLE[_key] = _unread
     return _result
 
 
@@ -8595,6 +8631,7 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
     # #vfs-index-fail-loud
     _sel_warns: "list[tuple[str, str, str, str]]" = []
     _SELECTION_RUN_WARNINGS[str(mods_root).lower()] = _sel_warns
+    _SELECTION_UNREADABLE.pop(str(mods_root).lower(), None)
 
     def _prog(text: str) -> None:
         if progress is None:
@@ -8697,11 +8734,13 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
         _prog(f"locating {len(union_all)} armour mesh path(s) across "
               f"{len(enabled_ordered)} enabled mods…")
         _unreadable: "list[tuple[str, str]]" = []
+        _unreadable_dirs: "list[str]" = []
         try:
             vfs = discovery.build_mesh_index(
                 mods_root, enabled_ordered, target_keys=union_all,
                 skip_mods=_index_skip, unreadable=_unreadable,
-                overwrite=_modlist_overwrite(mods_root))  # #overwrite-mesh-index
+                overwrite=_modlist_overwrite(mods_root),  # #overwrite-mesh-index
+                unreadable_dirs=_unreadable_dirs)
         except Exception as _e:
             # NOT an empty index: {} reads as "no mod ships these meshes", and
             # the convert step reused it, so every source converted its own or
@@ -8719,6 +8758,8 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
                      "folder, then run again")
         _BATCH_MESH_INDEX[str(mods_root).lower()] = vfs
         _sel_warns.extend(_mesh_index_unreadable_warnings(_unreadable))
+        _SELECTION_UNREADABLE[str(mods_root).lower()] = (
+            list(_unreadable), list(_unreadable_dirs))
 
     # #bsa-only-sources (2026-09-24): a mod whose armour meshes are in no loose
     # file anywhere may still ship them in an ARCHIVE, and the convert step

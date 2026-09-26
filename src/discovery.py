@@ -376,16 +376,22 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
 
 
 def _walk_nifs(meshes_dir: Path, mod_name: str,
-               unreadable: "list[tuple[str, str]] | None"):
-    """Every ``.nif`` file under `meshes_dir` (any case), in the order
+               unreadable: "list[tuple[str, str]] | None",
+               unreadable_dirs: "list[str] | None" = None):
+    """Every ``.nif`` FILE under `meshes_dir` (any case), in the order
     ``Path.rglob`` gave: a folder's files, then each subfolder in turn.
 
     ``rglob`` let any error but a permission error escape from the MIDDLE of
     its walk, and one over-long path, dead junction or folder vanishing in one
     mod then aborted the index for every mod. Here an unreadable folder is
     skipped ALONE: the rest of this mod and every other mod are still indexed,
-    and the error goes to `unreadable` as (mod folder, error text).
-    #vfs-index-fail-loud"""
+    and the error goes to `unreadable` as (mod folder, error text), the folder
+    that could not be read to `unreadable_dirs`. #vfs-index-fail-loud
+
+    Files only, where ``rglob('*.nif')`` also yielded a FOLDER named like a
+    mesh (``armor\\x_1.nif\\``): that folder then won its key over a real file
+    in a lower-priority mod, and the piece failed to load. A mesh inside such a
+    folder is still indexed, as before."""
     errors: "list[OSError]" = []
     for root, _dirs, files in os.walk(meshes_dir, onerror=errors.append):
         base = Path(root)
@@ -396,6 +402,8 @@ def _walk_nifs(meshes_dir: Path, mod_name: str,
         e = errors[0]
         more = f" (and {len(errors) - 1} more)" if len(errors) > 1 else ""
         unreadable.append((mod_name, plain_error(e) + more))
+    if unreadable_dirs is not None:
+        unreadable_dirs.extend(str(e.filename or meshes_dir) for e in errors)
 
 
 def build_mesh_index(
@@ -406,6 +414,7 @@ def build_mesh_index(
     skip_mods: "tuple[str, ...] | set[str]" = (),
     unreadable: "list[tuple[str, str]] | None" = None,
     overwrite: "Path | None" = None,
+    unreadable_dirs: "list[str] | None" = None,
 ) -> dict[str, Path]:
     """Map each ``meshes\\``-relative NIF path (lowercase, forward-slash, e.g.
     ``'armor/foo/bar_1.nif'``) to the winning provider's absolute file across
@@ -428,6 +437,8 @@ def build_mesh_index(
         whose ``meshes`` folder could not be fully read. Only the unreadable
         folders are skipped; the index is correct for everything else.
         #vfs-index-fail-loud
+      unreadable_dirs: if given, receives the path of each folder that could
+        not be read, so a caller can tell when it becomes readable.
     """
     skip = {m.lower() for m in skip_mods}  # case-insensitive: mod folder names
     index: dict[str, Path] = {}            # and skip entries can differ in case
@@ -529,8 +540,10 @@ def build_mesh_index(
         except OSError as e:
             if unreadable is not None:
                 unreadable.append((mod_name, plain_error(e)))
+            if unreadable_dirs is not None:
+                unreadable_dirs.append(str(meshes_dir))
             continue
-        for nif in _walk_nifs(meshes_dir, mod_name, unreadable):
+        for nif in _walk_nifs(meshes_dir, mod_name, unreadable, unreadable_dirs):
             try:
                 rel = nif.relative_to(meshes_dir).as_posix().lower()
             except (ValueError, OSError):

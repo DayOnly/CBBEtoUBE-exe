@@ -417,9 +417,15 @@ undone at once and in silence: a mod whose meshes are in another mod was dropped
 but a permission error escape from the middle of its walk, so one over-long path or
 dead junction in one mod aborted the index for every mod. Now:
 - `build_mesh_index` walks each mod's `meshes` folder with `os.walk(onerror=...)`
-  (`discovery._walk_nifs`, same files, same order, same paths as `rglob`): an
-  unreadable folder is skipped alone and handed back through `unreadable` as
-  (mod, error); both steps print one warning naming each such folder.
+  (`discovery._walk_nifs`, same order and paths as `rglob`): an unreadable folder
+  is skipped alone and handed back through `unreadable` as (mod, error); both
+  steps print one warning naming each such folder. A `meshes` folder whose
+  existence cannot even be checked is skipped the same way. One difference from
+  `rglob('*.nif')`, on purpose and unswitched: it also yielded a FOLDER named like
+  a mesh (`armor\x_1.nif\`), which won its key over a real file in a lower-priority
+  mod and then failed to load; only files are indexed now (a mesh inside such a
+  folder still is). The reported modlist has no such folder (the index is
+  identical key for key).
 - If the index still raises, selection caches `None`, not `{}`, so the convert step
   builds its own; the warning names the failure, and the mods it could not search
   are listed as "not searched for", not "found nowhere". The convert step's own
@@ -427,8 +433,13 @@ dead junction in one mod aborted the index for every mod. Now:
 - The vanilla sweep's mesh-path read warns instead of `pass`.
 - Selection's warnings are kept in `_SELECTION_RUN_WARNINGS`; the convert step
   records them after it clears the run's record, and counts them with its own in
-  the end-of-run tally. A selection that recorded one is not memoized, so the next
-  refresh or convert tries again.
+  the end-of-run tally. A selection whose index failed or whose vanilla sweep
+  could not be read is not memoized, so the next refresh or convert tries again.
+  One whose only problem is folders it could not read IS memoized with them
+  (`_ARMOR_MOD_DIRS_UNREADABLE`): each reuse first lists those folders again and
+  says the same warning for that run to record, and the first time one of them
+  can be read the selection runs afresh. Not memoizing it made every GUI refresh
+  repeat the whole scan (92-175 s live) for a folder that stays unreadable.
 No switch: when the index builds -- every run seen -- the output is byte-identical.
 
 **MO2's overwrite folder is a provider** (`#overwrite-mesh-index`, 2026-09-25,

@@ -7290,7 +7290,7 @@ PAIRS = (
     Pair('VFL-a', 'one unreadable folder aborts the index for every mod again',
          edits=(
              ('src/discovery.py',
-              '        for nif in _walk_nifs(meshes_dir, mod_name, unreadable):',
+              '        for nif in _walk_nifs(meshes_dir, mod_name, unreadable, unreadable_dirs):',
               '        for nif in meshes_dir.rglob("*.nif"):  # MUTATED', 1),
          ),
          tests=('tests/test_vfs_index_fail_loud.py',),
@@ -7348,8 +7348,8 @@ PAIRS = (
     Pair('VFL-g', 'a selection short of mods is kept and reused',
          edits=(
              ('src/auto_convert.py',
-              '    if not (require_arma and _SELECTION_RUN_WARNINGS.get(_key[0])):',
-              '    if True:  # MUTATED', 1),
+              '    if not _warns:\n',
+              '    if True:  # MUTATED\n', 1),
          ),
          tests=('tests/test_vfs_index_fail_loud.py',),
          expect=('test_a_failed_selection_is_tried_again',),
@@ -7358,9 +7358,9 @@ PAIRS = (
          edits=(
              ('src/auto_convert.py',
               '        if require_arma:\n'
-              '            _SELECTION_RUN_WARNINGS[_key[0]] = []\n',
+              '            _SELECTION_RUN_WARNINGS[_key[0]] = (\n',
               '        if False:  # MUTATED\n'
-              '            _SELECTION_RUN_WARNINGS[_key[0]] = []\n', 1),
+              '            _SELECTION_RUN_WARNINGS[_key[0]] = (\n', 1),
          ),
          tests=('tests/test_vfs_index_fail_loud.py',),
          expect=('test_a_kept_selection_carries_no_old_warning',),
@@ -7428,6 +7428,86 @@ PAIRS = (
          ),
          tests=('tests/test_vfs_index_fail_loud.py',),
          expect=('test_an_unreadable_folder_in_the_convert_step_is_counted',),
+    ),
+    # #vfs-index-fail-loud, second round (2026-09-25): files only; a meshes
+    # folder that cannot be checked is skipped alone; a selection whose only
+    # problem is an unreadable folder is kept while it stays unreadable.
+    Pair('VFL-p', 'a folder named like a mesh is indexed as one',
+         edits=(
+             ('src/discovery.py',
+              '        for f in files:\n'
+              '            if f.lower().endswith(".nif"):\n'
+              '                yield base / f\n',
+              '        for f in _dirs + files:  # MUTATED\n'
+              '            if f.lower().endswith(".nif"):\n'
+              '                yield base / f\n', 1),
+         ),
+         tests=('tests/test_vfs_index_unreadable_memo.py',),
+         expect=('test_a_folder_named_like_a_mesh_is_not_a_mesh',),
+    ),
+    Pair('VFL-q', 'a meshes folder that cannot be checked aborts the index',
+         edits=(
+             ('src/discovery.py',
+              '        except OSError as e:\n'
+              '            if unreadable is not None:\n'
+              '                unreadable.append((mod_name, plain_error(e)))\n'
+              '            if unreadable_dirs is not None:\n',
+              '        except ValueError as e:  # MUTATED\n'
+              '            if unreadable is not None:\n'
+              '                unreadable.append((mod_name, plain_error(e)))\n'
+              '            if unreadable_dirs is not None:\n', 1),
+         ),
+         tests=('tests/test_vfs_index_unreadable_memo.py',),
+         expect=('test_a_meshes_folder_that_cannot_be_checked_is_skipped_alone',),
+    ),
+    Pair('VFL-r', 'a selection with an unreadable folder is not kept',
+         edits=(
+             ('src/auto_convert.py',
+              '    elif _unread[1] and len(_warns) == len(_unread[0]):\n',
+              '    elif False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_vfs_index_unreadable_memo.py',),
+         expect=('test_an_unreadable_folder_keeps_the_selection_and_says_it_again',),
+    ),
+    Pair('VFL-s', 'the kept selection does not say its warning again',
+         edits=(
+             ('src/auto_convert.py',
+              '                _mesh_index_unreadable_warnings(_held[0]) if _held else [])',
+              '                [] if _held else [])  # MUTATED', 1),
+         ),
+         tests=('tests/test_vfs_index_unreadable_memo.py',),
+         expect=('test_an_unreadable_folder_keeps_the_selection_and_says_it_again',),
+    ),
+    Pair('VFL-t', 'a folder that became readable is not read again',
+         edits=(
+             ('src/auto_convert.py',
+              '        with os.scandir(path):\n'
+              '            return False\n',
+              '        with os.scandir(path):\n'
+              '            return True  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_vfs_index_unreadable_memo.py',),
+         expect=('test_a_folder_that_became_readable_is_selected_again',),
+    ),
+    Pair('VFL-u', 'a failed index is kept like an unreadable folder',
+         edits=(
+             ('src/auto_convert.py',
+              '    elif _unread[1] and len(_warns) == len(_unread[0]):\n',
+              '    elif True:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_vfs_index_unreadable_memo.py',
+                'tests/test_vfs_index_fail_loud.py'),
+         expect=('test_a_failed_index_is_still_tried_again',
+                 'test_a_failed_selection_is_tried_again'),
+    ),
+    Pair('VFL-v', 'the unreadable folders are not handed back',
+         edits=(
+             ('src/discovery.py',
+              '        unreadable_dirs.extend(str(e.filename or meshes_dir) for e in errors)',
+              '        pass  # MUTATED', 1),
+         ),
+         tests=('tests/test_vfs_index_unreadable_memo.py',),
+         expect=('test_an_unreadable_folder_keeps_the_selection_and_says_it_again',),
     ),
     # #esp-report-pairing (2026-09-25): the log and the per-mod report pair each
     # patch with the plugin that made it, not by position.
