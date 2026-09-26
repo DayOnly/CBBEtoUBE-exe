@@ -544,7 +544,9 @@ def test_a_run_killed_in_the_nif_phase_leaves_no_patch_naming_an_unwritten_nif(
 
 def _run_killed_batch(tmp_path, monkeypatch, kill_on):
     """Sources ModA (a1, a2), ModC (its planning fails), ModB (b1) on the
-    batch path; the run dies when `kill_on` starts converting."""
+    batch path, largest first b1, a1, a2 -- so ModB's NIFs are all in while
+    ModA, before it, cannot finish; the run dies when `kill_on` starts
+    converting."""
     import json
     mods = [tmp_path / n for n in ("ModA", "ModC", "ModB")]
     for m in mods:
@@ -558,6 +560,7 @@ def _run_killed_batch(tmp_path, monkeypatch, kill_on):
         return ConvertResult(src_path=item[0], dst_path=str(item[1]),
                              status="converted (copy)")
     monkeypatch.setattr(ac, "_nif_convert_worker", _kill_or_convert)
+    monkeypatch.setattr(ac, "_source_mb", lambda p: {"b1": 5.0, "a1": 2.0}.get(p, 0.0))
     items = {"ModA": [_item("a1", "a"), _item("a2", "a")], "ModB": [_item("b1", "b")]}
     monkeypatch.setattr(ac, "_auto_convert_mod_steps", _steps_recording(
         [], lambda n: items[n],
@@ -568,7 +571,7 @@ def _run_killed_batch(tmp_path, monkeypatch, kill_on):
 
 
 def test_a_planning_failure_is_in_the_report_before_any_nif(tmp_path, monkeypatch):
-    rep = _run_killed_batch(tmp_path, monkeypatch, kill_on="a1")
+    rep = _run_killed_batch(tmp_path, monkeypatch, kill_on="b1")
     assert rep["complete"] is False
     assert [f["name"] for f in rep["failed_mods"]] == ["ModC"], rep
 
@@ -577,10 +580,11 @@ def test_a_run_killed_mid_phase_reports_how_far_its_nifs_got(tmp_path, monkeypat
     """No source can FINISH before the phase ends (each waits for its smallest
     unit and every earlier source), so the checkpoint also records the NIF
     phase: files converted and the sources whose every NIF is in."""
-    rep = _run_killed_batch(tmp_path, monkeypatch, kill_on="b1")
+    rep = _run_killed_batch(tmp_path, monkeypatch, kill_on="a2")
     assert rep["complete"] is False
+    assert rep["source_mods"] == 1, "no source finished; ModC's failure is known"
     assert rep["nif_phase"] == {"files_done": 2, "files_total": 3,
-                                "sources_nifs_done": ["ModA"]}, rep
+                                "sources_nifs_done": ["ModB"]}, rep
     assert [f["name"] for f in rep["failed_mods"]] == ["ModC"]
 
 
