@@ -15914,4 +15914,15 @@ PAIRS = (
          tests=('tests/test_model_path_sites.py',),
          expect=('test_the_utf8_writer_gives_an_undefined_byte_back_and_nothing_else_moves',),
     ),
+    # #alttex-overwrite (2026-09-26): with no batch index, the colour-variant
+    # source lookup reads MO2's overwrite like the convert step's own index.
+    Pair('AOW-a', "the colour-variant lookup leaves MO2's overwrite out",
+         edits=(
+             ('src/ube_patcher.py',
+              '                                             overwrite=_ac._modlist_overwrite(Path(mr)))\n',
+              '                                             )  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_alttex_overwrite.py',),
+         expect=('test_the_lookup_reads_the_copy_the_convert_step_converted',),
+    ),
 )
