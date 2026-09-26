@@ -7130,53 +7130,67 @@ LEG_MOTION_ON_MORPHTRI = (
 # TRI-owning shapes at the pass's own 9u hug distance -- a distance chosen for a
 # dress. REPORTED IN GAME 2026-09-26 on a one-piece plated cuirass (legs, faulds
 # and a plate hanging between the legs, all ONE TRI-owning shape): the plate
-# between the legs "clips into itself" instead of deforming; the 09-23 build was
-# fine, and the switch-off build confirmed the cause in game. Mechanism: the
-# plates stand OFF the body (median 2.2-4.3u over the leggings they cover), and
-# each plate row was re-split to the skin nearest to it, independently of the
-# plate it overlaps, so overlapping plates stopped moving together. The rows the
-# 09-23 fix was FOR are fitted cloth: on the reported trousers every changed part
-# sits at a median standoff of 0.6-1.9u.
+# between the legs "clips into itself" instead of deforming; the build before
+# `#leg-motion-morphtri` was fine, and a build with only that switched off fixed
+# it in game. Mechanism: the plates stand OFF the body (median 2.2-4.3u over the
+# leggings they cover), and each plate row was re-split to the skin nearest to
+# it, independently of the plate it overlaps, so overlapping plates stopped
+# moving together. The rows `#leg-motion-morphtri` was FOR are fitted cloth: on
+# the reported trousers every changed part sits at a median standoff of 0.6-1.9u.
 #
 # So on the TRI-owning shapes this instance reaches only through the opt-out, a
-# row that stands over ANOTHER visible layer of the piece (the line to its body
-# point passes through one, more than a plate's thickness in:
-# _MORPHTRI_HUG_LAYER_GAP) takes the full match inside _MORPHTRI_HUG_NEAR, none
-# beyond _MORPHTRI_HUG_FAR, and a linear share between (a hard cut would put a
-# hinge in a plate that spans the band). A row that is the ONLY layer over the
-# skin keeps the full reach.
+# row that stands over ANOTHER visible layer of the piece takes the full match
+# inside _MORPHTRI_HUG_NEAR, none beyond _MORPHTRI_HUG_FAR, and a linear share
+# between (a hard cut would put a hinge in a plate that spans the band). A row
+# that is the ONLY layer over the skin keeps the full reach. "Another layer" = the
+# line to the row's body point meets a visible surface of the piece that FACES
+# AWAY from the body, more than _MORPHTRI_HUG_LAYER_GAP in (so neither the plate's
+# own thickness nor its body-facing inside counts; colliders, proxies and the body
+# are not layers).
 #
-# WHY THE LAYER CONDITION. Distance alone was built first and censused on the
-# live pack: 545 admitted shapes on 328 pieces have rows at 2-9u, many of them
-# skirts and outfits. A parent-vs-lane sample of the most affected (11 pieces,
-# multipose, zeroed UBE body) lost coverage on 2: a lower panel over a swinging
-# thigh (thigh 0.25% -> 0.75%, walk/crouch/stride/knee bend) and a steel body
-# (upper chest, arms crossed 1.36% -> 1.63%) -- rows that were the only layer
-# over the skin. With the layer condition all 9 measurable pieces read exactly
-# as the build. Nothing separates the two classes by PART: the plates are
-# stitched to the leggings, so the welded plate+leggings is one 2619-vert part.
+# SCOPE: the leg band only. At z >= 72 and within 5u, `#full-weight-match` runs
+# after this pass and writes the covered body's whole row, so the fade does not
+# reach there (on the plated cuirass 70 of the 355 rows the fade changed ship as
+# the build does). The reported plate hangs below it.
 #
-# Measured, zeroed UBE body, weight 1, seed 1:
-#   plated cuirass, NEW self-crossing pairs vs bind, plate x plate:
-#       stride L    build 13 / 7   this 8 / 7    switch-off of the 09-23 fix 8 / 7
-#       thighs fwd  build 26 / 7   this 19 / 5   switch-off of the 09-23 fix 19 / 5
-#     body exposure (multipose, every region): identical in all three -- the
-#     match bought that piece nothing. NOT a full revert: the fitted leggings
-#     under the plates (0.8u) keep the match, so THEIR own crossings at the
-#     crotch stay at the build's level (stride L 24, 09-23 build 13) -- the
-#     trousers class the 09-23 fix is for, under the plate.
-#   reported trousers: multipose thigh 1.25% / butt 0.00%, the same as the
-#     build (the 09-23 build 2.50% / 0.25%): the fix is kept.
-# The distances are not sensitive: 1.5-2.5 / 2.0-3.0 / 2.5-3.5 read the same on
-# the plated piece. Other shapes are untouched (the population is only what the
-# opt-out admits). CBBE2UBE_NO_MORPHTRI_HUG_FEATHER=1 restores the 9u reach.
+# WHY THE LAYER CONDITION. Distance alone was built first. Censused on the live
+# pack, 545 admitted shapes on 328 pieces have leg-band rows at 2-9u that the fade
+# could act on, many of them skirts and outfits. In a parent-vs-lane sample of
+# the most affected it lost coverage on a lower panel over a swinging thigh
+# (thigh 0.25% -> 0.75%) and a steel body (upper chest 1.36% -> 1.63%): rows that
+# were the only layer over the skin. With the layer condition the same census
+# counts 449 shapes on 256 pieces (rows the fade can act on; the written files
+# change on fewer). Nothing separates the classes by PART: the
+# plates are stitched to the leggings, so the welded plate+leggings is one part.
+#
+# Measured, zeroed UBE body, weight 1, seed 1, poses matched by name:
+#   plated cuirass, NEW self-crossing pairs vs bind (plate x plate):
+#       stride L     build 13 / 7    this 8 / 7    #leg-motion-morphtri off 8 / 7
+#       thighs fwd   build 26 / 7    this 19 / 5   #leg-motion-morphtri off 19 / 5
+#     whole shape, both thighs back: build +144, this +218, #leg-motion-morphtri
+#     off +209 -- the one pose worse than the build (plates x leggings), at the
+#     level the user accepted in game with #leg-motion-morphtri off.
+#     Body exposure (multipose, every region): identical in all three. NOT a full
+#     revert: the fitted leggings (0.8u) keep the match, so their own crossings
+#     at the crotch stay at the build's level (stride L 24, switch-off 13).
+#   reported trousers: multipose identical to the build (thigh 1.25% / butt 0%;
+#     #leg-motion-morphtri off 2.50% / 0.25%). Their standing-off rows are faded
+#     too (Greaves: 360 of 362 rows at 2-3u stand over another layer); the fix did
+#     not depend on them. Checked at the zeroed body only.
+#   18 of the pieces the fade reaches most (skirts, outfits, plated and layered
+#     armour, both convert paths, the two above included): 15 identical; a skirt
+#     1 point better at the thigh; a loincloth armour's thigh in a stride 2.39% ->
+#     2.69%; one mage armour mixed (butt 1 sampled point better in 2 poses, thigh
+#     1-2 points worse in 3, of 400 sampled).
+# Other shapes are untouched (the population is only what the opt-out admits).
+# CBBE2UBE_NO_MORPHTRI_HUG_FEATHER=1 restores the 9u reach.
 MORPHTRI_HUG_FEATHER = (
     not _flag("CBBE2UBE_NO_MORPHTRI_HUG_FEATHER", False))
 _MORPHTRI_HUG_NEAR = _knob("CBBE2UBE_MORPHTRI_HUG_NEAR", 2.0)
 _MORPHTRI_HUG_FAR = _knob("CBBE2UBE_MORPHTRI_HUG_FAR", 3.0)
-# A row is faded only when the line to its body point passes through another
-# visible surface of the piece at least this far in -- more than a plate's own
-# thickness.
+# A row is faded only when the line to its body point meets another visible,
+# outward-facing surface of the piece at least this far in -- more than a plate's
+# own thickness.
 _MORPHTRI_HUG_LAYER_GAP = _knob("CBBE2UBE_MORPHTRI_HUG_LAYER_GAP", 0.75)
 # Fraction of the body-vs-garment leg-share gap to close (1.0 = full match).
 _LEG_MOTION_STRENGTH = _knob("CBBE2UBE_LEG_MOTION_STRENGTH", 1.0)

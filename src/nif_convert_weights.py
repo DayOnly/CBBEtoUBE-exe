@@ -1858,11 +1858,17 @@ def _limb_tri_admitted(src_nif_path, ignore_morph_tri: bool, tri_hug,
     return _source_morph_tri_shape_names(Path(src_nif_path)) - set(skipped)
 
 
-def _layer_soup(shapes, skip_names) -> tuple:
+def _layer_soup(shapes, skip_names, body_tree=None) -> tuple:
     """World-space triangles of every VISIBLE garment surface in the NIF -- the
     layers a standing-off row can cover (#morphtri-hug-feather). Leaves out the
     body, colliders and proxies (by the piece's XML and by the structural name
-    keys), which a row may stand over without being an outer layer."""
+    keys), which a row may stand over without being an outer layer.
+
+    With `body_tree` (a KD-tree of the body's verts) only triangles that FACE
+    AWAY from the body are kept: an underlying layer is met on its outer face,
+    while a thick part's own back face points at the body. Without this a lone
+    part thicker than the gap read as standing over "another layer" (its own
+    inside) and lost the match (adversarial review of d30720b)."""
     keys = tuple(_nc()._CONFORM_SKIP_STRUCTURAL) + ("proxy", "stabil")
     Vs, Ts, off = [], [], 0
     for sh in shapes:
@@ -1877,6 +1883,14 @@ def _layer_soup(shapes, skip_names) -> tuple:
             continue
         if not len(V) or not len(T):
             continue
+        if body_tree is not None:
+            a = V[T[:, 0]]
+            n = np.cross(V[T[:, 1]] - a, V[T[:, 2]] - a)
+            c = V[T].mean(axis=1)
+            _, bi = body_tree.query(c)
+            T = T[np.einsum("ij,ij->i", n, c - body_tree.data[bi]) > 0.0]
+            if not len(T):
+                continue
         Vs.append(V)
         Ts.append(T + off)
         off += len(V)
@@ -1903,11 +1917,22 @@ def _rows_covering_a_layer(O, P, lay_V, lay_T, gap: float):
         return out
     Dn = D[ok] / L[ok, None]
     tmax = L[ok] - gap - 0.1
-    tester = fit_metrics._ClipTester(lay_V, lay_T, tmax=float(tmax.max()) + 1e-3)
-    t = np.asarray(fit_metrics.cast_chunked(tester, O[ok] + Dn * gap, Dn,
-                                            finite_only=False), dtype=np.float64)
+    try:
+        tester = fit_metrics._ClipTester(lay_V, lay_T, tmax=float(tmax.max()) + 1e-3)
+        # Small chunks: on a dense piece one 512-ray chunk built 9.2M ray/triangle
+        # pairs (1.6 GB) -- a MemoryError there would cost the shape its match.
+        t = np.asarray(fit_metrics.cast_chunked(tester, O[ok] + Dn * gap, Dn,
+                                                chunk=_LAYER_RAY_CHUNK,
+                                                finite_only=False), dtype=np.float64)
+    except MemoryError as _me:
+        # Fail toward the build's behaviour (no row faded), and say so.
+        _note_pass_failure("_rows_covering_a_layer", _me)
+        return out
     out[np.flatnonzero(ok)] = np.isfinite(t) & (t <= tmax)
     return out
+
+
+_LAYER_RAY_CHUNK = 64
 
 
 def _hug_feather(dist, near: float, far: float):
@@ -2117,11 +2142,13 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
         with it set needs its own in-game verdict on a TRI-owning piece. The
         LEG instance (`#leg-motion-morphtri`) takes it from
         `LEG_MOTION_ON_MORPHTRI`.
-      * `tri_hug` = (near, far) narrows what that opt-out admits to rows that
-        HUG the body: full match inside `near`, none beyond `far`, a linear
-        share between (`#morphtri-hug-feather`, see MORPHTRI_HUG_FEATHER). It
-        applies only to the TRI-owning shapes the opt-out admitted; every other
-        shape keeps `max_dist`.
+      * `tri_hug` = (near, far) narrows what that opt-out admits: a row that
+        stands over ANOTHER visible, outward-facing layer of the piece takes the
+        full match inside `near`, none beyond `far`, a linear share between; a
+        row that is the only layer over the skin keeps `max_dist`
+        (`#morphtri-hug-feather`, see MORPHTRI_HUG_FEATHER). Only on the
+        TRI-owning shapes the opt-out admitted. Rows the full-vector instance
+        reaches afterwards (z >= 72) are rewritten by it.
       * skips colliders / soft-body / HDT-SMP-rigged shapes, per the standing rule
         that every skin pass leaves authored physics geometry alone.
     """
@@ -2677,7 +2704,8 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                             _lay = _layer_soup(
                                 nf.shapes,
                                 set(collider_names) | {"BaseShape"}
-                                | set(_nc().UBE_BODY_INJECT_NAMES))
+                                | set(_nc().UBE_BODY_INJECT_NAMES),
+                                body_tree=tree)
                         _cov = _rows_covering_a_layer(
                             wv[_cand], Vb[np.asarray(near)[_cand]],
                             _lay[0], _lay[1], _nc()._MORPHTRI_HUG_LAYER_GAP)

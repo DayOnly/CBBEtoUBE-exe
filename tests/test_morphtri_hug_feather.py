@@ -43,6 +43,7 @@ LT, RT, PV = "NPC L Thigh [LThg]", "NPC R Thigh [RThg]", "NPC Pelvis [Pelv]"
 def test_flag_default_on_and_kill_switch(monkeypatch):
     assert nc.MORPHTRI_HUG_FEATHER is True
     assert (nc._MORPHTRI_HUG_NEAR, nc._MORPHTRI_HUG_FAR) == (2.0, 3.0)
+    assert nc._MORPHTRI_HUG_LAYER_GAP == 0.75
     monkeypatch.setenv("CBBE2UBE_NO_MORPHTRI_HUG_FEATHER", "1")
     reloaded = importlib.reload(nc)
     try:
@@ -130,7 +131,7 @@ def _grid(x0, x1, z0, z1, y, n=5):
     return verts, tris
 
 
-def _build(path, offsets=(-1.0, -2.5, -4.0)):
+def _build(path, offsets=(-1.0, -2.5, -4.0), extra=()):
     """BaseShape: a flat patch at y=0 over the leg band, left half on the left
     thigh, right half on the right. Plate: one strip in front of it per offset
     (default 1u, 2.5u and 4u, STACKED, so each outer strip covers the one
@@ -171,6 +172,12 @@ def _build(path, offsets=(-1.0, -2.5, -4.0)):
         pv += v
         pt += [(a + off, b + off, c + off) for a, b, c in t]
     add("Plate", pv, pt, [{PV: 0.6, LT: 0.2, RT: 0.2} for _ in pv])
+    for spec in extra:                        # other shapes of the piece
+        name, y = spec[0], spec[1]
+        v, t = _grid(-5.0, 5.0, 42.0, 68.0, y)
+        if len(spec) > 2 and spec[2]:         # wound to FACE THE BODY
+            t = [(a, c, b) for a, b, c in t]
+        add(name, v, t, [{PV: 0.6, LT: 0.2, RT: 0.2} for _ in v])
     nif.save()
     return np.asarray(pv)
 
@@ -184,10 +191,14 @@ def _pelvis(path):
     return out
 
 
-def _run(tmp_path, monkeypatch, *, tri_owned, feather, offsets=(-1.0, -2.5, -4.0)):
+def _run(tmp_path, monkeypatch, *, tri_owned, feather, offsets=(-1.0, -2.5, -4.0),
+         extra=(), colliders=None):
     p = tmp_path / ("f" if feather else "n") / "piece_1.nif"
     p.parent.mkdir(parents=True)
-    pv = _build(p, offsets)
+    pv = _build(p, offsets, extra)
+    if colliders is not None:
+        _cs.patch(monkeypatch, "_hdt_collider_shape_names",
+                  lambda *a, **k: set(colliders))
     monkeypatch.setattr(nc, "MATCH_LEG_MOTION", True)
     monkeypatch.setattr(nc, "LEG_MOTION_ON_MORPHTRI", True)
     monkeypatch.setattr(nc, "MORPHTRI_NO_LEG_GRAFT", True)
@@ -222,6 +233,52 @@ def test_a_standoff_row_over_bare_skin_keeps_the_full_match(tmp_path, monkeypatc
     assert np.all(pel < 0.05), "nothing under it: the full 9u reach applies"
 
 
+@pytestmark_e2e
+def test_a_collider_named_only_by_the_xml_is_not_a_layer_under_the_plate(
+        tmp_path, monkeypatch):
+    """The pass hands the piece's XML colliders to the layer set as skips. A
+    plate standing over nothing but such a collider is the only VISIBLE layer
+    and keeps the full match; the same shape without the XML is a real layer
+    under the plate, and the plate is faded."""
+    pv, pel = _run(tmp_path, monkeypatch, tri_owned=True, feather=True,
+                   offsets=(-4.0,), extra=(("HipGuard", -1.0),),
+                   colliders={"HipGuard"})
+    assert np.all(pel < 0.05)
+
+
+@pytestmark_e2e
+def test_a_surface_facing_the_body_under_the_plate_is_not_a_layer(tmp_path, monkeypatch):
+    """End to end: the pass gives the layer set the body, so a surface that faces
+    the body (a thick part's inside) does not make the plate over it an outer
+    layer."""
+    pv, pel = _run(tmp_path, monkeypatch, tri_owned=True, feather=True,
+                   offsets=(-4.0,), extra=(("PlateInside", -2.5, True),),
+                   colliders=set())
+    assert np.all(pel < 0.05)
+
+
+def test_running_out_of_memory_fades_nothing_and_says_so(monkeypatch):
+    calls = []
+
+    def boom(*a, **k):
+        raise MemoryError("synthetic")
+
+    monkeypatch.setattr(ncw.fit_metrics, "cast_chunked", boom)
+    monkeypatch.setattr(ncw, "_note_pass_failure", lambda where, e: calls.append(where))
+    V, T = _grid(-5.0, 5.0, 40.0, 70.0, -0.5, n=11)
+    O = np.array([[0.0, -3.0, 55.0]]); P = np.array([[0.0, 0.0, 55.0]])
+    got = ncw._rows_covering_a_layer(O, P, np.asarray(V), np.asarray(T), 0.75)
+    assert not got.any() and calls == ["_rows_covering_a_layer"]
+
+
+@pytestmark_e2e
+def test_the_same_shape_without_the_xml_is_a_layer(tmp_path, monkeypatch):
+    pv, pel = _run(tmp_path, monkeypatch, tri_owned=True, feather=True,
+                   offsets=(-4.0,), extra=(("HipGuard", -1.0),),
+                   colliders=set())
+    assert np.allclose(pel, 0.6, atol=1e-3)
+
+
 def test_the_layer_test_sees_a_plate_over_a_sheet_and_not_a_plate_alone():
     V, T = _grid(-5.0, 5.0, 40.0, 70.0, -0.5, n=11)
     Pv, Pt = _grid(-3.0, 3.0, 45.0, 65.0, -3.0, n=7)
@@ -233,6 +290,33 @@ def test_the_layer_test_sees_a_plate_over_a_sheet_and_not_a_plate_alone():
     alone = ncw._rows_covering_a_layer(O, P, O, np.asarray(Pt), 0.75)
     assert not alone.any(), "a plate's own triangles are not a layer under it"
     assert not ncw._rows_covering_a_layer(O, P, None, None, 0.75).any()
+
+
+def test_a_thick_lone_plate_does_not_cover_its_own_back_face():
+    """A part thicker than the gap has an inner face that FACES THE BODY. Given
+    the body, the layer set keeps only faces pointing away from it, so the plate
+    stands over nothing; without the body its back face reads as a layer."""
+    from scipy.spatial import cKDTree
+    bv, _ = _grid(-6.0, 6.0, 40.0, 70.0, 0.0, n=13)
+    outer_v, outer_t = _grid(-3.0, 3.0, 45.0, 65.0, -3.0, n=7)
+    inner_v, inner_t = _grid(-3.0, 3.0, 45.0, 65.0, -2.0, n=7)
+    inner_t = [(a, c, b) for a, b, c in inner_t]       # wound to face the body
+
+    class S:
+        def __init__(self, name, v, t):
+            self.name, self.verts, self.tris = name, v, t
+
+    shapes = [S("Plate", outer_v + inner_v,
+                outer_t + [(a + len(outer_v), b + len(outer_v), c + len(outer_v))
+                           for a, b, c in inner_t])]
+    O = np.asarray(outer_v)
+    P = O.copy(); P[:, 1] = 0.0
+    tree = cKDTree(np.asarray(bv))
+    V, T = ncw._layer_soup(shapes, set(), body_tree=tree)
+    assert V is None or not ncw._rows_covering_a_layer(O, P, V, T, 0.75).any()
+    V0, T0 = ncw._layer_soup(shapes, set())
+    assert ncw._rows_covering_a_layer(O, P, V0, T0, 0.75).all(), (
+        "control: without the facing test the back face 1u in is hit")
 
 
 def test_a_layer_closer_than_the_gap_is_the_plates_own_thickness():
