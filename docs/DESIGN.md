@@ -439,7 +439,14 @@ dead junction in one mod aborted the index for every mod. Now:
   (`_ARMOR_MOD_DIRS_UNREADABLE`): each reuse first lists those folders again and
   says the same warning for that run to record, and the first time one of them
   can be read the selection runs afresh. Not memoizing it made every GUI refresh
-  repeat the whole scan (92-175 s live) for a folder that stays unreadable.
+  repeat the whole scan (92-175 s live) for a folder that stays unreadable. A
+  folder gone since (deleted or renamed -- the fix the warning asks for) counts
+  as changed, not unreadable: `_folder_unreadable` answers False for
+  FileNotFoundError/NotADirectoryError unless the extended-length (`\\?\`) form
+  still finds the path, since an over-long path can report "not found" while it
+  exists. Only a selection whose warnings are ALL unreadable folders is kept
+  (`len(_warns) == len(_unread[0])`): one that also lost its vanilla sweep's keys
+  is not.
 No switch: when the index builds -- every run seen -- the output is byte-identical.
 
 **MO2's overwrite folder is a provider** (`#overwrite-mesh-index`, 2026-09-25,
@@ -628,6 +635,33 @@ already-UBE path among the additions.
   pieces; the two per-source patches rebuilt from the loaded copies are record for
   record the loser's; coverage replay byte-identical. Switch set: census and replay
   identical to the parent.
+- **Left out only when a source reads the loaded copy** (`#loaded-copy-reader`,
+  `CBBE2UBE_NO_LOADED_COPY_READER`). The rule above asked only "does the index map
+  this name to another file?". The index ranks overwrite first and holds every
+  enabled mod, so the winner could sit where no source reads it -- overwrite (a
+  cleaned copy saved there), a mod the run excludes, one the name gate refuses --
+  and then NO source read the plugin: its armour was not planned, converted or
+  patched (probe: sources [], planned set()), where the parent converted it from
+  the mod's copy. Now `_read_by_a_source(winner)` must hold too: the winner's
+  folder is directly in the mods root and passes `_source_gate_ok` -- the name
+  gate selection applies before reading plugins, factored out of `_name_ok` --
+  with the run's exclusions, remembered per mods root by each `require_arma`
+  selection (`_SOURCE_GATE`, set on a memo hit too; without one, no exclusions).
+  The GATE, not the final candidate list, decides, on purpose: a gated winner
+  whose loaded copy plans no armour means the game loads none (nothing to
+  convert); `--only-mods` and the UBE-native drop narrow the batch AFTER
+  selection, and a losing copy read then would overwrite the winner's patch in
+  `_unmerged_patches` (same stem) or re-convert armour a UBE-native mod ships. When
+  the mod's copy is kept, the convert step and `--plugins-only` note it if the two
+  copies' armatures (defining plugin, id, MOD2-5) differ; the mod's copy, not the
+  game's, is read -- the parent's behaviour, and a source plugin outside its own
+  mod folder would break per-mod attribution (sidecar `source_esp`, incremental
+  change detection). The switch is part of the selection memo key. Live (all
+  enabled mods, `auto`'s gate, no user exclusions -- the deployed exclusion list is
+  empty): overwrite holds 0 plugins; 85 losing root copies in 81 mods, every
+  winner a mod folder the gate admits, so 0 change: per-mod plugins, skips and
+  strict/planned bases identical to the parent, coverage replay byte-identical.
+  Switch set: identical to the parent.
 - **Masters are read from the copy the game loads** (`#master-search-load-order`,
   `CBBE2UBE_NO_MASTER_SEARCH_LOAD_ORDER`). `_discover_master_data_dirs(sources[0])`
   -- the batch's one master search list, also the merge's, the coverage passes'

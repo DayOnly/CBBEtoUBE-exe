@@ -26,10 +26,16 @@ selection with an unreadable folder is kept.
    for a folder that stays unreadable. The kept selection says its warning
    again each time it is reused, and is selected again as soon as one of those
    folders can be read. A selection whose index FAILED is still not kept.
+4. A folder deleted or renamed since (the fix the warning asks for) is not
+   "still unreadable": the selection runs again instead of repeating a warning
+   about a folder that is gone. An over-long path that reports "not found"
+   while it exists stays unreadable. A selection with an unreadable folder AND
+   an unread vanilla sweep is not kept either.
 """
 import errno
 import os
 import pathlib
+import shutil
 from pathlib import Path
 
 import pytest
@@ -198,3 +204,75 @@ def test_a_failed_index_is_still_tried_again(modlist, monkeypatch):
     _select(modlist)
     _select(modlist)
     assert len(calls) == 2
+
+
+# --- 4. a folder gone since, and a second problem ---------------------------------
+
+@pytest.mark.parametrize("fix", ["delete", "rename"])
+def test_a_folder_deleted_or_renamed_since_is_selected_again(
+        modlist, monkeypatch, capsys, fix):
+    state = _deep_unreadable(monkeypatch)
+    calls = _counting_index(monkeypatch)
+    _select(modlist)
+    deep = modlist / "Body Build" / "meshes" / "deep"
+    state["broken"] = False          # the fault goes with the folder
+    if fix == "delete":
+        shutil.rmtree(deep)
+    else:
+        deep.rename(deep.with_name("shallow"))
+    capsys.readouterr()
+    assert _select(modlist) == ["Armour Mod"]
+    assert len(calls) == 2, "a folder that is gone must not keep the selection"
+    assert "could not be fully read" not in capsys.readouterr().out, (
+        "no warning about a folder that is not there")
+    assert ac._SELECTION_RUN_WARNINGS[_key(modlist)] == []
+
+
+def test_an_existing_folder_that_reads_as_not_found_stays_unreadable(
+        modlist, monkeypatch):
+    """An over-long path can report "not found" while it exists: that folder
+    is still unreadable, and the kept selection is reused."""
+    real = os.scandir
+
+    def scandir(path="."):
+        if Path(path).name == "deep":
+            raise FileNotFoundError(errno.ENOENT,
+                                    "The system cannot find the path specified",
+                                    str(path))
+        return real(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    if hasattr(pathlib, "_NormalAccessor"):
+        monkeypatch.setattr(pathlib._NormalAccessor, "scandir",
+                            staticmethod(scandir))
+    calls = _counting_index(monkeypatch)
+    _select(modlist)
+    _select(modlist)
+    assert len(calls) == 1
+
+
+def test_an_unreadable_folder_and_an_unread_vanilla_sweep_are_not_kept(
+        modlist, tmp_path, monkeypatch):
+    """Two problems: the kept-with-its-folders rule is for a selection whose
+    ONLY problem is unreadable folders; this one's vanilla keys were never
+    located, so the next run must try again."""
+    data = tmp_path / "Data"
+    data.mkdir()
+    monkeypatch.setattr(paths, "discover_layout",
+                        lambda *a, **k: paths.Layout(game_data_dirs=[data]))
+
+    def bases(d, **kw):
+        if d == data:
+            raise OSError(errno.EIO, "The device is not ready", str(d))
+        return {"armor/set/coat", "deep/x"} if d.name == "Armour Mod" else set()
+
+    monkeypatch.setattr(ac, "_player_armor_mesh_bases", bases)
+    _deep_unreadable(monkeypatch)
+    calls = _counting_index(monkeypatch)
+    assert _select(modlist) == ["Armour Mod"]
+    assert sorted(w[0] for w in ac._SELECTION_RUN_WARNINGS[_key(modlist)]) == [
+        "mod folder unreadable", "vanilla mesh paths unread"]
+    _select(modlist)
+    assert len(calls) == 2, "a selection with an unread vanilla sweep must not be kept"
+    assert "vanilla mesh paths unread" in [
+        w[0] for w in ac._SELECTION_RUN_WARNINGS[_key(modlist)]]

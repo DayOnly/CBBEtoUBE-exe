@@ -61,6 +61,17 @@ their armour is still converted, from the copy the game loads, so the converted
 armour and the merged plugin are unchanged. `CBBE2UBE_NO_LOADED_SOURCE_PLUGINS=1`
 (set to 1) reads every copy again.
 
+A copy is left out only when the mod the game loads it from is itself converted
+this run, so that mod reads the game's copy. When the loaded copy sits where the
+tool never converts from -- Mod Organizer's overwrite folder (a plugin cleaned or
+edited and saved there), a mod you excluded, or a mod the tool skips by its name
+-- the mod's own copy is read as before; otherwise no mod read that plugin and
+its armour was not converted at all. If the two copies' armour differs, the log
+says so. Measured on the reported modlist: its overwrite folder holds no plugins,
+and in each of the 85 cases where a mod's plugin loses to another mod's copy that
+other mod can be converted, so nothing changes. `CBBE2UBE_NO_LOADED_COPY_READER=1`
+(set to 1) leaves the mod's copy out in every case.
+
 ### Fixed — the run log and the per-mod reports name the right plugin for each patch
 
 A mod with several plugins, some of them without armour, was listed with each
@@ -87,7 +98,9 @@ whose name ends in `.nif` is no longer taken for a mesh (it used to hide a real
 mesh of that name in a lower-priority mod, and the piece then failed to load). A
 folder that stays unreadable no longer makes every Refresh repeat the whole
 search (1.5-3 minutes): the result is kept, the warning is given again each time,
-and the search runs afresh as soon as the folder can be read.
+and the search runs afresh as soon as the folder can be read, or once you have
+deleted or renamed it (then no warning names a folder that is gone). A search
+that also could not read which vanilla armour meshes to look for is not kept.
 
 ### Fixed — a garment whose layers share one name keeps every layer
 

@@ -1380,6 +1380,85 @@ def _same_path(a, b) -> bool:
             == os.path.normcase(os.path.abspath(str(b))))
 
 
+def _loaded_copy_reader_on() -> bool:
+    r"""#loaded-copy-reader (2026-09-25): is a mod's root plugin left out only
+    when a conversion source reads the copy the game loads in its place? Yes,
+    by default.
+
+    #loaded-source-plugins left a root copy out whenever the game loads that
+    name from another folder. The index it asks ranks MO2's overwrite folder
+    first and holds every enabled mod, so the winning copy could sit where no
+    source ever reads it: overwrite (a cleaned or edited copy saved there), a
+    mod excluded from the run, or one the name gate refuses. Then no source
+    read the plugin at all: its armour was not planned, converted or patched,
+    where before it was converted from the mod's own copy. Now the mod's copy
+    is left out only when the winning copy is in a mod folder the selection's
+    gate admits (`_source_gate_ok`, the run's exclusions included), so that
+    source reads the game's copy; else the mod's own copy is read, as before
+    #loaded-source-plugins, and a note says when the two copies' armatures
+    differ. CBBE2UBE_NO_LOADED_COPY_READER=1 leaves it out in every case."""
+    return not _flag("CBBE2UBE_NO_LOADED_COPY_READER", False)
+
+
+# {mods root key: (excluded names lowercased, enabled names or None)}: the gate
+# of the latest `require_arma` selection over that mods root. The convert step
+# that follows it in the same process judges the folder of a loaded plugin copy
+# by the same gate. No entry: the gate with no exclusions. #loaded-copy-reader
+_SOURCE_GATE: "dict[str, tuple[frozenset, frozenset | None]]" = {}
+
+
+def _path_key(p) -> str:
+    return os.path.normcase(os.path.abspath(str(p)))
+
+
+def _set_source_gate(mods_root: Path, extra_exclude_names, enabled_names) -> None:
+    """Remember a `require_arma` selection's gate for `_read_by_a_source`.
+    #loaded-copy-reader"""
+    _SOURCE_GATE[_path_key(mods_root)] = (
+        frozenset(n.lower() for n in (extra_exclude_names or set())),
+        None if enabled_names is None else frozenset(enabled_names))
+
+
+def _read_by_a_source(loaded: Path, mods_root: Path) -> bool:
+    """Does a conversion source of this run read `loaded`, the copy of a plugin
+    the game loads? Only a folder directly in the mods root that the
+    selection's gate admits is ever a source; MO2's overwrite folder and the
+    game Data folder never are. #loaded-copy-reader"""
+    if not _loaded_copy_reader_on():
+        return True
+    folder = Path(loaded).parent
+    if not _same_path(folder.parent, mods_root):
+        return False
+    excl, enabled = _SOURCE_GATE.get(_path_key(mods_root), (frozenset(), None))
+    return _source_gate_ok(folder, excl, enabled, True)
+
+
+def _armature_models(plugin: Path) -> "frozenset | None":
+    """{(defining plugin, low id, models)} of a plugin's armatures, `models`
+    being its sorted (MOD2..MOD5, path) pairs; None when it cannot be read.
+    #loaded-copy-reader"""
+    from . import esp as _esp
+    try:
+        e = _esp.ESP.load_cached(plugin)
+    except Exception:
+        return None
+    lcm = [m.lower() for m in e.header.masters]
+    out = set()
+    for g in e.groups:
+        if g.label != b"ARMA":
+            continue
+        for rec in g.records:
+            mi = rec.formid >> 24
+            owner = lcm[mi] if mi < len(lcm) else Path(plugin).name.lower()
+            models = sorted(
+                (s.decode("ascii"),
+                 d.split(b"\x00", 1)[0].decode("latin-1").lower().replace("/", "\\"))
+                for s, d in _esp.iter_subrecords(rec.payload)
+                if s in (b"MOD2", b"MOD3", b"MOD4", b"MOD5"))
+            out.add((owner, rec.formid & 0xFFFFFF, tuple(models)))
+    return frozenset(out)
+
+
 def _modlist_overwrite(mods_root: Path) -> "Path | None":
     """MO2's overwrite folder of the discovered modlist when `mods_root` is its
     mods folder, else None: the mesh index reads it (#overwrite-mesh-index).
@@ -1394,12 +1473,16 @@ def _modlist_overwrite(mods_root: Path) -> "Path | None":
 
 
 def _loaded_copies_only(source_dir: Path, plugins: "list[Path]",
-                        skipped: "list[tuple[Path, str]] | None" = None
+                        skipped: "list[tuple[Path, str]] | None" = None,
+                        differs: "list[tuple[Path, str]] | None" = None
                         ) -> "list[Path]":
     """`plugins` of the mod folder `source_dir` less the copies the game never
     loads: one in a subfolder, and a root one whose name loads from another
-    folder. Unchanged for a folder that is not directly in the modlist's mods
-    root. `skipped` receives (plugin, why). #loaded-source-plugins"""
+    folder that a conversion source reads (#loaded-copy-reader: a copy loaded
+    from a folder no source reads keeps this mod's copy, and `differs` receives
+    (plugin, where) when the two copies' armatures differ). Unchanged for a
+    folder that is not directly in the modlist's mods root. `skipped` receives
+    (plugin, why). #loaded-source-plugins"""
     loaded = _loaded_plugin_index()
     if loaded is None:
         return plugins
@@ -1414,13 +1497,33 @@ def _loaded_copies_only(source_dir: Path, plugins: "list[Path]",
             continue
         w = idx.get(p.name.lower())
         if w is not None and not _same_path(w, p):
-            if skipped is not None:
-                _where = (w.parent.name if _same_path(w.parent.parent, mods_root)
-                          else str(w.parent))
-                skipped.append((p, f"the game loads the copy in '{_where}'"))
-            continue
+            _where = (w.parent.name if _same_path(w.parent.parent, mods_root)
+                      else str(w.parent))
+            if _read_by_a_source(w, mods_root):
+                if skipped is not None:
+                    skipped.append((p, f"the game loads the copy in '{_where}'"))
+                continue
+            # No source reads the game's copy: this one is read, else nothing
+            # converts the plugin's armour. #loaded-copy-reader
+            if differs is not None:
+                mine, theirs = _armature_models(p), _armature_models(w)
+                if mine is not None and theirs is not None and mine != theirs:
+                    differs.append((p, _where))
         keep.append(p)
     return keep
+
+
+def _note_unread_loaded_copies(result: "AutoConvertResult",
+                               differs: "list[tuple[Path, str]]") -> None:
+    """Say which plugins are converted from this mod's copy although the game
+    loads a copy whose armatures differ, from a folder no source reads.
+    #loaded-copy-reader"""
+    for p, where in differs:
+        line = (f"{p.name}: the game loads the copy in '{where}', which is not "
+                "converted this run, and its armour differs from this mod's copy "
+                "(other pieces or other meshes); this mod's copy is converted")
+        print(f"  {line}")
+        result.notes.append(line)
 
 
 def _note_unloaded_plugins(result: "AutoConvertResult",
@@ -1458,7 +1561,8 @@ def _patch_name_taken(out_esp: Path, claimed: "set[str] | None",
 
 
 def _find_source_esps(source_dir: Path,
-                      skipped: "list[tuple[Path, str]] | None" = None
+                      skipped: "list[tuple[Path, str]] | None" = None,
+                      differs: "list[tuple[Path, str]] | None" = None
                       ) -> list[Path]:
     """Find ALL plausible CBBE armor ESPs in a mod folder.
 
@@ -1467,8 +1571,9 @@ def _find_source_esps(source_dir: Path,
     ESPs with disjoint ARMA/ARMO sets need every one covered, or some armor
     categories have no UBE armature and render invisible on UBE characters.
     For a mod of the modlist only the copies the game loads count
-    (`_loaded_copies_only`; `skipped` receives the others with the reason).
-    #loaded-source-plugins
+    (`_loaded_copies_only`; `skipped` receives the others with the reason,
+    `differs` a kept copy whose loaded twin no source reads and whose
+    armatures differ). #loaded-source-plugins #loaded-copy-reader
     """
     # Facegen dirs are named after the source plugin (facegeom\Plugin.esp\)
     # so rglob("*.esp") can match a directory — skip anything under these paths.
@@ -1518,7 +1623,8 @@ def _find_source_esps(source_dir: Path,
             candidates.append(p)
     candidates.sort(key=lambda p: (len(p.parts), p.name.lower()))
     if _loaded_source_plugins_on():
-        candidates = _loaded_copies_only(source_dir, candidates, skipped)
+        candidates = _loaded_copies_only(source_dir, candidates, skipped,
+                                         differs)
     return candidates
 
 
@@ -1932,9 +2038,12 @@ def refresh_mod_esp(
         except Exception:
             bsa_mesh_rel_paths = None
     _unloaded: "list[tuple[Path, str]]" = []
+    _differs: "list[tuple[Path, str]]" = []
     src_esps = (_vanilla_sweep_esps(source_dir)
-                or _find_source_esps(source_dir, skipped=_unloaded))
+                or _find_source_esps(source_dir, skipped=_unloaded,
+                                     differs=_differs))
     _note_unloaded_plugins(result, _unloaded)
+    _note_unread_loaded_copies(result, _differs)
     if not src_esps:
         result.notes.append("no source ESP found — skipping ESP generation")
         return result
@@ -2213,8 +2322,11 @@ def auto_convert_mod(
     # output than before the gate existed, with the female-only policy bypassed.
     # So gate on whether a plugin was actually READ. #esp-less-fallback-only
     _unloaded: "list[tuple[Path, str]]" = []
-    _src_esps = _sweep_esps or _find_source_esps(source_dir, skipped=_unloaded)
+    _differs: "list[tuple[Path, str]]" = []
+    _src_esps = _sweep_esps or _find_source_esps(source_dir, skipped=_unloaded,
+                                                 differs=_differs)
     _note_unloaded_plugins(result, _unloaded)
+    _note_unread_loaded_copies(result, _differs)
     # A mod whose every plugin is a copy the game does not load HAS a plugin:
     # it plans nothing, never the whole folder. #loaded-source-plugins
     if _skip_esp_less_fallback(armor_bases,
@@ -8432,13 +8544,27 @@ _SELECTION_UNREADABLE: "dict[str, tuple[list, list[str]]]" = {}
 
 
 def _folder_unreadable(path: str) -> bool:
-    """Does listing `path` still fail? (A folder gone since reads as still
-    unreadable: it holds nothing either way.)"""
+    """Does listing `path` still fail? A folder gone since (deleted or renamed:
+    the fix the warning asks for) does NOT: its memoized warning names a folder
+    that is not there, so the selection runs again. An over-long path can
+    report "not found" while it exists, so a missing folder is checked again
+    through the extended-length form before it counts as gone."""
     try:
         with os.scandir(path):
             return False
+    except (FileNotFoundError, NotADirectoryError):
+        return _long_path_exists(path)
     except OSError:
         return True
+
+
+def _long_path_exists(path: str) -> bool:
+    """Does `path` exist, asked in Windows' extended-length form (no 260-char
+    limit)? Elsewhere: as asked."""
+    p = os.path.abspath(str(path))
+    if os.name == "nt" and not p.startswith("\\\\?\\"):
+        p = ("\\\\?\\UNC\\" + p[2:]) if p.startswith("\\\\") else ("\\\\?\\" + p)
+    return os.path.lexists(p)
 
 
 def _has_any_source_plugin(mod_dir: Path) -> bool:
@@ -8454,6 +8580,38 @@ def _has_any_source_plugin(mod_dir: Path) -> bool:
                 return True
         dirs[:] = [d for d in dirs if d.lower() not in _skip]  # prune asset trees
     return False
+
+
+def _source_gate_ok(mod_dir: Path, excl: "set[str] | frozenset",
+                    enabled_names: "set[str] | frozenset | None",
+                    require_arma: bool) -> bool:
+    """The gate selection puts every mod folder through before reading its
+    plugins: enabled, not excluded (`excl`, lowercased names), no non-source
+    name, not child content, and holding a plugin. A folder it refuses is never
+    a conversion source."""
+    nl = mod_dir.name.lower()
+    if nl in excl:
+        return False
+    if enabled_names is not None and mod_dir.name not in enabled_names:
+        return False  # disabled in the active MO2 profile
+    # The beast-race hints are a TIE-BREAKER, not a veto: under
+    # `require_arma` the ARMA test is the evidence and it decides, so a
+    # khajiit ARMOUR mod is admitted while a khajiit body/fur/race mod still
+    # yields no armour base and is dropped below. The `scan` preview has no
+    # ESP parse, hence no evidence, so there the name is all we have.
+    _hints = (_NONSOURCE_NAME_HINTS_HARD if require_arma
+              else _NONSOURCE_NAME_HINTS)
+    if any(h in nl for h in _hints):
+        return False
+    if _is_child_content_mod(mod_dir.name):
+        return False  # child clothing — not armour "for the player"
+    # A source plugin can be .esp OR a bespoke-armour master/.esl (quest mods,
+    # bespoke-armor masters, ...). #179. SINGLE asset-pruned
+    # walk (stops at first plugin) -- masters/CC are excluded downstream by
+    # _find_source_esps, so a master-only folder still gets dropped.
+    if not _has_any_source_plugin(mod_dir):
+        return False
+    return True
 
 
 def _find_armor_mod_dirs(mods_root: Path,
@@ -8486,7 +8644,7 @@ def _find_armor_mod_dirs(mods_root: Path,
             # #npc-worn-nonplayable
             # Which plugin copies are read decides sources too.
             # #loaded-source-plugins
-            _loaded_source_plugins_on(),
+            _loaded_source_plugins_on(), _loaded_copy_reader_on(),
             # The female-only rule's pairs change the mesh keys indexed.
             # #female-slot-pairs #female-slot-absent
             _female_slot_pairs_on(), _female_slot_absent_on(),
@@ -8513,6 +8671,9 @@ def _find_armor_mod_dirs(mods_root: Path,
         if require_arma:
             _SELECTION_RUN_WARNINGS[_key[0]] = (
                 _mesh_index_unreadable_warnings(_held[0]) if _held else [])
+            # Its gate judges the loaded plugin copies of the convert step
+            # that follows. #loaded-copy-reader
+            _set_source_gate(mods_root, extra_exclude_names, enabled_names)
         return list(_cached)
     _ARMOR_MOD_DIRS_CACHE.pop(_key, None)
     _ARMOR_MOD_DIRS_UNREADABLE.pop(_key, None)
@@ -8578,29 +8739,7 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
         return []
 
     def _name_ok(mod_dir: Path) -> bool:
-        nl = mod_dir.name.lower()
-        if nl in excl:
-            return False
-        if enabled_names is not None and mod_dir.name not in enabled_names:
-            return False  # disabled in the active MO2 profile
-        # The beast-race hints are a TIE-BREAKER, not a veto: under
-        # `require_arma` the ARMA test is the evidence and it decides, so a
-        # khajiit ARMOUR mod is admitted while a khajiit body/fur/race mod still
-        # yields no armour base and is dropped below. The `scan` preview has no
-        # ESP parse, hence no evidence, so there the name is all we have.
-        _hints = (_NONSOURCE_NAME_HINTS_HARD if require_arma
-                  else _NONSOURCE_NAME_HINTS)
-        if any(h in nl for h in _hints):
-            return False
-        if _is_child_content_mod(mod_dir.name):
-            return False  # child clothing — not armour "for the player"
-        # A source plugin can be .esp OR a bespoke-armour master/.esl (quest mods,
-        # bespoke-armor masters, ...). #179. SINGLE asset-pruned
-        # walk (stops at first plugin) -- masters/CC are excluded downstream by
-        # _find_source_esps, so a master-only folder still gets dropped.
-        if not _has_any_source_plugin(mod_dir):
-            return False
-        return True
+        return _source_gate_ok(mod_dir, excl, enabled_names, require_arma)
 
     if not require_arma:
         # scan/preview: conventional armor-path name heuristic (no ESP parse).
@@ -8627,6 +8766,9 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
     # Which plugin copies load is read afresh for each selection.
     # #loaded-source-plugins
     _LOADED_PLUGIN_INDEX.clear()
+    # A loaded copy counts as read only in a folder this gate admits.
+    # #loaded-copy-reader
+    _set_source_gate(mods_root, extra_exclude_names, enabled_names)
     # This selection's run warnings, for the convert step to record.
     # #vfs-index-fail-loud
     _sel_warns: "list[tuple[str, str, str, str]]" = []
