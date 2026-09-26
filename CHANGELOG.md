@@ -36,9 +36,14 @@ the same way, without changing anything -- and repeats the renaming on it, so
 it knows exactly which original layer became "fur", "fur:1", "fur:2" and so on.
 It does this when the converted mesh shows renamed layers, when a colour
 variant lists one layer name more than once, which proves the garment had
-several layers of that name even if every renamed one was lost, and when the
+several layers of that name even if every renamed one was lost, when the
 converted mesh has two layers whose names differ only in capitals ("Fur" and
-"fur"), which the tool otherwise matches as one name. Layers the previous fix
+"fur"), which the tool otherwise matches as one name, and when the converted
+mesh has two layers with exactly the same name. When the merged plugin is
+split into several files (CBBE_to_UBE_Combined.esp, CBBE_to_UBE_Combined2.esp,
+...), the tool looks at all of them together: a variant in one file that
+lists a name twice counts for the same garment's variants in the other files
+too, and each original mesh is read once. Layers the previous fix
 leaves with their shared name (named in the physics file, or a body), layers
 named alike up to capitals, and any name a variant lists twice or the
 converted mesh carries twice are told apart by their vertex count, triangle
@@ -67,16 +72,17 @@ name in three cases:
   coordinates that only their names tell apart (two renamed layers, or
   "Fur" and "fur"), whose order the armour mod swapped after the conversion;
 - every other layer of the name was lost in conversion, so the converted mesh
-  has the name once, no variant of the garment lists it twice, and the tool
-  did not read the original mesh (nothing else about the garment made it) or
-  could not use it. The one entry goes to the layer that is left, as before,
-  and that is another layer's colour when the entry was written for a lost
-  layer;
-- the converted mesh has several layers with exactly the same name (left
-  with their shared name, or a mesh converted by an older version) and the
-  tool did not read the original mesh: the converted mesh shows no renamed
-  layer and no names differing only in capitals, and no variant lists a name
-  twice. The one entry goes to the last layer of that name, as before.
+  has the name once, no variant of the garment in any of the merged plugin's
+  files lists it twice, and the tool did not read the original mesh (nothing
+  else about the garment made it) or could not use it. The one entry goes to
+  the layer that is left, as before, and that is another layer's colour when
+  the entry was written for a lost layer;
+- the converted mesh has two or more layers with no name at all, and a
+  variant has an entry with no name: it goes to the last of them, as before.
+  No mesh a colour variant of the reported modlist uses has such layers.
+This holds when the colour variants are fixed once, right after the merge,
+which is what a run does. When a converted mesh will not load, its colour
+variants keep their original entries, and the run says so.
 None of the meshes the reported modlist converts has renamed layers, so
 current output does not change. One converted mesh has two layer names that
 differ only in capitals (a small collision layer and the feet), but no colour
@@ -100,6 +106,13 @@ name was lost. `CBBE2UBE_NO_ALTTEX_CASE_PROVENANCE=1` (read only when the
 switch above is not set) treats "Fur" and "fur" as different names when it
 reads the original mesh, as the previous test build did: a variant's entry
 for one of them can then go to the other.
+`CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY=1` (read only when none of the
+`..._DUP_OCCURRENCE`, `..._DUP_SHAPE_NAMES`, `..._EXACT_PROVENANCE`,
+`..._SET_PROVENANCE` and `..._CASE_PROVENANCE` switches is set) fixes each file of a split merged plugin on its own and does not
+read the original mesh just because two layers share a name exactly, as the
+previous test build did: a variant naming a layer once can then put a lost
+layer's colour on the one left, when only another file's variant lists the
+name twice, or put its colour on the last of two same-named layers.
 
 ### Changed — whether you can wear an item is read from the plugin the game uses
 

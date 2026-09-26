@@ -47,7 +47,8 @@ SET_OFF = "CBBE2UBE_NO_ALTTEX_SET_PROVENANCE"
 SWITCHES = (SET_OFF, "CBBE2UBE_NO_ALTTEX_EXACT_PROVENANCE",
             "CBBE2UBE_NO_ALTTEX_DUP_OCCURRENCE", "CBBE2UBE_NO_DUP_SHAPE_NAMES",
             "CBBE2UBE_NO_ALTTEX_FAMILY_STRICT",
-            "CBBE2UBE_NO_ALTTEX_CASE_PROVENANCE")
+            "CBBE2UBE_NO_ALTTEX_CASE_PROVENANCE",
+            "CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY")
 needs_pynifly = pytest.mark.skipif(not pynifly_available(),
                                    reason="pynifly native lib not available")
 

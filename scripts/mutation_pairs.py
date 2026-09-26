@@ -6965,13 +6965,18 @@ PAIRS = (
          ),
          # Not '..._beside_an_authored_case_variant' since #alttex-case-provenance:
          # its NIF carries 'Fur' and 'fur', which reads the source on its own.
-         tests=('tests/test_alttex_set_provenance.py',),
+         # Not '..._binds_a_physics_kept_group_by_print' since
+         # #alttex-batch-ambiguity: its NIF carries 'fur' twice, which reads the
+         # source on its own. A repeat in another ESL-split piece is.
+         tests=('tests/test_alttex_set_provenance.py',
+                'tests/test_alttex_batch_ambiguity.py'),
          expect=('test_every_renamed_shell_lost_drops_the_lost_shells_colour',
                  'test_a_repeat_in_a_later_armature_still_reads_the_source',
                  'test_a_repeated_name_without_a_source_loses_its_entries',
                  'test_another_sets_repeat_makes_a_single_entry_ambiguous[True]',
                  'test_another_sets_repeat_makes_a_single_entry_ambiguous[False]',
-                 'test_the_reconcile_binds_a_physics_kept_group_by_print'),
+                 'test_a_repeat_in_another_piece_makes_a_single_entry_ambiguous[True]',
+                 'test_a_repeat_in_another_piece_makes_a_single_entry_ambiguous[False]'),
     ),
     Pair('ASP-c', 'a name a set gives twice is not taken as repeated',
          edits=(
@@ -6980,13 +6985,15 @@ PAIRS = (
               '    return frozenset(nm for nm, c in count.items() '
               'if nm and c > 2)  # MUTATED', 1),
          ),
+         # Not '..._binds_a_physics_kept_group_by_print' since
+         # #alttex-batch-ambiguity: its NIF carries 'fur' twice, which reads the
+         # source on its own.
          tests=('tests/test_alttex_set_provenance.py',),
          expect=('test_every_renamed_shell_lost_drops_the_lost_shells_colour',
                  'test_a_repeated_name_without_a_source_loses_its_entries',
                  'test_a_sets_repeated_names_are_case_insensitive',
                  'test_another_sets_repeat_makes_a_single_entry_ambiguous[True]',
-                 'test_another_sets_repeat_makes_a_single_entry_ambiguous[False]',
-                 'test_the_reconcile_binds_a_physics_kept_group_by_print'),
+                 'test_another_sets_repeat_makes_a_single_entry_ambiguous[False]'),
     ),
     Pair('ASP-d', 'with no source a repeated name keeps its first-listed entry',
          edits=(
@@ -7176,5 +7183,73 @@ PAIRS = (
          ),
          tests=('tests/test_alttex_case_provenance.py',),
          expect=('test_a_case_variant_of_a_renamed_shell_must_keep_its_print',),
+    ),
+    # #alttex-batch-ambiguity (2026-09-25): the ESL-split pieces of the merged
+    # plugin are reconciled as ONE view (a repeat in one piece makes the NIF's
+    # name shared in every piece), and a NIF carrying a name twice has its
+    # source read.
+    Pair('ABA-a', 'the batch-ambiguity off-switch no longer switches anything off',
+         edits=(
+             ('src/ube_patcher.py',
+              '    return not _flag("CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY", False)',
+              '    return True  # MUTATED', 1),
+         ),
+         tests=('tests/test_alttex_batch_ambiguity.py',),
+         expect=('test_switched_off_each_piece_is_reconciled_on_its_own[True]',
+                 'test_switched_off_each_piece_is_reconciled_on_its_own[False]',
+                 'test_switched_off_a_name_carried_twice_binds_by_name'),
+    ),
+    Pair('ABA-b', 'each ESL-split piece is reconciled on its own',
+         edits=(
+             ('src/ube_patcher.py',
+              '        return _reconcile_alt_texture_pieces(pieces, meshes_root)',
+              '        pass  # MUTATED', 1),
+         ),
+         tests=('tests/test_alttex_batch_ambiguity.py',),
+         expect=('test_a_repeat_in_another_piece_makes_a_single_entry_ambiguous[True]',
+                 'test_a_repeat_in_another_piece_makes_a_single_entry_ambiguous[False]',
+                 'test_a_single_entry_in_the_first_piece_is_ambiguous_too'),
+    ),
+    Pair('ABA-c', 'a NIF carrying a name twice reads no source',
+         edits=(
+             ('src/ube_patcher.py',
+              '                elif batch and _literal_duplicate_names(s.name for s in nf.shapes):',
+              '                elif False:  # MUTATED', 1),
+         ),
+         tests=('tests/test_alttex_batch_ambiguity.py',),
+         expect=('test_a_name_the_nif_carries_twice_reads_the_source[True]',
+                 'test_a_name_the_nif_carries_twice_reads_the_source[False]'),
+    ),
+    Pair('ABA-d', 'a name carried twice is not taken as a literal duplicate',
+         edits=(
+             ('src/ube_patcher.py',
+              '    return frozenset(n for n, c in count.items() if c > 1)',
+              '    return frozenset(n for n, c in count.items() if c > 2)  # MUTATED', 1),
+         ),
+         tests=('tests/test_alttex_batch_ambiguity.py',),
+         expect=('test_literal_duplicate_names_are_the_names_carried_twice',
+                 'test_a_name_the_nif_carries_twice_reads_the_source[True]',
+                 'test_a_name_the_nif_carries_twice_reads_the_source[False]'),
+    ),
+    Pair('ABA-e', 'a piece that does not load is skipped silently',
+         edits=(
+             ('src/ube_patcher.py',
+              '            load_error = load_error or ex',
+              '            pass  # MUTATED', 1),
+         ),
+         tests=('tests/test_alttex_batch_ambiguity.py',),
+         expect=('test_a_piece_that_does_not_load_raises_after_the_others_are_saved',),
+    ),
+    Pair('ABA-f', "every piece's fixes are counted against the first piece",
+         edits=(
+             ('src/ube_patcher.py',
+              '            fixed[pi] += 1',
+              '            fixed[0] += 1  # MUTATED', 1),
+         ),
+         tests=('tests/test_alttex_batch_ambiguity.py',),
+         expect=('test_a_repeat_in_another_piece_makes_a_single_entry_ambiguous[True]',
+                 'test_a_repeat_in_another_piece_makes_a_single_entry_ambiguous[False]',
+                 'test_a_single_entry_in_the_first_piece_is_ambiguous_too',
+                 'test_every_piece_is_reconciled_and_saved'),
     ),
 )

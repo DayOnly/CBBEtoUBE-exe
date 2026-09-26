@@ -1134,10 +1134,12 @@ physics-XML and body keep rules), so the reconcile re-derives it instead of
 guessing from the converted NIF. For each converted NIF a set names that
 carries a `name:k` beside `name` (case-insensitively, k a plain integer from 1:
 `_split_name_candidates`), that a set names one shape name in more than once
-(case-insensitively: `_repeated_entry_names`, `#alttex-set-provenance` below),
-or that carries one name under two spellings (`Fur` and `fur`:
-`_case_variant_names`, `#alttex-case-provenance` below); any other NIF never
-reads a source:
+(case-insensitively: `_repeated_entry_names`, `#alttex-set-provenance` below;
+a set in ANY piece of the merged plugin, `#alttex-batch-ambiguity` below),
+that carries one name under two spellings (`Fur` and `fur`:
+`_case_variant_names`, `#alttex-case-provenance` below), or that carries one
+name twice in one spelling (`_literal_duplicate_names`,
+`#alttex-batch-ambiguity`); any other NIF never reads a source:
 1. find its source, read-only, the way the convert step found it
    (`_alttex_source_paths`): our path is `!UBE\` + the source's meshes path;
    the full-VFS winner from the batch's own index (`auto_convert.
@@ -1196,30 +1198,40 @@ against the scratch conversion, keeps all six entries of all 12 sets on their
 own shells. So a colour is missed when a shell was lost, when an entry's index
 disagrees with its name, when the source is missing or changed, or when the
 converted shapes of a kept or otherwise shared name cannot be told apart.
-Re-derived after `#alttex-case-provenance` (below), with every switch on, a
-colour can still land on another shell of the same name (case-insensitively)
-in exactly three cases; in each, the binding is by a name the reconcile
-cannot check:
-- two shells identical in vertex count, triangle count and UVs that only
+Re-derived after `#alttex-batch-ambiguity` (below), with every switch on, by
+following each entry through the reconcile. An entry of a NIF that loads
+either (a) binds by name, when the NIF's source is not read -- it shows no
+`name:k`, no second spelling, no name twice, and no set in any piece repeats
+a name -- or when it is read and the entry's name is not one the source or
+the reconcile shows is shared; (b) is dropped, for a shared name when the
+source is missing, unreadable or not the mesh converted; or (c) binds by
+source index and print (step 4). So a colour can still land on another shell
+of the same name (case-insensitively) in exactly three cases:
+- (c) two shells identical in vertex count, triangle count and UVs that only
   their names tell apart -- two renamed shells (`fur`, `fur:1`) or two
   spellings (`Fur`, `fur`) -- which the mod swapped after the conversion:
   the print cannot see the swap;
-- a name the source shares whose other shells were ALL lost in conversion,
-  so the converted NIF carries it once (no `name:k`, no second spelling), and
-  no set of that NIF names it twice, when the source was not read (nothing
-  else about the NIF reads it) or does not match: the name's one entry goes
-  to the surviving shape by name, which is the lost shell's colour when the
-  entry was written for a lost shell;
-- a name the converted NIF carries twice in one spelling (a group the rename
-  kept as authored, or a mesh converted before the rename) when no source is
-  read -- the NIF shows no `name:k` and no second spelling of any name, and no
-  set of it names a name twice: one entry per name, on the LAST shape of the
-  name.
-With the source read and matched, neither of the last two can happen: the
-source's shared names bind by index and print, or are dropped.
-Precondition: the reconcile runs once, on a freshly merged plugin whose sets
-still carry the source's indices (stale overflow pieces are removed by the
-merge); it is not meant to run again on its own output.
+- (a) a name the source shares whose other shells were ALL lost in
+  conversion, so the converted NIF carries it once (no `name:k`, no second
+  spelling, no literal duplicate), and no set of that NIF in any piece of the
+  merged plugin names it twice, when the source was not read (nothing else
+  about the NIF reads it) or does not match: the name's one entry goes to the
+  surviving shape by name, which is the lost shell's colour when the entry
+  was written for a lost shell;
+- (a) an entry with an EMPTY name on a NIF carrying two or more unnamed
+  shapes: the name map keeps the last, and no shared-name rule takes an
+  empty name, so it goes there unless the source is read for another name
+  and does not match (then it is dropped). MEASURED: no converted NIF a set
+  of the reported modlist names has two unnamed shapes.
+With the source read and matched only the first can happen: a name the
+source shares binds by index and print, or is dropped.
+Not in the list, because the entry is never rebound: a converted NIF that
+exists but does not load keeps its set's source indices unchanged (the run
+reports it).
+Precondition: the reconcile runs once, on a freshly merged plugin -- every
+ESL-split piece of it together -- whose sets still carry the source's
+indices (stale overflow pieces are removed by the merge); it is not meant to
+run again on its own output, whose indices are the converted NIF's.
 `CBBE2UBE_NO_ALTTEX_EXACT_PROVENANCE=1` binds by the converted NIF's layout
 (`#alttex-family-strict`, below), byte for byte as before.
 
@@ -1291,8 +1303,9 @@ source switched on:
   `fur`, `fur:1`) must carry its source shell's print, as the renamed shells
   must; otherwise the source is not the mesh converted (step 3).
 So every name the reconcile knows was shared binds exactly or is dropped,
-whether or not a source was found. The cases left are the three listed under
-`#alttex-exact-provenance`. Every armature's sets are still scanned for
+whether or not a source was found. The cases left are those listed under
+`#alttex-exact-provenance`, once `#alttex-batch-ambiguity` (below) closed two
+more. Every armature's sets are still scanned for
 repeats before any NIF is loaded (a repeat in a later armature reads the
 source; test and Pair ASP-m).
 Measured on the reported modlist (all 3,345 loadable converted NIFs of the
@@ -1306,6 +1319,51 @@ stale coat's sets were already dropped (its source does not match).
 `CBBE2UBE_NO_ALTTEX_CASE_PROVENANCE=1` (read only with set provenance on)
 groups by exact name, reads no source for two spellings alone and binds such a
 `Fur` by name, byte for byte as `#alttex-set-provenance` first shipped.
+
+**One view of the whole merged plugin: `#alttex-batch-ambiguity`.** Two holes
+left after `#alttex-case-provenance`, each able to put a colour on the WRONG
+shell:
+- `reconcile_alt_texture_indices_all` reconciled each ESL-split piece
+  (`<stem>.esp`, `<stem>2.esp`, ...) on its own, rebuilding the repeats, the
+  converted NIFs, the shared names and the bindings per piece. The merge
+  splits by patch, so two armatures on one NIF can land in different pieces:
+  a set in one piece repeating `fur` proves the NIF's `fur` was shared, yet a
+  set in the other naming `fur` once read no source and bound by name -- a
+  lost shell's colour on the surviving `fur`, with the source found or not.
+  Now `_reconcile_alt_texture_pieces` takes every piece at once: every
+  piece's sets are scanned for repeats before any NIF is loaded, and one
+  view (NIF cache, prints, shared names, bindings) serves every piece, so
+  each source is looked up and read once. Each piece that changed is saved;
+  a piece that does not load raises after the others are reconciled and
+  saved (the caller reports the failure, as before).
+- A converted NIF carrying one name twice in one spelling (a group the rename
+  kept as authored, or a mesh converted before the rename) read its source
+  only when a set repeated a name, another name looked renamed, or a name had
+  two spellings; otherwise a set naming the name once put its entry on the
+  LAST shape of the name. Now such a NIF (`_literal_duplicate_names`, empty
+  names excluded) has its source read, and the name binds by print or is
+  dropped, as a repeat's does.
+`reconcile_alt_texture_indices` on one plugin is the same function over one
+piece, so a single-piece merge reconciles as before. What is left is the
+list under `#alttex-exact-provenance`.
+Measured on the reported modlist, against the parent (8317cd7), on git
+archives: the path a fresh run takes -- `merge_patches_split` then this
+reconcile -- over the coverage patches the replay writes (3 in, 2 pieces),
+over the deployed coverage patches (2 in, 2 pieces) and over the per-source
+fallback merge (188 in, 3 pieces) is byte-identical (7/7 files); the
+per-patch reconcile of the 190 pre-reconcile patches and the coverage replay
+(3 ESPs, 3 sidecars, stats) are byte-identical too. On the freshly merged
+pieces 9, 2 and 60 models are named from more than one piece, and none of the
+4, 4 and 3 models a set repeats a name for is among them; the one literal
+duplicate is the stale coat, whose fresh sets already read its source (it
+does not match, so its `fur` entries are dropped). The only change is
+outside the reconcile's precondition: reconciling the deployed, already
+reconciled plugins again drops the one `Fur` entry of 6 of the stale coat's
+sets (index 5, its last `fur`), which a fresh merge already drops -- a
+colour missed.
+`CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY=1` (read only with case provenance on)
+reconciles each piece on its own and reads no source for a literal duplicate
+alone, byte for byte as `#alttex-case-provenance` first shipped.
 
 **The layout guess, behind the switch: `#alttex-family-strict`.** Without the
 source the reconcile cannot know which shapes the rename made;

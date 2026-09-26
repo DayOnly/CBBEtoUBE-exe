@@ -27,22 +27,39 @@ wrong (adjacent) plugin -> every color variant rendered the base texture.
 import struct
 from pathlib import Path
 
+import pytest
+
 from src import esp, ube_patcher as up
 
 
-def test_reconcile_runs_on_all_esl_split_pieces(tmp_path, monkeypatch):
+@pytest.mark.parametrize("batch_off", [False, True])
+def test_reconcile_runs_on_all_esl_split_pieces(tmp_path, monkeypatch,
+                                                batch_off):
     # The color-variant bug: reconcile_alt_texture_indices ran ONLY on the
     # primary Combined.esp, but merge_patches_split overflows records (incl. their
     # alt-texture sets) into Combined2.esp/Combined3.esp -- so 174 overflow ARMAs
-    # kept stale 3D indices. The _all wrapper must visit EVERY split piece.
+    # kept stale 3D indices. The _all wrapper must visit EVERY split piece
+    # (#alttex-batch-ambiguity: all of them as one view; switched off, one at
+    # a time).
     stem = "CBBE_to_UBE_Combined"
     for name in (f"{stem}.esp", f"{stem}2.esp", f"{stem}3.esp"):
         (tmp_path / name).write_bytes(b"")
     (tmp_path / "Unrelated.esp").write_bytes(b"")        # must NOT be visited
 
+    for k in ("CBBE2UBE_NO_ALTTEX_DUP_OCCURRENCE", "CBBE2UBE_NO_DUP_SHAPE_NAMES",
+              "CBBE2UBE_NO_ALTTEX_EXACT_PROVENANCE",
+              "CBBE2UBE_NO_ALTTEX_SET_PROVENANCE",
+              "CBBE2UBE_NO_ALTTEX_CASE_PROVENANCE",
+              "CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY"):
+        monkeypatch.delenv(k, raising=False)
+    if batch_off:
+        monkeypatch.setenv("CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY", "1")
     visited = []
     monkeypatch.setattr(up, "reconcile_alt_texture_indices",
                         lambda p, m: (visited.append(Path(p).name), 1)[1])
+    monkeypatch.setattr(up, "_reconcile_alt_texture_pieces",
+                        lambda ps, m: (visited.extend(Path(p).name for p in ps),
+                                       len(ps))[1])
     n = up.reconcile_alt_texture_indices_all(tmp_path / f"{stem}.esp",
                                              tmp_path / "meshes")
     assert set(visited) == {f"{stem}.esp", f"{stem}2.esp", f"{stem}3.esp"}, visited

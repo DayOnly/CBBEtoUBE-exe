@@ -476,6 +476,44 @@ def _alttex_case_provenance_on() -> bool:
     return not _flag("CBBE2UBE_NO_ALTTEX_CASE_PROVENANCE", False)
 
 
+def _alttex_batch_ambiguity_on() -> bool:
+    r"""#alttex-batch-ambiguity (2026-09-25): are the reconcile's decisions
+    about a converted NIF -- is a name shared, is its source read, how does
+    it bind -- taken once for the whole merged plugin, every ESL-split piece
+    together, and does a NIF carrying a literal duplicate name have its
+    source read? Yes, by default. Read only with #alttex-case-provenance on.
+
+    Two holes it left, each able to put a colour on the WRONG shell:
+    - `reconcile_alt_texture_indices_all` reconciled each piece
+      (`<stem>.esp`, `<stem>2.esp`, ...) on its own. A set in one piece that
+      repeats a name proves that NIF's name was shared, but a set in ANOTHER
+      piece naming it once read no source and bound by name: a lost shell's
+      colour could land on the surviving shell. Now every piece's sets are
+      scanned first, and one view -- the repeats, the converted NIFs, the
+      shared names, the source bindings -- serves every piece
+      (`_reconcile_alt_texture_pieces`); each source is read once.
+    - A converted NIF carrying one name twice (a group the rename left as
+      authored) read its source only when some set repeated the name or
+      another name looked renamed; a set naming it once put its entry on the
+      LAST shape of the name. Now such a NIF has its source read
+      (`_literal_duplicate_names`), and the name binds by print or is
+      dropped, as a repeat's does.
+
+    CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY=1 reconciles each piece on its own and
+    reads no source for a literal duplicate alone, as #alttex-case-provenance
+    first did."""
+    return not _flag("CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY", False)
+
+
+def _literal_duplicate_names(names) -> "frozenset[str]":
+    """#alttex-batch-ambiguity: the non-empty shape names a NIF carries more
+    than once under one exact spelling (a group the rename left as authored).
+    The reconcile's name map keeps the last such shape, so an entry of such a
+    name cannot be bound by its name."""
+    count = Counter(str(n) for n in names if n)
+    return frozenset(n for n, c in count.items() if c > 1)
+
+
 def _case_variant_names(names) -> "frozenset[str]":
     """#alttex-case-provenance: the lowercased shape names a NIF carries under
     more than one spelling ('Fur' and 'fur'). The reconcile matches names
@@ -898,11 +936,30 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
     wrong shapes or fall out of range (no effect). This reloads each ARMA's
     converted NIF and rewrites the alt-texture set to the surviving shapes'
     real names+indices. Returns number of ARMA records fixed.
-    Run AFTER NIF conversion + merge."""
+    Run AFTER NIF conversion + merge, once, on a freshly merged plugin: an
+    entry's index is read as the SOURCE mesh's 3D index."""
+    return _reconcile_alt_texture_pieces([esp_path], meshes_root)
+
+
+def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
+    """`reconcile_alt_texture_indices` over one or more plugins taken as ONE
+    view (#alttex-batch-ambiguity): every plugin's sets are scanned before
+    any NIF is loaded, and the repeats, the converted NIFs, the shared names
+    and the source bindings are shared by all of them. Each plugin that
+    changed is saved. A plugin that does not load raises -- after the others
+    are reconciled and saved. Returns the ARMA records fixed, summed."""
     from pathlib import Path as _Path
     from . import nif_io
     meshes_root = _Path(meshes_root)
-    e = esp.ESP.load(esp_path)
+    loaded = []                          # (path, ESP)
+    load_error = None
+    for piece in esp_paths:
+        try:
+            loaded.append((piece, esp.ESP.load(piece)))
+        except Exception as ex:          # reconcile the rest, then raise
+            if len(esp_paths) == 1:
+                raise
+            load_error = load_error or ex
     _cache: "dict[str, dict | None]" = {}
     # Converted NIFs that EXIST but won't load: their alt-texture set keeps the
     # stale source indices (color variants misalign). Distinct from a legitimately
@@ -920,6 +977,8 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
     # #alttex-case-provenance: a NIF carrying one name under two spellings
     # ('Fur', 'fur') has its source read too.
     case_prov = set_prov and _alttex_case_provenance_on()
+    # #alttex-batch-ambiguity: so does a NIF carrying one name twice.
+    batch = case_prov and _alttex_batch_ambiguity_on()
 
     def shapes_for(model_path: str):
         key = model_path.lower()
@@ -934,6 +993,8 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
                 if exact and (_split_name_candidates(idx) or key in _repeats
                               or (case_prov and _case_variant_names(idx))):
                     _prints[key] = [(s.name, _shape_print(s)) for s in nf.shapes]
+                elif batch and _literal_duplicate_names(s.name for s in nf.shapes):
+                    _prints[key] = [(s.name, _shape_print(s)) for s in nf.shapes]
         except Exception:
             idx = None
             load_failed.append(model_path)
@@ -943,7 +1004,9 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
     SLOT_FOR = {b"MO2S": b"MOD2", b"MO3S": b"MOD3",
                 b"MO4S": b"MOD4", b"MO5S": b"MOD5"}
     sets = []                            # (record, subrecords, {MODn: model})
-    for g in e.groups:
+    owner: "list[int]" = []              # the plugin (index in `loaded`) of each
+    groups = [(pi, g) for pi, (_p, e) in enumerate(loaded) for g in e.groups]
+    for pi, g in groups:
         if g.label != b"ARMA":
             continue
         for r in g.records:
@@ -955,6 +1018,7 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
                 if sig in (b"MOD2", b"MOD3", b"MOD4", b"MOD5"):
                     models[sig] = data.rstrip(b"\x00").decode("latin-1", "ignore")
             sets.append((r, subs, models))
+            owner.append(pi)
             for sig, data in subs:
                 if set_prov and sig in SLOT_FOR and models.get(SLOT_FOR[sig]):
                     rep = _repeated_entry_names(data)
@@ -985,8 +1049,8 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
             bindings[k] = _alttex_binding(
                 _read_alttex_source(src) if src is not None else None, conv,
                 ambiguous.get(k, frozenset()))
-    fixed = 0
-    for r, subs, models in sets:
+    fixed = [0] * len(loaded)            # ARMA records fixed, per plugin
+    for (r, subs, models), pi in zip(sets, owner):
         changed = False
         new_payload = b""
         for sig, data in subs:
@@ -1004,7 +1068,7 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
             new_payload += esp.encode_subrecord(sig, data)
         if changed:
             r.payload = new_payload
-            fixed += 1
+            fixed[pi] += 1
     import sys as _s
     if load_failed:
         print(f"  !! alt-texture reconcile: {len(load_failed)} converted NIF(s) "
@@ -1022,9 +1086,12 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
                   f"read or is not the mesh converted -> the colour-variant "
                   f"entries of those layers were dropped (they keep their "
                   f"base colour): {unmatched[:5]}", file=_s.stderr)
-    if fixed:
-        e.save(esp_path)
-    return fixed
+    for (piece, e), n in zip(loaded, fixed):
+        if n:
+            e.save(piece)
+    if load_error is not None:
+        raise load_error
+    return sum(fixed)
 
 
 def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root) -> int:
@@ -1033,11 +1100,22 @@ def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root) -> int:
 
     merge_patches_split may spill records into sibling pieces; those pieces
     carry alt-texture sets that also need reconciliation. Globs the same
-    `<stem>*<suffix>` family the split writer uses. Returns total records fixed."""
+    `<stem>*<suffix>` family the split writer uses. Returns total records fixed.
+
+    #alttex-batch-ambiguity: the pieces are ONE plugin split for the ESL cap,
+    so they are reconciled as one view (`_reconcile_alt_texture_pieces`): a
+    set in one piece that repeats a name makes that NIF's name shared in
+    every piece. With CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY=1 (or any earlier
+    alt-texture switch set) each piece is reconciled on its own."""
     from pathlib import Path as _Path
     p = _Path(primary_esp_path)
+    pieces = sorted(p.parent.glob(f"{p.stem}*{p.suffix}"))
+    if (_alttex_dup_occurrence_on() and _alttex_exact_provenance_on()
+            and _alttex_set_provenance_on() and _alttex_case_provenance_on()
+            and _alttex_batch_ambiguity_on()):
+        return _reconcile_alt_texture_pieces(pieces, meshes_root)
     total = 0
-    for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
+    for piece in pieces:
         total += reconcile_alt_texture_indices(piece, meshes_root)
     return total
 
