@@ -44,6 +44,37 @@ import struct
 import zlib
 from pathlib import Path
 
+from .envflags import flag as _flag
+
+
+def model_path_codepage() -> bool:
+    r"""#model-path-codepage (2026-09-26): are archive entry names read in the
+    game's codepage, as the armature model paths that name them are? Yes, by
+    default.
+
+    The game reads a model path and an archive's folder and file names as the
+    same bytes, in cp1252. #arma-path-bytes made the converter read MOD2-5 as
+    cp1252, but this reader decoded archive names as latin-1, and the
+    alt-texture reconcile and the postflight missing-mesh check still read
+    MOD2-5 as latin-1. The two agree on every byte but 0x80-0x9F (a curly
+    apostrophe, an en dash, s with a caron ...), where cp1252 has a character
+    and latin-1 a control code: an archive-only mesh named with one was never
+    found by the coverage step's "does this mesh exist" lookup, and our own
+    converted NIF at such a path was not found by the reconcile or the
+    postflight. Names are now decoded as cp1252 with `surrogateescape` -- the
+    codec `ube_patcher._model_path_str` reads model paths with, lossless for
+    the five bytes cp1252 leaves undefined -- and both ARMA readers read
+    through `_model_path_str`. CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1 reads them
+    all as latin-1 again."""
+    return not _flag("CBBE2UBE_NO_MODEL_PATH_CODEPAGE", False)
+
+
+def _decode_name(raw: bytes, codepage: bool) -> str:
+    """An archive folder or file name as text. #model-path-codepage"""
+    if codepage:
+        return raw.decode("cp1252", "surrogateescape")
+    return raw.decode("latin-1", "ignore")
+
 
 # --------------------------------------------------------------------------
 # BSA archive reader (Bethesda Archive, TES5/SSE: version 104 / 105)
@@ -111,6 +142,7 @@ class BSAArchive:
         self.archive_flags = archive_flags
         default_compressed = bool(archive_flags & _ARCHIVE_FLAG_COMPRESSED)
         embed_names = bool(archive_flags & _ARCHIVE_FLAG_EMBED_NAMES)
+        codepage = model_path_codepage()      # #model-path-codepage
 
         # Folder record size differs across versions: v103/104 = 16 bytes
         # (hash:8 count:4 offset:4); v105 = 24 bytes (hash:8 count:4
@@ -150,8 +182,8 @@ class BSAArchive:
             if archive_flags & _ARCHIVE_FLAG_DIRNAMES:
                 strlen = d[p]
                 p += 1
-                fname = d[p:p + strlen].split(b"\x00", 1)[0].decode(
-                    "latin-1", "ignore")
+                fname = _decode_name(d[p:p + strlen].split(b"\x00", 1)[0],
+                                     codepage)
                 p += strlen
             recs = []
             # Clamp the per-folder file count to what actually fits (16 bytes
@@ -175,7 +207,7 @@ class BSAArchive:
             block = d[names_start:names_start + total_file_name_len]
             for chunk in block.split(b"\x00"):
                 if chunk:
-                    file_names.append(chunk.decode("latin-1", "ignore"))
+                    file_names.append(_decode_name(chunk, codepage))
 
         # Build the name -> (offset, size, compressed) index.
         name_iter = iter(file_names)

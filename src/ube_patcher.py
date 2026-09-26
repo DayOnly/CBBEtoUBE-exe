@@ -1174,7 +1174,7 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root, problems=None) -> int:
             models: dict[bytes, str] = {}
             for sig, data in subs:
                 if sig in (b"MOD2", b"MOD3", b"MOD4", b"MOD5"):
-                    models[sig] = data.rstrip(b"\x00").decode("latin-1", "ignore")
+                    models[sig] = _model_path_read(data)
             sets.append((r, subs, models))
             owner.append(pi)
             for sig, data in subs:
@@ -2124,6 +2124,18 @@ def _model_path_str(data: bytes, as_bytes: bool) -> str:
     if as_bytes:
         return s.decode("cp1252", "surrogateescape")
     return s.decode("utf-8", errors="ignore")
+
+
+def _model_path_read(data: bytes) -> str:
+    """A MOD2-5 string of a plugin this tool WROTE, read back as it was
+    written: `_model_path_str` under #arma-path-bytes' own rule, so our
+    converted NIF at a path with a byte in 0x80-0x9F is found. The alt-texture
+    reconcile and the postflight read through it. #model-path-codepage; with
+    CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1 the old latin-1 read."""
+    from .bsa_strings import model_path_codepage
+    if model_path_codepage():
+        return _model_path_str(data, _arma_path_bytes())
+    return data.rstrip(b"\x00").decode("latin-1", "ignore")
 
 
 def _model_path_zstring(path: str, as_bytes: bool) -> bytes:
@@ -3781,7 +3793,7 @@ def validate_patch(esp_path: str | Path,
                 for sig, sd in esp.iter_subrecords(r.payload):
                     if sig not in (b"MOD3", b"MOD5"):
                         continue
-                    path = sd.rstrip(b"\x00").decode("latin1", errors="ignore")
+                    path = _model_path_read(sd)       # #model-path-codepage
                     if not path:
                         continue
                     # Anything without the !UBE\ prefix is a source path. Most are

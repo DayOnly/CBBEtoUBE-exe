@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed — a mesh whose file name has a curly apostrophe or a dash is found in a mod's archive
+
+A few characters (a curly apostrophe, an en or em dash, a trademark sign, some
+accented letters such as s with a caron) are stored as one byte that the tool
+read two different ways: one way for the mesh paths an armour names, another
+for the file names inside a mod's `.bsa` archive. A mesh named with one of them
+and shipped only in an archive was treated as missing, so the armour could be
+given a stand-in or left without its UBE version. Two later checks read the
+paths this tool wrote the old way too, so for such a path the colour-variant
+fix could not find our own converted mesh and the final check could report it
+as missing. All of them now read these names the way the game does. Measured on
+the reported modlist: no archive file name and no path in the output uses such
+a character, so nothing changes there today.
+`CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1` (set to 1) turns it off.
+
 ### Fixed — six more warnings now reach the end-of-run count and list
 
 Six warnings were printed in the log but left out of the warning count at the

@@ -2254,6 +2254,28 @@ them. The female-guard and stand-in lookups keep their cp1252 read. Live census:
 source plugins (one weapon model has such a byte), 0 in the 29 male-fallback
 sidecars; replay byte-identical. `CBBE2UBE_NO_ARMA_PATH_BYTES=1`.
 
+**Archive names and our own plugins' paths read in the same codepage**
+(`#model-path-codepage`, `CBBE2UBE_NO_MODEL_PATH_CODEPAGE`). The game matches
+a model path against an archive's folder and file names byte for byte, both
+cp1252. `BSAArchive` decoded the names as latin-1, and the alt-texture
+reconcile and the postflight missing-mesh check (`validate_patch`) read MOD2-5
+as latin-1. latin-1 and cp1252 differ only on 0x80-0x9F, where cp1252 has a
+character (0x92 is a curly apostrophe) and latin-1 a control code; for such a
+path the coverage step's existence lookup (`_mesh_exists_anywhere`, the batch
+extraction) missed an archive-only mesh, the reconcile missed our converted
+NIF (stale indices, or a lookup of another mod's copy under the wrong name
+with `#reconcile-loaded-mesh`), and the postflight counted a false
+`missing-nif`. `BSAArchive` now decodes names as cp1252 with `surrogateescape`
+(`_decode_name`, the codec `_model_path_str` uses, so a byte cp1252 leaves
+undefined matches too), and both ARMA readers read through `_model_path_read`
+-- `_model_path_str` under `#arma-path-bytes`' own rule, so a path is read back
+as it was written. Every `BSAArchive` user takes the one decoding; a listing
+and a `read_file` of a listed name always agree. Not covered: the planner and
+several coverage readers decode MOD2-5 as UTF-8 (a byte >= 0x80 that is not
+UTF-8 is dropped there); that is a separate class. Live census: 408 archives,
+512,578 names, 0 listings change; 8,880 model paths in the output plugins, 0
+with a byte >= 0x80.
+
 ### A plugin name SkyPatcher would split gets no line (`#skypatcher-name-guard`)
 
 The merge is the only writer of the INI (the coverage generators' own `ini_lines`
