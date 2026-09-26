@@ -334,12 +334,16 @@ def _log_dir_candidates():
 
 
 # The runs that convert, and so read the saved settings. `merge` builds no mesh.
-_SETTINGS_SUBCOMMANDS = frozenset({"auto", "convert"})
+# `check-setup` checks the setup those runs will have: it is the window's Check
+# setup without a window, and it read the bare environment, so a UBE body picked
+# on the Paths tab passed in the window and failed here. #check-setup-settings
+_SETTINGS_SUBCOMMANDS = frozenset({"auto", "convert", "check-setup"})
 
 
 def _apply_saved_settings(argv):
     """A headless `auto` / `convert` runs with CBBEtoUBE_settings.json, as the
-    window's Convert button does. #settings-everywhere
+    window's Convert button does, and `check-setup` checks with it, as the
+    window's Check setup does. #settings-everywhere #check-setup-settings
 
     It used to ignore the file: settings tuned in the window, then
     `CBBEtoUBE.exe auto` from MO2 or a shell, ran a whole conversion at the

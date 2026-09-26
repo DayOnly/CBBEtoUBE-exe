@@ -208,11 +208,17 @@ Settings persist to `CBBEtoUBE_settings.json` next to the exe (only your
 overrides are stored, so defaults keep tracking the build), and it survives a
 redeploy.
 
-The same file applies when you run `CBBEtoUBE.exe auto` or `convert` without the
-window (from an MO2 executable entry or a shell), so those runs match the Convert
-button. A variable already set in the environment wins over the file. The top of
-the log says where the settings came from, in a line starting `effective
-settings: from`, and lists what the file set. To run without the file, set
+The same file applies when you run `CBBEtoUBE.exe auto`, `convert` or
+`check-setup` without the window (from an MO2 executable entry or a shell), so
+those runs match the Convert button and Check setup. A headless `auto` also skips
+the mods on your Exclusions list (`CBBEtoUBE_exclusions.json`), as the window
+does: on top of any `--exclude-mods` you name, and with `--only-mods` only as
+far as coverage for the mods you did not pick. A variable already set in the
+environment wins over the file (the window does the reverse, so a variable you
+set yourself can make `check-setup` and the window's Check setup disagree). The
+top of the log (and `check-setup`, before its checks) says where the settings came from, in a line starting `effective
+settings: from`, and lists what the file set; the log also names any saved
+exclusions it added. To run without either file, set
 `CBBE2UBE_NO_HEADLESS_SETTINGS=1`.
 
 Several settings are worth calling out, because they target the hardest symptom
