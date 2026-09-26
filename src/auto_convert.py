@@ -206,6 +206,11 @@ def _prewarm_pool(
                 warn(f"warm-up task failed: {plain_error(e)}",
                      consequence="the first real piece on that worker pays the cold start",
                      indent="    ")
+                # Printed as a problem, so counted (the stale-output sweep
+                # counts it too): one entry however many workers. #one-tally
+                _record_class_once("worker warm-up failed", "worker pool", "warm-up",
+                                   f"{plain_error(e)}; the first piece on that "
+                                   "worker paid the cold start")
     finally:
         manager.shutdown()
     total = time.perf_counter() - t0
@@ -1393,6 +1398,11 @@ def _find_ube_body_ref(search_roots: list[Path] | None = None) -> Path | None:
                              "in a deeply-nested non-'ube' path could be missed",
                  fix="set the UBE body reference explicitly if the wrong body is picked",
                  file=sys.stderr)
+            # Each source repeats this search: one entry for the run. #one-tally
+            _record_once("body reference search cut short", "UBE body reference",
+                         str(root), f"{len(candidates)} candidate NIFs; only the "
+                         "first 1500 were checked, so a UBE body in a deeply-nested "
+                         "non-'ube' path could be missed")
         for p in candidates[:1500]:
             r = _check(p)
             if r is None:
@@ -2657,6 +2667,21 @@ def _record_class_once(kind: str, source, item, detail: str = "",
     _record_failure(kind, source, item, detail, severity=severity)
 
 
+def _record_once(kind: str, source, item, detail: str = "",
+                 severity: str = "warning") -> None:
+    """One entry for one fact a run can print more than once: a read that fails
+    again on every call (the NPC-outfit read is not cached on failure), a
+    lookup each source repeats (the UBE body search), a cached read whose
+    warning is recorded again after `_cmd_convert` clears the record. Recorded
+    the first time; not again while the same entry is in the record.
+    #one-tally"""
+    probe = {"kind": str(kind), "source": str(source), "item": str(item),
+             "detail": str(detail)[:400], "severity": str(severity)}
+    if any(all(e.get(k) == v for k, v in probe.items()) for e in _RUN_FAILURES):
+        return
+    _record_failure(kind, source, item, detail, severity=severity)
+
+
 def _run_tally() -> "tuple[int, int]":
     """(failures, warnings) of this run, counted from the record. #one-tally"""
     from . import failure_summary
@@ -3714,6 +3739,10 @@ def _auto_convert_mod_steps(
                      consequence="the source names a path outside the output mod; "
                                  "the file was skipped",
                      file=sys.stderr)
+                # In the parent, so recorded here. #one-tally
+                _record_failure("unsafe path skipped", source_dir.name, rel,
+                                "the source names a path outside the output mod; "
+                                "the file was skipped", severity="warning")
                 continue
             # First-writer wins: skip paths already claimed by an earlier source mod.
             if claimed_dst_paths is not None:
@@ -4011,6 +4040,10 @@ def _auto_convert_mod_steps(
                  f"({plain_error(_ie)})",
                  consequence="output was NOT re-loaded or verified",
                  file=_sys.stderr)
+            _record_failure("load check skipped", source_dir.name,
+                            "every converted mesh",
+                            f"pynifly unavailable ({plain_error(_ie)}); the output "
+                            "was not re-loaded or verified", severity="warning")
 
     # --- report ---
     report_name = f"conversion_report_{source_dir.name}.txt"
@@ -4595,9 +4628,15 @@ def _stamp_run_start(output_dir, *, planned, workers, orphan_temps_removed=0) ->
              where=str(output_dir),
              consequence="nothing can be written there",
              fix="check the path and its permissions")
+        _record_failure("output folder not created", str(output_dir),
+                        "the output folder", f"{plain_error(_e)}; nothing can be "
+                        "written there", severity="warning")   # #one-tally
     if build_info.write_run_config(output_dir, workers=workers) is None:
         warn("could not write conversion_settings.json", where=f"under {output_dir}",
              consequence="the output mod will not record which build and settings made it")
+        _record_failure("settings record not written", "conversion_settings.json",
+                        str(output_dir), "the output mod does not record which "
+                        "build and settings made it", severity="warning")
     _checkpoint_report(output_dir, [], planned=planned, workers=workers,
                        orphan_temps_removed=orphan_temps_removed)
 
@@ -5266,6 +5305,11 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                  consequence="if that is converter output rather than a hand-made "
                              "patch, coverage is being suppressed wrongly",
                  fix="check that mod before trusting this run")
+            _record_failure("already-UBE set from one mod", top,
+                            f"{n} of {len(covered)} 'already UBE' armours",
+                            "if that mod is converter output rather than a "
+                            "hand-made patch, coverage is suppressed wrongly; check "
+                            "it before trusting this run", severity="warning")
     _UBE_COVERED_CACHE[key] = covered
     return covered
 
@@ -5309,6 +5353,10 @@ def _print_coverage_warnings(label: str, stats: dict) -> None:
     warn(f"{label} coverage validator: {len(ws)} warning(s)",
          consequence="the lines below name what it found in the generated race "
                      "coverage; read them before trusting this run's coverage")
+    # One entry for the class, like the per-source patch validator's. #one-tally
+    _record_failure("coverage validator", f"{label} coverage",
+                    f"{len(ws)} warning(s)", _first_few(ws), severity="warning",
+                    count=len(ws))
     for w in ws[:5]:
         print(f"       {w}")
     if len(ws) > 5:
@@ -5809,6 +5857,11 @@ def _dead_armature_lookup(output, *built) -> "callable[[str], bool] | None":
              "whose meshes exist nowhere could not be told apart",
              consequence="every armature is given a UBE armature, as before, "
                          "including ones that draw nothing")
+        _record_failure("check skipped", "unified coverage",
+                        "armatures whose meshes exist nowhere",
+                        "the modlist's meshes could not be listed, so every "
+                        "armature was given a UBE armature, including ones that "
+                        "draw nothing", severity="warning")   # #one-tally
     return look
 
 
@@ -6982,6 +7035,12 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
              consequence="they are not drawn on UBE-race actors",
              fix="take the mod off the exclusion list to have them covered, or "
                  "install a UBE patch for it")
+        # Each problem line of this report is one entry. #one-tally
+        _record_failure("armour left uncovered", "unified coverage",
+                        f"{len(withheld)} armour(s) of an excluded mod",
+                        "no UBE armature from any mod, so they are not drawn on "
+                        "UBE-race actors; take the mod off the exclusion list or "
+                        "install a UBE patch for it", severity="warning")
         for (pl, fid), edid in withheld[:5]:
             print(f"       {edid or '?'}  ({pl}|{fid:06X})")
         if len(withheld) > 5:
@@ -7020,6 +7079,11 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
                          "not drawn on UBE-race actors, until their female mesh "
                          "is converted",
              fix="convert the mod that ships the female mesh")
+        _record_failure("female mesh not converted", "unified coverage",
+                        f"{len(kept)} female slot(s) kept their unconverted mesh, "
+                        f"{len(skipped)} body armature(s) not minted",
+                        "rather than take a converted MALE mesh; convert the mod "
+                        "that ships the female mesh", severity="warning")
         for k in kept[:5]:
             print(f"       {k['slot']} {k['kept']}  (not {k['male']})")
         if len(kept) > 5:
@@ -7086,6 +7150,11 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
              consequence="those body pieces are not drawn on UBE-race actors, rather "
                          "than draw their unconverted CBBE mesh on the UBE body",
              fix="convert the mod that ships the female mesh")
+        _record_failure("body armature not minted", "unified coverage",
+                        f"{len(wskip)} body armature(s)",
+                        "their female world mesh was not converted, so those body "
+                        "pieces are not drawn on UBE-race actors; convert the mod "
+                        "that ships the female mesh", severity="warning")
         for (pl, fid), edid in wdrop[:5]:
             print(f"       not covered: {edid or '?'}  ({pl}|{fid:06X})")
         if len(wdrop) > 5:
@@ -7107,6 +7176,12 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
              f"not minted ({len(unres_drop)} armour(s) left without one)",
              consequence="those pieces are not drawn on UBE-race actors",
              fix="build the UBE body's hands and feet in BodySlide")
+        _record_failure("UBE hands/feet not found", "unified coverage",
+                        f"{len(unres)} hand/foot armature(s) not minted",
+                        "they draw the nude CBBE hands or feet and the UBE body's own "
+                        "were not found, so those pieces are not drawn on UBE-race "
+                        "actors; build the UBE hands and feet in BodySlide",
+                        severity="warning")
         for k in unres[:5]:
             print(f"       {k['arma']}")
         for (pl, fid), edid, _why in unres_drop[:5]:
@@ -7279,6 +7354,10 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
             _ube_excl = set()
             warn(f"[unified] could not scan for existing UBE patches ({plain_error(_e)})",
                  consequence="not excluding any")
+            _record_failure("check skipped", "unified coverage", "already-UBE scan",
+                            f"{plain_error(_e)}; armour another mod already patched "
+                            "for UBE may be given a second armature",
+                            severity="warning")   # #one-tally
         if _ube_excl:
             print(f"  [unified] {len(_ube_excl)} armor(s) already have a UBE "
                   "patch from another mod -- leaving those alone")
@@ -7339,12 +7418,22 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
                          consequence="their armour is covered as if they were not "
                                      "excluded",
                          fix="use the mod's folder name exactly as MO2 shows it")
+                    _record_failure("excluded mod not found", "--exclude-mods",
+                                    ", ".join(_unfound[:5]),
+                                    "no mod folder has this name, so its armour is "
+                                    "covered as if it were not excluded; use the "
+                                    "folder name exactly as MO2 shows it",
+                                    severity="warning")   # #one-tally
             except Exception as _e:
                 _withheld_abs = set()
                 warn(f"[unified] could not list the excluded mods' armour "
                      f"({plain_error(_e)})",
                      consequence="coverage may give an excluded mod's armour an "
                                  "armature")
+                _record_failure("check skipped", "unified coverage",
+                                "the excluded mods' armour",
+                                f"{plain_error(_e)}; an excluded mod's armour may "
+                                "be given an armature", severity="warning")
         # Converted-mesh set FIRST: both coverage passes need it so a piece whose
         # OWN mesh was converted points at the !UBE\ mesh, not source. #mnb-converted-redirect
         ube_root = Path(output) / "meshes" / "!UBE"
@@ -7436,6 +7525,9 @@ def _sweep_orphan_temps_at_start(output, run_started: float) -> int:
         warn(f"could not sweep orphaned temp files: {plain_error(e)}",
              where=f"under {output}",
              consequence="partial files from an interrupted run may remain")
+        _record_failure("orphaned temp files not swept", "output mod", str(output),
+                        f"{plain_error(e)}; partial files from an interrupted run "
+                        "may remain", severity="warning")   # #one-tally
         return 0
     if removed:
         try:
@@ -7577,6 +7669,11 @@ def _cmd_convert(args):
         except Exception as e:
             warn(f"pre-warm failed (non-fatal): {plain_error(e)}",
                  consequence="the first pieces pay the cold start")
+            # Printed as a problem, and the stale-output sweep counts it as
+            # one, so the list names it too. #one-tally
+            _record_failure("pre-warm failed", "worker pool", "warm-up",
+                            f"{plain_error(e)}; the first pieces paid the cold "
+                            "start", severity="warning")
 
     # First-writer wins: shared set so later sources can't overwrite earlier outputs.
     claimed_dst_paths: set[Path] = set()
@@ -7739,6 +7836,9 @@ def _cmd_convert(args):
         except Exception as e:
             warn(f"incremental floor calc failed: {plain_error(e)}",
                  consequence="doing a full convert instead")
+            _record_failure("incremental mode off", "convert step",
+                            "incremental floor", f"{plain_error(e)}; every mesh "
+                            "was converted again", severity="warning")   # #one-tally
             incremental_floor = None
 
     # #skip-already-ube: armors ANOTHER mod has already UBE-patched are skipped
@@ -8115,6 +8215,8 @@ def _cmd_convert(args):
     except Exception as _wpe:
         warn(f"postflight weight-partner scan skipped: {plain_error(_wpe)}",
              consequence="missing _0/_1 partners were not checked this run")
+        _record_failure("check skipped", "output mod", "missing _0/_1 partners",
+                        plain_error(_wpe), severity="warning")   # #one-tally
 
     # Postflight REPAIR, and it runs BEFORE the detector below so that detector
     # reports the state that actually ships. The jiggle graft's fit gate is
@@ -8138,6 +8240,9 @@ def _cmd_convert(args):
     except Exception as _wps:
         warn(f"postflight weight-partner jiggle sync skipped: {plain_error(_wps)}",
              consequence="the two weights of a pair may jiggle differently")
+        _record_failure("repair skipped", "output mod", "_0/_1 jiggle sync",
+                        f"{plain_error(_wps)}; the two weights of a pair may "
+                        "jiggle differently", severity="warning")   # #one-tally
 
     # Postflight: flag `_0`/`_1` partners whose converted scale-bone set diverges
     # (per-file metadata leaking to one weight -> the two morph differently; e.g.
@@ -8169,6 +8274,8 @@ def _cmd_convert(args):
         except Exception as _wpe2:
             warn(f"postflight weight-partner parity scan skipped: {plain_error(_wpe2)}",
                  consequence="_0/_1 parity was not checked this run")
+            _record_failure("check skipped", "output mod", "_0/_1 parity",
+                            plain_error(_wpe2), severity="warning")   # #one-tally
 
     # What the end of the batch costs, in the log beside the start-of-run
     # "machine:" line's figures: PARENT_COMMIT_GB prices this process's
@@ -8225,6 +8332,10 @@ def _cmd_convert(args):
         except Exception as e:
             warn(f"vertex-color sanitize failed: {plain_error(e)}",
                  consequence="vertex colours were left as the source had them", indent="")
+            _record_failure("vertex-colour sweep failed", "output mod",
+                            "end-of-run sweep", f"{plain_error(e)}; vertex-colour "
+                            "flags were left as the source had them",
+                            severity="warning")   # #one-tally
 
     # Did unified coverage actually run? It now lives INSIDE the merge, so
     # every path that skips the merge also skips coverage -- and coverage
@@ -8272,6 +8383,10 @@ def _cmd_convert(args):
                 except Exception as e:
                     warn(f"female-model restore failed: {plain_error(e)}",
                          consequence="continuing with male fallbacks")
+                    _record_failure("female-model restore failed", output,
+                                    "before coverage", f"{plain_error(e)}; patches "
+                                    "keep their male fallbacks",
+                                    severity="warning")   # #one-tally
                 # UNIFIED COVERAGE (3b/3c): emit winner-scan coverage patches
                 # AFTER female-model restore (so it never touches their sidecar
                 # fids). 3c = the winner-scan is the SOLE generator: merge ONLY
@@ -8290,16 +8405,6 @@ def _cmd_convert(args):
                         exclude_mods=_split_mod_arg(
                             getattr(args, "exclude_mods", None)) or ())
                 _coverage_ran = True
-                if not _cov_ok:
-                    # Record it. Coverage failing silently is the worst outcome
-                    # here: mod-defined helmets/circlets/jewelry and body
-                    # variants go INVISIBLE on UBE actors, and without this the
-                    # run exits 0 with nothing in the failures file to explain
-                    # it. (The old standalone passes recorded a failure; when
-                    # coverage moved inside the merge that accounting was lost.)
-                    _record_failure("coverage", output, "unified coverage",
-                                    f"winner-scan incomplete (targets={_cov_targets})",
-                                    severity="warning")   # counted #one-tally
                 _cov_only = sorted(
                     patches_dir.glob("UBE_Mod*Coverage* UBE patch.esp"))
                 # Use coverage as the SOLE generator ONLY when it fully ran and
@@ -8320,6 +8425,22 @@ def _cmd_convert(args):
                     warn(f"[unified] coverage empty/incomplete (ok={_cov_ok}, "
                          f"targets={_cov_targets}, body={_cov_body})",
                          consequence="merging per-source patches instead")
+                    # Record it. Coverage failing silently is the worst outcome
+                    # here: mod-defined helmets/circlets/jewelry and body
+                    # variants go INVISIBLE on UBE actors, and without this the
+                    # run exits 0 with nothing in the failures file to explain
+                    # it. (The old standalone passes recorded a failure; when
+                    # coverage moved inside the merge that accounting was lost.)
+                    # A failed emit (ok False) always lands here, so this is
+                    # its one entry; a finished emit that came back empty or
+                    # without body links is recorded here too. #one-tally
+                    _record_failure("coverage", output, "unified coverage",
+                                    f"winner-scan incomplete (targets={_cov_targets})"
+                                    if not _cov_ok else
+                                    f"empty or without body links (targets="
+                                    f"{_cov_targets}, body={_cov_body}); the "
+                                    "per-source patches were merged instead",
+                                    severity="warning")   # counted #one-tally
                     # EXCLUDE any coverage patch still on disk. The glob
                     # "*UBE patch.esp" also matches
                     # "UBE_Mod*Coverage UBE patch.esp", so a partial run --
@@ -8358,6 +8479,13 @@ def _cmd_convert(args):
                              consequence="shipped as a NON-ESL full ESP (consumes one "
                                          "load-order slot)",
                              fix="position it to win")
+                        _record_failure("Combined ESP not ESL", "Combined ESP",
+                                        merged_out.name,
+                                        f"{stats.get('own_arma_records')} new ARMAs "
+                                        f"exceed the {stats.get('esl_slots_max')}-"
+                                        "record ESL cap; shipped as a full ESP that "
+                                        "takes a load-order slot",
+                                        severity="warning")   # #one-tally
                     print(f"  masters   : {len(stats.get('masters', []))}")
                     print(f"  ARMA total: {stats.get('total_arma_records')} "
                           f"(own: {stats.get('own_arma_records')}"
@@ -8389,6 +8517,11 @@ def _cmd_convert(args):
                                  consequence="an old SkyPatcher ini may still apply beside "
                                              "the new one",
                                  fix="delete it by hand")
+                            _record_failure("stale SkyPatcher ini", "Combined ESP",
+                                            _sp_ini_path.name,
+                                            f"{plain_error(_e)}; it may still apply "
+                                            "beside the new one; delete it by hand",
+                                            severity="warning")   # #one-tally
                     if _sp_lines:
                         from .atomic_io import atomic_write_bytes
                         _sp_hdr = [
@@ -8451,6 +8584,10 @@ def _cmd_convert(args):
                         warn(f"alt-texture reconcile failed: {plain_error(e)}",
                              consequence="colour variants may bind to the wrong shape",
                              fix="check the affected armour's variants in game")
+                        _record_failure("alt-texture reconcile failed",
+                                        merged_out.name, "colour variants",
+                                        f"{plain_error(e)}; colour variants may bind "
+                                        "to the wrong shape", severity="warning")
                     # Clear slot 33 (Hands) from forearm bracers that claim it but have
                     # no hand geometry — else they hide nude hands and draw nothing.
                     # Mesh-driven: real gloves/gauntlets are never touched.
@@ -8464,6 +8601,10 @@ def _cmd_convert(args):
                     except Exception as e:
                         warn(f"hands-slot fix failed: {plain_error(e)}",
                              consequence="hand pieces may keep their source slot")
+                        _record_failure("hands-slot fix failed", merged_out.name,
+                                        "forearm pieces claiming the hands slot",
+                                        f"{plain_error(e)}; they may keep the slot "
+                                        "and hide the hands", severity="warning")
                     # Dedup redundant own-ARMA armature refs: a body-armor ARMO that
                     # ended up with two converter-minted UBE ARMAs of the SAME race +
                     # meshes renders the body-swap mesh TWICE (doubled / blown-out /
@@ -8476,6 +8617,10 @@ def _cmd_convert(args):
                     except Exception as e:
                         warn(f"armature dedup failed: {plain_error(e)}",
                              consequence="duplicate armatures may remain in the Combined ESP")
+                        _record_failure("armature dedup failed", merged_out.name,
+                                        "duplicate UBE armatures",
+                                        f"{plain_error(e)}; a piece may be drawn twice",
+                                        severity="warning")
                     # Self-heal a stale/mis-sorted master list (a master-tier
                     # plugin after a regular ESP = load-order/FormID CTD). No-op on
                     # a correctly-ordered piece; repairs a stale Combined an earlier
@@ -8491,6 +8636,11 @@ def _cmd_convert(args):
                              consequence="the Combined ESP's masters may be out of order, "
                                          "and the game may refuse to load it",
                              fix="check the merged plugin's master list in xEdit")
+                        # A warning: the postflight below records a mis-ordered
+                        # master list as load-breaking, which fails the run.
+                        _record_failure("master re-sort failed", merged_out.name,
+                                        "master list", f"{plain_error(e)}; check the "
+                                        "master list in xEdit", severity="warning")
                     # POSTFLIGHT: re-validate the FINAL Combined (+ ESL split
                     # pieces) AFTER the merge/winner-rebase/reconcile/hands-fix
                     # mutations. validate_patch ran per-SOURCE only; a structural
@@ -8534,6 +8684,11 @@ def _cmd_convert(args):
                     except Exception as _pfe:
                         warn(f"postflight validation skipped: {plain_error(_pfe)}",
              consequence="the plugin was not checked for load-breaking issues")
+                        _record_failure("check skipped", "Combined ESP",
+                                        "postflight validation",
+                                        f"{plain_error(_pfe)}; the plugin was not "
+                                        "checked for load-breaking issues",
+                                        severity="warning")   # #one-tally
                 except Exception as e:
                     warn(f"auto-merge failed: {plain_error(e)}",
                          consequence="no Combined ESP this run; the per-source patches "
@@ -8585,6 +8740,9 @@ def _cmd_convert(args):
             warn(f"preview render failed: {plain_error(e)}",
                  consequence="no preview images this run; the conversion itself is unaffected",
                  indent="")
+            _record_failure("previews not rendered", "morph previews", "every preview",
+                            f"{plain_error(e)}; the conversion itself is unaffected",
+                            severity="warning")   # #one-tally
             preview_results = []
         ok = sum(1 for r in preview_results if "error" not in r)
         err = sum(1 for r in preview_results if "error" in r)
@@ -8605,6 +8763,12 @@ def _cmd_convert(args):
         if broken_bodytri:
             warn(f"{len(broken_bodytri)} NIF(s) reference a BODYTRI that doesn't exist on disk",
                  consequence="those pieces will not follow body sliders; listed below")
+            _record_failure("BODYTRI file missing", "output mod",
+                            f"{len(broken_bodytri)} mesh(es)",
+                            "they name a BODYTRI file that is not on disk, so they "
+                            "will not follow body sliders; "
+                            + _first_few(r["nif"] for r in broken_bodytri),
+                            severity="warning")   # #one-tally
             for r in broken_bodytri[:8]:
                 print(f"       {r['nif']}  ->  {r['bodytri_string']}")
             if len(broken_bodytri) > 8:
@@ -9620,6 +9784,10 @@ class _BsaMeshIndex:
                  consequence="the archive entry points outside the extraction folder "
                              "and was skipped",
                  file=sys.stderr)
+            # Printed once per entry (the refusal is cached). #one-tally
+            _record_failure("unsafe archive path skipped", Path(bsa_path).name,
+                            internal, "the archive entry points outside the "
+                            "extraction folder and was skipped", severity="warning")
             self._out[key] = None
             return None
         try:
@@ -10362,6 +10530,12 @@ def _batch_npc_worn_armos(for_coverage: bool = False
              consequence="non-playable armour that female NPCs wear is not "
                          "converted, and the coverage race-list rule does not "
                          "link it, this run")
+        # Not cached, so every call reads (and prints) again: one entry for the
+        # run, also when source selection read it before the record began.
+        # #one-tally
+        _record_once("load order not read", "load order", "armour NPCs wear",
+                     f"{plain_error(e)}; non-playable armour that female NPCs "
+                     "wear was not converted or linked")
         return None
 
 
@@ -10374,6 +10548,10 @@ _ARMO_WINNER_CACHE: "dict[tuple, dict | None]" = {}
 # overrides, and the stale-output sweep treats the plan as incomplete.
 # #stale-output-sweep
 _ARMO_WINNER_UNREADABLE: "dict[tuple, list[str]]" = {}
+# The warning that build printed, same key, as `_record_once` arguments: source
+# selection builds the map before `_cmd_convert` starts the run's record (and
+# clears it), so a cache hit records it again, once. #one-tally
+_ARMO_WINNER_WARNED: "dict[tuple, tuple]" = {}
 _ARMO_NONPLAYABLE_FLAG = 0x00000004   # ARMO record header flag
 
 
@@ -10453,6 +10631,8 @@ def _batch_armo_winner_nonplayable() -> "dict[tuple[str, int], bool] | None":
         key = (str(lay.mods_root), tuple(paths.enabled_mods_ordered(lay) or ()),
                tuple(n.lower() for n in names), _selection_winner_playable())
         if key in _ARMO_WINNER_CACHE:
+            if key in _ARMO_WINNER_WARNED:           # #one-tally
+                _record_once(*_ARMO_WINNER_WARNED[key])
             return _ARMO_WINNER_CACHE[key]
         t0 = time.time()
         fidx = paths._plugin_file_index_root(lay)
@@ -10465,6 +10645,7 @@ def _batch_armo_winner_nonplayable() -> "dict[tuple[str, int], bool] | None":
         _ARMO_WINNER_CACHE[key] = flags
         _ARMO_WINNER_UNREADABLE.clear()
         _ARMO_WINNER_UNREADABLE[key] = list(bad)
+        _ARMO_WINNER_WARNED.clear()
         print(f"  Armour playability: read the winning record of {len(flags)} "
               f"armour(s) in {len(ordered)} active plugin(s) in "
               f"{time.time() - t0:.1f}s")
@@ -10474,15 +10655,27 @@ def _batch_armo_winner_nonplayable() -> "dict[tuple[str, int], bool] | None":
                  f"playability: {_names}",
                  consequence="an armour those plugins override keeps the "
                              "playable flag of the record before them")
+            _ARMO_WINNER_WARNED[key] = (
+                "load order not read", "load order",
+                f"{len(bad)} plugin(s) read for armour playability", _names
+                + "; an armour they override keeps the playable flag of the "
+                  "record before them")
+            _record_once(*_ARMO_WINNER_WARNED[key])
         return flags
     except Exception as e:
         warn(f"could not read which armour the load order makes playable "
              f"({plain_error(e)})",
              consequence="each plugin's own record decides whether its armour "
                          "is playable, as before this rule, this run")
+        _rec = ("load order not read", "load order", "armour playability",
+                f"{plain_error(e)}; each plugin's own record decided whether its "
+                "armour is playable")
         if key is not None:
             _ARMO_WINNER_CACHE.clear()
             _ARMO_WINNER_CACHE[key] = None
+            _ARMO_WINNER_WARNED.clear()
+            _ARMO_WINNER_WARNED[key] = _rec
+        _record_once(*_rec)
         return None
 
 
@@ -12260,6 +12453,12 @@ def _cmd_auto(args):
                  indent="\n  ")
             for w in morph_warns:
                 print(f"     - {w}")
+            # After `_cmd_convert` wrote the failures file, which is written
+            # again below with this in it. #one-tally
+            _record_failure("nude-skin morph missing", "UBE body",
+                            f"{len(morph_warns)} nude part(s)",
+                            _first_few(morph_warns) + "; rebuild each in BodySlide "
+                            "with 'Build Morphs' checked", severity="warning")
     except Exception:
         pass
 

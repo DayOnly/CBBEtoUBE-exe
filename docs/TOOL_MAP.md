@@ -332,3 +332,4 @@ Only tools whose docstring carries a `python ...` line. A tool missing from this
 - `scripts/warning_surface.py`
   - `python scripts/warning_surface.py            # write docs/WARNINGS.md`
   - `python scripts/warning_surface.py --check    # exit 1 if the file is out of date`
+  - `python scripts/warning_surface.py --tally    # which problem warnings reach the run's record`

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Fixed — more warnings reach the end-of-run count and list
+
+39 warnings were printed in the log but left out of the warning count at the
+end of the run and out of the list the window shows after it, so a run that
+hit only these could still end "all clear". Among them: the colour-variant
+fix, the hands-slot fix, the duplicate-armature clean-up or the master-list
+repair of the Combined plugin failing; the final check of the Combined
+plugin, or of the `_0`/`_1` weight pairs, not running; the vertex-colour
+clean-up failing; the coverage step's own warnings (armour of an excluded mod
+left without a UBE armature, female meshes not converted, the UBE hands and
+feet not found, the coverage check's findings); a modlist whose plugins or
+NPC outfits could not be read; the missing-morph check of the UBE body's
+hands and feet. Each is now counted and listed once, as a warning, so the exit
+code of a run does not change. Nothing that is converted changes. A test now
+fails on any new warning that is printed but not counted.
+
 ### Fixed — running from source with an outdated `PYNIFLY_PATH` no longer loses the reference bodies
 
 This affects running the tool from its source code only; the exe carries its

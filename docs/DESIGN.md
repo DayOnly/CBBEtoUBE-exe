@@ -3709,6 +3709,29 @@ reported through `_report_coverage_holds`:
   counted wherever one is now recorded); only the log's numbers and the file
   change: an unreadable output mesh counts per file, and "merge skipped" counts.
   `auto`'s post-convert failures are the failures recorded after `_cmd_convert`.
+  **Every problem warning is recorded, and a scan keeps it so** (audit
+  2026-09-26 on 7f5c04c). `scripts/warning_surface.py --tally` lists each
+  problem-level `warn()` with whether a recorder call follows it on its own
+  path: later in the same block (looking inside a later loop, `with` or `try`
+  body, never inside an `if` or `except`), or as the statement right after the
+  if/elif chain it sits in. 63 of the 100 had none: 5 run inside `convert_nif`
+  (worker or in-process; its result and the parent's read-back carry them), 16
+  are recorded elsewhere (the tally loop, a caller, `_SELECTION_RUN_WARNINGS`,
+  one batch-wide validator entry), cannot be (the failures file itself) or sit
+  in `merge`/`validate`, which keep no run record, and 42 were gaps. 39 are now
+  recorded where they print, all as warnings, so no exit code moves; the other
+  3 are lane tally-encoding-0926's. `tests/test_one_tally_scan.py` holds the
+  unrecorded ones with a reason each and fails on a new one -- and on a listed
+  one that is now recorded. None was lowered to NOTE: `problem_count()` gates
+  the stale-output sweep (a printed problem makes it report only), so a level
+  change is a behaviour change, not a wording one. Repeats: `_record_once`
+  keeps one entry for one fact printed more than once (the NPC-outfit read is
+  not cached on failure; each source repeats the UBE body search); a cached
+  playability read keeps its warning in `_ARMO_WINNER_WARNED` and records it
+  again on a cache hit, because source selection builds it before
+  `_cmd_convert` clears the record; failed warm-up tasks are one class entry.
+  Coverage-validator hits are one entry carrying `count`, like the per-source
+  validator's.
 - **Dry run writes nothing** (`#dry-run-writes-nothing`). `auto
   --overlays-only --list-only` ran the overlay transfer: the overlays-only branch
   returned before the list-only check. It now lists what would be remapped
