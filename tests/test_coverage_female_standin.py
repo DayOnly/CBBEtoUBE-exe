@@ -604,14 +604,10 @@ def test_no_dead_slots_print_nothing(capsys):
     assert capsys.readouterr().out == ""
 
 
-# ------------------------------------------------ backlog 7: the planner, unchanged
+# ------------------------------------------------ backlog 7: the planner
 
-def test_the_planner_still_skips_the_male_when_a_first_person_female_resolves(tmp_path):
-    """Pinned (census backlog 7): the planner pools MOD3 and MOD5, so a dead
-    world female with a live first-person female converts only the female
-    models -- the male world mesh is never converted. The stand-in covers that
-    armour; a per-slot planner fix would convert a male mesh the stand-in then
-    outranks. Change this only with a live case the stand-in cannot reach."""
+def _planner_bases(tmp_path):
+    """A dead world female (MOD3) beside a live first-person female (MOD5)."""
     from src import esp
     rec = Record(sig=b"ARMA", flags=0, formid=0x01000800, payload=_payload(
         {b"MOD2": "armor/x/bob_1.nif", b"MOD3": "armor/x/gone_1.nif",
@@ -620,6 +616,34 @@ def test_the_planner_still_skips_the_male_when_a_first_person_female_resolves(tm
     mod.mkdir()
     esp.ESP(header=esp.TES4Header(masters=["Skyrim.esm"]),
             groups=[esp.Group(label=b"ARMA", records=[rec])]).save(mod / "planner.esp")
-    bases = ac._player_armor_mesh_bases(mod, mesh_resolves=lambda b: "alice" in b)
+    return ac._player_armor_mesh_bases(mod, mesh_resolves=lambda b: "alice" in b)
+
+
+def test_the_planner_still_skips_the_male_when_a_first_person_female_resolves(
+        tmp_path, monkeypatch):
+    """Pinned (census backlog 7), now the switched-off rule: with
+    CBBE2UBE_NO_FEMALE_SLOT_PAIRS=1 the planner pools MOD3 and MOD5, so a dead
+    world female with a live first-person female converts only the female
+    models -- the male world mesh is never converted, and the stand-in covers
+    that armour."""
+    monkeypatch.setenv("CBBE2UBE_NO_FEMALE_SLOT_PAIRS", "1")
+    bases = _planner_bases(tmp_path)
     assert any("alice" in b for b in bases), bases
     assert not any("bob" in b for b in bases), bases
+
+
+def test_by_default_the_planner_converts_the_dead_world_pairs_male(tmp_path,
+                                                                  monkeypatch):
+    """#female-slot-pairs (on by default since the selection lane, merged
+    09-26): the dead-path exception is judged per slot pair, so the male of the
+    dead world pair converts. The stand-in still outranks it where the vanilla
+    counterpart is unique (test_a_dead_female_slot_draws_the_vanilla_female_
+    counterpart); where it is ambiguous the converted male is what the slot
+    draws (test_an_ambiguous_counterpart_keeps_the_converted_male) instead of a
+    dead path. The pin above said to change this only with a live case the
+    stand-in cannot reach; the lane's live census found none drawn (+6 bases
+    whose winning records point elsewhere) -- an open question for the user."""
+    monkeypatch.delenv("CBBE2UBE_NO_FEMALE_SLOT_PAIRS", raising=False)
+    bases = _planner_bases(tmp_path)
+    assert any("alice" in b for b in bases), bases
+    assert any("bob" in b for b in bases), bases

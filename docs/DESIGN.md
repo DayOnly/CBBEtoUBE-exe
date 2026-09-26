@@ -588,6 +588,75 @@ single pass runs. Three rules encode this:
    the static harness cannot place -- the converter lifts their chains off the body
    and SMP moves them; in game is the verdict.
 
+**A mesh index that cannot be built is said, never cached as empty**
+(`#vfs-index-fail-loud`, 2026-09-25). Source selection built the index above inside
+`except Exception: vfs = {}`, printed nothing, and cached `{}` for the convert step,
+which reused it ("reusing 0 located armour mesh path(s)"). Every rule above was then
+undone at once and in silence: a mod whose meshes are in another mod was dropped as
+"found nowhere", and every other source converted its own or an archive copy (the
+122 pieces rule 3 moves among them). One error was enough: `Path.rglob` let any error
+but a permission error escape from the middle of its walk, so one over-long path or
+dead junction in one mod aborted the index for every mod. Now:
+- `build_mesh_index` walks each mod's `meshes` folder with `os.walk(onerror=...)`
+  (`discovery._walk_nifs`, same order and paths as `rglob`): an unreadable folder
+  is skipped alone and handed back through `unreadable` as (mod, error); both
+  steps print one warning naming each such folder. A `meshes` folder whose
+  existence cannot even be checked is skipped the same way. One difference from
+  `rglob('*.nif')`, on purpose and unswitched: it also yielded a FOLDER named like
+  a mesh (`armor\x_1.nif\`), which won its key over a real file in a lower-priority
+  mod and then failed to load; only files are indexed now (a mesh inside such a
+  folder still is). The reported modlist has no such folder (the index is
+  identical key for key).
+- If the index still raises, selection caches `None`, not `{}`, so the convert step
+  builds its own; the warning names the failure, and the mods it could not search
+  are listed as "not searched for", not "found nowhere". The convert step's own
+  failure is a warning too, where it used to be a parenthesis.
+- The vanilla sweep's mesh-path read warns instead of `pass`.
+- Selection's warnings are kept in `_SELECTION_RUN_WARNINGS`; the convert step
+  records them after it clears the run's record, each once, with its own; the
+  record is what the end-of-run tally counts (#one-tally), so no counter keeps
+  them apart from it. A selection whose index failed or whose vanilla sweep
+  could not be read is not memoized, so the next refresh or convert tries again.
+  One whose only problem is folders it could not read IS memoized with them
+  (`_ARMOR_MOD_DIRS_UNREADABLE`): each reuse first lists those folders again and
+  says the same warning for that run to record, and the first time one of them
+  can be read the selection runs afresh. Not memoizing it made every GUI refresh
+  repeat the whole scan (92-175 s live) for a folder that stays unreadable. A
+  folder gone since (deleted or renamed -- the fix the warning asks for) counts
+  as changed, not unreadable: `_folder_unreadable` answers False for
+  FileNotFoundError/NotADirectoryError unless the extended-length (`\\?\`) form
+  still finds the path, since an over-long path can report "not found" while it
+  exists. Only a selection whose warnings are ALL unreadable folders is kept
+  (`len(_warns) == len(_unread[0])`): one that also lost its vanilla sweep's keys
+  is not.
+No switch: when the index builds -- every run seen -- the output is byte-identical.
+
+**MO2's overwrite folder is a provider** (`#overwrite-mesh-index`, 2026-09-25,
+`CBBE2UBE_NO_OVERWRITE_MESH_INDEX`). `build_mesh_index` walked only the enabled mods;
+every other lookup of what the game loads -- `zeroed_body._layout_dirs`,
+`_mesh_exists_anywhere`, the loose-mesh index behind it -- puts overwrite first, and
+BodySlide run through MO2 without an output mod writes its builds there. A mod that
+ships only BodySlide projects then had no loose mesh to convert (it fell to an archive
+copy or was "found nowhere"), and rule 3 refused a zeroed body built into overwrite
+("not in a mod folder"). Now both steps pass the modlist's overwrite
+(`_modlist_overwrite`, None for any other mods folder) and the index walks its `meshes`
+as a BodySlide output of an unnamed body -- tier 2, first among the outputs: it wins a
+mesh no mod ships loose, a mod's own mesh (tier 0) still wins over it as rule 1 says of
+any output, and rule 3 may take a verified zeroed build from it
+(`_zeroed_output_provider` names it `OVERWRITE_LABEL`, `<MO2 overwrite>`, a name no
+folder can have). Tier 2 rather than the top: the tiers rank a mesh as a conversion
+SOURCE, not as the file the game draws, and overwrite's meshes are BodySlide builds of
+whatever preset was chosen -- exactly what rule 1 ranks below a mod's own. The game
+Data folder's loose meshes stay out: launched from MO2 that folder is the merged view
+of every mod, whose files the index already holds with their own tier, and walking it
+would rank every BodySlide output as a mod's own mesh and hand back this tool's own
+output mod, which the index skips on purpose; run on its own, a stock game folder holds
+the base game, whose meshes the vanilla sweep resolves from the archives.
+`_mesh_exists_anywhere` lists the Data folder because it only asks whether a mesh
+exists, never which copy to convert. The switch is in the selection memo key. Live: the
+reported modlist's overwrite and game Data folder hold no `meshes` folder; the
+selection-sized index (4,562 keys) is identical key for key, value for value.
+
 ### Which mods and pieces are sources at all (2026-09-24)
 
 The rules above pick a PROVIDER for a mesh the converter already plans. Four gates
@@ -744,6 +813,221 @@ already-UBE path among the additions.
   plugin-loaded), 4,221 mesh paths in more than one, 436 change winner (405 of
   them a particle patch against a weather plugin), none extracted by the last
   run, converted into `!UBE` or armour; replays byte-identical.
+
+### Which plugin copies are read (2026-09-25)
+
+- **Only the copy the game loads** (`#loaded-source-plugins`,
+  `CBBE2UBE_NO_LOADED_SOURCE_PLUGINS`). `_find_source_esps` rglob'd every plugin in
+  a mod folder. MO2 loads plugins only from a mod's root, and of several root copies
+  of one name only the highest-priority mod's (`paths._plugin_file_index_root`:
+  overwrite > enabled mods in priority order > game Data). A nested copy and a
+  losing duplicate were planned from, and each wrote the per-source patch named by
+  its stem into the one `_unmerged_patches` folder -- sources run highest priority
+  first, so the LOSER wrote last and kept the patch and its sidecars (live: two
+  patches' snapshots named the loser). The duplicate-plugin dedup in
+  selection dropped a mod only when ALL its root plugins were claimed, so a mod with
+  one losing duplicate beside other plugins stayed a source. Now, for a folder whose
+  parent is the modlist's mods root, `_loaded_copies_only` drops a plugin in a
+  subfolder and a root plugin whose name the index maps to another file; the index
+  is built once per selection and per batch (~0.7 s). A folder outside the modlist,
+  or no readable mod order, keeps every plugin (nothing says which copy loads). The
+  convert step and `--plugins-only` name each dropped copy and why. A mod left with
+  no loaded plugin plans NOTHING: the ESP-less fallback ("convert every NIF the
+  folder ships") is gated on the dropped copies too, since the mod has a plugin.
+  Within one batch `_patch_name_taken` keeps the first writer of a per-source patch
+  path (the highest-priority source); a later source with the same stem writes no
+  patch and says so. With the index that can only be two different loaded plugins
+  of one stem (an .esp and an .esm), or a run without a modlist. On the batch-wide
+  schedule (#global-schedule) a source claims its names when it writes its patch,
+  at its finish, and sources finish in source order, so the first writer is the
+  same; a vanilla sweep whose finish fails gives back the names it claimed there
+  before its serial retry writes them, as one source at a time restores them. Live (154 sources +
+  Data, light plan census): 4 copies dropped (1 nested, 3 losing, 2 of them with
+  armatures); 2 sources lose eligibility (a quest overhaul whose hotfix ships the
+  loaded plugin, a bugfix pack whose main plugin a tweak replaces); the planned
+  union is identical (2,008 bases, 3,365 files) -- the loaded copies plan the same
+  pieces; the two per-source patches rebuilt from the loaded copies are record for
+  record the loser's; coverage replay byte-identical. Switch set: census and replay
+  identical to the parent.
+- **Left out only when a source reads the loaded copy** (`#loaded-copy-reader`,
+  `CBBE2UBE_NO_LOADED_COPY_READER`). The rule above asked only "does the index map
+  this name to another file?". The index ranks overwrite first and holds every
+  enabled mod, so the winner could sit where no source reads it -- overwrite (a
+  cleaned copy saved there), a mod the run excludes, one the name gate refuses --
+  and then NO source read the plugin: its armour was not planned, converted or
+  patched (probe: sources [], planned set()), where the parent converted it from
+  the mod's copy. Now `_read_by_a_source(winner)` must hold too: the winner's
+  folder is directly in the mods root and passes `_source_gate_ok` -- the name
+  gate selection applies before reading plugins, factored out of `_name_ok` --
+  with the run's exclusions, remembered per mods root by each `require_arma`
+  selection (`_SOURCE_GATE`, set on a memo hit too; without one, no exclusions;
+  by default the exclusions no longer take part: `#excluded-copy-left-alone`
+  below).
+  The GATE, not the final candidate list, decides, on purpose: a gated winner
+  whose loaded copy plans no armour means the game loads none (nothing to
+  convert); `--only-mods` and the UBE-native drop narrow the batch AFTER
+  selection, and a losing copy read then would overwrite the winner's patch in
+  `_unmerged_patches` (same stem) or re-convert armour a UBE-native mod ships. When
+  the mod's copy is kept, the convert step and `--plugins-only` note it if the two
+  copies' armatures (defining plugin, id, MOD2-5) differ; the mod's copy, not the
+  game's, is read -- the parent's behaviour, and a source plugin outside its own
+  mod folder would break per-mod attribution (sidecar `source_esp`, incremental
+  change detection). The switch is part of the selection memo key. Live (all
+  enabled mods, `auto`'s gate, no user exclusions -- the deployed exclusion list is
+  empty): overwrite holds 0 plugins; 85 losing root copies in 81 mods, every
+  winner a mod folder the gate admits, so 0 change: per-mod plugins, skips and
+  strict/planned bases identical to the parent, coverage replay byte-identical.
+  Switch set: identical to the parent.
+- **A user-excluded winner is handled** (`#excluded-copy-left-alone`,
+  `CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE`, 2026-09-25). Judged by the gate WITH
+  the run's exclusions, a winner in a mod the user excluded read as "no source",
+  so a lower mod's copy of the plugin became a source again: excluding the mod
+  the game loads Quest.esp from (a hand-made UBE refit) planned and patched
+  Quest's armour from the losing CBBE copy, while `_armos_defined_by_mods` in the
+  same run named the refit the owner and withheld its coverage (probe: sources
+  ['Quest.esp'], planned {armor/q/body}; parent 30b78a3: nothing). And the gate saw
+  exclusions only through `auto --exclude-mods`: Select mode passes them as
+  `--coverage-exclude-mods` and standalone `convert --exclude-mods` runs no
+  selection, so one exclusion list read the copy in one mode and dropped it in
+  another. Now `_read_by_a_source` asks, in order: (1) winner not directly in the
+  mods root (overwrite, game Data) -> not handled, the mod's copy is read: no
+  source reads it and no exclusion names it, and `_armos_defined_by_mods` owns
+  nothing there (false when an excluded mod holds a root copy under overwrite's:
+  ownership read overwrite's copy and withheld it -- review of a6dc74b, fixed by
+  `#one-plugin-owner` below); (2) winner folder in `_RUN_USER_EXCLUSIONS` (matched by
+  `_mod_name_excluded`, as ownership is) -> handled, the mod's copy is dropped:
+  the 09-23 decision, an excluded mod's armour is left alone, and ownership is
+  the defining plugin read from this very loaded copy; decision (b) is untouched,
+  the excluded mod's non-body pieces keep their coverage from the winner scan,
+  which never depended on a source reading them; (3) a body mod (`_body_mod_names`,
+  cached per selection in `_BODY_MODS_SEEN`) -> not handled: skipped by what it
+  ships, not by the user, and coverage does not withhold it -- the parent's
+  answer under `auto` only (a standalone `convert` has no body mods in its gate,
+  and f057ba9 dropped the copy there); (4) otherwise `_source_gate_ok` with NO exclusion list -- child content,
+  a hard non-source name hint (`cbbetoube` covers our output) -> not handled,
+  those are the tool's guesses about the folder, not a user's choice, and coverage
+  does not withhold them; else handled. `_RUN_USER_EXCLUSIONS` is exactly the set
+  coverage withholds: `auto` sets `--exclude-mods` + `--coverage-exclude-mods`
+  before its selection, `_cmd_convert` sets its `--exclude-mods` (the same union
+  from `auto`, its own when standalone); both are in the selection memo key.
+  With no exclusion list in steps (2)-(4), only the user set changes the answer,
+  and only for a winner that step (3) or (4) would refuse. The switch restores
+  f057ba9 (the selection's gate with its exclusions). Live: deployed exclusions
+  empty, 0 body-mod winners (the 85 winners all pass the gate), so 0 change:
+  loaded-copy census identical, coverage replay byte-identical (9927 links).
+  Latent (all 77 winning mods excluded, as `auto` would): f057ba9 reads all 85
+  losing copies, 36 of them plugins coverage withholds as the excluded owner's;
+  this rule reads 0. Switch set: identical to f057ba9.
+- **One owner per plugin** (`#one-plugin-owner`, `CBBE2UBE_NO_ONE_PLUGIN_OWNER`,
+  2026-09-26). The rule above and `#exclude-owned-coverage` still decided apart,
+  and the review of a6dc74b found them disagreeing: (a) an excluded mod's copy
+  under an overwrite copy -- sources read a lower mod's copy (step 1) while
+  ownership withheld the armour (probe: read ['Quest.esp'], owned
+  [('quest.esp', 0x801)]); (b) an excluded mod's copy that LOSES to mod A --
+  ownership read A's loaded copy and withheld A's armour while A converted;
+  (c) a body-mod winner -- the lower copy was read, in `auto` and a standalone
+  `convert` alike (f057ba9's standalone `convert` had dropped it). Now ONE
+  function, `_plugin_owner(name)`, answers for both: the
+  highest-priority ENABLED mod folder with a root copy of the name
+  (`paths._plugin_file_index_root(lay, copies)` lists every mod's root copy in
+  priority order in the same walk that builds the loaded index). That is the mod
+  the game loads the plugin from; when overwrite holds a copy, the mod whose
+  copy it shadows -- overwrite is where tools run through MO2 save (xEdit
+  cleaning, patchers), and the shadowed copy is what loads with it emptied. Game
+  Data loses to every mod, so a name any enabled mod ships is never Data's; a
+  name no enabled mod ships has no owner. THE SINGLE RULE: (1) a mod's root copy
+  is read iff that mod owns the plugin (or no enabled mod does) -- another mod's
+  copy never is, whatever the owner is; (2) coverage withholds a plugin's ARMOs
+  iff its owner is in the run's exclusions (`_armos_defined_by_mods` skips an
+  excluded folder's root plugin another mod owns; the ARMOs are still read from
+  the loaded copy); (3) every entry point asks the same function, and the keep
+  decision reads no exclusion list at all, so All mods, Select mods, the GUI list
+  and a standalone `convert` read the same copies. An owner that is no source for
+  a reason of its own -- a body mod, child clothing, a hard non-source name --
+  leaves the plugin UNCONVERTED rather than converted from another copy: the game
+  loads the owner's records, and a per-source patch built from a copy it does not
+  load would override them (the reason #loaded-source-plugins exists); no user
+  decision covers these, and the 09-23 one (an excluded mod's armour is left
+  alone) is the nearest analogue. So nothing goes silently unconverted, each
+  mod's log names the copy left out and why (`_owner_skip_reason`: the owner,
+  overwrite's shadowing, "which you excluded" or "a body mod, which this tool
+  does not convert"), and every convert batch starts by listing, for the whole
+  modlist, each plugin whose owner is no source while another mod ships a
+  readable copy (`_plugins_no_source_owns`; a mod left with no plugin is no
+  source and would never say it; user exclusions are not listed, coverage
+  reports those). Owner = the MOD, not the loaded file: the kept copy under an
+  overwrite copy is noted when their armatures differ, as before. The switch, and
+  the switch of each earlier step (#loaded-source-plugins, #loaded-copy-reader,
+  #excluded-copy-left-alone), restore the separate rules in both passes; the
+  LCR/ECL test files run under this switch, tests/test_one_plugin_owner.py under
+  the default. Live (deployed exclusions empty): overwrite holds 0 plugins, all
+  85 losing root copies (81 mods) lose to a mod the gate admits (0 body, 0
+  gate-refused, 0 overwrite), so 0 change: loaded-copy census, 77-winners-
+  excluded census and owner census identical, coverage replay byte-identical
+  (9927 links), 0 plugins in the new list. Latent (b), every one of the 81 losing
+  mods excluded: a6dc74b withholds 3397 armours of 33 plugins whose owner is a
+  converted winner (1419 links, 1391 armours left with none); this rule withholds
+  10, the losers' own (4 links). Switch set: identical to a6dc74b in all of it.
+- **Masters are read from the copy the game loads** (`#master-search-load-order`,
+  `CBBE2UBE_NO_MASTER_SEARCH_LOAD_ORDER`). `_discover_master_data_dirs(sources[0])`
+  -- the batch's one master search list, also the merge's, the coverage passes'
+  and the `merge` command's -- was the game Data folder, then every folder of the
+  mods root in directory order: alphabetical, disabled mods included, the first
+  source's own folder left out. `ube_patcher._find_master_path` is first folder
+  wins, so a master's records (the Master-ESM ARMO scan, `_xesp_master_arma`) and
+  its ESM/ESL tier came from the base game's copy or an alphabetically first --
+  losing or disabled -- copy; `_discover_ube_races` read every plugin there, so a
+  disabled mod's UBE race plugin would have become a required master. Now, for a
+  folder of the modlist's mods root or its game Data folder,
+  `_load_order_master_dirs` gives overwrite, the ENABLED mods highest priority
+  first (the source's own folder included), then the game Data folder(s); a folder
+  outside the modlist keeps the old list. Live (637 master names of the sources'
+  plugins and the Combined): 32 resolve differently, and every new answer is the
+  copy the root plugin index says the game loads (31 were another copy -- the base
+  masters from the untouched game folder instead of the cleaned copies, pre-update
+  and pre-hotfix plugins, the base UBE mod's UBE_AllRace.esp instead of the
+  overhaul-patched one the game loads -- and 1, which only the
+  first source ships, was not found); ESM tier changes for that 1 (not found ->
+  ESL/ESM); UBE races found: none either way. Coverage replay byte-identical, and
+  the Combined merged from it with each list (merge + master re-sort) is byte for
+  byte the same. The 133 per-source patches whose plugin has a re-resolved master,
+  rebuilt with each list from the live snapshots: all 133 ESPs byte-identical; 6
+  `.skypatcher.json` sidecars list the same entries in another order (the cleaned
+  base masters hold their records in another order). Switch set: replay
+  byte-identical.
+
+### The female-only rule, per slot pair (2026-09-25)
+
+- **The dead-path exception per pair** (`#female-slot-pairs`,
+  `CBBE2UBE_NO_FEMALE_SLOT_PAIRS`). `_player_armor_mesh_bases` skips an armature's
+  male models when a female model resolves, and keeps them when the female path is
+  dead (#174: the armature is then pointed at the converted male; the user confirmed
+  "dead female path keeps male" again on 09-24). It judged MOD3 and MOD5 together, so
+  a dead female WORLD mesh beside a live female first-person mesh (or the reverse)
+  never converted the male of the dead pair. Now the old answer stands and, in
+  addition, a pair (MOD3 over MOD2, MOD5 over MOD4) whose female model is set and
+  resolves nowhere keeps its male. Only ever adds: an armature whose every female
+  model is dead keeps every male as before. Live (light plan census, 154 sources +
+  Data): +6 bases / +12 files, all one clothing replacer's colour and outfit
+  variants whose female world mesh it never shipped (8 world pairs, 1 first-person
+  pair); its winning records point elsewhere, so today they are converted without
+  being drawn -- the same as its first-person female meshes already were. The
+  follower armatures that found this (dead world path, male a vanilla mesh) are not
+  planned at all today (their mod plans nothing under the other gates). Coverage
+  replay byte-identical (it reads the output folder). Switch set: census identical.
+  The stale-output sweep's `female-only` reason (`drop_reasons`) is given per pair
+  too: the male of a pair the rule leaves out says `female-only`, the male a dead
+  pair keeps is planned and says nothing (merged into #stale-output-sweep 09-26;
+  switched off, both males of a live armature say it, as before).
+- **A pair with no female model** (`#female-slot-absent`, OFF, opt-in
+  `CBBE2UBE_FEMALE_SLOT_ABSENT_KEEPS_MALE=1`). The engine draws a pair's male model
+  when its female model is not set, so an armature with MOD3 but no MOD5 shows MOD4
+  in first person on a female actor; the rule skips that male. Converting it is the
+  male-only-piece exception applied per slot -- a policy call, not the dead-path fix,
+  so it is prepared and left off. Live with it on: +7 bases / +14 files, all
+  first-person (a court outfit's three torso variants, a museum mod's cuirass torso,
+  a bandit glove used by a shoulder piece, a vampire robe used by cloaks, and the
+  base game's hide bracers).
 
 ---
 
@@ -2317,6 +2601,16 @@ snapshot and skips every source, and a coverage failure leaves the fallback merg
 empty. A full run regenerates the old-named set; the next run without the switch then
 deletes the old set wherever the renamed one exists.
 
+**Which plugin made which patch** (`#esp-report-pairing`, 2026-09-25). A source's
+`source_esps` lists every plugin FOUND; `output_esps` and `esp_stats_list` only the
+patches WRITTEN -- a plugin with no ARMA group or a failed one writes none. The run
+log and `write_report` zipped the two, so every later pair shifted onto the wrong
+plugin (one bundle mod skips 238 armourless plugins). Both sites that write a patch
+(`_write_source_patches`, on either schedule, and `--plugins-only`) now record
+`(plugin, patch, stats)` in `esp_patched`, and the log (`_esp_patch_log_lines`) and
+the report read that; the report header says "N patched of M plugin(s) found". Text
+only, no switch: no patch, sidecar or mesh changes.
+
 ### Old conversions leave the output (`#stale-output-sweep`)
 
 The output folder is never cleaned, so a base an earlier run converted stays in
@@ -2446,7 +2740,10 @@ follower (converted male Ebony boots on her UBE body):
   used to remove a mod from the sources and nothing else. Owned means the ARMO's
   DEFINING plugin ships in that mod's folder — of four readings, the only one that
   caught all 14 of her minted armours (an overhaul patch wins 11 of their
-  overrides, and a BodySlide output supplies most of her meshes). Armour withheld
+  overrides, and a BodySlide output supplies most of her meshes). The defining
+  plugin is the excluded mod's only when that mod OWNS it (`_plugin_owner`,
+  `#one-plugin-owner`, the owner the sources read by): a root copy that loses to
+  another mod's belongs to that mod. Armour withheld
   this way that no mod covers is named in a warning. The window's Select-mods run
   passes its exclusion list as `--coverage-exclude-mods`, because coverage covers
   the whole load order on every run. `CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE=1` covers
@@ -2651,9 +2948,12 @@ follower (converted male Ebony boots on her UBE body):
   male keys are ambiguous on the live load order), and converted (`_ube_exists`):
   the slot is written `!UBE\` + it and its MO?T/MO?S are dropped. This outranks
   the converted male mesh, and it also runs where the male mesh was NOT
-  converted — the planner pools MOD3 and MOD5 (census backlog 7), so a
+  converted — the planner pooled MOD3 and MOD5 (census backlog 7), so a
   follower cuirass with a dead world mesh and a live first-person one converted
-  only the first-person female; `_world_mesh_converted` therefore counts a dead
+  only the first-person female (since #female-slot-pairs, merged 09-26, it
+  judges each pair and converts that male too, which the stand-in still
+  outranks; `CBBE2UBE_NO_FEMALE_SLOT_PAIRS=1` pools them again, and a source
+  the other gates drop converts nothing); `_world_mesh_converted` therefore counts a dead
   MOD3 with a stand-in as converted, or that cuirass stays unminted. One
   resolver is handed to both; `_converted_model_exists` is not hooked.
   Otherwise the male mesh: converted (the guard's dead path), or — on a
