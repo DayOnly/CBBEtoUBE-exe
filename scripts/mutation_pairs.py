@@ -1053,8 +1053,10 @@ PAIRS = (
               '            pass  # MUTATED: the dead pool is reused\n', 1),
          ),
          tests=('tests/test_golden_jobs.py',),
-         expect=('test_a_second_death_is_named_too',
-                 'test_a_worker_that_dies_fails_the_check_by_name'),
+         # Only the two-deaths case needs a fresh pool for certain: with one
+         # death the reused pool may or may not be broken by the time the
+         # re-run starts (it was MISSED under load on the parent too, 09-26).
+         expect=('test_a_second_death_is_named_too',),
     ),
     Pair('GJ-k', 'a worker death that no single piece reproduces is dropped',
          edits=(
@@ -1183,6 +1185,26 @@ PAIRS = (
          ),
          tests=('tests/test_golden_no_false_pass.py',),
          expect=('test_a_capture_names_a_piece_that_converted_to_nothing',),
+    ),
+    Pair('GJ-x', "check ignores a shape the output gained",
+         edits=(
+             ('scripts/golden_output.py',
+              '        for n in sorted(set(cur) - set(names)):\n',
+              '        for n in ():  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_golden_no_false_pass.py',),
+         expect=('test_a_shape_the_output_gained_is_a_regression',),
+    ),
+    Pair('GJ-y', 'a baseline with no shapes counts as compared',
+         edits=(
+             ('scripts/golden_output.py',
+              '        if not names:\n'
+              '            # A baseline that recorded no shapes compares nothing: counting it\n',
+              '        if False:  # MUTATED\n'
+              '            # A baseline that recorded no shapes compares nothing: counting it\n', 1),
+         ),
+         tests=('tests/test_golden_no_false_pass.py',),
+         expect=('test_a_baseline_with_no_shapes_is_not_counted_as_compared',),
     ),
     # #glow-diagnostic-path (2026-09-20): the diagnostic wrote nothing for an
     # unknown length of time, because its configured directory did not exist
