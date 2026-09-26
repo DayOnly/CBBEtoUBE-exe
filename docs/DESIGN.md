@@ -1912,7 +1912,14 @@ NIF never reads a source:
    where the convert step's source-local tier found it; else the load-order
    archives (`_BsaMeshIndex` over `_load_order_bsa_dirs`, lookup-only), read as
    the copy the convert step extracted to `<output>\_bsa_staging` and taken
-   only while its bytes are the archive's. Not searched: a source folder that
+   only while its bytes are the archive's -- the archive the convert step
+   extracted from: the index takes the same plugin order
+   (`_bsa_plugin_order`, `#bsa-load-order-winner`), so where MO2 priority and
+   plugin load order pick different archives the staged copy still matches
+   (`#alttex-source-winner`, `CBBE2UBE_NO_ALTTEX_SOURCE_WINNER`; before it the
+   MO2-first archive was read, the bytes never matched and the same-named
+   layers' entries were dropped; live: 1,088 staged meshes, 0 whose two
+   archive orders disagree). Not searched: a source folder that
    is not an enabled mod (the convert step's local tier can read one) -- that
    NIF falls back, below;
 2. read it and replay the converter's own rename on it

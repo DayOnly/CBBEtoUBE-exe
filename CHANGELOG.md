@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed — colour variants of a piece whose mesh two mods' archives both ship
+
+When two mods ship the same armour mesh inside their `.bsa` archives, the tool
+converts the copy the game loads (the archive of the plugin that loads later).
+The colour-variant fix then checked that mesh against the other archive, found
+it different, and dropped the colour variants of any layers that share a name
+(those layers kept their base colour). It now checks against the same archive
+the conversion used. Measured on the reported modlist: none of the 1,088 meshes
+the tool took from archives is shipped differently by two archives, so nothing
+changes there today. `CBBE2UBE_NO_ALTTEX_SOURCE_WINNER=1` (set to 1) turns it
+off.
+
 ### Fixed — a mesh whose file name has a curly apostrophe or a dash is found in a mod's archive
 
 A few characters (a curly apostrophe, an en or em dash, a trademark sign, some

@@ -540,6 +540,25 @@ def _reconcile_loaded_mesh_on() -> bool:
     return not _flag("CBBE2UBE_NO_RECONCILE_LOADED_MESH", False)
 
 
+def _alttex_source_winner_on() -> bool:
+    r"""#alttex-source-winner (2026-09-26): does the reconcile check an
+    archive-only source against the archive the convert step extracted it
+    from? Yes, by default.
+
+    `_alttex_source_paths` takes the copy the convert step staged in
+    `<output>\_bsa_staging` only while its bytes are the archive's. The convert
+    step's index picks, between two archives holding the mesh, the one whose
+    plugin loads later (#bsa-load-order-winner); the reconcile built its own
+    index without the plugin order, so it read the MO2-first archive. Where the
+    two orders disagree the bytes never matched, the source counted as
+    unreadable and every entry of a same-named layer was dropped (the layer
+    kept its base colour). Its index now takes the same plugin order
+    (`auto_convert._bsa_plugin_order`, None under
+    CBBE2UBE_NO_BSA_LOAD_ORDER_WINNER=1, as the convert step's).
+    CBBE2UBE_NO_ALTTEX_SOURCE_WINNER=1 reads the MO2-first archive again."""
+    return not _flag("CBBE2UBE_NO_ALTTEX_SOURCE_WINNER", False)
+
+
 def _loaded_mesh_lookup(meshes_root):
     r"""#reconcile-loaded-mesh: model path -> (path, None) | (None, bytes) |
     None, the copy of a path the game loads with our output (the folder
@@ -895,7 +914,9 @@ def _alttex_source_paths(meshes_root, keys) -> "dict[str, Path]":
     if rest:
         try:
             bsa = _ac._BsaMeshIndex(
-                _ac._load_order_bsa_dirs(mr, order, lay.game_data_dirs), None)
+                _ac._load_order_bsa_dirs(mr, order, lay.game_data_dirs), None,
+                plugin_order=(_ac._bsa_plugin_order(lay)
+                              if _alttex_source_winner_on() else None))
         except Exception:
             return out
         for k in rest:

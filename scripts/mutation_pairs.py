@@ -13400,4 +13400,34 @@ PAIRS = (
          tests=('tests/test_model_path_codepage.py',),
          expect=('test_a_path_is_read_back_as_arma_path_bytes_wrote_it',),
     ),
+    # #alttex-source-winner (2026-09-26): the reconcile reads an archive-only
+    # source from the archive the convert step extracted it from.
+    Pair('ASW-a', 'the source check reads the MO2-first archive again',
+         edits=(
+             ('src/ube_patcher.py',
+              '                plugin_order=(_ac._bsa_plugin_order(lay)\n'
+              '                              if _alttex_source_winner_on() else None))',
+              '                plugin_order=None)  # MUTATED', 1),
+         ),
+         tests=('tests/test_alttex_source_winner.py',),
+         expect=('test_the_copy_the_convert_step_staged_is_the_source',),
+    ),
+    Pair('ASW-b', 'the off-switch no longer switches anything off',
+         edits=(
+             ('src/ube_patcher.py',
+              '    return not _flag("CBBE2UBE_NO_ALTTEX_SOURCE_WINNER", False)',
+              '    return True  # MUTATED', 1),
+         ),
+         tests=('tests/test_alttex_source_winner.py',),
+         expect=('test_switched_off_the_mo2_first_archive_is_read_again',),
+    ),
+    Pair('ASW-c', "the source check ignores the load-order winner's own switch",
+         edits=(
+             ('src/ube_patcher.py',
+              '                plugin_order=(_ac._bsa_plugin_order(lay)\n',
+              '                plugin_order=(paths.active_plugins_ordered(lay)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_alttex_source_winner.py',),
+         expect=('test_with_the_load_order_winner_off_both_steps_take_the_mo2_order',),
+    ),
 )
