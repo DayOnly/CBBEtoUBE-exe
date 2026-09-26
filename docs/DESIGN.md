@@ -4324,3 +4324,32 @@ Runtime physics (SMP cloth goes where the simulation puts it), BodyMorph/OBody
 inflation beyond the fitted body, and equip-time instability. A full breast slider
 takes exposure 4.5% -> 12.1% on a piece whose pose behaviour is clean — the morph path
 is a separate, unexamined class, and on that piece it is the larger one.
+
+### Never compare a clearance across CBBE and UBE on the full crotch band
+
+The two bodies are not the same surface there. UBE models a dense midline slit
+(16% of the covered crotch-band vertices on 1.3% of the area, sideways normals,
+self-contact); the 3BA body ships its vulva and anus as separate companion shapes
+and is open there without them. A body -> nearest-garment-vertex clearance reads
+CBBE-shaped cloth "deeper" on UBE with no conversion error: a perfect warped shell
+reads ours - author p05 -0.50u (the shipped pack's median was -0.86u). A number
+that subtracts the author's crotch clearance from ours is only meaningful on skin
+BOTH bodies can show -- `single_swing_census` pairs band skin visible on the
+closed source body with skin visible on UBE through the warp's own
+nearest-vertex correspondence, and refuses to report unless a closed shell pushed
+through the converter's own warp reads ~0 there at bind AND in a one-leg swing,
+with each arm's shell riding its own body's weights (see METRICS.md, 2026-09-26
+and its round 2). Scoring each arm on its own visible skin is not enough: the
+closed 3BA body adds vulva skin a source garment can lie inside, which UBE has no
+counterpart for. On shared skin the shipped pack is slightly looser than the
+author (p05 +0.28u), not deeper.
+
+Compare a posed loss LEG BY LEG, never worse side to worse side: each arm's
+worse leg can be the other leg, and a conversion that raises the leg its source
+kept low can read unchanged or even better (7 of 201 pieces on the shipped
+pack were not counted as worse: 5 read unchanged, 2 better; in 5 of them one
+leg rises while the other falls; `single_swing_census.leg_compare`, METRICS.md round 3). And the
+source arm is only as good as its file: `find_source` pairs by path and garment
+shape names, taking the first mod alphabetically where several ship the path,
+which for 14 of those 201 pieces is not the file the converter read. Each row
+names the file it was scored on (`src_path`).

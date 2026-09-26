@@ -84,6 +84,40 @@ altogether, the message now says that instead of calling the body file
 unreadable. `CBBE2UBE_NO_NIF_LIBRARY_RETRY=1` (set to 1) turns the retry off;
 the clearer message stays.
 
+### Development only — the crotch-swing census compares the two bodies on skin both can show
+
+The census that measures how far crotch cloth sinks into the body when one leg
+swings compared our conversion with the original armour by subtracting their
+clearances over the crotch. The two bodies are not the same surface there: UBE
+models a narrow slit that CBBE does not, and the original body leaves an opening
+that it fills with separate pieces. Measured by nearest point, a garment
+converted perfectly reads about 0.5 units "deeper" on UBE at its tightest 5%
+(across the reported pack the gap was 0.86 units), and that difference was being
+reported as armour we bury deeper than its author did.
+
+The census now also compares the two only on skin that can be seen from outside
+on BOTH bodies, beside the old numbers under a label that says not to compare
+them across bodies. Each run first pushes a perfect test garment through the
+converter's own warp, standing still and with one leg swung, and refuses to
+report if that garment does not read close to zero or if a garment planted to
+drag with one leg does not read clearly worse. On the reported pack the
+conversion sits slightly looser than the original there (0.28 units at the
+tightest 5%), not deeper.
+
+In the leg swing the census now compares each leg with the SAME leg of the
+original. Comparing each piece's worst leg with the original's worst leg hid
+pieces whose worst leg changed sides: 7 pieces got more than 0.3 units worse on
+one leg while that comparison did not count them as worse (5 read as unchanged,
+2 even as better). Of 201 pieces with an
+original to compare, 19 have a leg more than 0.3 units worse after conversion
+and 68 have a leg more than 0.3 units better (by the worst-leg comparison: 12
+worse, 62 better; by any margin at all, 89 worse and 112 better). Most of the 19
+have no cause the census can show yet; that is being investigated, not fixed.
+The census also names the original file it compared against, since for 14 of
+the 201 that is not the file the converter read. Guarded by
+`tests/test_single_swing_census_visibility.py` and mutation pairs
+`SSV-a`..`SSV-aa`. No converter behaviour changes.
+
 ### Fixed — Check setup sees a UBE body you pick while the window is open
 
 The window looked up the reference bodies once and kept that answer until it
