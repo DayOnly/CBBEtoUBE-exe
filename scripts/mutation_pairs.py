@@ -13201,4 +13201,105 @@ PAIRS = (
          tests=('tests/test_plan_order_results.py',),
          expect=('test_the_sort_places_by_destination_then_source_then_reason',),
     ),
+    # #no-leaking-fakes (2026-09-26): a test helper assigned a fake on every
+    # split converter module while its callers restored only nif_convert, so
+    # the fakes outlived their tests and one regression guard passed or failed
+    # by file order. tests/conftest.py now snapshots every src.* / scripts.*
+    # module per test and FAILS the test that leaves one rebound, after
+    # putting it back. These pairs break the guard, and plant the leak class.
+    Pair('NLF-a', 'a leaking test is never failed',
+         edits=(
+             ('tests/conftest.py',
+              '    if leaks:\n        pytest.fail(',
+              '    if False:  # MUTATED: leaks go unreported\n        pytest.fail(', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_the_suite_fails_the_leaking_test_and_no_other',),
+    ),
+    Pair('NLF-b', 'a leak is reported but left in place for the next test',
+         edits=(
+             ('tests/_module_guard.py',
+              '            now[k] = v\n    return leaks',
+              '            pass  # MUTATED: left rebound\n    return leaks', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_a_bare_rebinding_is_reported_and_put_back',
+                 'test_a_switch_set_by_hand_is_a_leak',
+                 'test_the_suite_fails_the_leaking_test_and_no_other'),
+    ),
+    Pair('NLF-c', 'the guard looks before monkeypatch has undone its patches',
+         edits=(
+             ('tests/conftest.py',
+              'def _converter_modules_are_left_as_found():',
+              'def _zz_converter_modules_are_left_as_found():  # MUTATED: set up after monkeypatch', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_the_suite_fails_the_leaking_test_and_no_other',),
+    ),
+    Pair('NLF-d', 'a reload is called a leak',
+         edits=(
+             ('tests/_module_guard.py',
+              '        return (ca is not None and ca == cb and depth < 3',
+              '        return (ca is None and ca == cb and depth < 3  # MUTATED: code never equal', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_a_reload_is_not_a_leak_and_the_originals_come_back',),
+    ),
+    Pair('NLF-e', "a module's own `global` cache is called a leak",
+         edits=(
+             ('tests/_module_guard.py',
+              '        for m in _GLOBAL_RE.finditer(_text(path)):',
+              '        for m in _GLOBAL_RE.finditer(""):  # MUTATED: source unread', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_the_modules_own_run_time_cache_is_left_to_its_code',),
+    ),
+    Pair('NLF-f', 'the caches a sibling assigns through _nc() are called leaks',
+         edits=(
+             ('tests/_module_guard.py',
+              '            got.update(_NC_ASSIGN_RE.findall(_text(p)))',
+              '            pass  # MUTATED: _nc() assignments unread', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_the_real_converter_caches_are_recognised',),
+    ),
+    Pair('NLF-g', 'a cache filled in place is called a leak (values, not bindings)',
+         edits=(
+             ('tests/_module_guard.py',
+              '    return [(name, mod, dict(mod.__dict__))',
+              '    return [(name, mod, {k: (v.copy() if isinstance(v, dict) else v)'
+              ' for k, v in mod.__dict__.items()})  # MUTATED: containers copied', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_a_cache_filled_in_place_is_not_a_leak',),
+    ),
+    Pair('NLF-h', 'a replaced sys.modules entry goes unseen',
+         edits=(
+             ('tests/_module_guard.py',
+              '        if sys.modules.get(name) is not mod:',
+              '        if False:  # MUTATED: module object not checked', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_a_replaced_module_object_is_reported_and_put_back',),
+    ),
+    Pair('NLF-i', 'a real test fakes a converter function by bare assignment',
+         edits=(
+             ('tests/test_layer_group_canonical.py',
+              '    got = nc._dst_groups_for_names(\n        [_S("a"), _S("b")]',
+              '    nc._canonical_stack_name_groups = lambda *a: None  # MUTATED: bare leak\n'
+              '    got = nc._dst_groups_for_names(\n        [_S("a"), _S("b")]', 1),
+         ),
+         tests=('tests/test_layer_group_canonical.py',),
+         expect=('test_dst_groups_need_two_MEMBERS_PRESENT_HERE',),
+    ),
+    Pair('NLF-j', 'a helper patches every split module and undoes none of them',
+         edits=(
+             ('tests/test_chain_rest_lift.py',
+              '        _cs.patch(mp, "_shape_global_to_skin", lambda s: _Xf())',
+              '        _cs.patch(pytest.MonkeyPatch(), "_shape_global_to_skin",'
+              ' lambda s: _Xf())  # MUTATED: never undone', 1),
+         ),
+         tests=('tests/test_chain_rest_lift.py',),
+         expect=('test_a_chain_that_already_clears_is_left_alone',),
+    ),
 )

@@ -39,7 +39,7 @@ authored, not a consequence of which body they were fitted to.
 import inspect
 
 from src import nif_convert as nc
-from tests import _converter_sources as _cs  # set on every module that binds a name
+from tests import _converter_sources as _cs  # patch every module that binds a name
 
 
 def test_both_weights_resolve_to_the_same_canonical_file(tmp_path):
@@ -92,26 +92,23 @@ def test_the_caller_distinguishes_None_from_empty():
         "garment that legitimately has no stacked group")
 
 
-def test_dst_groups_need_two_MEMBERS_PRESENT_HERE():
+def test_dst_groups_need_two_MEMBERS_PRESENT_HERE(monkeypatch):
     """A name the canonical weight grouped may be absent from this file. A
     group down to one member is not a stack here and must not be planned."""
     class _S:
         def __init__(self, name, n=8):
             self.name = name
             self.verts = [(float(i), 0.0, 0.0) for i in range(n)]
-    orig_w, orig_g = nc._verts_skin_to_world, nc._shape_global_to_skin
-    _cs.set_all("_verts_skin_to_world", lambda sv, xf: __import__("numpy").asarray(sv, float))
-    _cs.set_all("_shape_global_to_skin", lambda s: None)
-    try:
-        got = nc._dst_groups_for_names(
-            [_S("a"), _S("b")], [{"a", "b"}, {"a", "missing"}], set())
-    finally:
-        nc._verts_skin_to_world, nc._shape_global_to_skin = orig_w, orig_g
+    _cs.patch(monkeypatch, "_verts_skin_to_world",
+              lambda sv, xf: __import__("numpy").asarray(sv, float))
+    _cs.patch(monkeypatch, "_shape_global_to_skin", lambda s: None)
+    got = nc._dst_groups_for_names(
+        [_S("a"), _S("b")], [{"a", "b"}, {"a", "missing"}], set())
     assert len(got) == 1, "the group with only one present member must be dropped"
     assert {m[0] for m in got[0]} == {"a", "b"}
 
 
-def test_excluded_names_never_enter_a_rebuilt_group():
+def test_excluded_names_never_enter_a_rebuilt_group(monkeypatch):
     """Colliders and injected body parts are excluded when the canonical set is
     built; the rebuild must honour the same exclusion, or one path re-admits
     what the other refused."""
@@ -119,14 +116,11 @@ def test_excluded_names_never_enter_a_rebuilt_group():
         def __init__(self, name):
             self.name = name
             self.verts = [(0.0, 0.0, 0.0)] * 4
-    orig_w, orig_g = nc._verts_skin_to_world, nc._shape_global_to_skin
-    _cs.set_all("_verts_skin_to_world", lambda sv, xf: __import__("numpy").asarray(sv, float))
-    _cs.set_all("_shape_global_to_skin", lambda s: None)
-    try:
-        got = nc._dst_groups_for_names(
-            [_S("a"), _S("ColBody")], [{"a", "ColBody"}], {"ColBody"})
-    finally:
-        nc._verts_skin_to_world, nc._shape_global_to_skin = orig_w, orig_g
+    _cs.patch(monkeypatch, "_verts_skin_to_world",
+              lambda sv, xf: __import__("numpy").asarray(sv, float))
+    _cs.patch(monkeypatch, "_shape_global_to_skin", lambda s: None)
+    got = nc._dst_groups_for_names(
+        [_S("a"), _S("ColBody")], [{"a", "ColBody"}], {"ColBody"})
     assert got == [], "an excluded shape must not be rebuilt into a group"
 
 

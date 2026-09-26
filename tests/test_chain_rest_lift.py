@@ -41,10 +41,11 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import src.nif_convert as nc  # noqa: E402
-from tests import _converter_sources as _cs  # set on every module that binds a name
+from tests import _converter_sources as _cs  # patch every module that binds a name
 
 
 class _Xf:
@@ -146,21 +147,16 @@ def _run(chain, fake, amp_value=0.5, osd=True):
     V, N, amp = _body(amp_value)
     if not osd:
         amp = None
-    saved = (nc.CHAIN_REST_LIFT, nc._find_user_preset_body,
-             nc._cached_ube_body_verts, nc._cached_body_morph_amplitude,
-             nc._find_ube_body_osd, nc._shape_global_to_skin)
-    nc.CHAIN_REST_LIFT = True
-    _cs.set_all("_find_user_preset_body", lambda *a, **k: "ube")
-    nc._cached_ube_body_verts = lambda *a, **k: (None, V, N)
-    _cs.set_all("_cached_body_morph_amplitude", lambda *a, **k: amp)
-    _cs.set_all("_find_ube_body_osd", lambda *a, **k: "osd")
-    _cs.set_all("_shape_global_to_skin", lambda s: _Xf())
-    try:
+    # One MonkeyPatch scope undoes every module `_cs.patch` touched -- the
+    # split siblings too, not just `nc` -- when the pass returns.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(nc, "CHAIN_REST_LIFT", True)
+        _cs.patch(mp, "_find_user_preset_body", lambda *a, **k: "ube")
+        mp.setattr(nc, "_cached_ube_body_verts", lambda *a, **k: (None, V, N))
+        _cs.patch(mp, "_cached_body_morph_amplitude", lambda *a, **k: amp)
+        _cs.patch(mp, "_find_ube_body_osd", lambda *a, **k: "osd")
+        _cs.patch(mp, "_shape_global_to_skin", lambda s: _Xf())
         return nc._lift_chain_roots_off_body(chain, fake)
-    finally:
-        (nc.CHAIN_REST_LIFT, nc._find_user_preset_body,
-         nc._cached_ube_body_verts, nc._cached_body_morph_amplitude,
-         nc._find_ube_body_osd, nc._shape_global_to_skin) = saved
 
 
 # ------------------------------------------------------------------ the gate
