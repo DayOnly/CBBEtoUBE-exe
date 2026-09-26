@@ -624,7 +624,7 @@ def check(tol: float, jobs: int = 1) -> int:
         print("NOTE: src/ or scripts/ has uncommitted changes -- `check` is "
               "measuring the working tree, not a commit.")
     work = GOLDEN / "_check"
-    bad = src_changed = compared = unconverted = 0
+    bad = src_changed = compared = unconverted = empty_base = 0
     # COVERAGE. A piece of the list the baseline does not hold (added to
     # pieces.json after the capture, or skipped by it) was dropped from the run
     # without a word, and a verdict that looked at none of them still read
@@ -663,11 +663,22 @@ def check(tol: float, jobs: int = 1) -> int:
                   f"not the converter. Re-capture to re-baseline.")
             src_changed += 1
             continue
-        compared += 1
         g = np.load(gold, allow_pickle=True)
         cur = r["fp"]
         names = sorted({k.split("::")[0] for k in g.files})
+        if not names:
+            # A baseline that recorded no shapes compares nothing: counting it
+            # as compared would be the 0/0 pass one level down.
+            print(f"  {label:<20} NOT COMPARED -- the baseline recorded no "
+                  f"shapes for it; re-capture.")
+            empty_base += 1
+            continue
+        compared += 1
         worst = []
+        # A shape the output gained (a duplicated body shape, say) is a change
+        # too: the loop below only walks the baseline's shapes.
+        for n in sorted(set(cur) - set(names)):
+            worst.append(f"shape ADDED: {n}")
         # SIDECARS (.tri, .xml) -- byte-compared. Golden used to look at NIF
         # geometry and weights only, so a defect living in a generated .tri was
         # invisible to it BY CONSTRUCTION, and one was: a set-iteration leak
@@ -723,7 +734,8 @@ def check(tol: float, jobs: int = 1) -> int:
     n = len(PIECES)
     missed = [f"{k} {what}" for k, what in (
         (src_changed, "source changed"), (len(unbased), "not in the baseline"),
-        (len(lost), "baseline file missing"), (unconverted, "failed to convert"))
+        (len(lost), "baseline file missing"), (unconverted, "failed to convert"),
+        (empty_base, "baseline has no shapes"))
         if k]
     print(f"compared {compared} of {n} piece(s)"
           + (f"; not compared: {', '.join(missed)}" if missed else ""))

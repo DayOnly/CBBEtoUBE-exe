@@ -268,3 +268,41 @@ def test_an_empty_piece_list_is_not_a_pass(harness, capsys):
     capsys.readouterr()
     assert go.check(1e-4) == 3
     assert "NOTHING COMPARED: 0 of 0" in capsys.readouterr().out
+
+
+# ------------------------------------------------------- shape-level coverage
+
+def test_a_shape_the_output_gained_is_a_regression(harness, capsys, monkeypatch):
+    """Review of c956de8: check walked the BASELINE's shapes only, so a shape
+    added to the output (a duplicated body shape, say) read 'ok' and the
+    verdict said every piece was compared."""
+    harness.pieces("cuirass")
+    assert go.capture() == 0
+
+    def _plus_one(nif_path):
+        fp = _fingerprint(nif_path)
+        fp["body_dup"] = fp["body"]
+        return fp
+    monkeypatch.setattr(go, "_fingerprint", _plus_one)
+    capsys.readouterr()
+    rc = go.check(1e-4)
+    out = capsys.readouterr().out
+    assert rc == 1, out
+    assert "shape ADDED: body_dup" in out, out
+    assert "PASS" not in out, out
+
+
+def test_a_baseline_with_no_shapes_is_not_counted_as_compared(harness, capsys,
+                                                              monkeypatch):
+    """Review of c956de8: a piece captured with zero shapes counted as compared
+    and passed -- the 0/0 pass one level down."""
+    harness.pieces("cuirass")
+    monkeypatch.setattr(go, "_fingerprint", lambda p: {})
+    assert go.capture() == 0
+    monkeypatch.setattr(go, "_fingerprint", _fingerprint)
+    capsys.readouterr()
+    rc = go.check(1e-4)
+    out = capsys.readouterr().out
+    assert rc == 3, out
+    assert "NOT COMPARED -- the baseline recorded no shapes" in out, out
+    assert "1 baseline has no shapes" in out, out
