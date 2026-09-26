@@ -149,3 +149,36 @@ def test_the_body_list_says_the_library_is_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(nif_io, "library", lambda: object())
     c = zb._candidate(None, "cbbe", "Out", pair, True, {})
     assert c.status == "unreadable" and "is unreadable (AttributeError)" in c.reason
+
+
+def test_a_second_thread_waits_for_the_retry_instead_of_failing(monkeypatch):
+    """Review of 5cea2af: the retry was marked done BEFORE the import finished,
+    so another thread's first read in that window got None and failed once.
+    Now the retry runs under a lock and is marked done when it has finished."""
+    import threading
+    import time
+    import types
+
+    entered = threading.Event()
+    fake = types.ModuleType("pynifly")
+
+    class _SlowPyn(types.ModuleType):
+        def __getattr__(self, name):
+            if name == "pynifly":
+                entered.set()
+                time.sleep(0.3)             # the import is still running
+                return fake
+            raise AttributeError(name)
+
+    monkeypatch.setitem(sys.modules, "pyn", _SlowPyn("pyn"))
+    monkeypatch.delitem(sys.modules, "pyn.pynifly", raising=False)
+    monkeypatch.setattr(nif_io, "pynifly", None)
+    monkeypatch.setattr(nif_io, "_RETRIED", False)
+    monkeypatch.setattr(nif_io, "NIF_LIBRARY_RETRY", True)
+    got = {}
+    first = threading.Thread(target=lambda: got.__setitem__("first", nif_io.library()))
+    first.start()
+    assert entered.wait(5), "the retry never started"
+    got["second"] = nif_io.library()          # while the first is importing
+    first.join(5)
+    assert got == {"first": fake, "second": fake}, got

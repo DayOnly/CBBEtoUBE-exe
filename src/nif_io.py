@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -68,27 +69,34 @@ from .envflags import flag as _flag  # noqa: E402
 
 NIF_LIBRARY_RETRY = not _flag("CBBE2UBE_NO_NIF_LIBRARY_RETRY", default=False)
 _RETRIED = False
+_RETRY_LOCK = threading.Lock()
 
 
 def library():
     """The pynifly module this module reads NIFs with, or None when it cannot
-    be imported (`import_error()` then says why)."""
+    be imported (`import_error()` then says why). The retry is made once, under
+    a lock, and marked done only when it has finished, so a second thread's
+    first read waits for it instead of failing."""
     global pynifly, _IMPORT_ERROR, _RETRIED
     if pynifly is not None or _RETRIED or not NIF_LIBRARY_RETRY:
         return pynifly
-    _RETRIED = True
-    if not getattr(sys, "frozen", False):
-        pn = str(Path(__file__).resolve().parent.parent / ".pynifly")
-        if pn not in sys.path:
-            sys.path.insert(0, pn)
-    try:
-        from pyn import pynifly as mod  # type: ignore
-    except ImportError as e:
-        _IMPORT_ERROR = e
-        return None
-    pynifly = mod
-    _IMPORT_ERROR = None
-    return mod
+    with _RETRY_LOCK:
+        if pynifly is not None or _RETRIED:
+            return pynifly
+        if not getattr(sys, "frozen", False):
+            pn = str(Path(__file__).resolve().parent.parent / ".pynifly")
+            if pn not in sys.path:
+                sys.path.insert(0, pn)
+        try:
+            from pyn import pynifly as mod  # type: ignore
+        except ImportError as e:
+            _IMPORT_ERROR = e
+            _RETRIED = True
+            return None
+        pynifly = mod
+        _IMPORT_ERROR = None
+        _RETRIED = True
+        return mod
 
 
 def import_error() -> str:
