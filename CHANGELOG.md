@@ -13,6 +13,63 @@ wrong layer, or drop it. It now looks where the conversion looked. The reported
 modlist has no meshes in its overwrite folder, so its result does not change.
 `CBBE2UBE_NO_OVERWRITE_MESH_INDEX=1` (set to 1) leaves the folder out of both.
 
+### Fixed — a vertex-colour clean-up that stops now fails the run
+
+At the end of a run the tool clears a colour setting from any mesh piece that
+has no colours to go with it; left on, that piece crashes the game when it is
+equipped. If this clean-up stopped with an error, the run only warned and
+still ended as a success, although the pieces it had not reached were never
+checked. It now counts as a failure ("can crash the game when equipped"), so
+the run ends as failed and the window says so. Converting again runs the
+clean-up over every mesh, `--plugins-only` included. On full runs the
+clean-up has found nothing to fix, so this should be rare. To get the old
+behaviour, set `CBBE2UBE_NO_VC_SWEEP_FAILURE=1`.
+
+### Changed — `merge` exits 1 when its plugin could not be checked
+
+The command-line `merge` checks the plugin it wrote for problems that stop the
+game loading it. When that check could not run, `merge` still exited 0, the
+same as for a plugin that passed. It now exits 1 ("written, not checked"),
+with a hint to run `validate`; 2 still means "checked, and not safe to load".
+A failed repair of the plugin's master list alone does not change the exit
+code: the check that follows looks at the master order and exits 2 if it is
+wrong. To get the old behaviour, set `CBBE2UBE_NO_MERGE_UNVERIFIED_EXIT=1`.
+
+### Fixed — the last few uncounted warnings
+
+- The missing-morph check of the UBE body's hands and feet was counted after
+  the end-of-run line was printed, so the log's warning count was one lower
+  than the list the window showed. It is now checked before that line.
+- Three problems of the mesh writer were printed only by the background
+  worker, whose output the log does not show: a failed partition pass, a
+  piece over the vertex limit that could not be split (it may crash the game
+  when equipped), and a mesh repair that was abandoned because it would have
+  lost a part. Each is now printed in the log for its mod and counted as a
+  warning.
+- With `--plugins-only`, a warning that some plugins could not be read for
+  which armour is playable was printed but not counted. It is counted now.
+- That warning's entry said the plugins were "read"; it now says "not read".
+
+Nothing that is converted changes. The test that finds uncounted warnings now
+accepts only a count made right after the warning, and names each warning on
+its own, so two warnings with the same words cannot hide each other.
+
+### Fixed — more warnings reach the end-of-run count and list
+
+39 warnings were printed in the log but left out of the warning count at the
+end of the run and out of the list the window shows after it, so a run that
+hit only these could still end "all clear". Among them: the colour-variant
+fix, the hands-slot fix, the duplicate-armature clean-up or the master-list
+repair of the Combined plugin failing; the final check of the Combined
+plugin, or of the `_0`/`_1` weight pairs, not running; the coverage step's
+own warnings (armour of an excluded mod
+left without a UBE armature, female meshes not converted, the UBE hands and
+feet not found, the coverage check's findings); a modlist whose plugins or
+NPC outfits could not be read; the missing-morph check of the UBE body's
+hands and feet. Each is now counted and listed once, as a warning, so the exit
+code of a run does not change. Nothing that is converted changes. A test now
+fails on any new warning that is printed but not counted.
+
 ### Fixed — running from source with an outdated `PYNIFLY_PATH` no longer loses the reference bodies
 
 This affects running the tool from its source code only; the exe carries its

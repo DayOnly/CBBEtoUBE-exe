@@ -65,6 +65,11 @@ def _convert(base, monkeypatch, capsys, *, settings_text="{}", skypatcher=True,
     monkeypatch.setenv("CBBE2UBE_RUN_LOG", str(base / "run.log"))
     monkeypatch.setattr(ac.paths, "enabled_mods", lambda lay: set())
     monkeypatch.setattr(ac, "_third_party_ube_covered_armos", lambda *a, **k: set())
+    # The temporary modlist has no plugin load order, so the playability read
+    # would fail open with a problem warning -- one the tally did not count
+    # until #one-tally's audit, which is how this fixture's "every check clean"
+    # went untrue unseen. Clean here: a load order with nothing non-playable.
+    monkeypatch.setattr(ac, "_batch_armo_winner_nonplayable", lambda: {})
     monkeypatch.setattr(pf, "_locate_in_mods_or_data",
                         lambda *a, **k: (base / "SkyPatcher.dll") if skypatcher else None)
     monkeypatch.setattr(pf, "_skypatcher_armor_patching", lambda p: True)
