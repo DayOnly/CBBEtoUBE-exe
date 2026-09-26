@@ -10825,7 +10825,7 @@ PAIRS = (
          ),
          tests=('tests/test_race_subset_dedup_agree.py',),
          expect=('test_the_merge_keeps_a_copy_that_lists_a_race_the_other_does_not',
-                 'test_same_mesh_siblings_sharing_a_first_race_lose_no_race'),
+                 'test_a_third_copy_covered_by_the_two_kept_is_dropped'),
     ),
     Pair('RSDA-i', 'the merge keeps every render-identical copy',
          edits=(
