@@ -13388,10 +13388,8 @@ PAIRS = (
               ' + "*.esp"))  # MUTATED', 1),
          ),
          tests=('tests/test_sweep_piece_family.py',),
-         expect=('test_a_copy_of_an_old_combined_does_not_put_the_moves_back'
-                 '[Combined - Copy.esp]',
-                 'test_a_copy_of_an_old_combined_does_not_put_the_moves_back'
-                 '[Combined_backup.esp]',
+         expect=('test_a_copy_of_an_old_combined_does_not_put_the_moves_back[copy]',
+                 'test_a_copy_of_an_old_combined_does_not_put_the_moves_back[backup]',
                  'test_an_unreadable_copy_does_not_put_the_moves_back'),
     ),
     Pair('SPF-b', 'the off-switch no longer switches anything off',

@@ -72,7 +72,8 @@ def moved(tmp_path):
 
 
 @pytest.mark.parametrize("copy", ["Combined - Copy.esp", "Combined_backup.esp",
-                                  "combined old.esp"])
+                                  "combined old.esp"],
+                         ids=["copy", "backup", "renamed"])
 def test_a_copy_of_an_old_combined_does_not_put_the_moves_back(moved, copy):
     w, results = moved
     _esp(w, copy, IRON_M, OLD_M)
