@@ -21,21 +21,29 @@ in place during a test is the same object and never trips it. A replaced
 
 * a name the module's own code rebinds at run time -- declared `global` in
   that module, or assigned as `_nc().NAME = ...` by a converter sibling
-  (a lazily-built cache such as the skeleton bone list). Found by reading the
-  source, so a new cache needs no edit here; `run_time_names()` lists them.
-* an `importlib.reload` of the module: every function comes back as a new
-  object with the same code. A reloaded module's functions, classes and other
-  objects are judged by what they ARE (same code, same class name, same type);
-  plain values -- the switches -- by equality, so a reload left under a
-  non-default environment is still a leak.
-* a same-typed container that is equal, or a fresh EMPTY one (a reload
-  rebuilding `_CACHE = {}`).
+  (a lazily-built cache such as the skeleton bone list, or the physics XML
+  bound per piece). Found by reading the source, so a new one needs no edit
+  here; `run_time_names()` lists them. The converter rebinding them is not a
+  test's fault -- any test that converts a piece in-process leaves them set --
+  so they never FAIL a test, but they are put back like everything else: a
+  cache built from one test's fake skeleton, or one piece's physics XML, must
+  not reach the next test.
+* an `importlib.reload` of the module, told by the fresh `__spec__` a reload
+  binds before it runs the source again. Only in a module that was reloaded
+  are functions, classes and other objects judged by what they ARE (same
+  code, same class name, same type) and a fresh EMPTY container accepted (a
+  reload rebuilding `_CACHE = {}`). Plain values -- the switches -- are judged
+  by equality either way, so a reload left under a non-default environment is
+  still a leak. Without a reload, a `functools.wraps` spy (same code once
+  unwrapped) or an emptied table is a leak like any other rebinding.
+* a same-typed container or value that is EQUAL to the one it replaced.
 
-Every rebinding, legitimate or not, except the run-time names, dunders and
-submodules is put back to the snapshot, so the next test starts from the
-objects the process started with. Blind spots, by design: a module first
-imported INSIDE a test (watched from the next one), a cache MUTATED in place
-with a fake entry (identity cannot see it), and `os.environ`.
+Every rebinding, legitimate or not, except dunders and submodules is put back
+to the snapshot, so the next test starts from the objects the process started
+with. Blind spots, by design: a module first imported INSIDE a test (watched
+from the next one), a cache MUTATED in place with a fake entry (identity
+cannot see it), a spy installed in a module the same test also reloaded, and
+`os.environ`.
 """
 from __future__ import annotations
 
@@ -122,30 +130,34 @@ def _same_value(a, b) -> bool:
         return False
 
 
-def _reloaded(mod, before: dict, now: dict) -> bool:
-    """True when a function DEFINED in `mod` came back as a new object with
-    the same code: the module's source was executed again."""
-    for k, v in before.items():
-        w = now.get(k, _MISSING)
-        if (w is not v and isinstance(v, types.FunctionType)
-                and isinstance(w, types.FunctionType)
-                and v.__module__ == mod.__name__ and w.__module__ == mod.__name__
-                and v.__code__ == w.__code__):
-            return True
-    return False
+def _reloaded(before: dict, now: dict) -> bool:
+    """True when `importlib.reload` ran the module again during the test:
+    reload binds a freshly found `__spec__` on the module before it executes
+    the source, and nothing else rebinds it. Not a guess from the functions
+    -- a spy that unwraps to the original's code is not a reload."""
+    return now.get("__spec__", _MISSING) is not before.get("__spec__", _MISSING)
 
 
 def _equivalent(a, b, reloaded: bool, depth: int = 0) -> bool:
-    """Is `b` (after the test) a legitimate rebinding of `a` (before)?"""
+    """Is `b` (after the test) a legitimate rebinding of `a` (before)?
+    `reloaded`: the module was re-executed, so its objects are new copies."""
     if a is b:
         return True
     if type(a) is not type(b):
         return False
     if isinstance(a, float) and a != a and b != b:
         return True                                  # nan
-    if reloaded and depth < 3 and isinstance(a, (tuple, list)) and len(a) == len(b):
+    if not reloaded:
+        # Nothing re-created the module's objects, so only an EQUAL value is
+        # harmless. A wraps spy, a function or class swapped for a namesake,
+        # an emptied table: each is a rebinding the next test would inherit.
+        if (isinstance(a, (types.FunctionType, type, types.ModuleType))
+                or _code_of(a) is not None):
+            return False
+        return _same_value(a, b)
+    if depth < 3 and isinstance(a, (tuple, list)) and len(a) == len(b):
         return all(_equivalent(x, y, reloaded, depth + 1) for x, y in zip(a, b))
-    if reloaded and depth < 3 and isinstance(a, dict) and len(b):
+    if depth < 3 and isinstance(a, dict) and len(b):
         return (list(a) == list(b)
                 and all(_equivalent(a[k], b[k], reloaded, depth + 1) for k in a))
     if isinstance(a, _PLAIN):
@@ -167,7 +179,7 @@ def _equivalent(a, b, reloaded: bool, depth: int = 0) -> bool:
         return len(b) == 0 or _same_value(a, b)
     # Anything else a re-executed module rebuilds (a lock, a logger adapter,
     # a compiled pattern): the same type is the most that can be asked.
-    return reloaded or _same_value(a, b)
+    return True
 
 
 def settle(snaps) -> list[str]:
@@ -183,24 +195,27 @@ def settle(snaps) -> list[str]:
                 and all(map(operator.is_, now.keys(), before.keys()))
                 and all(map(operator.is_, now.values(), before.values()))):
             continue
-        reloaded = _reloaded(mod, before, now)
+        reloaded = _reloaded(before, now)
+        run_time = run_time_names(mod)
         for k in [k for k in now if k not in before]:
             w = now[k]
             if _is_dunder(k) or _is_submodule(name, k, w):
                 continue            # interpreter bookkeeping / an import
-            if k in run_time_names(mod):
-                continue
-            leaks.append(f"{name}.{k}: added and left behind")
+            if k not in run_time:
+                leaks.append(f"{name}.{k}: added and left behind")
             del now[k]
         for k, v in before.items():
             w = now.get(k, _MISSING)
             if w is v or _is_dunder(k):
                 continue
+            if k in run_time:
+                # The converter's own run-time state: its code may rebind it,
+                # so no test is failed for it, but it does not outlive the test.
+                now[k] = v
+                continue
             if w is not _MISSING and _equivalent(v, w, reloaded):
                 now[k] = v          # a reload's copy: back to the original
                 continue
-            if k in run_time_names(mod):
-                continue            # the module's own cache: its lifetime
             if w is _MISSING:
                 leaks.append(f"{name}.{k}: deleted and not put back")
             else:

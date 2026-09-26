@@ -158,7 +158,10 @@ guard in `tests/conftest.py` (`tests/_module_guard.py`) snapshots every
 `src.*` and `scripts.*` module before each test and fails any test that leaves
 one rebound, naming `module.attr`; it puts the module back first, so the
 failure stays with the test that caused it. Names the converter's own code
-rebinds (a `global` cache, or `_nc().NAME = ...`) are left alone.
+rebinds (a `global` cache, or `_nc().NAME = ...`) never fail a test, but are
+put back too. Only a module the test actually reloaded may come back as
+look-alike copies (same code, a fresh empty table); anywhere else a
+`functools.wraps` spy or an emptied table fails the test like any fake.
 
 The mutation gate (`python scripts/mutation_gate.py run`, described in
 [docs/RELEASING.md](docs/RELEASING.md)) is far slower: every seeded pair runs its
