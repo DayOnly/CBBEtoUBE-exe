@@ -3486,6 +3486,55 @@ reported through `_report_coverage_holds`:
   carries each pass's minted set to `_report_coverage_holds`). The live report
   line went 8 -> 7 armours (the robe's drop is its own line); output bytes are
   unchanged.
+- **The split and the merge agree on what draws the same thing**
+  (`#race-subset-dedup-agree`). The merge's render-identical link dedup groups
+  one armour's links on `_arma_dedup_identity(...)[:7]`: primary race (RNAM),
+  meshes, slots, alt-texture sets -- not the MODL race list. Before the split
+  every minted armature carried all 16 races, so the race list never mattered.
+  After it, two same-mesh siblings disagreed with the merge both ways: the
+  races no sibling claims went to both, and when their narrowed lists began
+  with different races (so different RNAMs) both links survived and those
+  races drew the mesh twice (live: an effect armature pair on 2 armours, twice
+  on the 6 UBE elf races); when the lists began with the same race (one RNAM;
+  always so for hands/feet, which keep their source RNAM) the merge kept one
+  and the races only the other listed drew nothing (latent). Two fixes, one
+  switch. (1) Producer: in a disjoint split, human-listing members whose
+  `_arma_render_twin_key` is equal -- the merge key less RNAM, plus the source
+  plugin and its masters when there are alt-texture sets, whose TXST bytes
+  mean something only in one plugin's master space -- are one armature: the
+  first in the armour's order takes the union of their races (then the free
+  races as before) and the others are not minted for that armour
+  (`race_subset_twins`, reported unless some armour mints them). The overlap
+  test still runs on the unfolded lists, so no group that was left whole is
+  split now. (2) Guard: within a render-identical group the merge keeps its
+  choice as before, then keeps any other member whose UBE race set has a UBE
+  race no kept member has, instead of dropping it (`sp_kept_other_races`,
+  emitted, so the link balance is unchanged; the reconciliation says how
+  many). A double draw beats a missing one. The UBE race set
+  (`_arma_ube_race_set`, `#guard-ube-races`) is every RNAM/MODL race that
+  UBE_AllRace.esp defines -- the 16 of `UBE_RACE_FIDS_24` and its custom
+  races -- resolved through the piece's masters. Comparing every race was
+  wrong: the per-source patches mint each author armature with the 16 UBE
+  races beside the author's vanilla races, so an author's Khajiit and
+  Argonian copies of one glove differ only in vanilla races; only UBE actors
+  draw these links, so keeping both drew the glove twice on every UBE race
+  (full merge: 4 armours, 96 (armour, slot, UBE race) keys) and saved no race.
+  Live, coverage passes + merge (c0367ee vs this change): links 9927 -> 9925
+  (the two twins no longer minted), same-mesh double draws per (armour, slot,
+  UBE race) 12 -> 0 on 2 armours, 0 lost draws, 0 added, no other count
+  changes; the guard keeps 0 links. That coverage-only merge is the one the
+  unified path builds (`_cov_only`; the per-source patches stay unmerged). The
+  fallback path merges the per-source patches only: there this change is
+  byte-identical to the parent, and it is where the UBE-only comparison
+  matters -- the all-race guard (a5daa4d) kept 4 extra per-source links, 96
+  extra (armour, slot, UBE race) double draws on 4 gloves. A synthetic merge
+  of per-source + coverage patches together (no pipeline path builds it) also
+  re-packs `_partition_patches_for_esl` when two coverage ARMAs go and flips
+  which of two per-source mints the cross-piece first-writer keeps for 16
+  armours; that packing dependence predates this change and cannot reach
+  shipped output. Switches set: byte-identical to the parent
+  (both) and to the unguarded version (`CBBE2UBE_NO_GUARD_UBE_RACES=1`).
+  `CBBE2UBE_NO_RACE_SUBSET_DEDUP_AGREE=1`, `CBBE2UBE_NO_GUARD_UBE_RACES=1`.
 - **A body armour's hood rides with it** (`#coverage-body-accessory`). The body
   pass kept only armatures with a converted mesh or a hands/feet slot; the
   non-body pass skips any armour with a deforming slot. A robe's hood armature

@@ -105,6 +105,30 @@ the end-of-run list, and the record keeps any file that is still in
 no run has moved anything yet. `CBBE2UBE_NO_SWEEP_RECOVER_EVERY_RUN=1` (set to
 1) turns it off.
 
+### Fixed — per-race versions that share one mesh are drawn once, and never lost
+
+The fix below that draws each per-race version of an item only for its own
+races had a gap when two versions use the same mesh (an author's copy for
+humans and a copy for Orcs, say). The races neither copy lists got both
+copies, so on those races the same mesh was drawn twice. And when both copies
+happened to start with the same race, the final merge step took them for
+duplicates and kept only one, so the races only the other one listed would
+have drawn nothing for that item. Now copies that draw the same mesh are
+treated as one version, drawn once for all of their races, and the merge never
+drops a copy that lists a UBE race the kept one does not (the run log counts any
+it keeps). Copies that differ only in the other races they list (an author's
+Khajiit and Argonian copies of one glove, say) are still merged into one, as
+before: UBE characters draw only the UBE races, so keeping both would draw the
+glove twice on every UBE race. Measured on the reported modlist, in the merge a
+normal run builds (the coverage patches): 2 items (a transformation effect and
+an effect on one set of NPCs' skin) drew their effect twice on the six UBE elf
+races; they now draw it once, as before that fix. No item loses a draw and no
+other item changes. In the fallback merge (used only when the coverage step
+cannot run) the output is the same as before this fix.
+`CBBE2UBE_NO_RACE_SUBSET_DEDUP_AGREE=1` (set to 1) turns
+the whole fix off; `CBBE2UBE_NO_GUARD_UBE_RACES=1` (set to 1) makes the merge
+keep copies that differ only in non-UBE races again.
+
 ### Fixed — colour variants of a piece left to your own UBE build recolour the right layer
 
 Since this tool leaves a piece alone when your own UBE BodySlide build (or
