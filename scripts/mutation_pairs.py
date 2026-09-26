@@ -12975,10 +12975,8 @@ PAIRS = (
     Pair('SFU-q', 'the Results row says mid-phase for a finished NIF phase',
          edits=(
              ('src/gui.py',
-              '    if total > 0 and done >= total:
-',
-              '    if False:  # MUTATED
-', 1),
+              '    if total > 0 and done >= total:\n',
+              '    if False:  # MUTATED\n', 1),
          ),
          tests=('tests/test_global_schedule.py',),
          expect=('test_a_run_stopped_after_the_nif_phase_does_not_read_as_mid_phase',),
