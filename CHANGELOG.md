@@ -16,18 +16,13 @@ drops a copy that lists a UBE race the kept one does not (the run log counts any
 it keeps). Copies that differ only in the other races they list (an author's
 Khajiit and Argonian copies of one glove, say) are still merged into one, as
 before: UBE characters draw only the UBE races, so keeping both would draw the
-glove twice on every UBE race. Measured on the reported modlist, both coverage
-passes plus the final merge with every per-armour patch: 2 items (a
-transformation effect and an effect on one set of NPCs' skin) drew their effect
-twice on the six UBE elf races; they now draw it once, as before that fix. No
-item draws a mesh twice that did not before, and every item still draws on
-every UBE race. Because the merge now writes two fewer records, it packs its
-split plugin pieces differently, and where two per-armour patches each add a
-version of the same armature, the one packed first is used: 16 other items (9
-from one mage-armour mod, 4 robes' hoods, a hood, a hat and a cuirass from the
-base game) now use the other patch's version. That packing order is an existing
-weakness of the merge that any change in record counts can trigger; this fix
-does not choose it. `CBBE2UBE_NO_RACE_SUBSET_DEDUP_AGREE=1` (set to 1) turns
+glove twice on every UBE race. Measured on the reported modlist, in the merge a
+normal run builds (the coverage patches): 2 items (a transformation effect and
+an effect on one set of NPCs' skin) drew their effect twice on the six UBE elf
+races; they now draw it once, as before that fix. No item loses a draw and no
+other item changes. In the fallback merge (used only when the coverage step
+cannot run) the output is the same as before this fix.
+`CBBE2UBE_NO_RACE_SUBSET_DEDUP_AGREE=1` (set to 1) turns
 the whole fix off; `CBBE2UBE_NO_GUARD_UBE_RACES=1` (set to 1) makes the merge
 keep copies that differ only in non-UBE races again.
 

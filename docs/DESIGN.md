@@ -3136,17 +3136,17 @@ reported through `_report_coverage_holds`:
   Live, coverage passes + merge (c0367ee vs this change): links 9927 -> 9925
   (the two twins no longer minted), same-mesh double draws per (armour, slot,
   UBE race) 12 -> 0 on 2 armours, 0 lost draws, 0 added, no other count
-  changes; the guard keeps 0 links. Full merge (the deployed per-source
-  patches + the replayed coverage patches through `merge_patches_split`):
-  links 17130 -> 17128, `sp_dropped_render_identical` 8 -> 8,
-  `sp_kept_other_races` 0; the effect pair is de-doubled (12 keys, 3 -> 2 on
-  one armour whose per-source patch also draws it) and no key gains a
-  same-mesh double. Two fewer coverage ARMAs re-pack `_partition_patches_for_esl`
-  (9 patches change piece), and the cross-piece (armo, source armature)
-  first-writer-wins then takes the other of two per-source mints for 16
-  armours (9 of one mod whose override patch carried the converted mesh, 7
-  vanilla); one of them now claims slots 34/38 instead of 35. That packing
-  dependence predates this change. Switches set: byte-identical to the parent
+  changes; the guard keeps 0 links. That coverage-only merge is the one the
+  unified path builds (`_cov_only`; the per-source patches stay unmerged). The
+  fallback path merges the per-source patches only: there this change is
+  byte-identical to the parent, and it is where the UBE-only comparison
+  matters -- the all-race guard (a5daa4d) kept 4 extra per-source links, 96
+  extra (armour, slot, UBE race) double draws on 4 gloves. A synthetic merge
+  of per-source + coverage patches together (no pipeline path builds it) also
+  re-packs `_partition_patches_for_esl` when two coverage ARMAs go and flips
+  which of two per-source mints the cross-piece first-writer keeps for 16
+  armours; that packing dependence predates this change and cannot reach
+  shipped output. Switches set: byte-identical to the parent
   (both) and to the unguarded version (`CBBE2UBE_NO_GUARD_UBE_RACES=1`).
   `CBBE2UBE_NO_RACE_SUBSET_DEDUP_AGREE=1`, `CBBE2UBE_NO_GUARD_UBE_RACES=1`.
 - **A body armour's hood rides with it** (`#coverage-body-accessory`). The body
