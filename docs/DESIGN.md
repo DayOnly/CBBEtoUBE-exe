@@ -2790,6 +2790,19 @@ lost piece from a dropped one. What ships (`src/stale_sweep.py`, glue in
   moves only when its recorded source is gone, or was not selected, claims nothing and
   all its recorded bases move; never in the root-write mode. The brake: more than
   max(10, 2.5% of the output's bases) is report-only (live: 37 of 1,973, limit 49).
+- **A sidecar moves with the base it was named from** (`#sweep-sidecar-base`). The
+  converter names a piece's `.tri` and `.xml` after the NIF stem with ONE `_0`/`_1`
+  taken off (`_finalize_hdt_physics`, `_generate_hdt_xml_for_dst`, the phase-1
+  `tri_stem`), so `x_1_0.nif`/`x_1_1.nif` (base `x_1`) own `x_1.tri`/`x_1.xml`.
+  `stale_sweep.base_key` read a sidecar's stem back as the mesh `<stem>.nif` and
+  so took a SECOND suffix off, filing `x_1.xml` under `x` (of `x_0.nif`/`x_1.nif`).
+  In a folder holding both bases (sources ship that), moving a stale `x` took the
+  live `x_1` piece's physics XML and morph TRI with it -- no SMP and no body morphs
+  in game -- and a stale `x_1` left its own behind. The stem is now read back as
+  `<stem>_1.nif`, the key of the NIFs the converter derives the sidecar from.
+  `x.nif.tri` still goes with `x.nif_1.nif`. Live: the output holds no double-suffix
+  mesh, so the inventory (1,973 bases, 5,469 files) is identical either way.
+  `CBBE2UBE_NO_SWEEP_SIDECAR_BASE=1`: the old reading.
 - **No per-source patch left in place names a moved mesh**
   (`stale_sweep.hold_for_staying_patches`). A patch set this run did not write and
   does not move is merged by any later run whose coverage fails, in a run that has no
@@ -2818,8 +2831,59 @@ lost piece from a dropped one. What ships (`src/stale_sweep.py`, glue in
   re-points only to a mesh on disk, so the second pass ends where one pass over the
   whole folder does): the fallback Combined is the one a run without the sweep writes.
   An exception out of `_cmd_convert` puts them back from `_cmd_auto`; a journal a
-  killed run left unsettled is put back at the start of the next full run's sweep.
-  Report: `_superseded\stale_output_report.json` and the log.
+  killed run left unsettled is put back at the start of the next `auto` run of any
+  kind (below). Report: `_superseded\stale_output_report.json` and the log.
+- **Settled before the post-merge passes** (`#sweep-settle-before-postmerge`). The
+  moves used to settle in `_stale_output_sweep_finish`, after the whole merge block:
+  the alt-texture reconcile, the hands-slot fix and the postflight read
+  `meshes\!UBE` while a base the new Combined still names -- the case the put-back
+  exists for -- was in the stamp folder. Its MO2S-MO5S sets were indexed against
+  its absence (kept as authored, or bound by name to another mod's copy through
+  `#reconcile-loaded-mesh`), then our NIF came back and the game drew it with those
+  indices. `_stale_output_sweep_settle` now runs right after the merge writes the
+  Combined and the SkyPatcher INI, before those passes; the finish calls it too (a
+  no-op once settled) for a merge that failed, was skipped or fell back. The
+  decision reads only the Combined's `!UBE` model paths, which the reconcile (MO?S
+  indices), the hands-slot fix (slot flags), the armature dedup (ARMO references,
+  never an ARMA record) and the master re-sort never change, so what is kept and
+  what goes back is the same as before; only when is earlier. Live: the moves have
+  never run, so nothing is pending and the output is byte-identical to the parent.
+  `CBBE2UBE_NO_SWEEP_SETTLE_BEFORE_POSTMERGE=1`: they settle at the end, as before.
+- **The read-back reads the merge's own files** (`#sweep-piece-family`).
+  `stale_sweep.combined_references` globbed `<stem>*.esp`, so a user's
+  `<stem> - Copy.esp` or `<stem>_backup.esp` of an older Combined -- which names the
+  old meshes -- put every move back on every run, and an unreadable one did the same
+  ("could not be read back"). The sweep landed before `#piece-family-match` narrowed
+  every other post-merge reader, and no merge carried the change over. It now walks
+  `ube_patcher._combined_piece_family(<Combined>, ".esp")` (the Combined and its
+  numbered split pieces), so `CBBE2UBE_NO_PIECE_FAMILY_MATCH=1` reaches it too. Such
+  a copy is not the merge's file: the game loads it only if the user enables it, and
+  then it duplicates every record of the Combined as well. Live: the output holds
+  only `Combined.esp` and `Combined2.esp`; the read-back over every base on disk
+  finds the same 3,284 model paths either way. `CBBE2UBE_NO_SWEEP_PIECE_FAMILY=1`:
+  every `<stem>*.esp`, as before.
+- **A killed run's moves go back on the next run of any kind**
+  (`#sweep-recover-every-run`). The GUI's Cancel is `taskkill /T /F`, so the
+  `finally` in `_cmd_auto` never runs and the journal stays `moving` / `waiting for
+  the merge`. Only the next full run's sweep used to put it back: a Select-mods,
+  `--plugins-only`, merge-off or failed-source run in between left the old Combined
+  naming meshes in `_superseded\`, and its manifest -- which carries an earlier
+  entry only while its file is on disk -- dropped the moved bases, so the full run
+  that finally put them back found them "not recorded as converted by any run" and
+  held them for good. `_stale_recover_at_start` now runs at the top of every
+  `_cmd_convert` that carries the sweep context (before any per-source patch or
+  `meshes\!UBE` is read, before the manifest is written, with the sweep off too):
+  a `NOTE:` line and a warning entry in the one tally per stamp folder; a file that
+  cannot go back is a problem warning and a failure entry. NOTE, not a problem,
+  because nothing about the plan shrank: the full run after a kill still moves
+  what it decides. And `build_manifest` carries an earlier entry whose file a
+  journal still in `moving` / `waiting for the merge` / `partly put back...` lists
+  and that still sits in its stamp folder (`stale_sweep.stranded_files`), so a
+  file that comes back later is still ours; a move the merge kept drops out as
+  before. Live replay: no journal exists (the moves have not run live), so the
+  output is byte-identical to the parent either way.
+  `CBBE2UBE_NO_SWEEP_RECOVER_EVERY_RUN=1`: only the full run's sweep puts them
+  back, and a run before it drops their record.
 - **Isolated.** Any exception in the decisions, the moves or the report puts back
   every file the journal lists (the stamp folder is new, so a file there is one this
   run moved -- including one whose own roll-back failed), forgets the adoptions, warns,
@@ -3770,7 +3834,15 @@ reported through `_report_coverage_holds`:
   a problem in what was written was wrong too. Those two kinds moved to
   `failure_summary.NOT_WRITTEN` (same sentence); the title and the status line
   say "no Combined ESP was built" for them and count only the written-but-broken
-  kinds as problems in what was written (`_own_sentence_parts`).
+  kinds as problems in what was written (`_own_sentence_parts`). The stale-output
+  sweep's "stale sweep put back failed" (moved files that could not go back to
+  `meshes\!UBE`) was never added and read as a conversion that did not happen --
+  the opposite of the truth: the run converted, and a plugin may name a mesh that
+  now sits in `_superseded\`, a missing-mesh crash. `failure_summary.MOVED_NOT_PUT_BACK`
+  gives it its own sentence (move the listed files back by hand before playing),
+  and the title and status line say "moved meshes were not all put back"
+  (`#sweep-put-back-wording`). Still a failure in the one tally. Words only, no
+  switch; the run's files do not change.
 - **The --incremental fingerprint skips launch plumbing**
   (`#fingerprint-skips-plumbing`). It hashed every `CBBE2UBE_*` variable,
   including ones that cannot change a mesh, so a scripted re-run

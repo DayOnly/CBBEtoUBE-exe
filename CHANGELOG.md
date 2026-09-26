@@ -32,6 +32,65 @@ well; with `--only-mods`, a mod you name there is converted even if it is on the
 list, again as in the window. `CBBE2UBE_NO_HEADLESS_SETTINGS=1` (set to 1) turns
 off both, together with the saved settings.
 
+### Fixed — colour variants of a mesh put back after the merge recolour the right layer
+
+A full run moves old meshes into `_superseded\` before the plugin merge, and
+puts them back if the new combined plugin still uses them. The step that lines
+up colour variants with a mesh's layers ran before that put-back, so it looked
+for a mesh that was not there, and the variant could recolour the wrong layer of
+the mesh that then came back. The moves are now kept or put back straight after
+the merge, before that step and the checks that follow it read the meshes.
+Nothing changes on the reported modlist, where no run has moved anything yet.
+`CBBE2UBE_NO_SWEEP_SETTLE_BEFORE_POSTMERGE=1` (set to 1) turns it off.
+
+### Fixed — the end-of-run list says so when moved meshes could not be put back
+
+When old meshes that a run moved into `_superseded\` have to go back and one
+cannot (its place is taken, or the file is in use), the end-of-run window said
+the item "did NOT convert" and that its armour "keeps its previous state". In
+fact the run did convert, and a plugin may still use a mesh that is now missing,
+which can crash the game. The window and the status line now say that moved
+meshes were not all put back, and tell you to move the listed files back from
+`_superseded\` by hand before you play. Only the wording changes.
+
+### Fixed — a backup copy of the combined plugin no longer stops old meshes from being moved aside
+
+After the merge, a full run checks that the new combined plugin does not use
+any of the old meshes it moved into `_superseded\`; if it does, they all go
+back. That check also read any other plugin whose name starts the same way,
+such as `CBBE_to_UBE_Combined - Copy.esp` or `CBBE_to_UBE_Combined_backup.esp`.
+A backup of an older combined plugin uses the old meshes, so every run put
+everything back and warned about it. The check now reads only the combined
+plugin and its numbered parts (`CBBE_to_UBE_Combined2.esp`, ...), like the rest
+of the tool. Nothing changes on the reported modlist, which has no such copy.
+`CBBE2UBE_NO_SWEEP_PIECE_FAMILY=1` (set to 1) turns it off.
+
+### Fixed — moving an old mesh no longer takes a current mesh's physics and morph files with it
+
+Some armour folders hold two pieces whose names differ only by an extra `_1`
+(`robe_0.nif`/`robe_1.nif` and `robe_1_0.nif`/`robe_1_1.nif`). Each piece has its
+own physics file (`.xml`) and body-morph file (`.tri`). When a full run moved the
+first piece aside as an old conversion, it wrongly took the second piece's
+physics and morph files too, so the piece still in use lost its cloth physics
+and body morphs in game. Each piece's files now move only with that piece.
+Nothing changes on the reported modlist, where no such pair is converted.
+`CBBE2UBE_NO_SWEEP_SIDECAR_BASE=1` (set to 1) turns it off.
+
+### Fixed — meshes moved aside by a cancelled run come back on the next run of any kind
+
+When a full run moves old converted meshes into `_superseded\`, it keeps them
+there only once the plugin merge that follows has finished. Cancel stops the
+run at once, so a run cancelled between the move and the merge left those
+meshes in `_superseded\` while the previous combined plugin still pointed at
+them. Only the next full run of all mods put them back. A run of selected mods
+or a plugins-only refresh in between left them missing, and it also dropped them
+from the tool's record of what it converted, so the tool could never move them
+again. Every run now puts such files back first and says so in the log and in
+the end-of-run list, and the record keeps any file that is still in
+`_superseded\` for this reason. Nothing changed on the reported modlist, where
+no run has moved anything yet. `CBBE2UBE_NO_SWEEP_RECOVER_EVERY_RUN=1` (set to
+1) turns it off.
+
 ### Fixed — colour variants of a piece left to your own UBE build recolour the right layer
 
 Since this tool leaves a piece alone when your own UBE BodySlide build (or

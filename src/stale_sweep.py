@@ -108,16 +108,46 @@ def report_only_forced() -> bool:
     return _flag("CBBE2UBE_STALE_OUTPUT_SWEEP_REPORT_ONLY", False)
 
 
+def recover_every_run() -> bool:
+    r"""#sweep-recover-every-run: a journal a killed run left unsettled is put
+    back at the start of EVERY `auto` run (a Select-mods run, `--plugins-only`,
+    the merge off, the sweep off), not only by the next full run's sweep, and
+    the manifest keeps the record of a base whose files are still in a stamp
+    folder. CBBE2UBE_NO_SWEEP_RECOVER_EVERY_RUN=1: the full run's sweep alone
+    puts them back, and a run before it drops their record."""
+    return not _flag("CBBE2UBE_NO_SWEEP_RECOVER_EVERY_RUN", False)
+
+
+def settle_before_postmerge_on() -> bool:
+    r"""#sweep-settle-before-postmerge: the moves are kept or put back right
+    after the merge writes the Combined, before the alt-texture reconcile, the
+    hands-slot fix and the postflight read `meshes\!UBE` -- so a put-back
+    returns the NIF before a colour set is indexed against its absence.
+    CBBE2UBE_NO_SWEEP_SETTLE_BEFORE_POSTMERGE=1: they settle after those
+    passes, at the end of the merge block, as before."""
+    return not _flag("CBBE2UBE_NO_SWEEP_SETTLE_BEFORE_POSTMERGE", False)
+
+
+def sidecar_base_on() -> bool:
+    r"""#sweep-sidecar-base: a `.tri`/`.xml` belongs to the weight base the
+    converter named it from -- its stem is the mesh stem with ONE `_0`/`_1`
+    taken off, so `x_1.xml` goes with `x_1_0.nif`/`x_1_1.nif`, never with
+    `x_0.nif`/`x_1.nif`. CBBE2UBE_NO_SWEEP_SIDECAR_BASE=1: the stem is read as
+    a mesh and loses one more suffix, as before."""
+    return not _flag("CBBE2UBE_NO_SWEEP_SIDECAR_BASE", False)
+
+
 def base_key(rel: str) -> str:
     r"""The weight base of a file below `meshes\!UBE`: the key the planner
     claims (`_weight_base_key`), with a `.tri` or `.xml` mapped to its mesh's.
-    The converter names them after the mesh's stem without `_0`/`_1`, so
-    `x.tri` goes with `x_1.nif` and `x.nif.tri` with `x.nif_1.nif`: the stem
-    is read back as the mesh `<stem>.nif`."""
+    The converter names them after the mesh's stem without ONE `_0`/`_1`, so
+    `x.tri` goes with `x_1.nif`, `x_1.tri` with `x_1_1.nif` and `x.nif.tri`
+    with `x.nif_1.nif`: the stem is read back as the mesh `<stem>_1.nif`.
+    #sweep-sidecar-base"""
     from .auto_convert import _weight_base_key
     s = rel.replace("\\", "/")
     if s.lower().endswith((".tri", ".xml")):
-        s = s[:-4] + ".nif"
+        s = s[:-4] + ("_1.nif" if sidecar_base_on() else ".nif")
     return _weight_base_key(s)
 
 
@@ -203,21 +233,29 @@ def read_manifest(output) -> "tuple[dict | None, str]":
 
 
 def build_manifest(prev, claims, patches, on_disk, patch_files, adopted,
-                   run_stamp, build) -> dict:
+                   run_stamp, build, stranded=None) -> dict:
     """This run's record. `claims` {base: source} and `patches` {name: source}
     are what this run made; an earlier entry is carried while its file is still
     on disk (`on_disk` bases, `patch_files` names) and nothing this run claims
     it -- a held base keeps its source, a moved one drops out. `adopted` {base:
     source}: a base no run recorded that a source this run gave a positive
-    reason to drop; it is recorded now and can move on a later run."""
+    reason to drop; it is recorded now and can move on a later run.
+    `stranded` (bases, lower-case patch names), from `stranded_files`: files a
+    move no run settled left in a stamp folder -- their earlier entry is carried
+    too, so the file that comes back is still ours. #sweep-recover-every-run"""
     bases: dict = {}
     pats: dict = {}
+    s_bases, s_patches = stranded or (set(), set())
     if prev:
         for b, s in prev.get("bases", {}).items():
             if b in on_disk and b not in claims:
                 bases[b] = s
+            elif b in s_bases and b not in claims:
+                bases[b] = s
         for n, s in prev.get("patches", {}).items():
             if n.lower() in patch_files and n not in patches:
+                pats[n] = s
+            elif n.lower() in s_patches and n not in patches:
                 pats[n] = s
     for b, s in adopted.items():
         if b in on_disk and b not in claims:
@@ -542,8 +580,11 @@ def recover_interrupted(output) -> "list[tuple[str, list[str]]]":
             continue
         if not isinstance(d, dict) or d.get("status") not in _UNSETTLED:
             continue
+        planned = d.get("planned", [])
+        if not isinstance(planned, list):
+            continue  # not a journal this tool wrote: leave it, like torn JSON
         pairs = [(Path(output) / rel, j.parent / rel)
-                 for rel in d.get("planned", []) if isinstance(rel, str)]
+                 for rel in planned if isinstance(rel, str)]
         failed = put_back(pairs)
         update_journal(j, status=("partly put back after an interrupted run"
                                   if failed else "put back after an interrupted run"))
@@ -551,12 +592,66 @@ def recover_interrupted(output) -> "list[tuple[str, list[str]]]":
     return out
 
 
+def _stranded(status) -> bool:
+    """A journal whose files may still sit in its stamp folder though no run
+    decided they should: unsettled, or a put-back that left some behind."""
+    return isinstance(status, str) and (
+        status in _UNSETTLED or status.startswith("partly put back"))
+
+
+def stranded_files(output) -> "tuple[set[str], set[str]]":
+    r"""(weight bases, lower-case patch file names) of the files a journal that
+    no run settled -- or whose put-back left some behind -- lists, and that
+    still sit in its stamp folder. The manifest keeps their record: a file that
+    comes back later must still read as ours, or it can never move again.
+    #sweep-recover-every-run"""
+    bases: set = set()
+    patches: set = set()
+    root = Path(output) / SUPERSEDED_DIR
+    try:
+        journals = sorted(root.glob("*/" + JOURNAL_NAME))
+    except OSError:
+        return bases, patches
+    for j in journals:
+        try:
+            d = json.loads(j.read_bytes().decode("utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(d, dict) or not _stranded(d.get("status")):
+            continue
+        planned = d.get("planned", [])
+        for rel in planned if isinstance(planned, list) else []:
+            if not isinstance(rel, str) or not (j.parent / rel).is_file():
+                continue
+            s = rel.replace("\\", "/")
+            if s.lower().startswith("meshes/!ube/"):
+                bases.add(base_key(s[len("meshes/!ube/"):]))
+            else:
+                patches.add(Path(s).name.lower())
+    return bases, patches
+
+
+def piece_family_on() -> bool:
+    r"""#sweep-piece-family: the read-back after the merge reads the merge's own
+    files -- the Combined and its numbered split pieces
+    (`ube_patcher._combined_piece_family`, #piece-family-match) -- not every
+    `<stem>*.esp` beside it, so a user's `<stem> - Copy.esp` or
+    `<stem>_backup.esp` no longer puts every move back.
+    CBBE2UBE_NO_SWEEP_PIECE_FAMILY=1: every `<stem>*.esp`, as before."""
+    return not _flag("CBBE2UBE_NO_SWEEP_PIECE_FAMILY", False)
+
+
 def combined_references(combined_path, bases) -> "list[str]":
     r"""The `!UBE` model paths in the written Combined (and its split pieces)
     whose weight base is in `bases` -- a moved mesh the plugin still names.
-    Raises when a piece cannot be read: an unread plugin is not a clean one."""
+    Raises when a piece cannot be read: an unread plugin is not a clean one.
+    #sweep-piece-family"""
     combined_path = Path(combined_path)
-    pieces = sorted(combined_path.parent.glob(combined_path.stem + "*.esp"))
+    if piece_family_on():
+        from .ube_patcher import _combined_piece_family
+        pieces = _combined_piece_family(combined_path, ".esp")
+    else:
+        pieces = sorted(combined_path.parent.glob(combined_path.stem + "*.esp"))
     hits: list = []
     for piece in pieces:
         for m, b in _ube_models(piece):

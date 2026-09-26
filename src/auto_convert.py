@@ -6678,6 +6678,41 @@ def _stale_output_sweep_failover(output, patches_dir) -> int:
     return warns
 
 
+def _stale_output_sweep_settle(args, output, *, merged) -> int:
+    r"""#stale-output-sweep: keep this run's pending moves when the merge wrote
+    a new Combined from coverage alone and none of its pieces names a moved
+    base; otherwise put every moved file back. A no-op when nothing is pending
+    (already settled, or the sweep did not move). Returns warnings.
+
+    #sweep-settle-before-postmerge: called right after the merge, before the
+    alt-texture reconcile and the other passes that read `meshes\!UBE`, so a
+    put-back returns the NIF before a colour set is indexed against its
+    absence; `_stale_output_sweep_finish` calls it too (the merge failed, was
+    skipped, or the switch is set)."""
+    ctx = getattr(args, "stale_sweep", None)
+    if not ctx or not stale_sweep.sweep_on():
+        return 0
+    output = Path(output)
+    h = stale_sweep.pending()
+    if h is None:
+        return 0
+    stale_sweep._set_pending(None)
+    why = ""
+    if not merged:
+        why = "the new Combined plugin was not written from coverage this run"
+    else:
+        try:
+            refs = stale_sweep.combined_references(
+                output / args.merged_name, h.moved_bases)
+        except Exception as e:
+            refs = []
+            why = f"the new Combined plugin could not be read back ({plain_error(e)})"
+        if refs:
+            why = (f"the new Combined plugin still names {len(refs)} of them: "
+                   + ", ".join(refs[:3]))
+    return _stale_settle(h, why)
+
+
 def _stale_output_sweep_finish(args, output, results, *, merged) -> int:
     r"""#stale-output-sweep, after the merge: keep this run's moves only when
     the merge wrote a new Combined from coverage alone and none of its pieces
@@ -6689,24 +6724,7 @@ def _stale_output_sweep_finish(args, output, results, *, merged) -> int:
     if not ctx or not stale_sweep.sweep_on():
         return 0
     output = Path(output)
-    warns = 0
-    h = stale_sweep.pending()
-    if h is not None:
-        stale_sweep._set_pending(None)
-        why = ""
-        if not merged:
-            why = "the new Combined plugin was not written from coverage this run"
-        else:
-            try:
-                refs = stale_sweep.combined_references(
-                    output / args.merged_name, h.moved_bases)
-            except Exception as e:
-                refs = []
-                why = f"the new Combined plugin could not be read back ({plain_error(e)})"
-            if refs:
-                why = (f"the new Combined plugin still names {len(refs)} of them: "
-                       + ", ".join(refs[:3]))
-        warns += _stale_settle(h, why)
+    warns = _stale_output_sweep_settle(args, output, merged=merged)
     adopted, _STALE_ADOPTED = _STALE_ADOPTED, {}
     try:
         _stale_write_manifest(args, output, results, adopted)
@@ -6751,9 +6769,63 @@ def _stale_write_manifest(args, output, results, adopted) -> None:
     except Exception:
         build = ""
     ctx = getattr(args, "stale_sweep", None) or {}
+    # A moved file no run settled keeps its record. #sweep-recover-every-run
+    stranded = (stale_sweep.stranded_files(output)
+                if stale_sweep.recover_every_run() else None)
     stale_sweep.write_manifest(output, stale_sweep.build_manifest(
         prev, claims, patches, set(inv.bases), pfiles, adopted,
-        stale_sweep.run_stamp(ctx.get("started") or time.time()), build))
+        stale_sweep.run_stamp(ctx.get("started") or time.time()), build,
+        stranded))
+
+
+def _stale_recover_at_start(args, output) -> int:
+    r"""#sweep-recover-every-run: put back the files a killed run's sweep left
+    in `_superseded\<stamp>\` (the GUI's Cancel is a hard kill, so its `finally`
+    never ran), at the start of EVERY `auto` run -- before any per-source patch
+    or `meshes\!UBE` is read and before the manifest is written. Only the full
+    run's sweep did it before, so a Select-mods or `--plugins-only` run in
+    between left the old Combined naming missing meshes, and its manifest
+    dropped their record for good. Runs with the sweep off too: turning it off
+    must not leave meshes missing. Prints and records each put-back; a file
+    that cannot go back is a problem. Returns the problem warnings printed."""
+    if (not getattr(args, "stale_sweep", None)
+            or not stale_sweep.recover_every_run()):
+        return 0
+    output = Path(output)
+    warns = 0
+    try:
+        recovered = stale_sweep.recover_interrupted(output)
+    except Exception as e:  # noqa: BLE001 -- a start-of-run step must not kill the run
+        warn(f"stale-output sweep: could not check {stale_sweep.SUPERSEDED_DIR} for "
+             f"moves an interrupted run left ({type(e).__name__}: {e})",
+             consequence="files a stopped run moved aside may still be missing from "
+                         "meshes\\!UBE; this run converts as usual",
+             fix=f"look in {output / stale_sweep.SUPERSEDED_DIR} and send the "
+                    "log if files are missing")
+        _record_failure("stale sweep recovery failed", output,
+                        stale_sweep.SUPERSEDED_DIR, f"{type(e).__name__}: {e}",
+                        severity="warning")
+        return 1
+    for stamp, failed in recovered:
+        sdir = output / stale_sweep.SUPERSEDED_DIR / stamp
+        warn(f"stale-output sweep: put back the old conversions an interrupted run "
+             f"had moved to {stale_sweep.SUPERSEDED_DIR}\\{stamp}"
+             + (f" ({len(failed)} could not go back)" if failed else ""),
+             consequence="that run stopped before its merge confirmed the moves, so "
+                         "its Combined plugin may have named missing meshes until "
+                         "now; " + ("the files listed below are still missing"
+                                    if failed else
+                                    "they are back where it expects them"),
+             level=NOTE)
+        _record_failure("stale sweep put back after an interrupted run", output,
+                        f"{stale_sweep.SUPERSEDED_DIR}\\{stamp}",
+                        "a run stopped between the sweep's moves and its merge; "
+                        "its moved files were put back", severity="warning")
+        if failed:
+            warns += _stale_put_back_failed(
+                stale_sweep.Handle(output=output, stamp_dir=sdir,
+                                   journal=sdir / stale_sweep.JOURNAL_NAME), failed)
+    return warns
 
 
 def _stale_output_sweep_abandoned() -> int:
@@ -7434,6 +7506,10 @@ def _cmd_convert(args):
                   "explicitly to silence this.")
 
     _orphans_removed = _sweep_orphan_temps_at_start(output, _run_started)
+    # A killed run's sweep moves go back first, on every `auto` run: before any
+    # patch or mesh of the output is read and the manifest is written.
+    # #sweep-recover-every-run
+    _stale_recover_at_start(args, output)
     # Before any per-source patch is written or read (a full run, --only-mods
     # and --plugins-only all come through here). #source-patch-rename
     _migrate_source_patch_names_at_start(
@@ -8350,6 +8426,13 @@ def _cmd_convert(args):
                                             "the vanilla sweep", "linked 0 records",
                                             severity="warning")
                     _sos_merged = patch_paths is _cov_only   # #stale-output-sweep
+                    # Settle the sweep's moves now, before the passes below read
+                    # meshes\!UBE: a put-back returns the NIF before a colour set
+                    # is indexed against its absence. The decision reads only the
+                    # Combined's model paths, which those passes never change.
+                    # #sweep-settle-before-postmerge
+                    if stale_sweep.settle_before_postmerge_on():
+                        _stale_output_sweep_settle(args, output, merged=_sos_merged)
                     # Reconcile alt-texture 3D indices against the converted NIFs.
                     # Shape reordering during the NIF merge shifts MO2S/MO3S indices;
                     # reconcile ALL split pieces (overflow also carries alt-texture sets).
