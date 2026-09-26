@@ -621,6 +621,30 @@ def test_a_run_killed_mid_phase_reports_how_far_its_nifs_got(tmp_path, monkeypat
     assert [f["name"] for f in rep["failed_mods"]] == ["ModC"]
 
 
+def test_the_results_tab_says_how_far_the_nif_phase_got(tmp_path, monkeypatch):
+    """The Results tab is the only reader of the checkpoint. It read
+    `source_mods` alone, so a run stopped in the NIF phase -- where nearly no
+    source can have finished yet -- read as barely started. The row it paints
+    for the checkpoint a killed run leaves says how many pieces were in."""
+    rep = _run_killed_batch(tmp_path, monkeypatch, kill_on="a2")
+    line = gui._unfinished_run_text(rep)
+    assert "2 of 3 pieces were converted" in line, line
+    assert "1 mod(s) had all of theirs" in line, line
+    assert "1 of 3 planned mods" in line, line
+
+
+def test_a_checkpoint_without_a_nif_phase_keeps_the_old_row():
+    """Control: one source at a time (or a report from an older build) there
+    is no `nif_phase`, and a torn one is not trusted."""
+    old = ("This run did not finish: the report covers 3 of 7 planned mods, "
+           "then the run stopped. The run log says why.")
+    assert gui._unfinished_run_text({"source_mods": 3, "sources_planned": 7}) == old
+    for torn in ({"files_done": "x", "files_total": 5}, {"files_done": 1},
+                 {"files_done": 0, "files_total": 0}, ["not", "a", "dict"]):
+        rep = {"source_mods": 3, "sources_planned": 7, "nif_phase": torn}
+        assert gui._unfinished_run_text(rep) == old, torn
+
+
 # ------------------------------------------------------------ the window
 
 def test_one_bar_takes_the_per_file_estimate_as_the_runs():

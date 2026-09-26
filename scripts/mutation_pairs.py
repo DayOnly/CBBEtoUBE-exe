@@ -12950,4 +12950,24 @@ PAIRS = (
          tests=('tests/test_report_checkpoint.py',),
          expect=('test_a_checkpoint_that_cannot_be_written_is_counted_once_per_print',),
     ),
+    # The Results tab reads the checkpoint's NIF-phase progress.
+    Pair('SFU-f', "the Results row ignores the checkpoint's NIF phase",
+         edits=(
+             ('src/gui.py',
+              '    if total > 0:\n',
+              '    if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_global_schedule.py',),
+         expect=('test_the_results_tab_says_how_far_the_nif_phase_got',),
+    ),
+    Pair('SFU-g', 'the Results tab paints the row without the NIF phase',
+         edits=(
+             ('src/gui.py',
+              'ttk.Label(content, text=_unfinished_run_text(rep),',
+              'ttk.Label(content, text=_unfinished_run_text({k: v for k, v in rep.items() if k != "nif_phase"}),  # MUTATED', 1),
+         ),
+         tests=('tests/test_gui_reporting_surface.py',),
+         expect=('test_a_run_stopped_in_the_nif_phase_says_how_many_pieces_were_in',),
+         needs=('display',),
+    ),
 )

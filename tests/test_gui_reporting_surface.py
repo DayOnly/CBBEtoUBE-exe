@@ -554,6 +554,25 @@ def test_a_finished_report_is_not_called_incomplete(tmp_path):
     assert any(str(l).startswith("Last run") for l in labels)
 
 
+@needs_display
+def test_a_run_stopped_in_the_nif_phase_says_how_many_pieces_were_in(tmp_path):
+    """#global-schedule. Stopped in the batch-wide NIF phase, nearly no mod
+    has finished, so the mods count alone read as a run that barely started;
+    the painted row carries the phase's own progress."""
+    labels = _spy_labels_with_report(tmp_path, {
+        "complete": False, "source_mods": 2, "sources_planned": 9,
+        "converted_ok": 2, "armor_nifs": 30, "esp_patches": 1, "hard_failures": 0,
+        "nif_errors": 0, "load_failures": 0, "zero_mesh_mods": [],
+        "failed_mods": [], "weight_partner_warnings": [],
+        "nif_phase": {"files_done": 489, "files_total": 762,
+                      "sources_nifs_done": ["ModA", "ModB", "ModC"]},
+    })
+    assert "Source mods: " in labels, "the scoreboard did not paint at all"
+    assert any(str(l).startswith("INCOMPLETE run") for l in labels), labels[-20:]
+    assert any("489 of 762 pieces were converted" in str(l) for l in labels), labels[-20:]
+    assert any("2 of 9 planned mods" in str(l) for l in labels), labels[-20:]
+
+
 def test_the_results_heading_is_owned_by_the_renderer():
     """The two callers that reset the heading to a plain "Last run" after a
     render threw the date away, and would hide INCOMPLETE. #report-checkpoint"""

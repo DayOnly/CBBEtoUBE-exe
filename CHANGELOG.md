@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed — a run stopped while converting the armour pieces now shows how far it got
+
+The tool now converts the armour pieces of all your mods together, and a mod
+counts as finished (its patch written) only near the end of that step. If you
+cancelled a run, or it stopped, during that step, the Results tab said
+something like "the report covers 2 of 9 planned mods", even when most pieces
+were already converted. It now also says how many pieces were converted, and
+how many mods had all of theirs converted.
+
 ### Fixed — two warnings in the log now also reach the end-of-run count and list
 
 Two warnings were printed in the log but left out of the warning count at the
