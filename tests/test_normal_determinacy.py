@@ -36,20 +36,19 @@ from src.nif_convert import (
 
 
 @pytest.fixture(autouse=True)
-def _select_determinacy_branch():
+def _select_determinacy_branch(monkeypatch):
     """Every test below exercises the coherence/fan DETERMINACY sign-guard. A
     clearance-field build -- now the default -- force-enables
     NORMAL_SIGN_GUARD_BOUNDARY (see the `CLEARANCE_FIELD_* -> True` line by its
     definition), and that branch SHADOWS the determinacy one. Select the
     determinacy branch explicitly: it is the live fallback whenever clearance-field
     is off, and it is what this module is about. The boundary guard -- the
-    production default -- has its own test at the end of the file."""
-    saved = nc.NORMAL_SIGN_GUARD_BOUNDARY
-    nc.NORMAL_SIGN_GUARD_BOUNDARY = False
-    try:
-        yield
-    finally:
-        nc.NORMAL_SIGN_GUARD_BOUNDARY = saved
+    production default -- has its own test at the end of the file.
+
+    Through the SAME `monkeypatch` the tests use: a hand-saved value restored
+    here ran BEFORE that test's own monkeypatch undo, which then put back this
+    fixture's False -- the boundary guard stayed off for every later test."""
+    monkeypatch.setattr(nc, "NORMAL_SIGN_GUARD_BOUNDARY", False)
 
 
 def _disc(n=8, r=1.0, z=0.0):

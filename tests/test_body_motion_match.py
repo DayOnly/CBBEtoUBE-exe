@@ -28,6 +28,7 @@ body, so the nearest-copy weight eases out between _MATCH_NEAR and _MATCH_FAR.
 import importlib
 
 import numpy as np
+import pytest
 
 import src.sliderset_gen as sg
 from src.osd import OsdFile, OsdMorph
@@ -54,12 +55,13 @@ _PLATE = np.asarray([(0.0, 1.0, 5.0), (0.0, 12.0, 5.0)], np.float64)
 
 def _deltas(enabled=True):
     importlib.reload(sg)
-    if not enabled:
-        sg._BODY_MOTION_MATCH = False
-    bv, moved = _body()
-    tri = sg.generate_armor_tri({"Plate": _PLATE.copy()}, bv, _osd(moved),
-                                body_shape_name="BaseShape",
-                                include_body_shapes=False)
+    with pytest.MonkeyPatch.context() as mp:   # never left OFF for later tests
+        if not enabled:
+            mp.setattr(sg, "_BODY_MOTION_MATCH", False)
+        bv, moved = _body()
+        tri = sg.generate_armor_tri({"Plate": _PLATE.copy()}, bv, _osd(moved),
+                                    body_shape_name="BaseShape",
+                                    include_body_shapes=False)
     out = np.zeros((len(_PLATE), 3))
     for ts in tri.shapes:
         if ts.name == "Plate":
@@ -109,4 +111,8 @@ def test_disabled_matches_plain_idw(monkeypatch):
     """CBBE2UBE_NO_BODY_MOTION_MATCH=1 reverts to the old pointwise behaviour."""
     monkeypatch.setenv("CBBE2UBE_NO_BODY_MOTION_MATCH", "1")
     importlib.reload(sg)
-    assert sg._BODY_MOTION_MATCH is False
+    try:
+        assert sg._BODY_MOTION_MATCH is False
+    finally:
+        monkeypatch.delenv("CBBE2UBE_NO_BODY_MOTION_MATCH", raising=False)
+        importlib.reload(sg)      # the switch was left OFF for later tests

@@ -129,6 +129,26 @@ cannot run) the output is the same as before this fix.
 the whole fix off; `CBBE2UBE_NO_GUARD_UBE_RACES=1` (set to 1) makes the merge
 keep copies that differ only in non-UBE races again.
 
+### Development only — a test can no longer leave a stand-in behind for the tests after it
+
+Some tests swap a part of the converter for a simple stand-in while they run.
+One test helper put its stand-ins into every one of the converter's source
+files but the tests using it put back only one of them, so the rest stayed in
+place for every test that ran afterwards in the same test process. Whether a
+later test passed could then depend on the order the tests ran in, and one
+check guarding against invisible legs failed only in a shuffled order. The
+helper is gone, and every test is now checked when it finishes: if it left any
+of the tool's modules changed, that test fails and names what it left, and the
+module is put back first so the next test starts clean. Six more tests that
+left a setting switched off for the tests after them were fixed. The check
+also puts back what the converter itself remembers between pieces -- a
+skeleton it read, or the physics file of the last piece it converted --
+without blaming the test that converted, so that too can no longer reach the
+next test. And a stand-in that only looks like the original (one that wraps
+it, or an emptied table) is now caught unless the test really reloaded that
+part of the tool. The check adds about a second per test process. Nothing
+that is converted changes.
+
 ### Fixed — colour variants of a piece left to your own UBE build recolour the right layer
 
 Since this tool leaves a piece alone when your own UBE BodySlide build (or

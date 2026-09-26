@@ -68,21 +68,6 @@ def patch(monkeypatch, name: str, value) -> int:
     return n
 
 
-def set_all(name: str, value) -> int:
-    """`patch()` without a monkeypatch: bare-assignment form for tests that
-    set `nc.<name> = fake` themselves (same lifetime semantics as before --
-    the caller restores, or does not, exactly as it did)."""
-    import importlib
-    n = 0
-    for rel in pass_map.CONVERTER_MODULES:
-        mod = importlib.import_module("src." + Path(rel).stem)
-        if hasattr(mod, name):
-            setattr(mod, name, value)
-            n += 1
-    assert n, f"{name} is bound on no converter module"
-    return n
-
-
 def source(obj) -> str:
     """`inspect.getsource(obj)` for the split converter: the whole declared
     source when `obj` is the nif_convert module, else the object's own text,

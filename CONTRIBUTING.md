@@ -144,6 +144,25 @@ machine. Run it before you push; CI runs the same command on `windows-latest`.
 Capture the exit code directly -- piping pytest into anything reports the pipe's
 status, not pytest's own.
 
+**Patching the converter in a test.** Fake a converter function or switch with
+pytest's `monkeypatch` (`monkeypatch.setattr(nc, "NAME", fake)`), or with
+`tests/_converter_sources.patch(monkeypatch, "NAME", fake)` when the name is
+bound on more than one of the split `src/nif_convert*.py` modules -- each
+module looks a name up in its own globals, so a patch on `nif_convert` alone
+misses callers inside a sibling. Outside a test function, use
+`with pytest.MonkeyPatch.context() as mp:`. Never assign `nc.NAME = fake`
+yourself: a fake that outlives its test decides whether later tests pass, by
+the order they run in. A test that reloads a module under a changed
+environment must reload it again after restoring the environment. An autouse
+guard in `tests/conftest.py` (`tests/_module_guard.py`) snapshots every
+`src.*` and `scripts.*` module before each test and fails any test that leaves
+one rebound, naming `module.attr`; it puts the module back first, so the
+failure stays with the test that caused it. Names the converter's own code
+rebinds (a `global` cache, or `_nc().NAME = ...`) never fail a test, but are
+put back too. Only a module the test actually reloaded may come back as
+look-alike copies (same code, a fresh empty table); anywhere else a
+`functools.wraps` spy or an emptied table fails the test like any fake.
+
 The mutation gate (`python scripts/mutation_gate.py run`, described in
 [docs/RELEASING.md](docs/RELEASING.md)) is far slower: every seeded pair runs its
 tests once more. `--only ID ...` judges the pairs your change added or moved;

@@ -15029,4 +15029,192 @@ PAIRS = (
          tests=('tests/test_nif_library_one_search.py',),
          expect=('test_a_second_thread_waits_for_the_retry_instead_of_failing',),
     ),
+    # #no-leaking-fakes (2026-09-26): a test helper assigned a fake on every
+    # split converter module while its callers restored only nif_convert, so
+    # the fakes outlived their tests and one regression guard passed or failed
+    # by file order. tests/conftest.py now snapshots every src.* / scripts.*
+    # module per test and FAILS the test that leaves one rebound, after
+    # putting it back. These pairs break the guard, and plant the leak class.
+    Pair('NLF-a', 'a leaking test is never failed',
+         edits=(
+             ('tests/conftest.py',
+              '    if leaks:\n        pytest.fail(',
+              '    if False:  # MUTATED: leaks go unreported\n        pytest.fail(', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_the_suite_fails_the_leaking_test_and_no_other',),
+    ),
+    Pair('NLF-b', 'a leak is reported but left in place for the next test',
+         edits=(
+             ('tests/_module_guard.py',
+              '            now[k] = v\n    return leaks',
+              '            pass  # MUTATED: left rebound\n    return leaks', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_a_bare_rebinding_is_reported_and_put_back',
+                 'test_a_switch_set_by_hand_is_a_leak',
+                 'test_the_suite_fails_the_leaking_test_and_no_other'),
+    ),
+    Pair('NLF-c', 'the guard looks before monkeypatch has undone its patches',
+         edits=(
+             ('tests/conftest.py',
+              'def _converter_modules_are_left_as_found():',
+              'def _zz_converter_modules_are_left_as_found():  # MUTATED: set up after monkeypatch', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_the_suite_fails_the_leaking_test_and_no_other',),
+    ),
+    Pair('NLF-d', 'a reload is called a leak',
+         edits=(
+             ('tests/_module_guard.py',
+              '        return (ca is not None and ca == cb and depth < 3',
+              '        return (ca is None and ca == cb and depth < 3  # MUTATED: code never equal', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_a_reload_is_not_a_leak_and_the_originals_come_back',),
+    ),
+    Pair('NLF-e', "a module's own `global` cache is called a leak",
+         edits=(
+             ('tests/_module_guard.py',
+              '        for m in _GLOBAL_RE.finditer(_text(path)):',
+              '        for m in _GLOBAL_RE.finditer(""):  # MUTATED: source unread', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_the_modules_own_run_time_state_fails_no_test_but_is_put_back',),
+    ),
+    Pair('NLF-f', 'the caches a sibling assigns through _nc() are called leaks',
+         edits=(
+             ('tests/_module_guard.py',
+              '            got.update(_NC_ASSIGN_RE.findall(_text(p)))',
+              '            pass  # MUTATED: _nc() assignments unread', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_the_real_converter_caches_are_recognised',),
+    ),
+    Pair('NLF-g', 'a cache filled in place is called a leak (values, not bindings)',
+         edits=(
+             ('tests/_module_guard.py',
+              '    return [(name, mod, dict(mod.__dict__))',
+              '    return [(name, mod, {k: (v.copy() if isinstance(v, dict) else v)'
+              ' for k, v in mod.__dict__.items()})  # MUTATED: containers copied', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_a_cache_filled_in_place_is_not_a_leak',),
+    ),
+    Pair('NLF-h', 'a replaced sys.modules entry goes unseen',
+         edits=(
+             ('tests/_module_guard.py',
+              '        if sys.modules.get(name) is not mod:',
+              '        if False:  # MUTATED: module object not checked', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_a_replaced_module_object_is_reported_and_put_back',),
+    ),
+    Pair('NLF-i', 'a real test fakes a converter function by bare assignment',
+         edits=(
+             ('tests/test_layer_group_canonical.py',
+              '    got = nc._dst_groups_for_names(\n        [_S("a"), _S("b")]',
+              '    nc._canonical_stack_name_groups = lambda *a: None  # MUTATED: bare leak\n'
+              '    got = nc._dst_groups_for_names(\n        [_S("a"), _S("b")]', 1),
+         ),
+         tests=('tests/test_layer_group_canonical.py',),
+         expect=('test_dst_groups_need_two_MEMBERS_PRESENT_HERE',),
+    ),
+    Pair('NLF-j', 'a helper patches every split module and undoes none of them',
+         edits=(
+             ('tests/test_chain_rest_lift.py',
+              '        _cs.patch(mp, "_shape_global_to_skin", lambda s: _Xf())',
+              '        _cs.patch(pytest.MonkeyPatch(), "_shape_global_to_skin",'
+              ' lambda s: _Xf())  # MUTATED: never undone', 1),
+         ),
+         tests=('tests/test_chain_rest_lift.py',),
+         expect=('test_a_chain_that_already_clears_is_left_alone',),
+    ),
+    # #no-leaking-fakes round 2 (2026-09-26): the converter's own run-time
+    # names (a `global` cache, the per-piece physics XML) were skipped outright
+    # -- a fake assigned on one, or one piece's XML, reached the next test --
+    # and a wraps spy or an emptied table passed as a reload's copy in a test
+    # that reloaded nothing. Run-time names are now put back without failing
+    # the test; the reload rules apply only to a module whose __spec__ a
+    # reload rebound during the test.
+    Pair('NLF-k', "the converter's run-time state outlives the test",
+         edits=(
+             ('tests/_module_guard.py',
+              '                # so no test is failed for it, but it does not outlive the test.\n'
+              '                now[k] = v\n',
+              '                # so no test is failed for it, but it does not outlive the test.\n'
+              '                pass  # MUTATED: left as the test left it\n', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_the_modules_own_run_time_state_fails_no_test_but_is_put_back',
+                 'test_the_suite_fails_the_leaking_test_and_no_other'),
+    ),
+    Pair('NLF-l', "the converter's run-time state fails the test that converted",
+         edits=(
+             ('tests/_module_guard.py',
+              '                now[k] = v\n                continue\n'
+              '            if w is not _MISSING and _equivalent(v, w, reloaded):',
+              '                pass  # MUTATED: judged like a test\'s own rebinding\n'
+              '            if w is not _MISSING and _equivalent(v, w, reloaded):', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_the_modules_own_run_time_state_fails_no_test_but_is_put_back',
+                 'test_the_suite_fails_the_leaking_test_and_no_other'),
+    ),
+    Pair('NLF-m', 'a run-time global the module did not have is left behind',
+         edits=(
+             ('tests/_module_guard.py',
+              '            del now[k]\n        for k, v in before.items():',
+              '            if k not in run_time:  # MUTATED: run-time additions kept\n'
+              '                del now[k]\n        for k, v in before.items():', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_the_modules_own_run_time_state_fails_no_test_but_is_put_back',),
+    ),
+    Pair('NLF-n', 'every module is treated as reloaded',
+         edits=(
+             ('tests/_module_guard.py',
+              '    return now.get("__spec__", _MISSING) is not before.get("__spec__", _MISSING)',
+              '    return True  # MUTATED: no reload marker', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_a_wraps_spy_without_a_reload_is_a_leak',
+                 'test_an_emptied_table_without_a_reload_is_a_leak',
+                 'test_a_reload_excuses_only_the_module_that_was_reloaded',
+                 'test_the_suite_fails_the_leaking_test_and_no_other'),
+    ),
+    Pair('NLF-o', 'no module is ever seen as reloaded',
+         edits=(
+             ('tests/_module_guard.py',
+              '    return now.get("__spec__", _MISSING) is not before.get("__spec__", _MISSING)',
+              '    return False  # MUTATED: reloads unseen', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_a_reload_is_not_a_leak_and_the_originals_come_back',),
+    ),
+    Pair('NLF-p', 'a wraps spy passes as a reload copy with no reload',
+         edits=(
+             ('tests/_module_guard.py',
+              '    if not reloaded:\n        # Nothing re-created',
+              '    if not reloaded and _code_of(a) is None:  # MUTATED: spies judged by code\n'
+              '        # Nothing re-created', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_a_wraps_spy_without_a_reload_is_a_leak',
+                 'test_a_reload_excuses_only_the_module_that_was_reloaded',
+                 'test_the_suite_fails_the_leaking_test_and_no_other'),
+    ),
+    Pair('NLF-q', 'an emptied table passes as a reload copy with no reload',
+         edits=(
+             ('tests/_module_guard.py',
+              '    if not reloaded:\n        # Nothing re-created',
+              '    if not reloaded and not (isinstance(a, _CONTAINERS) and not b):'
+              '  # MUTATED: empty accepted\n'
+              '        # Nothing re-created', 1),
+         ),
+         tests=('tests/test_module_guard.py',),
+         expect=('test_an_emptied_table_without_a_reload_is_a_leak',
+                 'test_a_reload_excuses_only_the_module_that_was_reloaded',
+                 'test_the_suite_fails_the_leaking_test_and_no_other'),
+    ),
 )
