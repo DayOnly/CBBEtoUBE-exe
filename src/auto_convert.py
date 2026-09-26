@@ -6042,6 +6042,41 @@ def _stale_output_sweep_failover(output, patches_dir) -> int:
     return warns
 
 
+def _stale_output_sweep_settle(args, output, *, merged) -> int:
+    r"""#stale-output-sweep: keep this run's pending moves when the merge wrote
+    a new Combined from coverage alone and none of its pieces names a moved
+    base; otherwise put every moved file back. A no-op when nothing is pending
+    (already settled, or the sweep did not move). Returns warnings.
+
+    #sweep-settle-before-postmerge: called right after the merge, before the
+    alt-texture reconcile and the other passes that read `meshes\!UBE`, so a
+    put-back returns the NIF before a colour set is indexed against its
+    absence; `_stale_output_sweep_finish` calls it too (the merge failed, was
+    skipped, or the switch is set)."""
+    ctx = getattr(args, "stale_sweep", None)
+    if not ctx or not stale_sweep.sweep_on():
+        return 0
+    output = Path(output)
+    h = stale_sweep.pending()
+    if h is None:
+        return 0
+    stale_sweep._set_pending(None)
+    why = ""
+    if not merged:
+        why = "the new Combined plugin was not written from coverage this run"
+    else:
+        try:
+            refs = stale_sweep.combined_references(
+                output / args.merged_name, h.moved_bases)
+        except Exception as e:
+            refs = []
+            why = f"the new Combined plugin could not be read back ({plain_error(e)})"
+        if refs:
+            why = (f"the new Combined plugin still names {len(refs)} of them: "
+                   + ", ".join(refs[:3]))
+    return _stale_settle(h, why)
+
+
 def _stale_output_sweep_finish(args, output, results, *, merged) -> int:
     r"""#stale-output-sweep, after the merge: keep this run's moves only when
     the merge wrote a new Combined from coverage alone and none of its pieces
@@ -6053,24 +6088,7 @@ def _stale_output_sweep_finish(args, output, results, *, merged) -> int:
     if not ctx or not stale_sweep.sweep_on():
         return 0
     output = Path(output)
-    warns = 0
-    h = stale_sweep.pending()
-    if h is not None:
-        stale_sweep._set_pending(None)
-        why = ""
-        if not merged:
-            why = "the new Combined plugin was not written from coverage this run"
-        else:
-            try:
-                refs = stale_sweep.combined_references(
-                    output / args.merged_name, h.moved_bases)
-            except Exception as e:
-                refs = []
-                why = f"the new Combined plugin could not be read back ({plain_error(e)})"
-            if refs:
-                why = (f"the new Combined plugin still names {len(refs)} of them: "
-                       + ", ".join(refs[:3]))
-        warns += _stale_settle(h, why)
+    warns = _stale_output_sweep_settle(args, output, merged=merged)
     adopted, _STALE_ADOPTED = _STALE_ADOPTED, {}
     try:
         _stale_write_manifest(args, output, results, adopted)
@@ -7713,6 +7731,13 @@ def _cmd_convert(args):
                                             "the vanilla sweep", "linked 0 records",
                                             severity="warning")
                     _sos_merged = patch_paths is _cov_only   # #stale-output-sweep
+                    # Settle the sweep's moves now, before the passes below read
+                    # meshes\!UBE: a put-back returns the NIF before a colour set
+                    # is indexed against its absence. The decision reads only the
+                    # Combined's model paths, which those passes never change.
+                    # #sweep-settle-before-postmerge
+                    if stale_sweep.settle_before_postmerge_on():
+                        _stale_output_sweep_settle(args, output, merged=_sos_merged)
                     # Reconcile alt-texture 3D indices against the converted NIFs.
                     # Shape reordering during the NIF merge shifts MO2S/MO3S indices;
                     # reconcile ALL split pieces (overflow also carries alt-texture sets).

@@ -118,6 +118,16 @@ def recover_every_run() -> bool:
     return not _flag("CBBE2UBE_NO_SWEEP_RECOVER_EVERY_RUN", False)
 
 
+def settle_before_postmerge_on() -> bool:
+    r"""#sweep-settle-before-postmerge: the moves are kept or put back right
+    after the merge writes the Combined, before the alt-texture reconcile, the
+    hands-slot fix and the postflight read `meshes\!UBE` -- so a put-back
+    returns the NIF before a colour set is indexed against its absence.
+    CBBE2UBE_NO_SWEEP_SETTLE_BEFORE_POSTMERGE=1: they settle after those
+    passes, at the end of the merge block, as before."""
+    return not _flag("CBBE2UBE_NO_SWEEP_SETTLE_BEFORE_POSTMERGE", False)
+
+
 def sidecar_base_on() -> bool:
     r"""#sweep-sidecar-base: a `.tri`/`.xml` belongs to the weight base the
     converter named it from -- its stem is the mesh stem with ONE `_0`/`_1`

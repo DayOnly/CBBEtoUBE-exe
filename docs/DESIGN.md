@@ -2539,6 +2539,22 @@ lost piece from a dropped one. What ships (`src/stale_sweep.py`, glue in
   An exception out of `_cmd_convert` puts them back from `_cmd_auto`; a journal a
   killed run left unsettled is put back at the start of the next `auto` run of any
   kind (below). Report: `_superseded\stale_output_report.json` and the log.
+- **Settled before the post-merge passes** (`#sweep-settle-before-postmerge`). The
+  moves used to settle in `_stale_output_sweep_finish`, after the whole merge block:
+  the alt-texture reconcile, the hands-slot fix and the postflight read
+  `meshes\!UBE` while a base the new Combined still names -- the case the put-back
+  exists for -- was in the stamp folder. Its MO2S-MO5S sets were indexed against
+  its absence (kept as authored, or bound by name to another mod's copy through
+  `#reconcile-loaded-mesh`), then our NIF came back and the game drew it with those
+  indices. `_stale_output_sweep_settle` now runs right after the merge writes the
+  Combined and the SkyPatcher INI, before those passes; the finish calls it too (a
+  no-op once settled) for a merge that failed, was skipped or fell back. The
+  decision reads only the Combined's `!UBE` model paths, which the reconcile (MO?S
+  indices), the hands-slot fix (slot flags), the armature dedup (ARMO references,
+  never an ARMA record) and the master re-sort never change, so what is kept and
+  what goes back is the same as before; only when is earlier. Live: the moves have
+  never run, so nothing is pending and the output is byte-identical to the parent.
+  `CBBE2UBE_NO_SWEEP_SETTLE_BEFORE_POSTMERGE=1`: they settle at the end, as before.
 - **The read-back reads the merge's own files** (`#sweep-piece-family`).
   `stale_sweep.combined_references` globbed `<stem>*.esp`, so a user's
   `<stem> - Copy.esp` or `<stem>_backup.esp` of an older Combined -- which names the

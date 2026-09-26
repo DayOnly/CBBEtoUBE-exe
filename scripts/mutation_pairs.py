@@ -8478,8 +8478,8 @@ PAIRS = (
     Pair('SOS-x', "a merge that did not write the Combined keeps the moves",
          edits=(
              ('src/auto_convert.py',
-              '        if not merged:\n            why = "the new Combined plugin',
-              '        if False:  # MUTATED\n            why = "the new Combined plugin', 1),
+              '    if not merged:\n        why = "the new Combined plugin',
+              '    if False:  # MUTATED\n        why = "the new Combined plugin', 1),
          ),
          tests=('tests/test_stale_output_sweep.py',),
          expect=('test_a_merge_that_did_not_write_the_combined_puts_every_file_back',
@@ -8488,8 +8488,8 @@ PAIRS = (
     Pair('SOS-y', "a Combined that names a moved mesh keeps the moves",
          edits=(
              ('src/auto_convert.py',
-              '            if refs:\n                why = (',
-              '            if False:  # MUTATED\n                why = (', 1),
+              '        if refs:\n            why = (',
+              '        if False:  # MUTATED\n            why = (', 1),
          ),
          tests=('tests/test_stale_output_sweep.py',),
          expect=('test_a_combined_that_names_a_moved_mesh_puts_it_back',),
@@ -13444,5 +13444,44 @@ PAIRS = (
          ),
          tests=('tests/test_sweep_put_back_wording.py',),
          expect=('test_it_is_still_counted_as_a_failure',),
+    ),
+    # #sweep-settle-before-postmerge (2026-09-26): the sweep's moves settle
+    # right after the merge, before the reconcile reads meshes\!UBE.
+    Pair('SSP-a', 'the reconcile runs while a put-back is still pending',
+         edits=(
+             ('src/auto_convert.py',
+              '                        _stale_output_sweep_settle(args, output, merged=_sos_merged)\n',
+              '                        pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_sweep_settle_before_postmerge.py',),
+         expect=('test_a_put_back_is_done_before_the_reconcile_reads_the_meshes',),
+    ),
+    Pair('SSP-b', 'the off-switch no longer switches anything off',
+         edits=(
+             ('src/stale_sweep.py',
+              '    return not _flag("CBBE2UBE_NO_SWEEP_SETTLE_BEFORE_POSTMERGE", False)',
+              '    return True  # MUTATED', 1),
+         ),
+         tests=('tests/test_sweep_settle_before_postmerge.py',),
+         expect=('test_switched_off_the_reconcile_sees_the_mesh_missing',),
+    ),
+    Pair('SSP-c', 'the early settle ignores that the merge wrote the Combined',
+         edits=(
+             ('src/auto_convert.py',
+              '                        _stale_output_sweep_settle(args, output, merged=_sos_merged)\n',
+              '                        _stale_output_sweep_settle(args, output, merged=False)'
+              '  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_sweep_settle_before_postmerge.py',),
+         expect=('test_kept_moves_stay_kept',),
+    ),
+    Pair('SSP-d', 'a settled run stays pending and settles again at the end',
+         edits=(
+             ('src/auto_convert.py',
+              '    stale_sweep._set_pending(None)\n    why = ""\n',
+              '    why = ""  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_sweep_settle_before_postmerge.py',),
+         expect=('test_settling_twice_is_a_no_op',),
     ),
 )

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed — colour variants of a mesh put back after the merge recolour the right layer
+
+A full run moves old meshes into `_superseded\` before the plugin merge, and
+puts them back if the new combined plugin still uses them. The step that lines
+up colour variants with a mesh's layers ran before that put-back, so it looked
+for a mesh that was not there, and the variant could recolour the wrong layer of
+the mesh that then came back. The moves are now kept or put back straight after
+the merge, before that step and the checks that follow it read the meshes.
+Nothing changes on the reported modlist, where no run has moved anything yet.
+`CBBE2UBE_NO_SWEEP_SETTLE_BEFORE_POSTMERGE=1` (set to 1) turns it off.
+
 ### Fixed — the end-of-run list says so when moved meshes could not be put back
 
 When old meshes that a run moved into `_superseded\` have to go back and one
