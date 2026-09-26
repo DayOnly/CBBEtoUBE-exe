@@ -9835,6 +9835,51 @@ PAIRS = (
          tests=('tests/test_mutation_gate.py',),
          expect=('test_the_shard_command_refuses_a_tree_it_did_not_make',),
     ),
+    # #mutation-gate INVALID (2026-09-26): a mutated .py file that does not
+    # compile fails every test that imports it, the named ones among them, so
+    # the row read CAUGHT with its guard untested (LOW-f). The gate compiles
+    # the mutated text first and reads such a pair INVALID, which fails it.
+    Pair('MGC-a', 'a mutation that does not compile is run and reads CAUGHT',
+         edits=(
+             ('scripts/mutation_gate.py',
+              '        broken = None if lacking or reason else compile_problem(tree, pair)\n',
+              '        broken = None  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_mutation_gate.py',),
+         expect=('test_a_mutation_that_does_not_compile_reads_invalid_not_caught',),
+    ),
+    Pair('MGC-b', 'an INVALID pair no longer fails the gate',
+         edits=(
+             ('scripts/mutation_gate.py',
+              'FAILING = (MISSED, NOT_APPLIED, INVALID)',
+              'FAILING = (MISSED, NOT_APPLIED)  # MUTATED', 1),
+         ),
+         tests=('tests/test_mutation_gate.py',),
+         expect=('test_a_mutation_that_does_not_compile_reads_invalid_not_caught',
+                 'test_an_invalid_pair_in_one_shard_fails_the_combined_verdict'),
+    ),
+    Pair('MGC-c', 'the compile check judges each edit of a file on its own',
+         edits=(
+             ('scripts/mutation_gate.py',
+              '        if file not in texts:\n'
+              '            texts[file] = (Path(root) / file).read_bytes().decode("utf-8")\n',
+              '        texts[file] = (Path(root) / file).read_bytes().decode("utf-8")  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_mutation_gate.py',),
+         expect=('test_the_compile_check_reads_every_edit_of_a_file_together',),
+    ),
+    # #prepush-merge-files (2026-09-26): diff-tree lists no file of a merge
+    # commit without -c, so content that exists only in a merge resolution
+    # was published unread.
+    Pair('HK-f', 'the pre-push hook lists no file of a merge commit',
+         edits=(
+             ('scripts/hook_prepush.py',
+              'P._run("git", "diff-tree", "-c", "--root",',
+              'P._run("git", "diff-tree", "--root",  # MUTATED\n                         ', 1),
+         ),
+         tests=('tests/test_repo_hygiene_hooks.py',),
+         expect=('test_prepush_reads_the_files_a_merge_resolution_adds_or_edits',),
+    ),
     # #bsa-embed-name-end (2026-09-25): an uncompressed entry of an embed-names
     # archive was read to `start of data + size`, but the size counts the name
     # prefix: 1 + len(name) bytes of the next file came back on its end.
@@ -11524,12 +11569,19 @@ PAIRS = (
                  'test_a_dry_run_writes_the_cli_log_and_rotates_nothing[argv1]',
                  'test_the_window_tails_the_log_its_child_writes[True]'),
     ),
+    # LOW-f's first edit ended its replacement with `  # MUTATED` in the middle
+    # of a line, commenting out the closing parentheses: the file stopped
+    # compiling and every entry-point test failed on the SyntaxError, so the
+    # row read CAUGHT without testing the `--` stop (2026-09-26). It now removes
+    # only the stop and keeps the line whole; the gate reads a mutation that
+    # does not compile as INVALID.
     Pair('LOW-f', 'a --dry-run after -- reads as an option',
          edits=(
              ('cbbe_to_ube_main.py',
               '        if a == "--":\n            return False\n'
               '        if len(a) > 2 and (("--list-only".startswith(a)',
-              '        if len(a) > 2 and (("--list-only".startswith(a)  # MUTATED', 1),
+              '        pass  # MUTATED\n'
+              '        if len(a) > 2 and (("--list-only".startswith(a)', 1),
          ),
          tests=('tests/test_cli_gui_lows.py',),
          expect=('test_a_real_run_still_rotates[argv2]',),

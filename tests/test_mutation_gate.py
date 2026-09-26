@@ -122,6 +122,54 @@ def test_a_replacement_the_tests_cannot_see_reads_missed_and_fails_the_gate(tiny
     assert rep["verdict"] == "FAIL"
 
 
+def _lazy_pair(body, id="P5"):
+    """A pair that creates a module and a test importing it INSIDE the test
+    function -- the shape of the entry-point tests, where a SyntaxError is a
+    per-test failure of the named test, not a collection error."""
+    return mg.Pair(id, "a lazily imported module",
+                   (("lazy.py", None, body, 0),
+                    ("tests/test_lazy.py", None,
+                     "import sys\nfrom pathlib import Path\n\n\ndef test_lazy():\n"
+                     "    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))\n"
+                     "    import lazy\n    assert lazy.v() == 1\n", 0)),
+                   ("tests",), ("test_lazy",))
+
+
+def test_a_mutation_that_does_not_compile_reads_invalid_not_caught(
+        tiny, tmp_path, monkeypatch, capsys):
+    """LOW-f's edit commented out a line's closing parentheses: every test that
+    loaded the file failed on the SyntaxError, the named one among them, and
+    the row read CAUGHT whatever its guard did. A mutated file that does not
+    compile is never run; it reads INVALID and fails the gate. The same pair
+    written as valid Python is judged as usual."""
+    rep = _run(tiny, tmp_path, [_lazy_pair("def v(:\n    return 2\n")])
+    row = rep["pairs"][0]
+    assert row["status"] == mg.INVALID, row
+    assert "lazy.py: the mutation does not compile" in row["reason"] and "line 1" in row["reason"]
+    assert row["failing"] == [] and rep["verdict"] == "FAIL"
+    assert not (tiny / "lazy.py").exists()
+    valid = _run(tiny, tmp_path / "valid", [_lazy_pair("def v():\n    return 2\n")])
+    assert valid["pairs"][0]["status"] == mg.CAUGHT and valid["verdict"] == "PASS", valid["pairs"]
+    monkeypatch.setattr(mg, "REPO", tiny)
+    monkeypatch.setattr(mg, "_seeded_pairs", lambda: [_lazy_pair("def v(:\n    return 2\n")])
+    _private_temp(tmp_path, monkeypatch)
+    assert mg.main(["run"]) == 1
+    out = capsys.readouterr().out
+    assert "INVALID" in out and "1 invalid" in out and "VERDICT: FAIL" in out, out
+
+
+def test_the_compile_check_reads_every_edit_of_a_file_together(tiny):
+    """Two edits of one file: the first alone would not compile, the second
+    completes it. The gate writes both, so it judges both together."""
+    pair = mg.Pair("P6", "two edits", (
+        ("thing.py", "def f():\n    return 1\n", "def f():\n    return (1\n", 1),
+        ("thing.py", "\n\ndef g():", ")\n\ndef g():", 1)), ("tests/test_thing.py",), ("test_f",))
+    assert mg.check_anchors(tiny, pair) is None
+    assert mg.compile_problem(tiny, pair) is None
+    half = mg.Pair("P7", "one edit", pair.edits[:1], pair.tests, pair.expect)
+    assert "does not compile" in (mg.compile_problem(tiny, half) or "")
+
+
 def test_a_wrong_expected_id_reads_missed_even_on_a_red_run(tiny, tmp_path):
     """The mutation breaks g, but the pair claims f's test: a red run is not
     enough, the NAMED test must be the one that fails."""
@@ -317,6 +365,14 @@ def test_a_shard_control_that_failed_or_disagrees_with_its_exit_code_fails():
     liar = [_shard_result(0, [_row("P0")]), _shard_result(1, [_row("P1")], rc=1)]
     rep = mg.aggregate(pairs, [["P0"], ["P1"]], liar)
     assert rep["verdict"] == "FAIL" and any("disagrees" in r for r in rep["reasons"])
+
+
+def test_an_invalid_pair_in_one_shard_fails_the_combined_verdict():
+    pairs = _ids(2)
+    results = [_shard_result(0, [_row("P0")]),
+               _shard_result(1, [_row("P1", mg.INVALID)], rc=1, verdict="FAIL")]
+    rep = mg.aggregate(pairs, [["P0"], ["P1"]], results)
+    assert rep["verdict"] == "FAIL" and rep["pairs"][1]["status"] == mg.INVALID
 
 
 def test_a_not_judged_pair_passes_as_it_does_in_a_single_run():
