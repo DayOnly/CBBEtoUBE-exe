@@ -973,12 +973,14 @@ physics skirts, tassets or capes in your BodySlide build, and
 CBBE characters wear them that way. The tool takes a static version of those
 pieces instead, so on UBE characters the same skirts hang stiff.
 
-**This is off by default.** It first shipped on, and in game the physics
-versions of these armours turned out to sit looser on the body than the static
-ones: on the leather armour a large gap opened between the back of the hips
-and the armour (typically 1.2 units, now 2.5; the widest tenth 3.6, now 6.3),
-and on two of the outfits the widest tenth of the gap grew to about 6.3
-units too.
+**This is off by default.** It first shipped on, and in game most of these
+armours turned out to sit looser on the body in their physics versions than in
+their static ones, as their authors built them: on the leather armour a large
+gap opened between the back of the hips and the armour (typically 1.2 units
+with the static version against 2.5 with the physics one; the widest tenth 3.6
+against 6.3), and on two of the outfits the widest tenth of the gap reached
+about 6.3 units too. Most of the others are looser on the skirt or the thighs;
+the draugr, Forsworn and one farm-clothes version are not looser anywhere.
 So the tool keeps the static pieces, as it always did. To take the physics
 versions anyway, set `CBBE2UBE_ZEROED_SMP_GAIN=1` (set to 1).
 
@@ -988,7 +990,8 @@ versions carry the body the tool replaces, the physics file is found and holds
 constraints, nothing in that file would bring a second, hidden body back, and
 every part that swings still has something to collide with once the conversion
 has removed what it drops. Measured on the reported modlist: 17 armour pieces
-(34 files) change; everything else is converted exactly as before. One record
+change (68 files: 34 meshes, 17 morph files and 17 physics files that only the
+physics versions have); everything else is converted exactly as before. One record
 in the combined plugin changes with them: a retexture of the Forsworn armour
 gives it an alternate texture set naming four layers (armour, bottom, feather
 cape, underwear). The static version has none of those layer names, so the set
@@ -1007,7 +1010,7 @@ too. A piece is also kept as it was when that cleanup would leave its skirt
 swinging with no collision shape at all, or would leave a physics file the game
 cannot read. On the reported modlist this last refinement changes nothing.
 
-On 6 of the 34 files the conversion summary still reports a physics shape it
+On 6 of the 34 meshes the conversion summary still reports a physics shape it
 dropped (`hdt_xml_shape_dropped`), and that is expected: the iron light
 cuirass shares its physics file with the heavy one, which names a pauldron belt
 and its collider that the light cuirass does not have; both farm clothes name
