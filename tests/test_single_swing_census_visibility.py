@@ -327,7 +327,10 @@ def test_the_census_refuses_to_report_a_planted_posed_skew(tmp_path):
                       self_check_inputs=_inputs(_perfect, skewed_source_shell=True))
     out = buf.getvalue()
     assert rc == ssc.SELF_CHECK_EXIT, out
-    assert "REFUSED" in out and "swing loss" in out
+    # refused for the posed reason itself, not only by some other check
+    fail = next(s for s in out.splitlines() if "SELF-CHECK FAIL" in s)
+    assert "a perfect shell riding the body reads ours - author swing loss" in fail, out
+    assert "REFUSED" in out
     assert not (tmp_path / "rows.jsonl").exists()
 
 
@@ -422,6 +425,9 @@ def _main(argv, warp):
 def test_the_census_refuses_to_report_when_the_self_check_fails(tmp_path):
     rc, out = _main(["--pack", str(tmp_path), "--out", str(tmp_path / "rows.jsonl")], _buried)
     assert rc == ssc.SELF_CHECK_EXIT, out
+    # refused for the bind reason itself, not only by some other check
+    fail = next(s for s in out.splitlines() if "SELF-CHECK FAIL" in s)
+    assert "a perfect warped shell reads ours - author" in fail, out
     assert "REFUSED" in out
     assert not (tmp_path / "rows.jsonl").exists()
 
