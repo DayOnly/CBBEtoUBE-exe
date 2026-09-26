@@ -3091,7 +3091,8 @@ PAIRS = (
               '                _probe = path  # MUTATED\n', 1),
          ),
          tests=('tests/test_coverage_female_guard.py',),
-         expect=('test_the_lookup_gets_a_non_ascii_path_as_the_game_reads_it',),
+         # Only the UTF-8 rebuild (#arma-path-bytes off) mangles `path`.
+         expect=('test_the_lookup_gets_a_non_ascii_path_as_the_game_reads_it[utf8-rebuild]',),
     ),
     Pair('EOC-l', 'an excluded folder name with a comma withholds nothing',
          edits=(

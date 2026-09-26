@@ -30,6 +30,8 @@ with NO female model keeps the male one there -- what the engine draws anyway.
 import struct
 from pathlib import Path
 
+import pytest
+
 from src import ube_patcher as up
 from src.esp import (ESP, TES4Header, Group, Record, encode_subrecord,
                      encode_zstring, iter_subrecords)
@@ -371,9 +373,17 @@ def test_an_unreadable_folder_does_not_stop_the_lookup(tmp_path, monkeypatch):
     assert not exists(r"follower\f\missing_1.nif")
 
 
-def test_the_lookup_gets_a_non_ascii_path_as_the_game_reads_it():
-    """Model paths are cp1252; the utf-8 decode the rebuild uses drops the byte,
-    and the mesh would read as dead."""
+@pytest.mark.parametrize("utf8_rebuild", [False, True],
+                         ids=["path-bytes", "utf8-rebuild"])
+def test_the_lookup_gets_a_non_ascii_path_as_the_game_reads_it(
+        monkeypatch, utf8_rebuild):
+    """Model paths are cp1252; the utf-8 decode the rebuild uses with
+    CBBE2UBE_NO_ARMA_PATH_BYTES drops the byte, and the mesh would read as
+    dead -- the probe must not reuse that decode."""
+    monkeypatch.delenv("CBBE2UBE_NO_ARMA_PATH_BYTES", raising=False)
+    monkeypatch.delenv("CBBE2UBE_NO_MODEL_PATH_CODEPAGE", raising=False)
+    if utf8_rebuild:
+        monkeypatch.setenv("CBBE2UBE_NO_ARMA_PATH_BYTES", "1")
     asked = []
     p = encode_subrecord(b"EDID", encode_zstring("AA"))
     p += encode_subrecord(b"MOD2", encode_zstring(MALE))
