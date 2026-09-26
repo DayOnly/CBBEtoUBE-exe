@@ -6115,9 +6115,47 @@ def _stale_write_manifest(args, output, results, adopted) -> None:
     except Exception:
         build = ""
     ctx = getattr(args, "stale_sweep", None) or {}
+    # A moved file no run settled keeps its record. #sweep-recover-every-run
+    stranded = (stale_sweep.stranded_files(output)
+                if stale_sweep.recover_every_run() else None)
     stale_sweep.write_manifest(output, stale_sweep.build_manifest(
         prev, claims, patches, set(inv.bases), pfiles, adopted,
-        stale_sweep.run_stamp(ctx.get("started") or time.time()), build))
+        stale_sweep.run_stamp(ctx.get("started") or time.time()), build,
+        stranded))
+
+
+def _stale_recover_at_start(args, output) -> int:
+    r"""#sweep-recover-every-run: put back the files a killed run's sweep left
+    in `_superseded\<stamp>\` (the GUI's Cancel is a hard kill, so its `finally`
+    never ran), at the start of EVERY `auto` run -- before any per-source patch
+    or `meshes\!UBE` is read and before the manifest is written. Only the full
+    run's sweep did it before, so a Select-mods or `--plugins-only` run in
+    between left the old Combined naming missing meshes, and its manifest
+    dropped their record for good. Runs with the sweep off too: turning it off
+    must not leave meshes missing. Prints and records each put-back; a file
+    that cannot go back is a problem. Returns the problem warnings printed."""
+    if (not getattr(args, "stale_sweep", None)
+            or not stale_sweep.recover_every_run()):
+        return 0
+    output = Path(output)
+    warns = 0
+    for stamp, failed in stale_sweep.recover_interrupted(output):
+        sdir = output / stale_sweep.SUPERSEDED_DIR / stamp
+        warn(f"stale-output sweep: put back the old conversions an interrupted run "
+             f"had moved to {stale_sweep.SUPERSEDED_DIR}\\{stamp}",
+             consequence="that run stopped before its merge confirmed the moves, so "
+                         "its Combined plugin may have named missing meshes until "
+                         "now; they are back where it expects them",
+             level=NOTE)
+        _record_failure("stale sweep put back after an interrupted run", output,
+                        f"{stale_sweep.SUPERSEDED_DIR}\\{stamp}",
+                        "a run stopped between the sweep's moves and its merge; "
+                        "its moved files were put back", severity="warning")
+        if failed:
+            warns += _stale_put_back_failed(
+                stale_sweep.Handle(output=output, stamp_dir=sdir,
+                                   journal=sdir / stale_sweep.JOURNAL_NAME), failed)
+    return warns
 
 
 def _stale_output_sweep_abandoned() -> int:
@@ -6795,6 +6833,10 @@ def _cmd_convert(args):
                   "explicitly to silence this.")
 
     _orphans_removed = _sweep_orphan_temps_at_start(output, _run_started)
+    # A killed run's sweep moves go back first, on every `auto` run: before any
+    # patch or mesh of the output is read and the manifest is written.
+    # #sweep-recover-every-run
+    _stale_recover_at_start(args, output)
     # Before any per-source patch is written or read (a full run, --only-mods
     # and --plugins-only all come through here). #source-patch-rename
     _migrate_source_patch_names_at_start(

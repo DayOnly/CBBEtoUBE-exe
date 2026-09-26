@@ -108,6 +108,16 @@ def report_only_forced() -> bool:
     return _flag("CBBE2UBE_STALE_OUTPUT_SWEEP_REPORT_ONLY", False)
 
 
+def recover_every_run() -> bool:
+    r"""#sweep-recover-every-run: a journal a killed run left unsettled is put
+    back at the start of EVERY `auto` run (a Select-mods run, `--plugins-only`,
+    the merge off, the sweep off), not only by the next full run's sweep, and
+    the manifest keeps the record of a base whose files are still in a stamp
+    folder. CBBE2UBE_NO_SWEEP_RECOVER_EVERY_RUN=1: the full run's sweep alone
+    puts them back, and a run before it drops their record."""
+    return not _flag("CBBE2UBE_NO_SWEEP_RECOVER_EVERY_RUN", False)
+
+
 def base_key(rel: str) -> str:
     r"""The weight base of a file below `meshes\!UBE`: the key the planner
     claims (`_weight_base_key`), with a `.tri` or `.xml` mapped to its mesh's.
@@ -203,21 +213,29 @@ def read_manifest(output) -> "tuple[dict | None, str]":
 
 
 def build_manifest(prev, claims, patches, on_disk, patch_files, adopted,
-                   run_stamp, build) -> dict:
+                   run_stamp, build, stranded=None) -> dict:
     """This run's record. `claims` {base: source} and `patches` {name: source}
     are what this run made; an earlier entry is carried while its file is still
     on disk (`on_disk` bases, `patch_files` names) and nothing this run claims
     it -- a held base keeps its source, a moved one drops out. `adopted` {base:
     source}: a base no run recorded that a source this run gave a positive
-    reason to drop; it is recorded now and can move on a later run."""
+    reason to drop; it is recorded now and can move on a later run.
+    `stranded` (bases, lower-case patch names), from `stranded_files`: files a
+    move no run settled left in a stamp folder -- their earlier entry is carried
+    too, so the file that comes back is still ours. #sweep-recover-every-run"""
     bases: dict = {}
     pats: dict = {}
+    s_bases, s_patches = stranded or (set(), set())
     if prev:
         for b, s in prev.get("bases", {}).items():
             if b in on_disk and b not in claims:
                 bases[b] = s
+            elif b in s_bases and b not in claims:
+                bases[b] = s
         for n, s in prev.get("patches", {}).items():
             if n.lower() in patch_files and n not in patches:
+                pats[n] = s
+            elif n.lower() in s_patches and n not in patches:
                 pats[n] = s
     for b, s in adopted.items():
         if b in on_disk and b not in claims:
@@ -549,6 +567,44 @@ def recover_interrupted(output) -> "list[tuple[str, list[str]]]":
                                   if failed else "put back after an interrupted run"))
         out.append((j.parent.name, failed))
     return out
+
+
+def _stranded(status) -> bool:
+    """A journal whose files may still sit in its stamp folder though no run
+    decided they should: unsettled, or a put-back that left some behind."""
+    return isinstance(status, str) and (
+        status in _UNSETTLED or status.startswith("partly put back"))
+
+
+def stranded_files(output) -> "tuple[set[str], set[str]]":
+    r"""(weight bases, lower-case patch file names) of the files a journal that
+    no run settled -- or whose put-back left some behind -- lists, and that
+    still sit in its stamp folder. The manifest keeps their record: a file that
+    comes back later must still read as ours, or it can never move again.
+    #sweep-recover-every-run"""
+    bases: set = set()
+    patches: set = set()
+    root = Path(output) / SUPERSEDED_DIR
+    try:
+        journals = sorted(root.glob("*/" + JOURNAL_NAME))
+    except OSError:
+        return bases, patches
+    for j in journals:
+        try:
+            d = json.loads(j.read_bytes().decode("utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(d, dict) or not _stranded(d.get("status")):
+            continue
+        for rel in d.get("planned", []):
+            if not isinstance(rel, str) or not (j.parent / rel).is_file():
+                continue
+            s = rel.replace("\\", "/")
+            if s.lower().startswith("meshes/!ube/"):
+                bases.add(base_key(s[len("meshes/!ube/"):]))
+            else:
+                patches.add(Path(s).name.lower())
+    return bases, patches
 
 
 def combined_references(combined_path, bases) -> "list[str]":

@@ -2524,8 +2524,30 @@ lost piece from a dropped one. What ships (`src/stale_sweep.py`, glue in
   re-points only to a mesh on disk, so the second pass ends where one pass over the
   whole folder does): the fallback Combined is the one a run without the sweep writes.
   An exception out of `_cmd_convert` puts them back from `_cmd_auto`; a journal a
-  killed run left unsettled is put back at the start of the next full run's sweep.
-  Report: `_superseded\stale_output_report.json` and the log.
+  killed run left unsettled is put back at the start of the next `auto` run of any
+  kind (below). Report: `_superseded\stale_output_report.json` and the log.
+- **A killed run's moves go back on the next run of any kind**
+  (`#sweep-recover-every-run`). The GUI's Cancel is `taskkill /T /F`, so the
+  `finally` in `_cmd_auto` never runs and the journal stays `moving` / `waiting for
+  the merge`. Only the next full run's sweep used to put it back: a Select-mods,
+  `--plugins-only`, merge-off or failed-source run in between left the old Combined
+  naming meshes in `_superseded\`, and its manifest -- which carries an earlier
+  entry only while its file is on disk -- dropped the moved bases, so the full run
+  that finally put them back found them "not recorded as converted by any run" and
+  held them for good. `_stale_recover_at_start` now runs at the top of every
+  `_cmd_convert` that carries the sweep context (before any per-source patch or
+  `meshes\!UBE` is read, before the manifest is written, with the sweep off too):
+  a `NOTE:` line and a warning entry in the one tally per stamp folder; a file that
+  cannot go back is a problem warning and a failure entry. NOTE, not a problem,
+  because nothing about the plan shrank: the full run after a kill still moves
+  what it decides. And `build_manifest` carries an earlier entry whose file a
+  journal still in `moving` / `waiting for the merge` / `partly put back...` lists
+  and that still sits in its stamp folder (`stale_sweep.stranded_files`), so a
+  file that comes back later is still ours; a move the merge kept drops out as
+  before. Live replay: no journal exists (the moves have not run live), so the
+  output is byte-identical to the parent either way.
+  `CBBE2UBE_NO_SWEEP_RECOVER_EVERY_RUN=1`: only the full run's sweep puts them
+  back, and a run before it drops their record.
 - **Isolated.** Any exception in the decisions, the moves or the report puts back
   every file the journal lists (the stamp folder is new, so a file there is one this
   run moved -- including one whose own roll-back failed), forgets the adoptions, warns,

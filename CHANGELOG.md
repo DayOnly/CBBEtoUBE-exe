@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed — meshes moved aside by a cancelled run come back on the next run of any kind
+
+When a full run moves old converted meshes into `_superseded\`, it keeps them
+there only once the plugin merge that follows has finished. Cancel stops the
+run at once, so a run cancelled between the move and the merge left those
+meshes in `_superseded\` while the previous combined plugin still pointed at
+them. Only the next full run of all mods put them back. A run of selected mods
+or a plugins-only refresh in between left them missing, and it also dropped them
+from the tool's record of what it converted, so the tool could never move them
+again. Every run now puts such files back first and says so in the log and in
+the end-of-run list, and the record keeps any file that is still in
+`_superseded\` for this reason. Nothing changed on the reported modlist, where
+no run has moved anything yet. `CBBE2UBE_NO_SWEEP_RECOVER_EVERY_RUN=1` (set to
+1) turns it off.
+
 ### Fixed — colour variants of a piece left to your own UBE build recolour the right layer
 
 Since this tool leaves a piece alone when your own UBE BodySlide build (or
