@@ -14510,4 +14510,18 @@ PAIRS = (
          tests=('tests/test_nif_library_one_search.py',),
          expect=('test_the_body_list_says_the_library_is_missing',),
     ),
+    # The retry is marked done only once the import has finished, so a
+    # concurrent first read waits for it instead of getting None.
+    Pair('NLS-h', 'the NIF-library retry is marked done before its import finishes',
+         edits=(
+             ('src/nif_io.py',
+              '        if pynifly is not None or _RETRIED:\n'
+              '            return pynifly\n',
+              '        if pynifly is not None or _RETRIED:\n'
+              '            return pynifly\n'
+              '        _RETRIED = True  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_nif_library_one_search.py',),
+         expect=('test_a_second_thread_waits_for_the_retry_instead_of_failing',),
+    ),
 )
