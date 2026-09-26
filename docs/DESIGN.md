@@ -3324,6 +3324,27 @@ reported through `_report_coverage_holds`:
   out restores). `CBBE2UBE_NO_HEADLESS_SETTINGS=1` makes a headless run ignore
   the file, as before. `python -m src.auto_convert` does not go through the entry
   point and still reads only the environment.
+- **The body lookups are cached per input** (`#body-cache-by-inputs`).
+  `_BODY_DISCOVERY_CACHE` was keyed on the weight alone (`ube_1`), so the first
+  answer in a process stood for its lifetime. The window is the long-lived
+  process: its launch-time Check setup cached the UBE body, and after a
+  Paths-tab pick or an Import (both reach the window as `CBBE2UBE_UBE_BODY`
+  through `SettingsOverlay`) Check setup kept the launch body -- or `None`, i.e.
+  'missing' -- and `auto_convert._body_trees` (the UBE-native scan and the
+  Select list) kept its trees. The conversion is a fresh child (`Popen`) whose
+  pool workers are spawned, so a run's bodies were never stale; the headless
+  entry point applies the settings before the converter is imported. Each key
+  is now `(name, ZEROED_BODY_REFS, <the override variables the finder reads>,
+  CBBE2UBE_MO2_INI, CBBE2UBE_MODS_ROOT, CBBE2UBE_GAME_DATA)`: the instance
+  variables because the zeroed resolver and every scan walk what they select.
+  `_body_trees` is cached for the pair of paths the finders name now. An
+  unchanged input still hits (the scans walk the mods tree); a pick set back
+  hits its first answer. Not in the key: what is on disk (a body rebuilt in
+  BodySlide mid-session) and the MO2 profile's contents. `_MOD_DIR_LIST_CACHE`
+  and `_GLOB_FIRST_MEMO` are keyed on the mods root and depend on no setting;
+  `zeroed_body._CACHE` is keyed on the VFS folder list. Live replay: byte-identical
+  to the parent with and without the switch. `CBBE2UBE_NO_BODY_CACHE_BY_INPUTS=1`
+  restores the weight-only keys and the first trees.
 - **The window's child says who applied its settings** (`#settings-source-line`).
   The child goes through the entry point like every `auto`, and the marker was
   recorded as a skip, so every window run logged `settings file NOT applied

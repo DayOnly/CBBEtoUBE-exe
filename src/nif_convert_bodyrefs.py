@@ -42,7 +42,36 @@ _BODYSLIDE_OUT_HINTS = ("bodyslide output", "bodyslide_output", "bodyslide-outpu
 _FEMBODY_REL = ("meshes", "actors", "character", "character assets")
 
 # Per-process cache so the scan runs once.
-_BODY_DISCOVERY_CACHE: "dict[str, Path | None]" = {}
+_BODY_DISCOVERY_CACHE: "dict[str | tuple, Path | None]" = {}
+
+# #body-cache-by-inputs. The cache above was keyed on the weight alone
+# ('ube_1'), so the FIRST answer in a process was the answer for its lifetime.
+# The settings window lives on: its launch-time Check setup resolved the UBE
+# body, and a re-check after a Paths-tab pick or an imported settings file (both
+# reach the process as CBBE2UBE_UBE_BODY through gui_settings.SettingsOverlay)
+# still reported the launch body -- or 'missing' when there was none -- and the
+# Select list's UBE-native scan measured against it too. The conversion is a
+# fresh child with fresh workers, so its bodies were never stale. Each entry is
+# now keyed on what decides it: the override variables the finder reads, the
+# variables that pick the MO2 instance, mods folder and game Data (what the
+# zeroed resolver and every scan walk), and the zeroed switch. An unchanged pick
+# still hits; a changed one resolves again. What is on disk is not in the key
+# (a body rebuilt in BodySlide mid-session is still the old path's answer).
+# CBBE2UBE_NO_BODY_CACHE_BY_INPUTS=1 restores the weight-only keys.
+_LAYOUT_ENV = ("CBBE2UBE_MO2_INI", "CBBE2UBE_MODS_ROOT", "CBBE2UBE_GAME_DATA")
+
+
+def _body_cache_by_inputs() -> bool:
+    return not _flag("CBBE2UBE_NO_BODY_CACHE_BY_INPUTS", False)
+
+
+def _discovery_key(name: str, *env_names: str) -> "str | tuple":
+    """The `_BODY_DISCOVERY_CACHE` key for lookup `name` whose answer also
+    depends on the variables `env_names` -- or `name` alone when switched off."""
+    if not _body_cache_by_inputs():
+        return name
+    return (name, ZEROED_BODY_REFS,
+            *(os.environ.get(n) for n in env_names + _LAYOUT_ENV))
 
 # #zeroed-body-refs. The CBBE body the warp morphs FROM, the UBE body it morphs
 # TOWARD and the UBE body injected on the body-swap path are BodySlide's ZEROED
@@ -194,7 +223,7 @@ def _find_cbbe_base_body(weight: str = "_1") -> "Path | None":
     which is wrong for a 3BA BodySlide output; that skip is how it landed on a
     preset build the game never loads. Returns None if nothing is found
     (callers degrade to snap_armor_outside_body)."""
-    ck = f"cbbe{weight}"
+    ck = _discovery_key(f"cbbe{weight}", f"CBBE2UBE_CBBE_BODY{weight.upper()}")
     if ck in _BODY_DISCOVERY_CACHE:
         return _BODY_DISCOVERY_CACHE[ck]
     env = os.environ.get(f"CBBE2UBE_CBBE_BODY{weight.upper()}")
@@ -238,7 +267,8 @@ def _find_ube_femalebody(weight: str = "_1") -> "Path | None":
     Env override: CBBE2UBE_UBE_BODY_0 / _1 (weight-specific), or the single-path
     CBBE2UBE_UBE_BODY (the GUI picker) from which the weight sibling is derived.
     """
-    ck = f"ube{weight}"
+    ck = _discovery_key(f"ube{weight}", f"CBBE2UBE_UBE_BODY{weight.upper()}",
+                        "CBBE2UBE_UBE_BODY")
     if ck in _BODY_DISCOVERY_CACHE:
         return _BODY_DISCOVERY_CACHE[ck]
     override = _ube_body_override(weight)
@@ -341,6 +371,7 @@ def _find_ube_shapedata(cache_key: str, env_var: str,
 
     CACHED per process (the caller runs per-NIF and this scans every mod).
     """
+    cache_key = _discovery_key(cache_key, env_var)
     if cache_key in _BODY_DISCOVERY_CACHE:
         return _BODY_DISCOVERY_CACHE[cache_key]
     env = os.environ.get(env_var)
@@ -372,7 +403,7 @@ def _find_user_preset_body(weight_suffix: str = "_1") -> Path | None:
     preset bake adds (this body - template) to the garment and the chain lift
     clears the body the player wears, so both need the user's BUILD, preset
     included -- not the zeroed fit reference. See src/body_choice.py."""
-    ck = f"user_preset{weight_suffix}"
+    ck = _discovery_key(f"user_preset{weight_suffix}")
     if ck in _BODY_DISCOVERY_CACHE:
         return _BODY_DISCOVERY_CACHE[ck]
     res = _glob_first_in_mods(
