@@ -46,6 +46,7 @@ from typing import Iterable, NamedTuple
 from . import esp
 from .bsa_strings import game_codepage_text as _game_codepage_text
 from .bsa_strings import model_path_text as _model_path_text
+from .bsa_strings import model_path_codepage as _model_path_codepage
 from .envflags import flag as _flag
 
 
@@ -2231,13 +2232,18 @@ def _model_path_read(data: bytes) -> str:
 def _model_path_zstring(path: str, as_bytes: bool) -> bytes:
     """A model path as the null-terminated string an ARMA stores: cp1252 when
     `as_bytes` and the text has a cp1252 form (every path `_model_path_str`
-    read, plus ASCII prefixes), else UTF-8 as before. #arma-path-bytes"""
+    read, plus ASCII prefixes), else UTF-8 as before. #arma-path-bytes
+
+    #model-path-writer: never raises on a byte the one decoder kept as a lone
+    surrogate (one of the five cp1252 leaves undefined): the UTF-8 write gives
+    it back as that byte, where a strict UTF-8 write raised. Any other text is
+    written exactly as before."""
     if as_bytes:
         try:
             return path.encode("cp1252", "surrogateescape") + b"\x00"
         except UnicodeEncodeError:
             pass
-    return esp.encode_zstring(path)
+    return path.encode("utf-8", "surrogateescape") + b"\x00"
 
 
 def rebuild_arma_payload(source_payload: bytes, *,
@@ -2323,6 +2329,10 @@ def rebuild_arma_payload(source_payload: bytes, *,
     # source paths also as written (the lookups above keep their cp1252 read).
     _pb = _arma_path_bytes()
     src_mod2_w = src_mod4_w = ""
+    # #model-path-writer: the male source paths and the stand-ins are read by
+    # the one decoder (`_model_path_text`), so they are written back through
+    # its codec -- the source's own bytes -- with #arma-path-bytes off too.
+    _gc = _pb or _model_path_codepage()
     for sig, data in esp.iter_subrecords(source_payload):
         if sig == b"RNAM":
             out += esp.encode_subrecord(b"RNAM", struct.pack("<I", new_primary_rnam))
@@ -2393,9 +2403,11 @@ def rebuild_arma_payload(source_payload: bytes, *,
                 # mesh's shapes, so both go. #coverage-female-standin
                 _to = (path_prefix + _standin) if _standin is not None else _as_is
                 # The male path as it was written, byte for byte. #arma-path-bytes
-                _to_w = (_to if _standin is not None or not _pb else
+                # Both came from the one decoder, so they go back through its
+                # codec, #arma-path-bytes on or off. #model-path-writer
+                _to_w = (_to if _standin is not None or not _gc else
                          src_mod2_w if sig == b"MOD3" else src_mod4_w)
-                out += esp.encode_subrecord(sig, _model_path_zstring(_to_w, _pb))
+                out += esp.encode_subrecord(sig, _model_path_zstring(_to_w, _gc))
                 if declined_log is not None:
                     declined_log.append(
                         {"slot": sig.decode(), "standin": _to, "orig": path}

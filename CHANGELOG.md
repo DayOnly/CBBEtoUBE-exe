@@ -48,7 +48,11 @@ or an archive's file names now reads it the way the game does. Because the
 final check now reads these paths correctly, it can also stop a run with
 "unconverted-mesh-linked" when an armour named this way still points at its
 original mesh although our converted mesh exists -- in game that armour would
-wear the unconverted mesh. Measured on the reported modlist: of 31,108 armour
+wear the unconverted mesh. With `CBBE2UBE_NO_ARMA_PATH_BYTES=1` set, an armour
+whose female mesh is missing and whose male mesh path holds one of the five
+bytes the game's codepage has no character for could stop the coverage step
+with an encoding error; it now keeps the male path exactly as the armour had
+it. Measured on the reported modlist: of 31,108 armour
 mesh paths in the load order one holds such a byte (a creature's, not converted
 either way); no archive file name and no path in the output changes, so nothing
 changes there today. `CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1` (set to 1) turns it

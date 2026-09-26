@@ -2360,6 +2360,33 @@ game -- and with every reader on one decoding the rebuild redirects such a
 path whenever our NIF exists, so the row fires only where the redirect really
 failed. Test: `test_a_source_path_beside_our_converted_nif_fails_the_postflight`.
 
+*Round 3: the writer agrees with the decoder (`#model-path-writer`), and each
+deciding reader is pinned.* `rebuild_arma_payload` writes a dead female slot's
+male path "as it is", or a stand-in, from text the one decoder read. With only
+`CBBE2UBE_NO_ARMA_PATH_BYTES=1` set it wrote that text through the UTF-8
+branch of `_model_path_zstring` (strict `esp.encode_zstring`), which raises on
+the lone surrogate `game_codepage_text` keeps for 0x81, 0x8D, 0x8F, 0x90 or
+0x9D. Now both are written through the decoder's own codec (cp1252 +
+`surrogateescape`, i.e. the source's bytes) whenever they came from it --
+`#arma-path-bytes` on, or `#model-path-codepage` on -- and the UTF-8 branch
+writes with `surrogateescape`, which gives such a surrogate back as its byte
+and writes every other text exactly as before, so no model-path write raises.
+No new switch: the only setting that changes is `#arma-path-bytes` off with
+`#model-path-codepage` on, which round 2 introduced; with
+`CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1` (with or without
+`CBBE2UBE_NO_ARMA_PATH_BYTES=1`) the parent's bytes come back (the legacy
+cp1252 `replace` read cannot hold a surrogate). Round 2 routed about forty
+readers but most had no test that a revert to the old UTF-8 read breaks;
+`tests/test_model_path_sites.py` runs, for each reader that decides something
+(`generate_ube_patch`'s source scan -- whether a UBE ARMA is emitted --, the
+planner's male list, the body pass's `_arma_models` admit and
+`_world_mesh_converted` world-mesh tests, `_ube_twin_slots`,
+`fix_spurious_hand_slot`), the public step with a 0x92 path and the outcome
+that reader decides, and the same row switched off as the control that it must
+miss. The readers whose old decode was cp1252 `replace` agree with the codec on
+0x92 and differ only on the five undefined bytes, which no live path holds;
+they are routed but not pinned one by one.
+
 ### A plugin name SkyPatcher would split gets no line (`#skypatcher-name-guard`)
 
 The merge is the only writer of the INI (the coverage generators' own `ini_lines`
