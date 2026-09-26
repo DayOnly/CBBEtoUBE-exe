@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed — colour variants of an armour built into Mod Organizer's overwrite folder read the right copy
+
+When the tool converts an armour from a BodySlide build in the overwrite folder
+(see "armour you built with BodySlide into Mod Organizer's overwrite folder is
+found" below), the step that fixes its colour variants looked for the original
+mesh without looking in the overwrite folder when it converted one mod at a
+time, so it could read another mod's copy of the mesh and leave a colour on the
+wrong layer, or drop it. It now looks where the conversion looked. The reported
+modlist has no meshes in its overwrite folder, so its result does not change.
+`CBBE2UBE_NO_OVERWRITE_MESH_INDEX=1` (set to 1) leaves the folder out of both.
+
 ### Fixed — running from source with an outdated `PYNIFLY_PATH` no longer loses the reference bodies
 
 This affects running the tool from its source code only; the exe carries its

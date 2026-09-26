@@ -698,6 +698,13 @@ dead junction in one mod aborted the index for every mod. Now:
   is not.
 No switch: when the index builds -- every run seen -- the output is byte-identical.
 
+**The colour-variant source reads the same index** (`#alttex-overwrite`, 2026-09-26):
+`_alttex_source_paths` builds its own `build_mesh_index` when no batch index exists (a
+standalone `convert`, or selection's index failed) and now passes the modlist's
+overwrite too, so it reads the copy the convert step converted. Only that branch: when
+a batch index exists, the keys it lacks are resolved like the convert step's
+source-local tier, which never reads overwrite. Same switch.
+
 **MO2's overwrite folder is a provider** (`#overwrite-mesh-index`, 2026-09-25,
 `CBBE2UBE_NO_OVERWRITE_MESH_INDEX`). `build_mesh_index` walked only the enabled mods;
 every other lookup of what the game loads -- `zeroed_body._layout_dirs`,
