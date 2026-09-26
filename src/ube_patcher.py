@@ -3820,6 +3820,161 @@ def _is_beast_variant(v) -> bool:
                                for p, lo in actor)
 
 
+def _coverage_race_subset() -> bool:
+    r"""#coverage-race-subset (2026-09-25): does a DefaultRace armature that
+    an author split by race keep to the UBE counterparts of its own races?
+    Yes, by default.
+
+    Both passes minted every DefaultRace-primary armature of an armour for all
+    UBE races. Authors often split one piece into per-race armatures on the
+    same slots -- one listing the human races, one Orc only, one the three
+    elves, or one only a race of their own -- and an actor matches an armature
+    only by a race it lists, so each vanilla race draws one of them. On a UBE
+    actor every one drew at once: two identical circlets plus the elf circlet,
+    the same helmet twice, a second robe made for a mod's own race.
+    Now, within an armour's armatures that share a slot, when their human race
+    lists do not overlap (`_race_subset_split`), each is minted for the UBE
+    counterparts of the races it lists, and one listing only other races is
+    not minted. Overlapping lists (pieces drawn together in the base game) and
+    an armature with no sibling are unchanged.
+    CBBE2UBE_NO_COVERAGE_RACE_SUBSET=1 mints them for all UBE races again."""
+    return not _flag("CBBE2UBE_NO_COVERAGE_RACE_SUBSET", False)
+
+
+def _race_subset_split(to_mint, arma_win, armo_slots) -> "tuple[set, dict]":
+    """#coverage-race-subset: for one armour's armatures to mint -> (the ones
+    not to mint, {armature: UBE races, UBE_RACE_FIDS_24 order} for the ones
+    minted for fewer than every UBE race). Only DefaultRace-primary armatures
+    take part, grouped by overlapping slots (their BOD2, else `armo_slots`);
+    a group changes only when one member lists a vanilla human race:
+      * a member listing only other races (a mod's own race, an elder race,
+        the mannequin race) is not minted: no human draws it;
+      * when the human-listing members' UBE counterparts are disjoint and one
+        is fewer than all, each is minted for its own; the races none of them
+        claims go to the members listing no race at all (the DefaultRace
+        default), else to every human-listing member -- what they draw today.
+        A lone member claims none, so it keeps every race.
+    A beast-only member (the mannequin race ignored, as there) is
+    #coverage-beast-variant's, left as it is."""
+    info = {}
+    for x in to_mint:
+        v = arma_win[x]
+        if v[3] != _DEFAULT_RACE_ABS:
+            continue
+        races = _additional_races(v)
+        actor = [a for a in races if not _is_non_actor_race(a)]
+        human = frozenset(_ube_races_for_race_list(races)) if races else frozenset()
+        if human:
+            kind = "human"
+        elif not races:
+            kind = "default"
+        elif actor and all(p == "skyrim.esm" and lo in _BEAST_RACES_24 for p, lo in actor):
+            continue
+        else:
+            kind = "other"
+        info[x] = (kind, human, _arma_slot_bits(v[0]) or armo_slots)
+    group = {x: x for x in info}
+
+    def _root(x):
+        while group[x] != x:
+            x = group[x]
+        return x
+    members = list(info)
+    for i, a in enumerate(members):
+        for b in members[i + 1:]:
+            if info[a][2] & info[b][2]:
+                group[_root(a)] = _root(b)
+    comps: dict = {}
+    for x in members:
+        comps.setdefault(_root(x), []).append(x)
+    drop: set = set()
+    narrow: dict = {}
+    all_ube = frozenset(UBE_RACE_FIDS_24)
+    for comp in comps.values():
+        hs = [x for x in comp if info[x][0] == "human"]
+        if not hs:
+            continue                      # no human sibling to draw instead
+        drop.update(x for x in comp if info[x][0] == "other")
+        sets = [info[x][1] for x in hs]
+        overlap = sum(len(s) for s in sets) != len(frozenset().union(*sets))
+        if overlap or all(s == all_ube for s in sets):
+            continue                      # overlapping lists: drawn together
+        free = all_ube - frozenset().union(*sets)
+        ds = [x for x in comp if info[x][0] == "default"]
+        got = {x: info[x][1] | (frozenset() if ds else free) for x in hs}
+        got.update({x: free for x in ds})
+        for x, s in got.items():
+            if not s:
+                drop.add(x)
+            elif s != all_ube:
+                narrow[x] = [f for f in UBE_RACE_FIDS_24 if f in s]
+    return drop, narrow
+
+
+class _RaceSubset:
+    """#coverage-race-subset: one pass's use of `_race_subset_split` -- what
+    each armour leaves to mint, and which UBE races each minted armature
+    targets. A minted armature is one record shared by every armour that
+    lists it, so it targets the union, and all races as soon as one armour
+    mints it unsplit (a double draw there beats a missing one). `stats` is
+    read from those final targets, so it names only what the ESP holds."""
+
+    def __init__(self, arma_win):
+        self.arma_win = arma_win
+        self.on = _coverage_race_subset()
+        self.armos: list = []      # (armo_abs, edid, armatures kept) split
+        self.dropped: list = []    # armatures some armour left off
+        self._races: dict = {}     # armature -> UBE races some armour needs
+        self._full: set = set()    # armatures some armour needs for every race
+
+    def split(self, armo_abs, edid, to_mint, armo_slots):
+        """-> (`to_mint` without the armatures not to mint, {armature: UBE
+        races} for those minted for fewer)."""
+        if not self.on:
+            return to_mint, {}
+        drop, races = _race_subset_split(to_mint, self.arma_win, armo_slots)
+        if not (drop or races):
+            return to_mint, {}
+        kept = [x for x in to_mint if x not in drop]
+        self.armos.append((armo_abs, edid, kept))
+        self.dropped.extend(x for x in to_mint if x in drop and x not in self.dropped)
+        return kept, races
+
+    def targeted(self, to_mint, races) -> None:
+        for x in to_mint:
+            if x in races:
+                self._races.setdefault(x, set()).update(races[x])
+            else:
+                self._full.add(x)
+
+    def races_for(self, x) -> "list[int] | None":
+        """The UBE races minted armature `x` targets when fewer than every
+        one, in UBE_RACE_FIDS_24 order; None = unchanged."""
+        if x in self._full or x not in self._races:
+            return None
+        return [f for f in UBE_RACE_FIDS_24 if f in self._races[x]]
+
+    def stats(self) -> dict:
+        """From the FINAL targets, after the union: `race_subset` = the split
+        armours at least one of whose minted armatures draws for fewer than
+        every UBE race; `race_subset_dropped` = armatures some armour left off
+        that no armour of this pass mints; `race_subset_minted` = every
+        armature this pass mints, so the report can drop one the other pass
+        mints."""
+        n_all = len(UBE_RACE_FIDS_24)
+
+        def _narrowed(x) -> bool:
+            r = self.races_for(x)
+            return r is not None and len(r) < n_all
+        minted = self._full | set(self._races)
+        return {"race_subset": [(a, e) for a, e, kept in self.armos
+                                if any(_narrowed(x) for x in kept)],
+                "race_subset_dropped": [f"{a[0]}|{a[1]:X}" for a in self.dropped
+                                        if a not in minted],
+                "race_subset_minted": frozenset(
+                    f"{a[0]}|{a[1]:X}" for a in minted) if self.on else frozenset()}
+
+
 def _coverage_dead_armature() -> bool:
     r"""#coverage-dead-armature (2026-09-25): is an armature none of whose
     meshes exists anywhere left unminted? Yes, by default.
@@ -4941,6 +5096,7 @@ def generate_modded_nonbody_ube_coverage_patch(
     # record, judged by what it draws (`mesh_live`: the game view).
     _tpd = _coverage_third_party_drawn()
     _tpd_state = _ThirdPartyDrawn(arma_win, mesh_live, _conv_exists)
+    _subset = _RaceSubset(arma_win)      # #coverage-race-subset
     # #coverage-female-standin: a dead female slot's stand-in, else (non-body)
     # its male path as it is. Only where a dead path can be told at all. Asked
     # by the dead-armature test (Pass 2) and the rebuild (Pass 3).
@@ -5052,6 +5208,11 @@ def generate_modded_nonbody_ube_coverage_patch(
                 dead_dropped.append((armo_abs, edid))
                 continue
             _listed = {k: w for k, w in _listed.items() if k in to_mint}
+        # #coverage-race-subset: an author's per-race siblings, each for the UBE
+        # counterparts of its own races. Not beside a third-party reduction.
+        _narrow: dict = {}
+        if not _listed and not _fewer:
+            to_mint, _narrow = _subset.split(armo_abs, edid, to_mint, slots)
         if _kept_excluded:
             nonbody_kept.append((armo_abs, edid))
         if _listed:
@@ -5060,6 +5221,7 @@ def generate_modded_nonbody_ube_coverage_patch(
         targets.append((armo_abs, plugin_case.get(armo_abs[0], armo_abs[0]),
                         to_mint))
         _tpd_state.targeted(to_mint, _fewer)   # #coverage-third-party-drawn
+        _subset.targeted(to_mint, _narrow)     # #coverage-race-subset
         for x in to_mint:
             mint_set.setdefault(x, None)
             armo_slots[x] = armo_slots.get(x, 0) | slots   # #coverage-female-standin
@@ -5127,6 +5289,12 @@ def generate_modded_nonbody_ube_coverage_patch(
         _fewer_ube = _tpd_state.races_for(arma_abs)
         if _fewer_ube:
             _addl = [(ube_byte << 24) | f for f in _fewer_ube]
+            _prim = _addl[0]
+        # #coverage-race-subset: the UBE counterparts of its own races (never
+        # with the two above: those armatures are minted unsplit).
+        _sub_ube = _subset.races_for(arma_abs)
+        if _sub_ube:
+            _addl = [(ube_byte << 24) | f for f in _sub_ube]
             _prim = _addl[0]
         minted_payload = None
         _declined: list = []     # per attempt: a failed preserve must not count
@@ -5237,6 +5405,9 @@ def generate_modded_nonbody_ube_coverage_patch(
         "exclusion_nonbody_held": nonbody_held,
         # #coverage-third-party-drawn
         **_tpd_state.stats(),
+        # #coverage-race-subset: armours whose per-race armatures were split
+        # by race, and the armatures listing only other races left off.
+        **_subset.stats(),
         # #coverage-dead-armature: armatures not minted, and the armours left
         # with none.
         "dead_armature_skipped": [f"{a[0]}|{a[1]:X}" for a in dead_skipped],
@@ -5545,6 +5716,7 @@ def generate_modded_body_ube_coverage_patch(
     if _female_standin and female_mesh_exists is not None:
         _standin = _female_standin_resolver(arma_win, _ube_exists)
     _tpd_state = _ThirdPartyDrawn(arma_win, mesh_live, _conv_exists)
+    _subset = _RaceSubset(arma_win)      # #coverage-race-subset
     # #coverage-dead-armature: None = off, or the modlist cannot be read. One
     # whose copy draws the stand-in instead is not dead.
     _dead = (_dead_armature_judge(arma_win, crp, mesh_exists=dead_mesh_exists,
@@ -5834,6 +6006,12 @@ def generate_modded_body_ube_coverage_patch(
             if not to_mint:
                 dead_dropped.append((armo_abs, edid))
                 continue
+        # #coverage-race-subset: an author's per-race siblings (a hood riding
+        # along included), each for the UBE counterparts of its own races. Not
+        # beside a third-party reduction or the race-list rule.
+        _narrow: dict = {}
+        if not _listed and not _fewer:
+            to_mint, _narrow = _subset.split(armo_abs, edid, to_mint, slots)
         if _listed:
             # What the guards above left of it (a hood riding along is not).
             race_list_ube.update({x: _listed[x] for x in to_mint if x in _listed})
@@ -5847,6 +6025,7 @@ def generate_modded_body_ube_coverage_patch(
         targets.append((armo_abs, plugin_case.get(armo_abs[0], armo_abs[0]),
                         to_mint))
         _tpd_state.targeted(to_mint, _fewer)   # #coverage-third-party-drawn
+        _subset.targeted(to_mint, _narrow)     # #coverage-race-subset
         for x in to_mint:
             mint_set.setdefault(x, None)
             armo_slots[x] = armo_slots.get(x, 0) | slots   # #coverage-female-standin
@@ -5930,6 +6109,12 @@ def generate_modded_body_ube_coverage_patch(
         _fewer_ube = _tpd_state.races_for(arma_abs)
         if _fewer_ube:
             _ube_addl = [(ube_byte << 24) | f for f in _fewer_ube]
+            _ube_prim = _ube_addl[0]
+        # #coverage-race-subset: the UBE counterparts of its own races (never
+        # with the two above: those armatures are minted unsplit).
+        _sub_ube = _subset.races_for(arma_abs)
+        if _sub_ube:
+            _ube_addl = [(ube_byte << 24) | f for f in _sub_ube]
             _ube_prim = _ube_addl[0]
         _prim, _addl = _ube_prim, _ube_addl
         if cover_hands_feet and (_arma_bod2_slots(payload)
@@ -6108,6 +6293,8 @@ def generate_modded_body_ube_coverage_patch(
         "wigs": wigs_added,
         # #coverage-third-party-drawn
         **_tpd_state.stats(),
+        # #coverage-race-subset
+        **_subset.stats(),
         # #exclude-body-only, report only: withheld body pieces another mod's
         # SkyPatcher patch names (left to that patch).
         "exclusion_body_held": body_held,

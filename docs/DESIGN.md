@@ -2023,6 +2023,18 @@ added, 189 re-pointed, 198 armours; 0 a woman can wear changes visibly. Switched
 (`CBBE2UBE_NO_STALE_OUTPUT_SWEEP=1`) nothing is read, written, moved or reported;
 `CBBE2UBE_STALE_OUTPUT_SWEEP_REPORT_ONLY=1` lists and records but never moves.
 
+### The vanilla-coverage warning reads what ships (`#vanilla-links-delivered`)
+
+After the merge the run warns when a vanilla sweep ran and nothing vanilla got
+linked (`_vanilla_links_check`). It summed the sweep source's own patch links, but
+with the winner-scan coverage as the sole generator those per-source patches stay
+unmerged: a coverage change that dropped every vanilla armour still passed, and the
+run printed "vanilla coverage: 0" as a plain line. There the count of vanilla/DLC
+targets in the delivered INI now decides. The fallback merge ships the per-source
+patches and keeps the sweep source's own count (a mod's link to a vanilla record
+would mask a dead sweep in the delivered one). Output-neutral: only the warning
+changes, so it has no switch.
+
 ### What the coverage passes leave alone
 
 The winner scan is the sole generator over every armour in the load order, so it
@@ -2102,6 +2114,51 @@ follower (converted male Ebony boots on her UBE body):
   addons cover every biped slot of the armour. The ESP half keeps the `!UBE\` path
   test. `CBBE2UBE_NO_SKYPATCHER_PATCH_RECOGNITION=1` restores the flat, path-only
   read.
+  **The `!UBE\` addons pass the same test** (`#third-party-ini-slot-check`,
+  2026-09-25). A line adding a `!UBE\` armature excluded its targets outright, so a
+  cape-only UBE addon on a cuirass hid the cuirass, and an addon whose plugin is
+  unchecked in the load order hid its targets although SkyPatcher adds nothing
+  for it. Now an addon counts only when its plugin is in the active load order
+  (`active_plugins`, from `paths.active_plugins_ordered`; unknown = no check), and
+  a target is excluded only when the slots of all its counted UBE addons, of
+  either kind, cover every slot of the armour. Live: 11 lines, all loaded and
+  slot-complete, 0 armours move. `CBBE2UBE_NO_THIRD_PARTY_INI_SLOT_CHECK=1`
+  excludes on any `!UBE\` addon again.
+  **The armour's slots are its winner's** (`#third-party-ini-winner-slots`,
+  2026-09-25). The slots came from plugins in enabled mod folders only (a union
+  over every record, loaded or not), so a complete `!UBE\` refit of an armour no
+  mod overrides (vanilla or DLC in the game's Data folder) read as unknown and
+  was covered again: two bodies, the harm this exclusion exists to prevent. Now
+  the slots are the BOD2 of the load-order winner: `active_plugins` walked from
+  the last, each name resolved to the file the game loads through
+  `plugin_index` (`paths.plugin_file_index`, the #root-plugin-index: overwrite >
+  enabled mods > game Data). Mod-folder plugins reuse the records read for the
+  addons; a plugin outside the mods folder is read only when its TES4 names the
+  armour's plugin as a master (or is it); a plugin in our own output or a
+  skipped folder is passed over. When the winner cannot be read (no load order
+  or index, the record in no loaded plugin, no BOD2, or an unreadable plugin
+  above it that may hold it), a target a `!UBE\` addon names is excluded as
+  before the slot check -- never newly covered on unknown slots -- and both
+  callers print how many (`_print_unchecked_ube`); one only a UBE-race addon
+  names stays covered, as that test always did. Live: all 11 targets read from
+  their winner, 0 unchecked, 0 armours move.
+  `CBBE2UBE_NO_THIRD_PARTY_INI_WINNER_SLOTS=1` restores the mod-folder union and
+  covers a target whose slots are unknown.
+  **The walk always reads the root index** (`#winner-walk-root-index`,
+  2026-09-25). Both callers handed over `paths.plugin_file_index`, which is the
+  root-only index only while `#root-plugin-index` is on; with
+  `CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN=1` it is the legacy recursive walk,
+  which can resolve a name to an unloaded copy in a higher-priority mod's
+  subfolder (`optional\`, `_unmerged_patches\`). `_records_of` reads nothing from
+  a mod-folder file the scan did not read, so the winner was missed, the slots
+  were unknown, and a cape-only `!UBE\` addon hid its cuirass. Now both callers
+  pass `_winner_walk_plugin_index`: `paths.plugin_file_index` while the root
+  index is on (the same files), `paths._plugin_file_index_root` otherwise.
+  Unreadable plugins above the record: one whose TES4 header reads and neither
+  is nor masters the armour's plugin cannot hold the record and is passed over;
+  otherwise the slots are unknown. Defaults are unchanged by construction.
+  `CBBE2UBE_NO_WINNER_WALK_ROOT_INDEX=1` hands over `paths.plugin_file_index`
+  again.
 - **What another mod's UBE armature on the winning record already draws**
   (`#coverage-third-party-drawn`, with `#root-plugin-index` and
   `#coverage-keep-better-first-person`, 2026-09-25). Both passes used to skip an
@@ -2482,6 +2539,49 @@ reported through `_report_coverage_holds`:
   listed the mannequin race. Nested, with its own switch:
   `CBBE2UBE_NO_COVERAGE_BEAST_VARIANT=1` turns the whole rule off, which is not
   the parent's output. `CBBE2UBE_NO_BEAST_VARIANT_NON_ACTOR=1`.
+- **Per-race siblings draw only for their own races** (`#coverage-race-subset`).
+  The generalisation of the beast rule to human races. Authors split one piece
+  into DefaultRace-primary armatures on the same slots by race: the human races,
+  Orc only, the three elves, or a mod's own race only. By the same model (an
+  actor matches an armature only through a race it lists) each vanilla race
+  draws one of them, but both passes minted each for all 16 UBE races, so a UBE
+  actor drew all of them at once. `_race_subset_split` groups an armour's
+  DefaultRace armatures to mint by overlapping slots (their BOD2, else the
+  armour's) and changes a group only when a member lists a vanilla human race.
+  A member listing only non-human races (a mod's own race, an elder race, the
+  mannequin race) is not minted; a beast-only one, judged with the mannequin
+  race ignored as #coverage-beast-variant judges it, is left to that rule.
+  When the human-listing members' UBE counterparts (`_ube_races_for_race_list`)
+  are pairwise disjoint and not all 16, each member is minted for its own. The
+  races no member claims go to the members that list no race (the DefaultRace
+  default), else to every human-listing member (what they draw today), so no
+  UBE race loses its draw; a lone armature claims none and keeps all 16.
+  Overlapping lists are layered pieces the base game draws together, and are
+  unchanged (a near-full robe list missing one vampire race beside a full one,
+  live). So is an armour where the race-list rule or
+  #coverage-third-party-drawn chose the races. A minted
+  armature is one record shared by every armour that lists it, so
+  `_RaceSubset` targets the union, and all 16 as soon as one armour mints it
+  unsplit. Live census (both passes, every armour with two or more minted links):
+  19 same-slot groups; 11 layered with full lists (unchanged), 1 near-full plus
+  full (unchanged), 6 disjoint per-race splits (circlets split humans/Orc/elves
+  on 3 armours, a helmet split 14 races + Orc, 2 mesh-less FX-slot armatures
+  split humans/Orc+beasts, whose elves stay on both: 3 + 1 + 2) and 1 robe with
+  a sibling for a mod's own race. Replay: 7 armours, 9835 -> 9834 links (that
+  robe sibling), 15 links narrowed (armour x armature), drawn from 7 source
+  armatures minted as 9 records (the two FX armatures in both passes), 0
+  re-pointed; every (armour, UBE race) that drew before still draws. Re-counted
+  on the grown modlist (replay of 94340ee vs 217e870): a second helmet split 14
+  races + Orc joins, so 8 armours, 9927 -> 9926 links, 17 links narrowed from 9
+  source armatures minted as 11 records. `CBBE2UBE_NO_COVERAGE_RACE_SUBSET=1`.
+  The report and the pass stats (`_RaceSubset.stats`) are read from the FINAL
+  targets, after the union: an armour counts as split per race only when one
+  of its minted armatures draws for fewer than 16 races (a drop alone, or a
+  narrowing another armour's unsplit use widens back, does not), and an
+  armature is "left off" only when neither pass mints it (`race_subset_minted`
+  carries each pass's minted set to `_report_coverage_holds`). The live report
+  line went 8 -> 7 armours (the robe's drop is its own line); output bytes are
+  unchanged.
 - **A body armour's hood rides with it** (`#coverage-body-accessory`). The body
   pass kept only armatures with a converted mesh or a hands/feet slot; the
   non-body pass skips any armour with a deforming slot. A robe's hood armature

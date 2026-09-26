@@ -194,6 +194,52 @@ where they meet the panties -- the same result a run into an empty output folder
 already gave. `CBBE2UBE_NO_DST_XML_NO_STEM_SCAN=1` (set to 1) restores the old
 behaviour.
 
+### Fixed — another mod's partial or disabled UBE patch no longer hides armour from this tool
+
+When another mod's SkyPatcher file adds a UBE armature to an item, this tool
+leaves that item alone. It did so even when the added piece covered only part of
+the item (a UBE cape added to a cuirass left the cuirass with no body on UBE
+actors), and even when the plugin holding that piece was unchecked in the load
+order, so nothing was added at all. Now this tool also covers such an item in
+exactly two cases: the plugin holding the other mod's UBE piece is not loaded,
+or that mod's UBE pieces leave one of the item's slots uncovered. The item's
+slots are read from the version of it the game uses (the last loaded plugin that
+changes it, the game's own files included, so base-game armour is checked the
+same way). When that version cannot be read, the item is left alone as before,
+and the run says how many items that was. Measured on the reported modlist: no
+item changes. `CBBE2UBE_NO_THIRD_PARTY_INI_SLOT_CHECK=1` (set to 1) turns the
+whole check off; `CBBE2UBE_NO_THIRD_PARTY_INI_WINNER_SLOTS=1` reads the slots
+from mods' own plugins only and covers an item whose slots are unknown. That
+version is always looked up in the plugin files the game loads, also with
+`CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN=1` set: with that setting it could be
+looked up in an unused copy of the plugin in a mod's subfolder, so a UBE cape
+could hide a cuirass. `CBBE2UBE_NO_WINNER_WALK_ROOT_INDEX=1` turns that off.
+
+### Fixed — the warning for missing vanilla armour now checks what the game loads
+
+The run warns when vanilla armour ended up with no UBE armature, but it counted
+links in a file the game does not load, so a run that lost every vanilla armour
+could still finish without that warning. It now counts the links that are
+actually delivered. The converted files are unchanged.
+
+### Fixed — an item with a separate version per race no longer draws every version at once on UBE actors
+
+Some items carry one version for humans, another for Orcs and another for elves
+(a circlet reshaped around elf ears), or an extra version made only for a mod's
+own race. Each character in the base game wears only the version for their race,
+but this tool gave every version to every UBE actor, so they drew two identical
+circlets plus the elf one, the same helmet twice, or a second robe. Now each
+version is drawn only on the UBE versions of the races it was made for, and a
+version made only for a mod's own race is left off. Pieces the base game draws
+together (two robe layers listed for the same races) are unchanged, and every
+UBE race still draws the item. Measured on the reported modlist: 8 items change.
+On 7 of them, 9 per-race versions are now drawn only for their own races (17
+item-to-version links, as several items share a version); on the eighth, one
+extra robe version is left off. The run's report counts only what actually
+changed: an item is listed as drawn per race only when one of its versions now
+skips some races, and a version is listed as left off only when no item draws
+it any more. `CBBE2UBE_NO_COVERAGE_RACE_SUBSET=1` (set to 1) turns it off.
+
 ### Fixed — a garment whose layers share one name keeps every layer
 
 Some garments are built from several layers the author gave the same name, for
