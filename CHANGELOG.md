@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Fixed — per-race versions that share one mesh are drawn once, and never lost
+
+The fix below that draws each per-race version of an item only for its own
+races had a gap when two versions use the same mesh (an author's copy for
+humans and a copy for Orcs, say). The races neither copy lists got both
+copies, so on those races the same mesh was drawn twice. And when both copies
+happened to start with the same race, the final merge step took them for
+duplicates and kept only one, so the races only the other one listed would
+have drawn nothing for that item. Now copies that draw the same mesh are
+treated as one version, drawn once for all of their races, and the merge never
+drops a copy that lists a race the kept one does not (the run log counts any it
+keeps). Measured on the reported modlist: 2 items (a transformation effect and
+an effect on one set of NPCs' skin) drew their effect twice on the six UBE elf
+races; they now draw it once, as before that fix. No item loses a draw and no
+other item changes. `CBBE2UBE_NO_RACE_SUBSET_DEDUP_AGREE=1` (set to 1) turns it
+off.
+
 ### Fixed — colour variants of a piece left to your own UBE build recolour the right layer
 
 Since this tool leaves a piece alone when your own UBE BodySlide build (or

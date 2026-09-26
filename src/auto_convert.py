@@ -6451,6 +6451,13 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
         print(f"  [unified] {len(other_race)} armature(s) made only for other races "
               "(a mod's own race), or for none its siblings leave, left off UBE "
               "actors: no human draws them")
+    # #race-subset-dedup-agree: a same-mesh sibling another one draws for.
+    same_mesh = sorted({k for s in stats for k in (s.get("race_subset_twins") or [])}
+                       - minted_any)
+    if same_mesh:
+        print(f"  [unified] {len(same_mesh)} per-race armature(s) with the same mesh as a "
+              "sibling left off UBE actors: the sibling draws it once for all "
+              "their races")
     if wigs:
         print(f"  [unified] {len(wigs)} playable wig(s) drawn on UBE as headgear "
               "(their own mesh and collider)")

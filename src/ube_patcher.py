@@ -4717,10 +4717,59 @@ def _coverage_race_subset() -> bool:
     return not _flag("CBBE2UBE_NO_COVERAGE_RACE_SUBSET", False)
 
 
-def _race_subset_split(to_mint, arma_win, armo_slots) -> "tuple[set, dict]":
+def _race_subset_dedup_agree() -> bool:
+    r"""#race-subset-dedup-agree (2026-09-26): do the per-race split and the
+    merge's render-identical link dedup agree on which armatures draw the
+    same thing? Yes, by default.
+
+    The merge drops a link when another link on the same armour draws the
+    same meshes on the same slots with the same primary race
+    (`_arma_dedup_identity`); it never looked at the rest of the race list.
+    Before #coverage-race-subset every same-mesh sibling was minted for all
+    UBE races, so dropping one lost nothing. The split gave each sibling its
+    own races, and two things went wrong when an author's per-race armatures
+    share one mesh:
+      * the races no sibling lists went to every sibling, and siblings whose
+        lists begin with different races got different primary races, so
+        both links survived and those races drew the same mesh twice (live:
+        an effect mesh on two armours, twice on the six UBE elf races);
+      * siblings whose lists begin with the same race got one primary race,
+        so the merge dropped one, and the races only it listed drew nothing
+        for that armour (not live; a Nord copy and an Orc copy of one circlet
+        would do it).
+    Now the split takes same-mesh siblings as one armature (the first, for
+    all their races), and the merge never drops a link that lists a race no
+    kept link of its group lists.
+    CBBE2UBE_NO_RACE_SUBSET_DEDUP_AGREE=1 restores both as they were."""
+    return not _flag("CBBE2UBE_NO_RACE_SUBSET_DEDUP_AGREE", False)
+
+
+def _arma_render_twin_key(v):
+    """#race-subset-dedup-agree: what the merge's render-identical dedup
+    compares, less the primary race, for a source armature (`arma_win`
+    value): meshes, slots and alt-texture sets. An alt-texture set names its
+    texture sets through the source plugin's masters, so equal bytes mean the
+    same sets only within one plugin; then the plugin is part of the key."""
+    ident = _arma_dedup_identity(v[0])[1:7]
+    if ident[5]:
+        return ident, tuple(str(m).lower() for m in v[1]), str(v[2]).lower()
+    return ident, None, None
+
+
+def _arma_race_set(arma_payload: bytes) -> frozenset:
+    """Every race an armature lists (RNAM + MODL), as raw FormIDs of its own
+    plugin -- comparable only between records of one plugin."""
+    return frozenset(struct.unpack_from("<I", d)[0]
+                     for s, d in esp.iter_subrecords(arma_payload)
+                     if s in (b"RNAM", b"MODL") and len(d) >= 4)
+
+
+def _race_subset_split(to_mint, arma_win, armo_slots) -> "tuple[set, dict, set]":
     """#coverage-race-subset: for one armour's armatures to mint -> (the ones
     not to mint, {armature: UBE races, UBE_RACE_FIDS_24 order} for the ones
-    minted for fewer than every UBE race). Only DefaultRace-primary armatures
+    minted for fewer than every UBE race, the same-mesh siblings not minted
+    because the first of them draws for all their races --
+    #race-subset-dedup-agree). Only DefaultRace-primary armatures
     take part, grouped by overlapping slots (their BOD2, else `armo_slots`);
     a group changes only when one member lists a vanilla human race:
       * a member listing only other races (a mod's own race, an elder race,
@@ -4765,6 +4814,8 @@ def _race_subset_split(to_mint, arma_win, armo_slots) -> "tuple[set, dict]":
         comps.setdefault(_root(x), []).append(x)
     drop: set = set()
     narrow: dict = {}
+    twins: set = set()
+    agree = _race_subset_dedup_agree()
     all_ube = frozenset(UBE_RACE_FIDS_24)
     for comp in comps.values():
         hs = [x for x in comp if info[x][0] == "human"]
@@ -4777,14 +4828,24 @@ def _race_subset_split(to_mint, arma_win, armo_slots) -> "tuple[set, dict]":
             continue                      # overlapping lists: drawn together
         free = all_ube - frozenset().union(*sets)
         ds = [x for x in comp if info[x][0] == "default"]
-        got = {x: info[x][1] | (frozenset() if ds else free) for x in hs}
+        own = {x: info[x][1] for x in hs}
+        if agree:
+            # #race-subset-dedup-agree: same-mesh siblings are one armature
+            # (the first) for all their races; the rest render the same.
+            first: dict = {}
+            for x in hs:
+                y = first.setdefault(_arma_render_twin_key(arma_win[x]), x)
+                if y != x:
+                    own[y] = own[y] | own.pop(x)
+                    twins.add(x)
+        got = {x: s | (frozenset() if ds else free) for x, s in own.items()}
         got.update({x: free for x in ds})
         for x, s in got.items():
             if not s:
                 drop.add(x)
             elif s != all_ube:
                 narrow[x] = [f for f in UBE_RACE_FIDS_24 if f in s]
-    return drop, narrow
+    return drop, narrow, twins
 
 
 class _RaceSubset:
@@ -4800,6 +4861,7 @@ class _RaceSubset:
         self.on = _coverage_race_subset()
         self.armos: list = []      # (armo_abs, edid, armatures kept) split
         self.dropped: list = []    # armatures some armour left off
+        self.twins: list = []      # same-mesh siblings some armour drew once
         self._races: dict = {}     # armature -> UBE races some armour needs
         self._full: set = set()    # armatures some armour needs for every race
 
@@ -4808,12 +4870,13 @@ class _RaceSubset:
         races} for those minted for fewer)."""
         if not self.on:
             return to_mint, {}
-        drop, races = _race_subset_split(to_mint, self.arma_win, armo_slots)
-        if not (drop or races):
+        drop, races, twins = _race_subset_split(to_mint, self.arma_win, armo_slots)
+        if not (drop or races or twins):
             return to_mint, {}
-        kept = [x for x in to_mint if x not in drop]
+        kept = [x for x in to_mint if x not in drop and x not in twins]
         self.armos.append((armo_abs, edid, kept))
         self.dropped.extend(x for x in to_mint if x in drop and x not in self.dropped)
+        self.twins.extend(x for x in to_mint if x in twins and x not in self.twins)
         return kept, races
 
     def targeted(self, to_mint, races) -> None:
@@ -4836,7 +4899,9 @@ class _RaceSubset:
         every UBE race; `race_subset_dropped` = armatures some armour left off
         that no armour of this pass mints; `race_subset_minted` = every
         armature this pass mints, so the report can drop one the other pass
-        mints."""
+        mints; `race_subset_twins` = same-mesh siblings some armour left to
+        the first of them that no armour of this pass mints
+        (#race-subset-dedup-agree)."""
         n_all = len(UBE_RACE_FIDS_24)
 
         def _narrowed(x) -> bool:
@@ -4847,6 +4912,8 @@ class _RaceSubset:
                                 if any(_narrowed(x) for x in kept)],
                 "race_subset_dropped": [f"{a[0]}|{a[1]:X}" for a in self.dropped
                                         if a not in minted],
+                "race_subset_twins": [f"{a[0]}|{a[1]:X}" for a in self.twins
+                                      if a not in minted],
                 "race_subset_minted": frozenset(
                     f"{a[0]}|{a[1]:X}" for a in minted) if self.on else frozenset()}
 
@@ -7536,7 +7603,12 @@ def merge_patches(
     # distinct -- under-deduping exactly the near-identical pairs this exists to
     # collapse -- and would keep whichever was seen first rather than the one
     # carrying the most data.
+    # #race-subset-dedup-agree: the key holds the primary race only, so a
+    # member listing a race no kept member lists is kept too -- dropping it
+    # would leave that race with nothing for the armour.
+    _agree = _race_subset_dedup_agree()
     sp_dropped = 0
+    sp_kept_races = 0
     for key, recs in sp_by_armo.items():
         if len(recs) < 2:
             continue
@@ -7554,10 +7626,23 @@ def merge_patches(
             groups.setdefault(ident[:7], []).append((rec, ident[7]))
         kept = list(unreadable)
         for _k, members in groups.items():
-            if len(members) > 1:
-                sp_dropped += len(members) - 1
-            best = max(members, key=lambda m: m[1])[0]
+            bi = max(range(len(members)), key=lambda i: members[i][1])
+            best = members[bi][0]
             kept.append(best)
+            if not _agree:
+                sp_dropped += len(members) - 1
+                continue
+            drawn = set(_arma_race_set(best.payload))
+            for i, (rec, _n) in enumerate(members):
+                if i == bi:
+                    continue
+                races = _arma_race_set(rec.payload)
+                if races <= drawn:
+                    sp_dropped += 1
+                else:
+                    kept.append(rec)
+                    drawn |= races
+                    sp_kept_races += 1
         # preserve the original link order (stable output/INI diffs)
         order = {id(r): i for i, r in enumerate(recs)}
         sp_by_armo[key] = sorted(kept, key=lambda r: order.get(id(r), 0))
@@ -7589,6 +7674,9 @@ def merge_patches(
         "sp_dropped_no_record": sp_drop_norec,
         "sp_dropped_duplicate_pair": sp_drop_dup,
         "sp_dropped_render_identical": sp_dropped,
+        # #race-subset-dedup-agree: render-identical links kept (and emitted)
+        # because they list a race no kept link of their group lists.
+        "sp_kept_other_races": sp_kept_races,
         "sp_dropped_unsafe_name": sp_drop_unsafe,
         "sp_unsafe_name_targets": sp_unsafe,
         "sp_unsafe_output_names": [out_path.name] if _out_unsafe and sp_unsafe else [],
@@ -7697,6 +7785,11 @@ def report_link_reconciliation(stats: dict) -> "list[str]":
            f"({dup} duplicate, {ident} render-identical, {norec} unresolved"
            + (f", {unsafe} on a plugin name SkyPatcher cannot read" if unsafe else "")
            + ")"]
+    # #race-subset-dedup-agree: kept links are emitted, so not in the balance.
+    kept_races = int(stats.get("sp_kept_other_races", 0) or 0)
+    if kept_races:
+        out.append(f"  {kept_races} render-identical armature link(s) kept: they "
+                   f"list races the other copy does not")
     if norec:
         out.append(f"  !! {norec} armature link(s) had NO merged record -- "
                    f"those armor pieces get no UBE armature and will be "
@@ -7873,6 +7966,8 @@ def merge_patches_split(
                                          for s in piece_stats),
         "sp_dropped_render_identical": sum(
             s.get("sp_dropped_render_identical", 0) for s in piece_stats),
+        "sp_kept_other_races": sum(s.get("sp_kept_other_races", 0)
+                                   for s in piece_stats),
         "sp_dropped_unsafe_name": sum(s.get("sp_dropped_unsafe_name", 0)
                                       for s in piece_stats),
         "sp_unsafe_name_targets": [x for s in piece_stats
