@@ -1043,6 +1043,14 @@ _FINGERPRINT_HASHED_GROUPS = {
         "names": ("CBBE2UBE_RAY_CHUNK", "CBBE2UBE_NO_ZEROED_PROBE_MEMO"),
         "why": "how the ray casts are batched and whether a body probe is "
                "remembered: no test proves the NIF bytes the same"},
+    # Read through `_flag`, but the mesh maths is the same either way: proven
+    # byte-identical NIF for NIF (#global-schedule parity runs).
+    "which files stay": {
+        "names": ("CBBE2UBE_NO_GLOBAL_SCHEDULE",),
+        "why": "one schedule for the batch or one source at a time: every NIF "
+               "comes out the same, but a base an earlier source converted this "
+               "run is held in meshes\\ on one and moved to _superseded\\ on the "
+               "other when a later source leaves it to its builder"},
 }
 
 

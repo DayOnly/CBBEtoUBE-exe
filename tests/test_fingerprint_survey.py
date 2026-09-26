@@ -148,6 +148,25 @@ def test_the_quiet_switch_is_left_out_and_the_diagnostics_are_not():
     assert classify("CBBE2UBE_NO_CONFORM", pop["CBBE2UBE_NO_CONFORM"]) == "switch"
 
 
+def test_the_schedule_switch_is_hashed_for_the_files_it_keeps_not_the_maths(monkeypatch):
+    """CBBE2UBE_NO_GLOBAL_SCHEDULE is read through `_flag`, so the survey put
+    it in the switch group -- 'the mesh maths' -- although every NIF comes out
+    the same byte for byte either way. It stays hashed (it decides whether a
+    base an earlier source converted this run stays in meshes\\), under the
+    reason that is true."""
+    pop = population()
+    name = "CBBE2UBE_NO_GLOBAL_SCHEDULE"
+    assert "_flag" in pop[name], "control: it is read through the switch helper"
+    assert classify(name, pop[name]) == "which files stay"
+    assert "meshes" in ac._FINGERPRINT_HASHED_GROUPS["which files stay"]["why"]
+    import types
+    _clean_env(monkeypatch)
+    args = types.SimpleNamespace()
+    base = ac._nif_config_fingerprint(args)
+    monkeypatch.setenv(name, "1")
+    assert ac._nif_config_fingerprint(args) != base, "it must stay hashed"
+
+
 def test_no_listed_name_has_gone_from_the_code():
     """A table entry for a name nothing reads any more is a claim about
     nothing -- drop it."""

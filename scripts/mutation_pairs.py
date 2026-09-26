@@ -12900,4 +12900,16 @@ PAIRS = (
          tests=('tests/test_global_schedule.py',),
          expect=('test_the_planner_keeps_an_earlier_sources_conversion[one-source-at-a-time]',),
     ),
+    # #global-schedule follow-ups (2026-09-26): the schedule switch is hashed
+    # into the --incremental fingerprint for the files it keeps in meshes\,
+    # not as mesh maths.
+    Pair('SFU-a', 'the schedule switch is filed under the mesh maths again',
+         edits=(
+             ('src/auto_convert.py',
+              '        "names": ("CBBE2UBE_NO_GLOBAL_SCHEDULE",),',
+              '        "names": (),  # MUTATED', 1),
+         ),
+         tests=('tests/test_fingerprint_survey.py',),
+         expect=('test_the_schedule_switch_is_hashed_for_the_files_it_keeps_not_the_maths',),
+    ),
 )
