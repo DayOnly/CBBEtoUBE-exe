@@ -3462,7 +3462,15 @@ reported through `_report_coverage_holds`:
   a problem in what was written was wrong too. Those two kinds moved to
   `failure_summary.NOT_WRITTEN` (same sentence); the title and the status line
   say "no Combined ESP was built" for them and count only the written-but-broken
-  kinds as problems in what was written (`_own_sentence_parts`).
+  kinds as problems in what was written (`_own_sentence_parts`). The stale-output
+  sweep's "stale sweep put back failed" (moved files that could not go back to
+  `meshes\!UBE`) was never added and read as a conversion that did not happen --
+  the opposite of the truth: the run converted, and a plugin may name a mesh that
+  now sits in `_superseded\`, a missing-mesh crash. `failure_summary.MOVED_NOT_PUT_BACK`
+  gives it its own sentence (move the listed files back by hand before playing),
+  and the title and status line say "moved meshes were not all put back"
+  (`#sweep-put-back-wording`). Still a failure in the one tally. Words only, no
+  switch; the run's files do not change.
 - **The --incremental fingerprint skips launch plumbing**
   (`#fingerprint-skips-plumbing`). It hashed every `CBBE2UBE_*` variable,
   including ones that cannot change a mesh, so a scripted re-run

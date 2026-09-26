@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed — the end-of-run list says so when moved meshes could not be put back
+
+When old meshes that a run moved into `_superseded\` have to go back and one
+cannot (its place is taken, or the file is in use), the end-of-run window said
+the item "did NOT convert" and that its armour "keeps its previous state". In
+fact the run did convert, and a plugin may still use a mesh that is now missing,
+which can crash the game. The window and the status line now say that moved
+meshes were not all put back, and tell you to move the listed files back from
+`_superseded\` by hand before you play. Only the wording changes.
+
 ### Fixed — a backup copy of the combined plugin no longer stops old meshes from being moved aside
 
 After the merge, a full run checks that the new combined plugin does not use

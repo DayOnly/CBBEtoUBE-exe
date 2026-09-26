@@ -13411,4 +13411,38 @@ PAIRS = (
          expect=('test_a_numbered_split_piece_naming_a_moved_mesh_still_puts_it_back',
                  'test_an_unreadable_split_piece_still_puts_them_back'),
     ),
+    # #sweep-put-back-wording (2026-09-26): a sweep put-back that failed has its
+    # own sentence, not "did NOT convert -- keeps its previous state".
+    Pair('SPW-a', 'a failed put-back is worded as a conversion that did not happen',
+         edits=(
+             ('src/failure_summary.py',
+              '_OWN_SENTENCE = {**WRITTEN_BUT_BROKEN, **NOT_WRITTEN, **MOVED_NOT_PUT_BACK}',
+              '_OWN_SENTENCE = {**WRITTEN_BUT_BROKEN, **NOT_WRITTEN}  # MUTATED', 1),
+         ),
+         tests=('tests/test_sweep_put_back_wording.py',),
+         expect=('test_the_title_does_not_say_the_item_failed_to_convert',
+                 'test_the_intro_says_what_to_do_not_that_nothing_changed',
+                 'test_the_status_line_does_not_say_the_item_did_not_convert',
+                 'test_beside_a_real_conversion_failure_each_is_worded_by_itself'),
+    ),
+    Pair('SPW-b', 'the title and status line lose the put-back words',
+         edits=(
+             ('src/failure_summary.py',
+              '        parts.append("moved meshes were not all put back")',
+              '        pass  # MUTATED', 1),
+         ),
+         tests=('tests/test_sweep_put_back_wording.py',),
+         expect=('test_the_title_does_not_say_the_item_failed_to_convert',
+                 'test_the_status_line_does_not_say_the_item_did_not_convert'),
+    ),
+    Pair('SPW-c', 'a failed put-back drops out of the failure count',
+         edits=(
+             ('src/auto_convert.py',
+              '                    f"{len(failed)} file(s)", ", ".join(failed[:5]))',
+              '                    f"{len(failed)} file(s)", ", ".join(failed[:5]),'
+              ' severity="warning")  # MUTATED', 1),
+         ),
+         tests=('tests/test_sweep_put_back_wording.py',),
+         expect=('test_it_is_still_counted_as_a_failure',),
+    ),
 )

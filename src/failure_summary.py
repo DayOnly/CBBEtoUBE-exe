@@ -86,8 +86,20 @@ NOT_WRITTEN = {
         "the meshes converted, but no Combined ESP was built this run"),
 }
 
+# The stale-output sweep moved old meshes to `_superseded\` and could not put
+# every one back: the run DID convert, and a plugin may name a mesh that is no
+# longer where it looks -- a missing-mesh crash. It was worded as a conversion
+# that did not happen ("did NOT convert -- their armor keeps its previous
+# state"), the opposite of what the user must do. #sweep-put-back-wording
+MOVED_NOT_PUT_BACK = {
+    "stale sweep put back failed": (
+        "old meshes this tool had moved to _superseded\\ could not all be put "
+        "back, so a plugin may use a mesh that is missing and crash the game; "
+        "move the files listed back by hand before you play"),
+}
+
 # Every FAILED kind worded by itself rather than as "did NOT convert".
-_OWN_SENTENCE = {**WRITTEN_BUT_BROKEN, **NOT_WRITTEN}
+_OWN_SENTENCE = {**WRITTEN_BUT_BROKEN, **NOT_WRITTEN, **MOVED_NOT_PUT_BACK}
 
 
 def _failure_split(entries) -> "tuple[int, dict]":
@@ -108,14 +120,17 @@ def _failure_split(entries) -> "tuple[int, dict]":
 def _own_sentence_parts(broken) -> list:
     """The title's and the status line's words for the kinds worded by
     themselves: a broken written file counts as a problem in what was
-    written; a merge that failed or was skipped says no plugin was built.
-    #popup-per-kind"""
+    written; a merge that failed or was skipped says no plugin was built; a
+    sweep put-back that failed says moved meshes are not back.
+    #popup-per-kind #sweep-put-back-wording"""
     parts = []
     written = sum(n for k, n in broken.items() if k in WRITTEN_BUT_BROKEN)
     if written:
         parts.append(f"{written} problem(s) in what was written")
     if any(k in NOT_WRITTEN for k in broken):
         parts.append("no Combined ESP was built")
+    if any(k in MOVED_NOT_PUT_BACK for k in broken):
+        parts.append("moved meshes were not all put back")
     return parts
 
 
