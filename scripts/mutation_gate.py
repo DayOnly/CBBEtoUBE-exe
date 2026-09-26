@@ -31,16 +31,20 @@ go red:
   * an anchor that matches anything but its declared count reads NOT_APPLIED,
     never "still green" -- the population floor per pair, because a test that
     stays green on a mutation that was never applied is not a pass;
+  * a mutated .py file that no longer compiles reads INVALID and is never
+    run: a SyntaxError fails every test that imports the file, the named ones
+    among them, so such a row would read CAUGHT whatever the guard does;
   * a pair whose expected failures stay green reads MISSED, and so does one
-    where something else fails instead; NOT_APPLIED and MISSED fail the gate;
+    where something else fails instead; NOT_APPLIED, INVALID and MISSED fail
+    the gate;
   * a pair that needs what this machine lacks (a display) reads NOT_JUDGED:
     reported, counted, never mistaken for caught;
   * the worktree is restored with `git checkout` after every pair and must be
     clean before the next; every targeted test file must be green before the
     first pair and after the last, or nothing is judged.
 
-Exit codes: 0 every judged pair CAUGHT; 1 a pair MISSED or NOT_APPLIED, or a
-control run failed; 2 the gate could not run (no git, no worktree, the target
+Exit codes: 0 every judged pair CAUGHT; 1 a pair MISSED, NOT_APPLIED or
+INVALID, or a control run failed; 2 the gate could not run (no git, no worktree, the target
 is the checkout). Run it before tagging (docs/RELEASING.md) and from the
 mutation-gate workflow on demand; it is not a per-push job. MEASURED on the
 release machine, 2026-09-16: 40 pairs in 879 s, of which the 21-file baseline (449 tests) and its repeat after the last pair took 79 s and 74 s.
@@ -53,8 +57,8 @@ was green before its first pair and after its last", and a control run in some
 other worktree cannot vouch for that. The shards' rows come back as one report
 in the usual order, every selected pair exactly once, and one verdict: FAIL
 when any shard crashed, could not run or failed a control (named), when a pair
-was judged by no shard or by two, or when any pair was MISSED or NOT_APPLIED.
-Every worktree is removed on success, failure and Ctrl+C (the parent kills the
+was judged by no shard or by two, or when any pair was MISSED, NOT_APPLIED or
+INVALID. Every worktree is removed on success, failure and Ctrl+C (the parent kills the
 shards' process trees first). Each shard is a pytest process of its own, with
 the ~1.5 GB BLAS arena every converter test process commits: N shards commit
 about N x 1.5 GB at once. An interrupted run exits 2, with no verdict."""
@@ -78,6 +82,8 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 CAUGHT, MISSED, NOT_APPLIED, NOT_JUDGED = "CAUGHT", "MISSED", "NOT_APPLIED", "NOT_JUDGED"
+INVALID = "INVALID"
+FAILING = (MISSED, NOT_APPLIED, INVALID)   # the statuses that fail the gate
 _FAIL_LINE = re.compile(r"^(?:FAILED|ERROR) (.+?)(?: - .*)?$", re.M)
 _SUMMARY = re.compile(r"^(?:=+ )?(\d+ (?:passed|failed|error).*?) in [\d.]+s", re.M)
 
@@ -189,6 +195,35 @@ def check_anchors(root, pair: Pair) -> "str | None":
     return None
 
 
+def compile_problem(root, pair: Pair) -> "str | None":
+    """The INVALID reason, or None when every .py file the pair edits or
+    creates still compiles once all of its edits are made -- the text
+    apply_pair would write, built in memory. A mutation must change what the
+    code does, not stop it loading: LOW-f's edit commented out a line's
+    closing parentheses, every test that loads the file failed on the
+    SyntaxError, and the row read CAUGHT with its guard untested (2026-09-26).
+    Call it after check_anchors has passed."""
+    import warnings
+    texts: dict = {}
+    for file, anchor, replacement, _count in pair.edits:
+        if anchor is None:
+            texts[file] = replacement
+            continue
+        if file not in texts:
+            texts[file] = (Path(root) / file).read_bytes().decode("utf-8")
+        texts[file] = texts[file].replace(anchor, replacement)
+    for file, text in texts.items():
+        if not file.endswith(".py"):
+            continue
+        try:
+            with warnings.catch_warnings():      # a SyntaxWarning is not a failure
+                warnings.simplefilter("ignore")
+                compile(text, file, "exec", dont_inherit=True)
+        except SyntaxError as e:
+            return f"{file}: the mutation does not compile: {e.msg} (line {e.lineno})"
+    return None
+
+
 def apply_pair(root, pair: Pair) -> None:
     """Apply every edit; bytes in, bytes out, so line endings are untouched."""
     for file, anchor, replacement, _count in pair.edits:
@@ -246,7 +281,7 @@ def _seeded_pairs() -> list:
 
 def _row_line(row: dict) -> str:
     line = f"{row['status']:<11} {row['id']:<7} {row.get('seconds', 0.0):>6.1f}s  {row['why']}"
-    if row["status"] == NOT_APPLIED:
+    if row["status"] in (NOT_APPLIED, INVALID):
         line += f"\n            {row['reason']}"
     elif row["status"] == NOT_JUDGED:
         line += f"\n            needs {', '.join(row['needs'])}, which this machine lacks"
@@ -309,10 +344,13 @@ def judge(tree, pairs, report: dict, log=print) -> None:
         row: dict = {"id": pair.id, "why": pair.why}
         lacking = unmet_needs(pair)
         reason = check_anchors(tree, pair)
+        broken = None if lacking or reason else compile_problem(tree, pair)
         if lacking:
             row.update(status=NOT_JUDGED, needs=lacking, seconds=0.0, failing=[])
         elif reason:
             row.update(status=NOT_APPLIED, reason=reason, seconds=0.0, failing=[])
+        elif broken:
+            row.update(status=INVALID, reason=broken, seconds=0.0, failing=[])
         else:
             apply_pair(tree, pair)
             try:
@@ -328,7 +366,7 @@ def judge(tree, pairs, report: dict, log=print) -> None:
     after = run_tests(tree, files)
     report["control_after"] = after
     log(f"control after: rc={after['rc']} {after['summary']} ({after['seconds']} s)")
-    bad = [r for r in report["pairs"] if r["status"] in (MISSED, NOT_APPLIED)]
+    bad = [r for r in report["pairs"] if r["status"] in FAILING]
     report["verdict"] = "PASS" if not bad and after["rc"] == 0 else "FAIL"
 
 
@@ -445,7 +483,7 @@ def aggregate(pairs, shard_ids, results) -> dict:
 
     PASS needs every shard to have run and passed its own controls with an exit
     code that agrees with its verdict, every pair judged by exactly one shard,
-    and no pair MISSED or NOT_APPLIED. NOT_JUDGED passes, as it does in a
+    and no pair MISSED, NOT_APPLIED or INVALID. NOT_JUDGED passes, as it does in a
     single run: it is reported, never counted as caught."""
     order = [p.id for p in pairs]
     by_k = {r["shard"]: r for r in results}
@@ -480,7 +518,7 @@ def aggregate(pairs, shard_ids, results) -> dict:
         shards.append(entry)
     reasons += completeness(order, judged)
     combined = [rows[i] for i in order if i in rows]
-    bad = [r for r in combined if r["status"] in (MISSED, NOT_APPLIED)]
+    bad = [r for r in combined if r["status"] in FAILING]
     report = {"jobs": len(shard_ids), "shards": shards, "pairs": combined,
               "verdict": "PASS" if not reasons and not bad else "FAIL"}
     if reasons:
@@ -660,6 +698,7 @@ def main(argv=None) -> int:
     shards = f" over {report['jobs']} shards" if "jobs" in report else ""
     print(f"VERDICT: {report['verdict']} -- {counts.get(CAUGHT, 0)} caught, "
           f"{counts.get(MISSED, 0)} missed, {counts.get(NOT_APPLIED, 0)} not applied, "
+          f"{counts.get(INVALID, 0)} invalid, "
           f"{counts.get(NOT_JUDGED, 0)} not judged here; {report.get('seconds', 0)} s{shards}")
     if report.get("left_behind"):
         print(f"mutation gate could not clean up: {len(report['left_behind'])} worktree(s) "

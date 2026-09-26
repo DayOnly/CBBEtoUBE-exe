@@ -140,6 +140,47 @@ def test_prepush_reads_every_commit_not_just_the_tip(tmp_path):
     assert r.returncode == 1 and "notes.txt" in r.stderr, r.stderr[-1500:]
 
 
+def _merge_repo(tmp_path):
+    """A trunk and a side branch, each with a clean commit, merged with
+    --no-commit so the test can edit the resolution before committing it."""
+    repo, git, commit = _prepush_repo(tmp_path)
+    commit("a.txt", "plain\n", "base")
+    trunk = git("rev-parse", "--abbrev-ref", "HEAD").strip()
+    git("checkout", "-q", "-b", "side")
+    commit("b.txt", "side text\n", "side work")
+    git("checkout", "-q", trunk)
+    commit("c.txt", "trunk text\n", "trunk work")
+    git("merge", "-q", "--no-ff", "--no-commit", "side")
+    return repo, git
+
+
+def test_prepush_reads_the_files_a_merge_resolution_adds_or_edits(tmp_path):
+    """A merge commit's own content -- a conflict resolution, or a file added in
+    the merge -- exists in no other commit. diff-tree lists no file of a merge
+    unless asked, so a merge committed with --no-verify published a
+    denylisted name unread (2026-09-26). #prepush-merge-files"""
+    repo, git = _merge_repo(tmp_path)
+    (repo / "b.txt").write_bytes(b"side text\nresolved: the Sure heart piece\n")
+    (repo / "notes.txt").write_bytes(b"the Sure heart piece\n")
+    git("add", "b.txt", "notes.txt")
+    git("commit", "-q", "--no-verify", "-m", "merge side")
+    assert len(git("log", "-1", "--format=%P").split()) == 2, "the tip is not a merge"
+    r = _push(repo, git)
+    assert r.returncode == 1, r.stderr[-1500:]
+    assert "b.txt:2: denylisted asset name" in r.stderr, r.stderr[-1500:]
+    assert "notes.txt:1: denylisted asset name" in r.stderr, r.stderr[-1500:]
+
+
+def test_prepush_passes_a_clean_merge(tmp_path):
+    """The control: a merge whose files each come whole from one parent adds
+    nothing of its own, and a push of it is not refused."""
+    repo, git = _merge_repo(tmp_path)
+    git("commit", "-q", "--no-verify", "-m", "merge side")
+    assert len(git("log", "-1", "--format=%P").split()) == 2, "the tip is not a merge"
+    r = _push(repo, git)
+    assert r.returncode == 0, r.stderr[-1500:]
+
+
 def test_prepush_passes_a_clean_range_and_skips_what_the_remote_has(tmp_path):
     repo, git, commit = _prepush_repo(tmp_path)
     commit("a.txt", "plain\n", "fix: the Sure heart cuirass")      # already published

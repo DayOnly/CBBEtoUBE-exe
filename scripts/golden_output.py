@@ -26,7 +26,12 @@ mesh. This is that safety net.
     python scripts/golden_output.py check        # re-convert and diff
     python scripts/golden_output.py check --tol 0.001
 
-`check` exits non-zero on any regression, so it can gate a refactor.
+`check` exits non-zero on any regression, so it can gate a refactor: 1 when a
+piece regressed or failed to convert, 2 when it refuses to compare (no
+baseline, a different flag set), and 3 when it compared NOTHING -- every
+source changed, or no piece of the list is in the baseline. 0/0 is not a pass.
+The verdict line says how many of the listed pieces were compared; a PASS that
+did not look at all of them reads `PASS (PARTIAL)`, with the others counted.
 
     python scripts/golden_output.py check --jobs 5   # pieces in 5 worker processes
 
@@ -379,8 +384,29 @@ def _effective_jobs(requested: int, n_pieces: int) -> int:
     return n
 
 
+def _empty_work(work_root: Path) -> None:
+    """Remove the run's scratch folder, and refuse to go on if it is still there.
+
+    A run killed part-way (Ctrl+C, a native crash, a closed window) left its
+    converted NIFs and sidecars in this folder, and the converter does not
+    delete an old output when a conversion raises or skips. The next run then
+    fingerprinted the LAST run's files: a piece that now converts to nothing,
+    or no longer writes its physics XML, read `ok` and the check PASSED."""
+    shutil.rmtree(work_root, ignore_errors=True)
+    if work_root.exists():
+        raise RuntimeError(
+            f"could not empty {work_root} -- a file in it is held open. Close "
+            f"it and re-run: an old conversion left there would be read as "
+            f"this run's output")
+
+
 def _measured(pieces, work_root: Path, jobs: int):
     """Yield (piece, result, error) for every piece, IN PIECE ORDER.
+
+    `work_root` is this run's alone: it is emptied before the first piece, so
+    nothing a killed run left there can be read as a new conversion, and
+    removed when the run ends, however it ends (the converted NIFs are
+    scratch; only the fingerprints are kept, and they cost 105 MB per run).
 
     jobs 1 is the sequential run as it always was: `error` is always None and
     an exception propagates. With more, the pieces go to that many SPAWNED
@@ -399,6 +425,15 @@ def _measured(pieces, work_root: Path, jobs: int):
       * the pool broke but every unfinished piece converted alone: one last
         row with piece None, so the run still fails -- a worker died and no
         single piece reproduces it."""
+    _empty_work(work_root)
+    try:
+        yield from _measured_rows(pieces, work_root, jobs)
+    finally:
+        shutil.rmtree(work_root, ignore_errors=True)
+
+
+def _measured_rows(pieces, work_root: Path, jobs: int):
+    """The rows `_measured` yields, converted in a work folder it owns."""
     measure = _measure                  # looked up per call, not bound at def
     if jobs <= 1:
         for piece in pieces:
@@ -513,14 +548,17 @@ def capture(jobs: int = 1) -> int:
         if failed:
             for label, err in failed:
                 print(f"  FAIL {label:<20} {err}")
-            shutil.rmtree(work, ignore_errors=True)
             print(f"\nbaseline NOT written: {len(failed)} piece(s) failed in a "
                   f"worker -- {GOLDEN} is unchanged.")
             return 1
     for (label, sub, stem, slots, why), r, _err in rows:
         src, fp = r["src"], r["fp"]
         if fp is None:
-            print(f"  SKIP {label:<20} (source not found: {sub}/{stem})")
+            # Two different things, and they must not read alike: a piece the
+            # mod list does not have, and one it has that converted to nothing.
+            why_not = ("source not found" if src is None
+                       else "found, but the conversion produced nothing")
+            print(f"  SKIP {label:<20} ({why_not}: {sub}/{stem})")
             continue
         np.savez_compressed(
             GOLDEN / f"{label}.npz",
@@ -539,13 +577,16 @@ def capture(jobs: int = 1) -> int:
         ok += 1
         print(f"  captured {label:<20} {len(fp)} shape(s), "
               f"{sum(len(d['verts']) for d in fp.values())} verts")
+    if not ok:
+        # An empty manifest is not a baseline: every later `check` would
+        # compare nothing and, before it counted, PASS.
+        print(f"\nbaseline NOT written: 0 of {len(PIECES)} piece(s) captured "
+              f"-- {GOLDEN} is unchanged.")
+        return 1
     (GOLDEN / "manifest.json").write_text(json.dumps(man, indent=1), encoding="utf-8")
-    # The converted NIFs are scratch -- only the fingerprints are the baseline.
-    # Keeping them cost 105 MB per run.
-    shutil.rmtree(work, ignore_errors=True)
     print(f"\nbaseline: {ok}/{len(PIECES)} piece(s) -> {GOLDEN}")
     print(f"flags recorded: {man['flags'] or 'none'}")
-    return 0 if ok else 1
+    return 0
 
 
 def check(tol: float, jobs: int = 1) -> int:
@@ -583,21 +624,39 @@ def check(tol: float, jobs: int = 1) -> int:
         print("NOTE: src/ or scripts/ has uncommitted changes -- `check` is "
               "measuring the working tree, not a commit.")
     work = GOLDEN / "_check"
-    bad = src_changed = 0
-    todo = [p for p in PIECES if p[0] in man["pieces"]
-            and (GOLDEN / f"{p[0]}.npz").is_file()]
+    bad = src_changed = compared = unconverted = empty_base = 0
+    # COVERAGE. A piece of the list the baseline does not hold (added to
+    # pieces.json after the capture, or skipped by it) was dropped from the run
+    # without a word, and a verdict that looked at none of them still read
+    # "output identical". Each one is named, and counted in the verdict.
+    todo, unbased, lost = [], [], []
+    for p in PIECES:
+        if p[0] not in man["pieces"]:
+            unbased.append(p[0])
+        elif not (GOLDEN / f"{p[0]}.npz").is_file():
+            lost.append(p[0])
+        else:
+            todo.append(p)
+    for label in unbased:
+        print(f"  {label:<20} NOT IN BASELINE -- not compared; run `capture` "
+              f"to add it.")
+    for label in lost:
+        print(f"  {label:<20} NOT COMPARED -- the manifest lists it but "
+              f"{label}.npz is missing; re-capture.")
     jobs, _ = _plan_jobs(jobs, len(todo))        # refusal already handled above
     for piece, r, err in _measured(todo, work, jobs):
         label = _row_label(piece)
         if err is not None:
             print(f"  {label:<20} FAIL  {err}")
             bad += 1
+            unconverted += piece is not None
             continue
         rec = man["pieces"][label]
         gold = GOLDEN / f"{label}.npz"
         if r["fp"] is None:
             print(f"  {label:<20} FAIL  conversion produced nothing")
             bad += 1
+            unconverted += 1
             continue
         if r["source_sig"] != rec["source_sig"]:
             print(f"  {label:<20} SOURCE CHANGED -- the input mesh differs, "
@@ -607,7 +666,19 @@ def check(tol: float, jobs: int = 1) -> int:
         g = np.load(gold, allow_pickle=True)
         cur = r["fp"]
         names = sorted({k.split("::")[0] for k in g.files})
+        if not names:
+            # A baseline that recorded no shapes compares nothing: counting it
+            # as compared would be the 0/0 pass one level down.
+            print(f"  {label:<20} NOT COMPARED -- the baseline recorded no "
+                  f"shapes for it; re-capture.")
+            empty_base += 1
+            continue
+        compared += 1
         worst = []
+        # A shape the output gained (a duplicated body shape, say) is a change
+        # too: the loop below only walks the baseline's shapes.
+        for n in sorted(set(cur) - set(names)):
+            worst.append(f"shape ADDED: {n}")
         # SIDECARS (.tri, .xml) -- byte-compared. Golden used to look at NIF
         # geometry and weights only, so a defect living in a generated .tri was
         # invisible to it BY CONSTRUCTION, and one was: a set-iteration leak
@@ -656,15 +727,32 @@ def check(tol: float, jobs: int = 1) -> int:
                 print(f"      ... and {len(worst)-6} more")
         else:
             print(f"  {label:<20} ok")
-    shutil.rmtree(work, ignore_errors=True)      # scratch NIFs, ~105 MB per run
     print()
     if src_changed:
         print(f"{src_changed} piece(s) had a CHANGED SOURCE mesh -- not a code "
               f"regression; re-run `capture` to re-baseline those.")
+    n = len(PIECES)
+    missed = [f"{k} {what}" for k, what in (
+        (src_changed, "source changed"), (len(unbased), "not in the baseline"),
+        (len(lost), "baseline file missing"), (unconverted, "failed to convert"),
+        (empty_base, "baseline has no shapes"))
+        if k]
+    print(f"compared {compared} of {n} piece(s)"
+          + (f"; not compared: {', '.join(missed)}" if missed else ""))
     if bad:
         print(f"FAIL: {bad} piece(s) regressed (tolerance {tol}u)")
         return 1
-    print(f"PASS: output identical to the baseline (tolerance {tol}u)")
+    if compared == 0:
+        print(f"NOTHING COMPARED: 0 of {n} piece(s) were compared with the "
+              f"baseline -- 0/0 is not a pass. Re-capture, or fix the piece list.")
+        return 3
+    if compared < n:
+        print(f"PASS (PARTIAL): {compared} of {n} piece(s) identical to the "
+              f"baseline (tolerance {tol}u) -- the other {n - compared} were "
+              f"NOT looked at.")
+        return 0
+    print(f"PASS: output identical to the baseline -- all {n} piece(s) "
+          f"compared (tolerance {tol}u)")
     return 0
 
 

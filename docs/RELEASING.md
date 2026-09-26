@@ -51,7 +51,11 @@ dirty flag lies.
 Every seeded mutation (`scripts/mutation_pairs.py`) is applied in a detached
 worktree and must turn its named tests red. An anchor that no longer matches
 reads NOT_APPLIED and fails the gate, because a test that stays green on a
-mutation that was never applied proves nothing; a MISSED pair is a guard that
+mutation that was never applied proves nothing. A mutated `.py` file that no
+longer compiles reads INVALID, is never run, and fails the gate too: a
+SyntaxError turns every test that imports the file red, the named ones among
+them, whatever the guard does -- rewrite the pair so the file still compiles.
+A MISSED pair is a guard that
 has become decoration -- fix the guard, never the pair. It is slow (40 pairs
 took 879 s when the gate landed; 202 pairs took 1942 s on 2026-09-21): run it once
 per release, after the last source commit and before the rebuild, and from the
@@ -66,7 +70,7 @@ and control-after (a control run in another worktree cannot vouch for this
 one), and the shards' rows come back as one report in the usual order with one
 verdict. The verdict is FAIL when a shard crashed or failed a control (the
 report names the shard and ends with its log), when a pair was judged by no
-shard or by two, or when any pair was MISSED or NOT_APPLIED; `--jobs 1`, the
+shard or by two, or when any pair was MISSED, NOT_APPLIED or INVALID; `--jobs 1`, the
 default, is the single run above, unchanged. Every worktree is removed on
 success, failure and Ctrl+C. The price is memory: each shard runs pytest, and
 every pytest process that imports the converter commits the ~1.5 GB BLAS arena,
@@ -97,8 +101,12 @@ maintainer machine and not in CI: the runner has no game and no pieces.
 An unintended diff is a regression. An intended one must be explainable shape
 by shape, and then `capture` re-baselines. `check` refuses across a different
 `CBBE2UBE_*` flag set and says so when the baseline was captured on another
-commit; keep the shell free of converter flags for both runs. What it cannot
-see: a class the piece list does not cover (the base-game set unless
+commit; keep the shell free of converter flags for both runs. The verdict
+line counts the pieces it compared: `PASS (PARTIAL)` names how many it did not
+look at (source changed, not in the baseline), and a check that compared none
+exits 3 with `NOTHING COMPARED` instead of passing. Each run empties its work
+folder first, so nothing a killed run left there is read as new output. What
+it cannot see: a class the piece list does not cover (the base-game set unless
 `golden/pieces.json` points it at more), and anything a float on another
 machine would round differently -- it is a same-machine, same-toolchain check.
 

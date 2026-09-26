@@ -149,6 +149,20 @@ it, or an emptied table) is now caught unless the test really reloaded that
 part of the tool. The check adds about a second per test process. Nothing
 that is converted changes.
 
+### Development only — the checks before a release no longer pass without looking
+
+- The golden-output check empties its work folder before every run, so files
+  an interrupted run left there can no longer stand in for a piece that now
+  converts to nothing or drops its physics file. A check that compared
+  nothing exits 3 ("0/0 is not a pass"), a partial one says how many pieces
+  it looked at, a shape the output gained is a change, and a piece whose
+  baseline holds no shapes is not counted as compared.
+- The mutation gate compiles each seeded mutation first: one that is not
+  valid Python reads INVALID and fails the gate like MISSED and NOT_APPLIED,
+  instead of counting as caught because every import broke.
+- The pre-push hook also reads the files a merge commit writes itself (a
+  conflict resolution, a file added in the merge), which it skipped before.
+
 ### Fixed — colour variants of a piece left to your own UBE build recolour the right layer
 
 Since this tool leaves a piece alone when your own UBE BodySlide build (or

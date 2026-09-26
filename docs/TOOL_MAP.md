@@ -63,7 +63,7 @@ Two more tracked scripts are excluded as doc GENERATORS rather than measurements
 | `scripts/analysis/verify_zero_weight_bones.py` | 1 | yes | Find ZERO-WEIGHT BONES in the converted output (#zeroweight-bone-desync) |
 | `scripts/analysis/zero_weight_pair_ab.py` | 1, 2 | yes | PAIRED zero-weight-bone A/B between two builds' output (#zeroweight-bone-desync) |
 | `scripts/convert_one_armor.py` | 2 | — | Convert ONE armor's mesh pair for fast diagnose/fix/verify loops on a single piece -- WITHOUT diverging from what a real batch run produces |
-| `scripts/golden_output.py` | 2 | — | golden-output regression harness. |
+| `scripts/golden_output.py` | 2 | yes | golden-output regression harness. |
 | `scripts/install_rcs.py` | — | — | Install RaceCompatibility SKSE + UBE compatibility mods into MO2 |
 | `scripts/postflight_1_2.py` | 3 | yes | Post-reconvert health check for the 1.2 bust-follow release |
 | `scripts/sanity_check_converted.py` | 1 | — | Pre-test sanity check on converted body-slot armor NIFs |

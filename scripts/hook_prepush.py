@@ -21,7 +21,8 @@ commits without either, `git cherry-pick` runs neither, a merge commit runs
 commit-msg but not pre-commit, and `--no-verify` skips both -- so a lane
 committed or rebased on a machine without the denylist reaches `git push`
 unchecked. This applies the same rules to each commit about to leave: its
-message, its author and committer addresses, and every file it adds or changes,
+message, its author and committer addresses, and every file it adds or changes
+(for a merge, every file whose merged content matches none of its parents),
 read AT that commit (a name added in one commit and deleted in the next is still
 published history).
 
@@ -60,8 +61,16 @@ def commit_problems(sha: str, denylist) -> "list[str]":
         ident = H.check_identity(email)
         if ident:
             problems.append(f"commit {short}: {email} -- {ident}")
-    paths = [p for p in P._run("git", "diff-tree", "--root", "--no-commit-id", "--name-only",
-                               "-r", "--diff-filter=ACMR", sha).splitlines() if p]
+    # `-c`: for a merge commit, every file whose merged content differs from
+    # EACH parent -- a conflict resolution, or an edit made in the merge itself.
+    # Without it diff-tree lists nothing for a merge, so a name added only in
+    # the resolution was published unread (2026-09-26). A file taken whole from
+    # one parent is that parent's content, read on the commit that made it.
+    # For a commit with one parent (or none) `-c` changes nothing.
+    # #prepush-merge-files
+    paths = list(dict.fromkeys(
+        p for p in P._run("git", "diff-tree", "-c", "--root", "--no-commit-id", "--name-only",
+                          "-r", "--diff-filter=ACMR", sha).splitlines() if p))
 
     def read(path):
         return P._run_bytes("git", "show", f"{sha}:{path}")

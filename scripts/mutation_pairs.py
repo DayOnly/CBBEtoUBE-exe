@@ -1053,8 +1053,10 @@ PAIRS = (
               '            pass  # MUTATED: the dead pool is reused\n', 1),
          ),
          tests=('tests/test_golden_jobs.py',),
-         expect=('test_a_second_death_is_named_too',
-                 'test_a_worker_that_dies_fails_the_check_by_name'),
+         # Only the two-deaths case needs a fresh pool for certain: with one
+         # death the reused pool may or may not be broken by the time the
+         # re-run starts (it was MISSED under load on the parent too, 09-26).
+         expect=('test_a_second_death_is_named_too',),
     ),
     Pair('GJ-k', 'a worker death that no single piece reproduces is dropped',
          edits=(
@@ -1084,6 +1086,125 @@ PAIRS = (
          ),
          tests=('tests/test_golden_jobs.py',),
          expect=('test_a_re_run_starts_in_a_clean_folder',),
+    ),
+    # #golden-no-false-pass (2026-09-26): `check` said "PASS: output identical"
+    # without having looked. A run killed part-way left its converted files in
+    # the work folder and the next run read them as its own; and 0 of N pieces
+    # compared (every source changed, pieces not in the baseline, a capture
+    # that found nothing) passed with exit 0. 0/0 is not a pass.
+    Pair('GJ-n', "a run reads the files a killed run left in its work folder",
+         edits=(
+             ('scripts/golden_output.py',
+              '    _empty_work(work_root)\n',
+              '    pass  # MUTATED: the old folder is kept\n', 1),
+         ),
+         tests=('tests/test_golden_no_false_pass.py',),
+         expect=('test_a_killed_run_cannot_hide_a_piece_that_converts_to_nothing',
+                 'test_a_killed_run_cannot_hide_a_dropped_physics_xml'),
+    ),
+    Pair('GJ-o', 'a work folder that could not be emptied is used anyway',
+         edits=(
+             ('scripts/golden_output.py',
+              '    if work_root.exists():\n',
+              '    if False:  # MUTATED: a held folder is used\n', 1),
+         ),
+         tests=('tests/test_golden_no_false_pass.py',),
+         expect=('test_a_work_folder_that_cannot_be_emptied_stops_the_run',),
+    ),
+    Pair('GJ-p', 'an interrupted run leaves its work folder behind',
+         edits=(
+             ('scripts/golden_output.py',
+              '    finally:\n        shutil.rmtree(work_root, ignore_errors=True)\n',
+              '    finally:\n        pass  # MUTATED: the folder is left\n', 1),
+         ),
+         tests=('tests/test_golden_no_false_pass.py',),
+         expect=('test_an_interrupted_check_leaves_no_work_folder',),
+    ),
+    Pair('GJ-q', 'a check that compared nothing passes',
+         edits=(
+             ('scripts/golden_output.py',
+              '    if compared == 0:\n',
+              '    if False:  # MUTATED: 0/0 passes\n', 1),
+         ),
+         tests=('tests/test_golden_no_false_pass.py',),
+         expect=('test_every_source_changed_is_not_a_pass',
+                 'test_an_empty_piece_list_is_not_a_pass'),
+    ),
+    Pair('GJ-r', 'a check that compared some pieces reads as a full pass',
+         edits=(
+             ('scripts/golden_output.py',
+              '    if compared < n:\n',
+              '    if False:  # MUTATED: partial reads as full\n', 1),
+         ),
+         tests=('tests/test_golden_no_false_pass.py',),
+         expect=('test_a_partial_check_says_how_much_it_looked_at',
+                 'test_a_piece_added_after_the_capture_is_named'),
+    ),
+    Pair('GJ-s', 'a piece missing from the baseline is dropped without a word',
+         edits=(
+             ('scripts/golden_output.py',
+              '    for label in unbased:\n',
+              '    for label in ():  # MUTATED: not named\n', 1),
+         ),
+         tests=('tests/test_golden_no_false_pass.py',),
+         expect=('test_a_piece_added_after_the_capture_is_named',),
+    ),
+    Pair('GJ-t', 'a baseline file gone from disk is dropped without a word',
+         edits=(
+             ('scripts/golden_output.py',
+              '    for label in lost:\n',
+              '    for label in ():  # MUTATED: not named\n', 1),
+         ),
+         tests=('tests/test_golden_no_false_pass.py',),
+         expect=('test_a_baseline_file_gone_from_disk_is_named',),
+    ),
+    Pair('GJ-u', 'a capture that found nothing writes an empty baseline',
+         edits=(
+             ('scripts/golden_output.py',
+              '    if not ok:\n',
+              '    if False:  # MUTATED: empty manifest written\n', 1),
+         ),
+         tests=('tests/test_golden_no_false_pass.py',),
+         expect=('test_a_capture_that_found_nothing_writes_no_baseline',
+                 'test_a_capture_that_found_nothing_keeps_the_old_baseline'),
+    ),
+    Pair('GJ-v', 'a compared piece is not counted as compared',
+         edits=(
+             ('scripts/golden_output.py',
+              '        compared += 1\n',
+              '        pass  # MUTATED: not counted\n', 1),
+         ),
+         tests=('tests/test_golden_no_false_pass.py',),
+         expect=('test_a_full_check_says_it_compared_every_piece',),
+    ),
+    Pair('GJ-w', 'a capture reads a piece that converted to nothing as not installed',
+         edits=(
+             ('scripts/golden_output.py',
+              '            why_not = ("source not found" if src is None\n',
+              '            why_not = ("source not found" if True  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_golden_no_false_pass.py',),
+         expect=('test_a_capture_names_a_piece_that_converted_to_nothing',),
+    ),
+    Pair('GJ-x', "check ignores a shape the output gained",
+         edits=(
+             ('scripts/golden_output.py',
+              '        for n in sorted(set(cur) - set(names)):\n',
+              '        for n in ():  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_golden_no_false_pass.py',),
+         expect=('test_a_shape_the_output_gained_is_a_regression',),
+    ),
+    Pair('GJ-y', 'a baseline with no shapes counts as compared',
+         edits=(
+             ('scripts/golden_output.py',
+              '        if not names:\n'
+              '            # A baseline that recorded no shapes compares nothing: counting it\n',
+              '        if False:  # MUTATED\n'
+              '            # A baseline that recorded no shapes compares nothing: counting it\n', 1),
+         ),
+         tests=('tests/test_golden_no_false_pass.py',),
+         expect=('test_a_baseline_with_no_shapes_is_not_counted_as_compared',),
     ),
     # #glow-diagnostic-path (2026-09-20): the diagnostic wrote nothing for an
     # unknown length of time, because its configured directory did not exist
@@ -3091,7 +3212,11 @@ PAIRS = (
               '                _probe = path  # MUTATED\n', 1),
          ),
          tests=('tests/test_coverage_female_guard.py',),
-         expect=('test_the_lookup_gets_a_non_ascii_path_as_the_game_reads_it',),
+         # Since #arma-path-bytes `path` is a cp1252 read by default, so this
+         # edit changes what the lookup is asked only with that switch off:
+         # the test runs both ways and the switch-off case is the one named.
+         # MISSED from 475bd19 until 2026-09-26.
+         expect=('test_the_lookup_gets_a_non_ascii_path_as_the_game_reads_it[utf8_round_trip]',),
     ),
     Pair('EOC-l', 'an excluded folder name with a comma withholds nothing',
          edits=(
@@ -9747,6 +9872,51 @@ PAIRS = (
          tests=('tests/test_mutation_gate.py',),
          expect=('test_the_shard_command_refuses_a_tree_it_did_not_make',),
     ),
+    # #mutation-gate INVALID (2026-09-26): a mutated .py file that does not
+    # compile fails every test that imports it, the named ones among them, so
+    # the row read CAUGHT with its guard untested (LOW-f). The gate compiles
+    # the mutated text first and reads such a pair INVALID, which fails it.
+    Pair('MGC-a', 'a mutation that does not compile is run and reads CAUGHT',
+         edits=(
+             ('scripts/mutation_gate.py',
+              '        broken = None if lacking or reason else compile_problem(tree, pair)\n',
+              '        broken = None  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_mutation_gate.py',),
+         expect=('test_a_mutation_that_does_not_compile_reads_invalid_not_caught',),
+    ),
+    Pair('MGC-b', 'an INVALID pair no longer fails the gate',
+         edits=(
+             ('scripts/mutation_gate.py',
+              'FAILING = (MISSED, NOT_APPLIED, INVALID)',
+              'FAILING = (MISSED, NOT_APPLIED)  # MUTATED', 1),
+         ),
+         tests=('tests/test_mutation_gate.py',),
+         expect=('test_a_mutation_that_does_not_compile_reads_invalid_not_caught',
+                 'test_an_invalid_pair_in_one_shard_fails_the_combined_verdict'),
+    ),
+    Pair('MGC-c', 'the compile check judges each edit of a file on its own',
+         edits=(
+             ('scripts/mutation_gate.py',
+              '        if file not in texts:\n'
+              '            texts[file] = (Path(root) / file).read_bytes().decode("utf-8")\n',
+              '        texts[file] = (Path(root) / file).read_bytes().decode("utf-8")  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_mutation_gate.py',),
+         expect=('test_the_compile_check_reads_every_edit_of_a_file_together',),
+    ),
+    # #prepush-merge-files (2026-09-26): diff-tree lists no file of a merge
+    # commit without -c, so content that exists only in a merge resolution
+    # was published unread.
+    Pair('HK-f', 'the pre-push hook lists no file of a merge commit',
+         edits=(
+             ('scripts/hook_prepush.py',
+              'P._run("git", "diff-tree", "-c", "--root",',
+              'P._run("git", "diff-tree", "--root",  # MUTATED\n                         ', 1),
+         ),
+         tests=('tests/test_repo_hygiene_hooks.py',),
+         expect=('test_prepush_reads_the_files_a_merge_resolution_adds_or_edits',),
+    ),
     # #bsa-embed-name-end (2026-09-25): an uncompressed entry of an embed-names
     # archive was read to `start of data + size`, but the size counts the name
     # prefix: 1 + len(name) bytes of the next file came back on its end.
@@ -11626,12 +11796,19 @@ PAIRS = (
                  'test_a_dry_run_writes_the_cli_log_and_rotates_nothing[argv1]',
                  'test_the_window_tails_the_log_its_child_writes[True]'),
     ),
+    # LOW-f's first edit ended its replacement with `  # MUTATED` in the middle
+    # of a line, commenting out the closing parentheses: the file stopped
+    # compiling and every entry-point test failed on the SyntaxError, so the
+    # row read CAUGHT without testing the `--` stop (2026-09-26). It now removes
+    # only the stop and keeps the line whole; the gate reads a mutation that
+    # does not compile as INVALID.
     Pair('LOW-f', 'a --dry-run after -- reads as an option',
          edits=(
              ('cbbe_to_ube_main.py',
               '        if a == "--":\n            return False\n'
               '        if len(a) > 2 and (("--list-only".startswith(a)',
-              '        if len(a) > 2 and (("--list-only".startswith(a)  # MUTATED', 1),
+              '        pass  # MUTATED\n'
+              '        if len(a) > 2 and (("--list-only".startswith(a)', 1),
          ),
          tests=('tests/test_cli_gui_lows.py',),
          expect=('test_a_real_run_still_rotates[argv2]',),
