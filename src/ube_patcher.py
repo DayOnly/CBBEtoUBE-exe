@@ -511,6 +511,87 @@ def _alttex_batch_ambiguity_on() -> bool:
     return not _flag("CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY", False)
 
 
+def _reconcile_loaded_mesh_on() -> bool:
+    r"""#reconcile-loaded-mesh (2026-09-26): when our output has no NIF at one
+    of our `!UBE\` model paths, does the reconcile index that colour set
+    against the copy of the path the GAME loads? Yes, by default.
+
+    The reconcile looked each model up only in our output's meshes folder.
+    Since #skip-built-ube-path and #supersede-whole-base, a base the user's
+    own BodySlide build ships is left to that build (our old copy moves to
+    `_superseded`), so the reconcile found no NIF and kept the source
+    plugin's CBBE-era indices: a colour landed on the wrong shape of the
+    build the game loads. Measured on the reported modlist's full run: 11
+    sets on such paths, 3 of them wrong (one torso's skirt colour went to the
+    build's collision body), 8 already right.
+
+    The copy the game loads is found as the coverage step finds it
+    (`auto_convert._mesh_exists_anywhere(...).loaded_copy`: the first loose
+    file by MO2 priority, overwrite first, our output left out, then the
+    archive by plugin load order), read-only. It is another mod's mesh, not
+    our conversion, so the source-provenance binding is not used for it: its
+    entries bind by name, and the entries of a name it carries twice (or in
+    two spellings), or that a set repeats, are dropped. A path found nowhere
+    keeps its entries as authored, as before, and is counted. Our output's
+    own NIF, when present, is used exactly as before.
+
+    CBBE2UBE_NO_RECONCILE_LOADED_MESH=1 leaves a set whose NIF is not in our
+    output untouched, as before."""
+    return not _flag("CBBE2UBE_NO_RECONCILE_LOADED_MESH", False)
+
+
+def _loaded_mesh_lookup(meshes_root):
+    r"""#reconcile-loaded-mesh: model path -> (path, None) | (None, bytes) |
+    None, the copy of a path the game loads with our output (the folder
+    holding `meshes_root`) left out; None when the modlist cannot be read."""
+    from . import auto_convert as _ac
+    try:
+        look = _ac._mesh_exists_anywhere(Path(meshes_root).parent)
+    except Exception:
+        return None
+    return getattr(look, "loaded_copy", None) if look is not None else None
+
+
+def _loaded_mesh_names(hit, stage_dir) -> "list[str]":
+    r"""#reconcile-loaded-mesh: the shape names, in 3D-index order, of a
+    `_loaded_mesh_lookup` hit. An archived copy is written to a temporary file
+    in `stage_dir` (our output's `_bsa_staging`), read, and deleted. Raises
+    when it cannot be read."""
+    import os
+    import tempfile
+    from . import nif_io
+    path, data = hit
+    tmp = None
+    made = None                          # a staging folder this call created
+    if path is None:
+        sd = Path(stage_dir)
+        if not sd.exists():
+            made = sd
+        sd.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(stage_dir), prefix=".reconcile-",
+                                   suffix=".nif")
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        path = tmp
+    try:
+        nf = nif_io.load_nif(path)
+        try:
+            return [s.name for s in nf.shapes]
+        finally:
+            nif_io.release_nif(nf._backing)
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        if made is not None:             # leave the output as it was
+            try:
+                made.rmdir()
+            except OSError:
+                pass
+
+
 def _literal_duplicate_names(names) -> "frozenset[str]":
     """#alttex-batch-ambiguity: the shape names a NIF carries more than once
     under one exact spelling (a group the rename left as authored) -- the
@@ -872,7 +953,8 @@ def _bind_by_source(entries, lnames: "list[str]",
 def _reindex_alt_texture_payload(data: bytes,
                                  shape_index: "dict[str, int]",
                                  source: "_AltTexBinding | None" = None,
-                                 ambiguous: "frozenset[str]" = frozenset()
+                                 ambiguous: "frozenset[str]" = frozenset(),
+                                 loaded: bool = False
                                  ) -> "bytes | None":
     """Rewrite an MO?S alt-texture set to match a CONVERTED NIF's shapes.
 
@@ -889,6 +971,11 @@ def _reindex_alt_texture_payload(data: bytes,
         those entries are dropped, and so are those of `ambiguous`, the names
         the reconcile knows were shared: `_alttex_set_provenance_on`).
     `shape_index` = {shape_name: index} from the converted NIF.
+    `loaded` (#reconcile-loaded-mesh): `shape_index` is ANOTHER mod's copy of
+    the path, the one the game loads -- not our conversion, so no name of it
+    is our rename: every entry binds by name, except those of `ambiguous`
+    (here: the names that mesh carries twice or a set repeats), which are
+    dropped; `source` is not used.
     Returns rebuilt payload, or None on parse failure (caller keeps original)."""
     try:
         entries = _alttex_entries(data)
@@ -899,12 +986,15 @@ def _reindex_alt_texture_payload(data: bytes,
     by_occurrence: "dict[int, int]" = {}
     bound: "set[str]" = set()                   # names bound by occurrence
     exact = _alttex_dup_occurrence_on() and _alttex_exact_provenance_on()
-    if exact:
+    if loaded:
+        bound = set(ambiguous)                  # which shape is not known: drop
+    elif exact:
         bound, by_occurrence = _bind_by_source(entries, lnames, shape_index,
                                                source, ambiguous)
     # With the source switched off: bind by the converted NIF's layout.
     families = (_renamed_shape_families(shape_index, set(lnames))
-                if _alttex_dup_occurrence_on() and not exact else {})
+                if _alttex_dup_occurrence_on() and not exact and not loaded
+                else {})
     strict = bool(families) and _alttex_family_strict_on()
     for fam, members in families.items():
         first: "dict[int, int]" = {}   # source 3D index -> its first entry
@@ -1001,6 +1091,34 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
     # empty name included (two unnamed shapes), and a set naming two entries
     # with no name.
     batch = case_prov and _alttex_batch_ambiguity_on()
+    # #reconcile-loaded-mesh: one of our '!UBE\' paths our output has no NIF
+    # at is indexed against the copy the game loads (another mod's): model key
+    # -> that copy's lowercased names carried twice (dropped, as a set's
+    # repeats are). `nowhere`: such paths found nowhere, kept as authored.
+    loaded_on = _reconcile_loaded_mesh_on()
+    _game_copy: "dict[str, frozenset[str]]" = {}
+    _set_repeats: "dict[str, set[str]]" = {}   # model key -> names a set repeats
+    nowhere: "list[str]" = []
+    unreadable: "list[str]" = []         # another mod's copy that would not load
+    _look: list = []                     # the lookup, built on first need
+
+    def loaded_shapes(model_path: str, key: str):
+        if not _look:
+            _look.append(_loaded_mesh_lookup(meshes_root))
+        hit = _look[0](model_path) if _look[0] is not None else None
+        if hit is None:
+            nowhere.append(model_path)
+            return None
+        try:
+            names = _loaded_mesh_names(hit, meshes_root.parent / "_bsa_staging")
+        except Exception:
+            # Not our conversion: said on its own line below, never as one of
+            # ours that failed to load. The set stays as authored.
+            unreadable.append(model_path)
+            return None
+        twice = Counter(str(n or "").lower() for n in names)
+        _game_copy[key] = frozenset(n for n, c in twice.items() if c > 1)
+        return {s: i for i, s in enumerate(names)}
 
     def shapes_for(model_path: str):
         key = model_path.lower()
@@ -1009,7 +1127,10 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
         idx = None
         try:
             p = meshes_root / model_path.replace("/", "\\")
-            if p.is_file():
+            if (loaded_on and not p.is_file()
+                    and _alttex_source_rel(model_path) is not None):
+                idx = loaded_shapes(model_path, key)
+            elif p.is_file():
                 nf = nif_io.load_nif(p)
                 idx = {s.name: i for i, s in enumerate(nf.shapes)}
                 if exact and (_split_name_candidates(idx) or key in _repeats
@@ -1047,6 +1168,11 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
                     if rep:
                         _repeats.setdefault(models[SLOT_FOR[sig]].lower(),
                                             set()).update(rep)
+                if loaded_on and sig in SLOT_FOR and models.get(SLOT_FOR[sig]):
+                    rep = _repeated_entry_names(data, unnamed=True)
+                    if rep:
+                        _set_repeats.setdefault(models[SLOT_FOR[sig]].lower(),
+                                                set()).update(rep)
     for _r, subs, models in sets:
         for sig, _data in subs:
             if sig in SLOT_FOR and models.get(SLOT_FOR[sig]):
@@ -1080,9 +1206,18 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
                 mdl = models.get(SLOT_FOR[sig])
                 idxmap = shapes_for(mdl) if mdl else None
                 if idxmap is not None:
-                    rebuilt = _reindex_alt_texture_payload(
-                        data, idxmap, bindings.get(mdl.lower()),
-                        ambiguous.get(mdl.lower(), frozenset()))
+                    key = mdl.lower()
+                    if key in _game_copy:
+                        # #reconcile-loaded-mesh: another mod's copy, by name.
+                        rebuilt = _reindex_alt_texture_payload(
+                            data, idxmap, None,
+                            _game_copy[key]
+                            | frozenset(_set_repeats.get(key, ())),
+                            loaded=True)
+                    else:
+                        rebuilt = _reindex_alt_texture_payload(
+                            data, idxmap, bindings.get(key),
+                            ambiguous.get(key, frozenset()))
                     if rebuilt is not None and rebuilt != data:
                         new_payload += esp.encode_subrecord(sig, rebuilt)
                         changed = True
@@ -1108,6 +1243,18 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
                   f"read or is not the mesh converted -> the colour-variant "
                   f"entries of those layers were dropped (they keep their "
                   f"base colour): {unmatched[:5]}", file=_s.stderr)
+    if _game_copy or nowhere or unreadable:
+        print(f"  alt-texture reconcile: {len(_game_copy)} model(s) not in "
+              f"this output indexed against the copy the game loads (another "
+              f"mod's); {len(set(nowhere))} found nowhere -> kept as authored"
+              + (f": {sorted(set(nowhere))[:5]}" if nowhere else ""),
+              file=_s.stderr)
+    if unreadable:
+        print(f"  !! alt-texture reconcile: {len(set(unreadable))} model(s) not "
+              f"in this output: the copy the game loads (another mod's) could not "
+              f"be read -> its colour-variant indices kept as authored (variant "
+              f"textures may misalign): {sorted(set(unreadable))[:5]}",
+              file=_s.stderr)
     for (piece, e), n in zip(loaded, fixed):
         if n:
             e.save(piece)
