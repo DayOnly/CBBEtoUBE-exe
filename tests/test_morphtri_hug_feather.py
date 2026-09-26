@@ -1,0 +1,223 @@
+# CBBEtoUBE - CBBE/3BA to UBE armor converter
+# Copyright (C) 2026 DayOnly
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+"""#morphtri-hug-feather: the leg match reaches a TRI-owning shape only where it
+HUGS the body.
+
+Reported in game 2026-09-26: on a one-piece plated cuirass whose source ships a
+BodySlide TRI, the plate between the legs clipped into itself instead of
+deforming. `#leg-motion-morphtri` had let the leg match reach that shape at the
+pass's 9u hug distance, and the plates stand 2-4u off the body. The fix keeps the
+match on fitted rows (the trousers it was built for sit at 0.6-1.9u) and fades
+it out between _MORPHTRI_HUG_NEAR and _MORPHTRI_HUG_FAR.
+"""
+import importlib
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import src.nif_convert as nc                                  # noqa: E402
+from src import nif_convert_weights as ncw                    # noqa: E402
+from tests import _converter_sources as _cs                   # noqa: E402
+from tests.synthetic_nif import pynifly_available             # noqa: E402
+
+LT, RT, PV = "NPC L Thigh [LThg]", "NPC R Thigh [RThg]", "NPC Pelvis [Pelv]"
+
+
+def test_flag_default_on_and_kill_switch(monkeypatch):
+    assert nc.MORPHTRI_HUG_FEATHER is True
+    assert (nc._MORPHTRI_HUG_NEAR, nc._MORPHTRI_HUG_FAR) == (2.0, 3.0)
+    monkeypatch.setenv("CBBE2UBE_NO_MORPHTRI_HUG_FEATHER", "1")
+    reloaded = importlib.reload(nc)
+    try:
+        assert reloaded.MORPHTRI_HUG_FEATHER is False
+    finally:
+        monkeypatch.delenv("CBBE2UBE_NO_MORPHTRI_HUG_FEATHER", raising=False)
+        importlib.reload(nc)
+
+
+def test_the_feather_is_full_inside_none_beyond_linear_between():
+    f = ncw._hug_feather([0.0, 1.9, 2.0, 2.25, 2.5, 2.75, 3.0, 3.1, 9.0], 2.0, 3.0)
+    assert np.allclose(f, [1, 1, 1, 0.75, 0.5, 0.25, 0, 0, 0])
+
+
+def test_a_degenerate_feather_is_a_hard_cut_not_a_division_by_zero():
+    f = ncw._hug_feather([1.0, 2.0, 2.01], 2.0, 2.0)
+    assert np.array_equal(f, [1.0, 1.0, 0.0])
+    f = ncw._hug_feather([1.0, 2.5], 3.0, 2.0)
+    assert np.array_equal(f, [1.0, 1.0])
+
+
+def test_only_the_shapes_the_opt_out_admitted_are_feathered():
+    """The feather must not reach a shape the pass reached anyway (no TRI), nor a
+    draping shape the gate still skips, nor anything when the instance keeps
+    the gate or passes no feather."""
+    with pytest.MonkeyPatch.context() as mp:
+        _cs.patch(mp, "_source_morph_tri_shape_names",
+                  lambda p: {"armor", "RobesLower"})
+        mp.setattr(nc, "MORPHTRI_NO_LEG_GRAFT", True)
+        adm = ncw._limb_tri_admitted("src_1.nif", True, (2.0, 3.0), {"RobesLower"})
+        assert adm == {"armor"}
+        assert ncw._limb_tri_admitted("src_1.nif", False, (2.0, 3.0), set()) == set()
+        assert ncw._limb_tri_admitted("src_1.nif", True, (), set()) == set()
+        assert ncw._limb_tri_admitted(None, True, (2.0, 3.0), set()) == set()
+        mp.setattr(nc, "MORPHTRI_NO_LEG_GRAFT", False)
+        assert ncw._limb_tri_admitted("src_1.nif", True, (2.0, 3.0), set()) == set()
+
+
+def _forwarded(fn, **flags):
+    seen = {}
+
+    def fake(dst_path, biped_slots=0, **kw):
+        seen.update(kw)
+        return 0
+
+    with pytest.MonkeyPatch.context() as mp:
+        _cs.patch(mp, "_match_limb_motion_to_body", fake)
+        for name, value in flags.items():
+            mp.setattr(nc, name, value)
+        fn("piece_1.nif")
+    assert seen, "the instance never reached the shared pass -- nothing was tested"
+    return seen
+
+
+def test_the_leg_instance_forwards_the_feather_and_the_switch_removes_it():
+    on = _forwarded(nc._match_leg_motion_to_body, MATCH_LEG_MOTION=True,
+                    MORPHTRI_HUG_FEATHER=True)
+    assert on.get("tri_hug") == (nc._MORPHTRI_HUG_NEAR, nc._MORPHTRI_HUG_FAR)
+    off = _forwarded(nc._match_leg_motion_to_body, MATCH_LEG_MOTION=True,
+                     MORPHTRI_HUG_FEATHER=False)
+    assert off.get("tri_hug") == ()
+
+
+def test_no_other_instance_is_feathered():
+    for fn, enable in ((nc._match_spine_motion_to_body, "MATCH_SPINE_MOTION"),
+                       (nc._match_arm_motion_to_body, "MATCH_ARM_MOTION"),
+                       (nc._match_full_weights_to_body, "MATCH_FULL_WEIGHTS")):
+        kw = _forwarded(fn, MORPHTRI_HUG_FEATHER=True, **{enable: True})
+        assert not kw.get("tri_hug"), fn.__name__
+
+
+# --------------------------------------------------------------------------
+# end to end: the real pass on a real (tiny) NIF
+# --------------------------------------------------------------------------
+
+def _grid(x0, x1, z0, z1, y, n=5):
+    xs, zs = np.linspace(x0, x1, n), np.linspace(z0, z1, n)
+    verts = [(float(x), float(y), float(z)) for z in zs for x in xs]
+    tris = []
+    for r in range(n - 1):
+        for c in range(n - 1):
+            a, b = r * n + c, r * n + c + 1
+            d, e = (r + 1) * n + c, (r + 1) * n + c + 1
+            tris += [(a, b, e), (a, e, d)]
+    return verts, tris
+
+
+def _build(path):
+    """BaseShape: a flat patch at y=0 over the leg band, left half on the left
+    thigh, right half on the right. Plate: three strips in front of it at 1u,
+    2.5u and 4u, each Pelvis 0.6 / thighs 0.2 -- a CBBE-style pelvis-heavy row
+    the leg match would re-split onto the thigh under it."""
+    pyn = nc._pynifly()
+    nif = pyn.NifFile()
+    nif.initialize("SKYRIMSE", str(path))
+    bones = [LT, RT, PV]
+
+    def add(name, verts, tris, weights):
+        sh = nif.createShapeFromData(name, verts, tris, [(0.0, 0.0)] * len(verts),
+                                     [(0.0, -1.0, 0.0)] * len(verts))
+        tb = pyn.TransformBuf()
+        tb.set_identity()
+        sh.transform = tb
+        sh.skin()
+        for b in bones:
+            sh.add_bone(b)
+        idt = pyn.TransformBuf()
+        idt.set_identity()
+        for b in bones:
+            sh.set_skin_to_bone_xform(b, idt)
+        for b in bones:
+            pairs = [(i, w[b]) for i, w in enumerate(weights) if w.get(b, 0.0) > 0]
+            if pairs:
+                sh.setShapeWeights(b, pairs)
+
+    # 1u x 2.5u spacing puts a body vertex straight behind every plate vertex,
+    # so the pass's nearest-VERTEX distance is exactly the strip's offset.
+    bv, bt = _grid(-6.0, 6.0, 40.0, 70.0, 0.0, n=13)
+    add("BaseShape", bv, bt,
+        [{LT: 1.0} if x < 0 else {RT: 1.0} for x, _y, _z in bv])
+    pv, pt = [], []
+    for y in (-1.0, -2.5, -4.0):
+        v, t = _grid(-4.0, 4.0, 45.0, 65.0, y)
+        off = len(pv)
+        pv += v
+        pt += [(a + off, b + off, c + off) for a, b, c in t]
+    add("Plate", pv, pt, [{PV: 0.6, LT: 0.2, RT: 0.2} for _ in pv])
+    nif.save()
+    return np.asarray(pv)
+
+
+def _pelvis(path):
+    sh = next(s for s in nc._pynifly().NifFile(filepath=str(path)).shapes
+              if s.name == "Plate")
+    out = np.zeros(len(sh.verts))
+    for i, w in sh.bone_weights.get(PV, []):
+        out[i] += w
+    return out
+
+
+def _run(tmp_path, monkeypatch, *, tri_owned, feather):
+    p = tmp_path / ("f" if feather else "n") / "piece_1.nif"
+    p.parent.mkdir(parents=True)
+    pv = _build(p)
+    monkeypatch.setattr(nc, "MATCH_LEG_MOTION", True)
+    monkeypatch.setattr(nc, "LEG_MOTION_ON_MORPHTRI", True)
+    monkeypatch.setattr(nc, "MORPHTRI_NO_LEG_GRAFT", True)
+    monkeypatch.setattr(nc, "COVERED_SKIN_TARGET", False)
+    monkeypatch.setattr(nc, "MORPHTRI_HUG_FEATHER", feather)
+    _cs.patch(monkeypatch, "_source_morph_tri_shape_names",
+              lambda _p: {"Plate"} if tri_owned else set())
+    nc._match_leg_motion_to_body(str(p), 0, src_nif_path=str(tmp_path / "src_1.nif"))
+    return pv, _pelvis(p)
+
+
+pytestmark_e2e = pytest.mark.skipif(not pynifly_available(),
+                                    reason="pynifly native lib not available")
+
+
+@pytestmark_e2e
+def test_a_standoff_row_keeps_the_authors_weights(tmp_path, monkeypatch):
+    pv, pel = _run(tmp_path, monkeypatch, tri_owned=True, feather=True)
+    near, mid, far = (np.isclose(pv[:, 1], y) for y in (-1.0, -2.5, -4.0))
+    assert np.all(pel[near] < 0.05), "a hugging row must still take the full match"
+    assert np.allclose(pel[mid], 0.3, atol=0.02), "half-way row takes half the match"
+    assert np.allclose(pel[far], 0.6, atol=1e-3), "a standoff row keeps its own weights"
+
+
+@pytestmark_e2e
+def test_switched_off_the_standoff_row_is_matched_again(tmp_path, monkeypatch):
+    pv, pel = _run(tmp_path, monkeypatch, tri_owned=True, feather=False)
+    assert np.all(pel < 0.05), "without the feather every row within 9u is matched"
+
+
+@pytestmark_e2e
+def test_a_shape_without_a_morph_tri_is_not_feathered(tmp_path, monkeypatch):
+    pv, pel = _run(tmp_path, monkeypatch, tri_owned=False, feather=True)
+    assert np.all(pel < 0.05), "the feather is for the opt-out's population only"

@@ -7126,6 +7126,39 @@ MATCH_LEG_MOTION = (
 # CBBE2UBE_NO_LEG_MOTION_MORPHTRI=1 restores the gated behaviour.
 LEG_MOTION_ON_MORPHTRI = (
     not _flag("CBBE2UBE_NO_LEG_MOTION_MORPHTRI", False))
+# #morphtri-hug-feather. `#leg-motion-morphtri` let the leg match reach the
+# TRI-owning shapes at the pass's own 9u hug distance -- a distance chosen for a
+# dress. REPORTED IN GAME 2026-09-26 on a one-piece plated cuirass (legs, faulds
+# and a plate hanging between the legs, all ONE TRI-owning shape): the plate
+# between the legs "clips into itself" instead of deforming; the 09-23 build was
+# fine, and the switch-off build confirmed the cause in game. Mechanism: the
+# plates stand OFF the body (median 2.2-4.3u over the leggings they cover), and
+# each plate row was re-split to the skin nearest to it, independently of the
+# plate it overlaps, so overlapping plates stopped moving together. The rows the
+# 09-23 fix was FOR are fitted cloth: on the reported trousers every changed part
+# sits at a median standoff of 0.6-1.9u.
+#
+# So on the TRI-owning shapes this instance reaches only through the opt-out, a
+# row takes the full match inside _MORPHTRI_HUG_NEAR, none beyond
+# _MORPHTRI_HUG_FAR, and a linear share between (a hard cut would put a hinge in
+# a plate that spans the band). Measured, zeroed UBE body, weight 1, seed 1:
+#   plated cuirass, NEW self-crossing pairs vs bind, plate x plate:
+#       stride L    build 13 / 7   feather 8 / 7   switch-off 8 / 7
+#       thighs fwd  build 26 / 7   feather 19 / 5  switch-off 19 / 5
+#     body exposure (multipose, every region): identical in all three -- the
+#     match bought that piece nothing. NOT a full revert: the fitted leggings
+#     under the plates (0.8u) keep the match, so THEIR own crossings at the
+#     crotch stay at the build's level (stride L 24, switch-off 13) -- the
+#     trousers class the 09-23 fix is for, under the plate.
+#   reported trousers, multipose thigh 1.25% / butt 0.00% with the feather, the
+#     same as the build (switch-off 2.50% / 0.25%): the fix is kept.
+# Insensitive to the exact distances: 1.5-2.5 / 2.0-3.0 / 2.5-3.5 read the same
+# on the plated piece. Other shapes are untouched (the population is only what
+# the opt-out admits). CBBE2UBE_NO_MORPHTRI_HUG_FEATHER=1 restores the 9u reach.
+MORPHTRI_HUG_FEATHER = (
+    not _flag("CBBE2UBE_NO_MORPHTRI_HUG_FEATHER", False))
+_MORPHTRI_HUG_NEAR = _knob("CBBE2UBE_MORPHTRI_HUG_NEAR", 2.0)
+_MORPHTRI_HUG_FAR = _knob("CBBE2UBE_MORPHTRI_HUG_FAR", 3.0)
 # Fraction of the body-vs-garment leg-share gap to close (1.0 = full match).
 _LEG_MOTION_STRENGTH = _knob("CBBE2UBE_LEG_MOTION_STRENGTH", 1.0)
 # Only match verts within this distance of the body: beyond it the cloth is drape, not

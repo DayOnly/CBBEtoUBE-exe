@@ -1845,6 +1845,29 @@ def _limb_morph_tri_skip(dst_path, nf, src_nif_path, ignore_morph_tri: bool,
     return {n for n in names if any(k in (n or "").lower() for k in keys)}
 
 
+def _limb_tri_admitted(src_nif_path, ignore_morph_tri: bool, tri_hug,
+                       skipped) -> set:
+    """The TRI-owning shapes a limb-motion instance reaches ONLY because it opted
+    out of the morph-TRI gate -- the population `tri_hug` applies to
+    (#morphtri-hug-feather). Empty unless the instance passes a `tri_hug` AND
+    ignores the gate AND the gate is live; the shapes it still `skipped`
+    (draping names) are not reached, so they are not admitted."""
+    if not (tri_hug and ignore_morph_tri and src_nif_path
+            and _nc().MORPHTRI_NO_LEG_GRAFT):
+        return set()
+    return _source_morph_tri_shape_names(Path(src_nif_path)) - set(skipped)
+
+
+def _hug_feather(dist, near: float, far: float):
+    """Share of the limb match a row takes by its distance to the body
+    (#morphtri-hug-feather): 1 at or inside `near`, 0 at or beyond `far`, linear
+    between. `far <= near` is a hard cut at `near`."""
+    d = np.asarray(dist, dtype=np.float64)
+    if far <= near:
+        return (d <= near).astype(np.float64)
+    return np.clip((far - d) / (far - near), 0.0, 1.0)
+
+
 def _match_leg_motion_to_body(dst_path, biped_slots: int = 0, src_nif_path=None) -> int:
     """LEG instance of the limb-motion match -- see _match_limb_motion_to_body.
 
@@ -1866,7 +1889,9 @@ def _match_leg_motion_to_body(dst_path, biped_slots: int = 0, src_nif_path=None)
         # #leg-motion-morphtri: the population this instance was built for --
         # minus the DRAPING-named shapes the leg passes already skip by name.
         ignore_morph_tri=_nc().LEG_MOTION_ON_MORPHTRI,
-        keep_draping_skip=True)
+        keep_draping_skip=True,
+        tri_hug=((_nc()._MORPHTRI_HUG_NEAR, _nc()._MORPHTRI_HUG_FAR)
+                 if _nc().MORPHTRI_HUG_FEATHER else ()))
 
 def _match_arm_motion_to_body(dst_path, biped_slots: int = 0, src_nif_path=None) -> int:
     """ARM instance of the limb-motion match  (#armhole-arm-follow).
@@ -1979,6 +2004,7 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                                shoulder_z: float = 0.0,
                                shoulder_max_dist: float = 0.0,
                                keep_draping_skip: bool = False,
+                               tri_hug: tuple = (),
                                src_nif_path=None) -> int:
     """Raise a garment's LIMB-BONE share toward the body's so it travels WITH the
     limb instead of being left behind. Returns the number of verts matched.
@@ -2039,6 +2065,11 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
         with it set needs its own in-game verdict on a TRI-owning piece. The
         LEG instance (`#leg-motion-morphtri`) takes it from
         `LEG_MOTION_ON_MORPHTRI`.
+      * `tri_hug` = (near, far) narrows what that opt-out admits to rows that
+        HUG the body: full match inside `near`, none beyond `far`, a linear
+        share between (`#morphtri-hug-feather`, see MORPHTRI_HUG_FEATHER). It
+        applies only to the TRI-owning shapes the opt-out admitted; every other
+        shape keeps `max_dist`.
       * skips colliders / soft-body / HDT-SMP-rigged shapes, per the standing rule
         that every skin pass leaves authored physics geometry alone.
     """
@@ -2063,6 +2094,8 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
     # Same rule as the reskin and the graft gates. #morphtri-no-leg-graft
     morph_tri_names = _limb_morph_tri_skip(dst_path, nf, src_nif_path,
                                            ignore_morph_tri, keep_draping_skip)
+    _tri_admitted = _limb_tri_admitted(src_nif_path, ignore_morph_tri, tri_hug,
+                                       morph_tri_names)
     # Does a physics XML exist for this piece at all? Drives the inert-chain
     # allowance below. Stem is per-armor (weight suffix stripped), matching where
     # both the generator and the source-XML copy write.
@@ -2575,6 +2608,13 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                         if _b not in ube_bones:
                             foreign += G[:, _j]
                     _sel &= foreign <= 1e-4
+                # #morphtri-hug-feather: see _MORPHTRI_HUG_NEAR. Only on a shape
+                # this instance reached THROUGH the morph-TRI opt-out; 1 at or
+                # inside the near distance, 0 at or beyond the far one.
+                _hug_f = None
+                if s.name in _tri_admitted:
+                    _hug_f = _hug_feather(dist, tri_hug[0], tri_hug[1])
+                    _sel &= _hug_f > 0.0
                 rows = np.where(_sel)[0]
                 if len(rows) == 0:
                     continue
@@ -2588,6 +2628,11 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                     nzo = o_old > 1e-6
                     sc[nzo] = o_new[nzo] / o_old[nzo]
                     NEW[np.ix_(rows, other)] = G[np.ix_(rows, other)] * sc[:, None]
+                if _hug_f is not None:
+                    # A row between the two distances takes that fraction of the
+                    # match; both ends sum to 1, so the blend does too.
+                    _f = _hug_f[rows][:, None]
+                    NEW[rows] = G[rows] + _f * (NEW[rows] - G[rows])
 
             # 4-INFLUENCE CAP, APPLIED HERE ON PURPOSE. Matching to the body's split
             # can give a vert a 5th influence, and Skyrim's skin partition only holds

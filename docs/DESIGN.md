@@ -1153,7 +1153,17 @@ passes, and what each gives an exempted morph-TRI shape is set per pass:
   narrowed by `#morphtri-thigh-graft`);
 - the leg-motion match reaches it (`#leg-motion-morphtri`), except draping-named
   shapes (robe, dress, ...), which the leg passes skip by name; the spine and arm
-  instances keep the exemption;
+  instances keep the exemption. On these shapes it reaches only rows that HUG the
+  body: full match within 2u, a linear share to 3u, none beyond
+  (`#morphtri-hug-feather`, `CBBE2UBE_NO_MORPHTRI_HUG_FEATHER`), instead of the
+  pass's 9u, which was chosen for a dress. Reported in game on a one-piece plated
+  cuirass: the plates stand 2-4u off the body over the leggings, each plate row was
+  re-split to the skin nearest to it independently of the plate it overlaps, and
+  the plate between the legs clipped into itself. The trousers the opt-out was
+  made for sit at 0.6-1.9u and keep their fix. Weights only; the feather's per-row
+  distance is the pass's own nearest-body-vertex distance. Not a full revert on the
+  plated piece: its fitted leggings keep the match. Measurements in the comment on
+  `MORPHTRI_HUG_FEATHER`;
 - the butt / belly / breast jiggle graft reaches it (`#morphtri-keep-jiggle`).
 
 Withholding all three from BodySlide-built trousers left the author's CBBE pelvis
