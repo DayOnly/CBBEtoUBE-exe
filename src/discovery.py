@@ -215,18 +215,47 @@ def _declares_physics(path: Path) -> "bool | None":
         return None
 
 
+def _overwrite_mesh_index_on() -> bool:
+    r"""#overwrite-mesh-index (2026-09-25): does the mesh index read MO2's
+    overwrite folder? Yes, by default.
+
+    `build_mesh_index` walked only the enabled mods, while every other lookup
+    of what the game loads (`zeroed_body._layout_dirs`, the coverage step's
+    `_mesh_exists_anywhere`) puts overwrite first -- and BodySlide run through
+    MO2 without an output mod writes its builds there. A mod that ships only
+    BodySlide projects then had no loose mesh to convert, and a verified zeroed
+    build in overwrite could not be taken (`#zeroed-output-source` said "not in
+    a mod folder"). Overwrite is indexed as a BodySlide output of an unnamed
+    body (tier 2, first among outputs) and may provide the zeroed build. The
+    game Data folder's loose meshes stay out: launched from MO2 that folder is
+    the merged view of every mod, whose files are indexed with their own tier
+    (and of this tool's own output, which the index skips on purpose).
+    CBBE2UBE_NO_OVERWRITE_MESH_INDEX=1 leaves overwrite out again."""
+    return not _flag("CBBE2UBE_NO_OVERWRITE_MESH_INDEX", False)
+
+
+# The provider name of MO2's overwrite folder in the mesh index (no mod folder
+# can be called this: '<' and '>' are not allowed in Windows names).
+OVERWRITE_LABEL = "<MO2 overwrite>"
+
+
 def _zeroed_output_provider(mods_root: Path, enabled_mods: "list[str]",
-                            skip: "set[str]") -> "tuple[str | None, str]":
+                            skip: "set[str]", overwrite: "Path | None" = None
+                            ) -> "tuple[str | None, str]":
     """(the enabled mod that provides the zeroed CBBE body the fit uses, "")
     or (None, why not). Found by CONTENT -- the folder the zeroed-body resolver
     verified the game's CBBE body in -- never by the mod's name, so another
-    body's BodySlide output (a male or UBE build) is never a candidate."""
+    body's BodySlide output (a male or UBE build) is never a candidate. With
+    `overwrite`, a body built into MO2's overwrite folder is provided by
+    `OVERWRITE_LABEL`. #overwrite-mesh-index"""
     import os
     from . import nif_convert_bodyrefs as _br
     from . import zeroed_body as _zb
     if not _br.ZEROED_BODY_REFS:
         return None, "zeroed body references are off"
     root = Path(os.path.realpath(mods_root))
+    ow_root = (Path(os.path.realpath(overwrite)) if overwrite is not None
+               else None)
     provider = None
     for w in ("_0", "_1"):
         try:
@@ -237,13 +266,19 @@ def _zeroed_output_provider(mods_root: Path, enabled_mods: "list[str]",
         if ref is None or os.path.realpath(ref) != os.path.realpath(zb.path):
             return None, (f"the fit's CBBE body at weight {w[-1]} is {ref}, "
                           f"not the zeroed build {zb.path}")
-        try:
-            mod = Path(os.path.realpath(zb.path)).relative_to(root).parts[0]
-        except (ValueError, IndexError):
-            return None, f"the zeroed CBBE body is not in a mod folder ({zb.path})"
+        real = Path(os.path.realpath(zb.path))
+        if ow_root is not None and real.is_relative_to(ow_root):
+            mod = OVERWRITE_LABEL
+        else:
+            try:
+                mod = real.relative_to(root).parts[0]
+            except (ValueError, IndexError):
+                return None, f"the zeroed CBBE body is not in a mod folder ({zb.path})"
         if provider is not None and mod.lower() != provider.lower():
             return None, "the zeroed CBBE body's weights come from two mods"
         provider = mod
+    if provider == OVERWRITE_LABEL:
+        return provider, ""
     names = {m.lower(): m for m in enabled_mods}
     if provider.lower() not in names or provider.lower() in skip:
         return None, f"{provider!r} is not an enabled mod this index reads"
@@ -252,25 +287,31 @@ def _zeroed_output_provider(mods_root: Path, enabled_mods: "list[str]",
 
 def _prefer_zeroed_outputs(index: "dict[str, Path]", win_tier: "dict[str, int]",
                            mods_root: Path, enabled_mods: "list[str]",
-                           skip: "set[str]") -> None:
+                           skip: "set[str]", overwrite: "Path | None" = None
+                           ) -> None:
     """Re-point pieces at the verified zeroed BodySlide build, in place.
     See the #zeroed-output-source block above for the rules. The loose-file
-    answers it needs are remembered for this call only (#zeroed-probe-memo)."""
+    answers it needs are remembered for this call only (#zeroed-probe-memo).
+    `overwrite`: MO2's overwrite folder, which may hold that build
+    (#overwrite-mesh-index)."""
     from . import zeroed_body as _zb
     with _zb.probe_memo():
-        _prefer_zeroed_outputs_in(index, win_tier, mods_root, enabled_mods, skip)
+        _prefer_zeroed_outputs_in(index, win_tier, mods_root, enabled_mods, skip,
+                                  overwrite)
 
 
 def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int]",
                               mods_root: Path, enabled_mods: "list[str]",
-                              skip: "set[str]") -> None:
+                              skip: "set[str]", overwrite: "Path | None" = None
+                              ) -> None:
     if _flag("CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE", False):
         return
     stems = sorted({k[:-len("_0.nif")] for k, t in win_tier.items()
                     if t == 0 and k.endswith(("_0.nif", "_1.nif"))})
     if not stems:
         return
-    provider, why = _zeroed_output_provider(mods_root, enabled_mods, skip)
+    provider, why = _zeroed_output_provider(mods_root, enabled_mods, skip,
+                                            overwrite)
     if provider is None:
         _zos_say(f"[zeroed-output-source] off -- {why}")
         return
@@ -280,7 +321,8 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
     except _zb.ZeroedBodyError as e:
         _zos_say(f"[zeroed-output-source] off -- {e}")
         return
-    out_root = Path(mods_root) / provider
+    out_root = (Path(overwrite) if provider == OVERWRITE_LABEL
+                else Path(mods_root) / provider)
     moved: "list[str]" = []
     kept: "dict[str, int]" = {}
 
@@ -363,11 +405,15 @@ def build_mesh_index(
     target_keys: "set[str] | None" = None,
     skip_mods: "tuple[str, ...] | set[str]" = (),
     unreadable: "list[tuple[str, str]] | None" = None,
+    overwrite: "Path | None" = None,
 ) -> dict[str, Path]:
     """Map each ``meshes\\``-relative NIF path (lowercase, forward-slash, e.g.
     ``'armor/foo/bar_1.nif'``) to the winning provider's absolute file across
     all enabled mods in MO2 priority order. Resolves through the full VFS so
     meshes that live in a replacer or BodySlide output mod are found correctly.
+    With `overwrite` (MO2's overwrite folder) its ``meshes`` are indexed as a
+    BodySlide output of an unnamed body, ahead of every other such output
+    (#overwrite-mesh-index); the game Data folder's loose meshes are not.
 
     Args:
       mods_root: ``<modlist>/mods``.
@@ -458,9 +504,16 @@ def build_mesh_index(
         return result
 
     found_max_tier = -1
-    ordered_mods = sorted(enabled_mods, key=_tier)  # stable: keeps priority in-tier
-    for mod_name in ordered_mods:
-        mtier = _tier(mod_name)
+    # (label, folder, tier). MO2's overwrite is the top of the game's VFS and
+    # where BodySlide run through MO2 writes, so it is indexed like a BodySlide
+    # output of an unnamed body: tier 2, ahead of every other output -- it wins
+    # a mesh no mod ships loose, and #zeroed-output-source may take its verified
+    # zeroed build over a mod's own. #overwrite-mesh-index
+    providers = [(m, mods_root / m, _tier(m)) for m in enabled_mods]
+    if overwrite is not None and _overwrite_mesh_index_on():
+        providers.insert(0, (OVERWRITE_LABEL, Path(overwrite), 2))
+    providers.sort(key=lambda p: p[2])      # stable: keeps priority in-tier
+    for mod_name, mod_folder, mtier in providers:
         # Early-stop only once every referenced mesh is found AND no still-unwalked
         # mod could out-rank a current winner. With body-match on, a later SAME-tier
         # mod can still replace a winner, so we must finish every tier <= the deepest
@@ -469,7 +522,7 @@ def build_mesh_index(
             break
         if mod_name.lower() in skip:
             continue
-        meshes_dir = mods_root / mod_name / "meshes"
+        meshes_dir = mod_folder / "meshes"
         try:
             if not meshes_dir.is_dir():
                 continue
@@ -503,5 +556,6 @@ def build_mesh_index(
                         and inc == (False, True)     # incumbent: bespoke body, no canonical
                         and chal[0]):                # challenger: has canonical body
                     index[rel] = nif       # tier unchanged; priority already lost, body wins
-    _prefer_zeroed_outputs(index, win_tier, mods_root, enabled_mods, skip)
+    _prefer_zeroed_outputs(index, win_tier, mods_root, enabled_mods, skip,
+                           overwrite if _overwrite_mesh_index_on() else None)
     return index

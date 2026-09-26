@@ -431,6 +431,32 @@ dead junction in one mod aborted the index for every mod. Now:
   refresh or convert tries again.
 No switch: when the index builds -- every run seen -- the output is byte-identical.
 
+**MO2's overwrite folder is a provider** (`#overwrite-mesh-index`, 2026-09-25,
+`CBBE2UBE_NO_OVERWRITE_MESH_INDEX`). `build_mesh_index` walked only the enabled mods;
+every other lookup of what the game loads -- `zeroed_body._layout_dirs`,
+`_mesh_exists_anywhere`, the loose-mesh index behind it -- puts overwrite first, and
+BodySlide run through MO2 without an output mod writes its builds there. A mod that
+ships only BodySlide projects then had no loose mesh to convert (it fell to an archive
+copy or was "found nowhere"), and rule 3 refused a zeroed body built into overwrite
+("not in a mod folder"). Now both steps pass the modlist's overwrite
+(`_modlist_overwrite`, None for any other mods folder) and the index walks its `meshes`
+as a BodySlide output of an unnamed body -- tier 2, first among the outputs: it wins a
+mesh no mod ships loose, a mod's own mesh (tier 0) still wins over it as rule 1 says of
+any output, and rule 3 may take a verified zeroed build from it
+(`_zeroed_output_provider` names it `OVERWRITE_LABEL`, `<MO2 overwrite>`, a name no
+folder can have). Tier 2 rather than the top: the tiers rank a mesh as a conversion
+SOURCE, not as the file the game draws, and overwrite's meshes are BodySlide builds of
+whatever preset was chosen -- exactly what rule 1 ranks below a mod's own. The game
+Data folder's loose meshes stay out: launched from MO2 that folder is the merged view
+of every mod, whose files the index already holds with their own tier, and walking it
+would rank every BodySlide output as a mod's own mesh and hand back this tool's own
+output mod, which the index skips on purpose; run on its own, a stock game folder holds
+the base game, whose meshes the vanilla sweep resolves from the archives.
+`_mesh_exists_anywhere` lists the Data folder because it only asks whether a mesh
+exists, never which copy to convert. The switch is in the selection memo key. Live: the
+reported modlist's overwrite and game Data folder hold no `meshes` folder; the
+selection-sized index (4,562 keys) is identical key for key, value for value.
+
 ### Which mods and pieces are sources at all (2026-09-24)
 
 The rules above pick a PROVIDER for a mesh the converter already plans. Four gates

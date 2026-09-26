@@ -1380,6 +1380,19 @@ def _same_path(a, b) -> bool:
             == os.path.normcase(os.path.abspath(str(b))))
 
 
+def _modlist_overwrite(mods_root: Path) -> "Path | None":
+    """MO2's overwrite folder of the discovered modlist when `mods_root` is its
+    mods folder, else None: the mesh index reads it (#overwrite-mesh-index).
+    An unreadable layout is None too: it must not fail the index it feeds."""
+    try:
+        lay = paths.discover_layout()
+    except Exception:
+        return None
+    if lay.mods_root is None or not _same_path(lay.mods_root, mods_root):
+        return None
+    return paths.overwrite_dir(lay)
+
+
 def _loaded_copies_only(source_dir: Path, plugins: "list[Path]",
                         skipped: "list[tuple[Path, str]] | None" = None
                         ) -> "list[Path]":
@@ -5344,7 +5357,8 @@ def _cmd_convert(args):
                     Path(_mr), _enabled_ordered,
                     target_keys=_target_keys,
                     skip_mods={Path(output).name},
-                    unreadable=_unreadable)
+                    unreadable=_unreadable,
+                    overwrite=_modlist_overwrite(Path(_mr)))   # #overwrite-mesh-index
                 print(f"  VFS mesh index: located {len(mesh_vfs_index)} of "
                       f"{len(_target_keys)} referenced armour mesh path(s) "
                       f"across {len(_enabled_ordered)} enabled mods")
@@ -8458,6 +8472,8 @@ def _find_armor_mod_dirs(mods_root: Path,
             # The female-only rule's pairs change the mesh keys indexed.
             # #female-slot-pairs #female-slot-absent
             _female_slot_pairs_on(), _female_slot_absent_on(),
+            # Whether overwrite's meshes are indexed. #overwrite-mesh-index
+            discovery._overwrite_mesh_index_on(),
             _flag("CBBE2UBE_NO_BSA_ONLY_SOURCES", False),
             _flag("CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES", False),
             _flag("CBBE2UBE_NO_NUDE_BASENAME_PATH", False),
@@ -8684,7 +8700,8 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
         try:
             vfs = discovery.build_mesh_index(
                 mods_root, enabled_ordered, target_keys=union_all,
-                skip_mods=_index_skip, unreadable=_unreadable)
+                skip_mods=_index_skip, unreadable=_unreadable,
+                overwrite=_modlist_overwrite(mods_root))  # #overwrite-mesh-index
         except Exception as _e:
             # NOT an empty index: {} reads as "no mod ships these meshes", and
             # the convert step reused it, so every source converted its own or

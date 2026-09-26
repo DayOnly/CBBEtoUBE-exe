@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixed — armour you built with BodySlide into Mod Organizer's overwrite folder is found
+
+When BodySlide runs through Mod Organizer without an output mod, it saves its
+builds in the overwrite folder, and the game loads them from there. The tool's
+search for armour meshes never looked in that folder, so an armour that exists
+only as BodySlide builds there was not converted, and a clean (zeroed) build there
+could not be used as the conversion source the way one in a BodySlide output mod
+is. The overwrite folder is now searched and treated like a BodySlide output mod:
+a mesh that only it has is converted from it, an armour mod's own mesh still comes
+first, and a verified zeroed build there is taken as for an output mod. The reported
+modlist has no meshes in its overwrite folder, so its result does not change.
+`CBBE2UBE_NO_OVERWRITE_MESH_INDEX=1` (set to 1) leaves the folder out.
+
 ### Fixed — plugins this tool's patches build on are read from the copy the game loads
 
 To build its patches, the tool reads the plugins they depend on. It looked for
