@@ -10062,11 +10062,15 @@ PAIRS = (
          tests=('tests/test_atomic_audit_append.py',),
          expect=('test_the_lift_log_reader_counts_a_torn_line',),
     ),
-    Pair('AAA-i', 'a blank line is counted as a torn record',
+    # A blank line in an old sink is a splice artefact: a record overwritten
+    # at its own offset by one exactly its length minus the newline leaves only
+    # the newline behind, so the record is lost with no unparseable line.
+    Pair('AAA-i', 'a blank line is not counted as a lost record',
          edits=(
              ('scripts/analysis/physics_rest_depth.py',
-              '            if not line.strip():\n                continue\n            try:\n                rec = json.loads(line)',
-              '            try:  # MUTATED\n                rec = json.loads(line)', 1),
+              '            if not line.strip():\n'
+              '                out.torn += 1           # a blank line is a splice artefact too\n',
+              '            if not line.strip():  # MUTATED\n', 1),
          ),
          tests=('tests/test_atomic_audit_append.py',),
          expect=('test_the_lift_log_reader_counts_a_torn_line',),

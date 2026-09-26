@@ -25,6 +25,7 @@ sys.path.insert(0, str(_REPO))
 from src import atomic_io, fit_metrics  # noqa: E402
 from scripts.analysis import physics_rest_depth as prd  # noqa: E402
 from scripts.analysis import survival_report as sr  # noqa: E402
+from scripts.analysis import audit_sink  # noqa: E402
 
 WORKERS, RECORDS = 8, 500
 
@@ -182,15 +183,24 @@ def test_the_lift_log_reader_counts_a_torn_line(tmp_path, capsys):
     log = tmp_path / "standoff_audit.jsonl"
     _old_sink_with_a_tear(log)
     got = prd.read_lift_log(log)
-    assert got.torn == 1                       # the blank line is not a tear
+    # The unparseable line and the blank one: a blank line in an old sink is a
+    # record overwritten down to its newline, so it is a lost record too.
+    assert got.torn == 2
     assert dict(got[prd.log_key("set/a/cuirass_1.nif")]["moved"]) == {
         "Skirt 1_00": {0.9}}
     prd.lift_log_check([], got, 5)
-    assert "1 torn line(s)" in capsys.readouterr().out
+    assert "2 torn line(s)" in capsys.readouterr().out
 
 
 def test_the_survival_reader_says_it_skipped_a_torn_line(tmp_path, capsys):
     log = tmp_path / "standoff_audit.jsonl"
     _old_sink_with_a_tear(log)
     assert len(sr.load(log)) == 1
-    assert "1 torn line(s)" in capsys.readouterr().err
+    assert "2 torn line(s)" in capsys.readouterr().err
+
+
+def test_the_sink_reader_counts_a_blank_line_as_torn(tmp_path):
+    log = tmp_path / "standoff_audit.jsonl"
+    _old_sink_with_a_tear(log)
+    rows, torn = audit_sink.load(log)
+    assert len(rows) == 1 and torn == 2

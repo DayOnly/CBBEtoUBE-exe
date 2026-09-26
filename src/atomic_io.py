@@ -194,7 +194,8 @@ def atomic_copy(src, dst) -> None:
 # write", two steps another process can get between, so two workers write at
 # the same offset and one record lands inside the other. MEASURED: a full run
 # tore 14-16 lines and lost ~30 records, differently each run; the live sink
-# had 58 torn lines; 8 processes x 500 records of up to 30 KB tore ~800 lines
+# had 58 splice artefacts (51 unparseable lines + 7 blank ones); 8 processes x
+# 500 records of up to 30 KB tore ~800 lines
 # per trial with no lock (the same test with this lock: 0).
 #
 # The fix is a cross-process lock around ONE write of the whole encoded record.

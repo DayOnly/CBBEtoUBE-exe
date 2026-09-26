@@ -257,7 +257,10 @@ seek-to-end then write, and a raw `O_APPEND` `os.write` is no better (measured:
 8 processes x 500 records of up to 30 KB tore ~600-800 lines per trial either
 way), so two workers could write at one offset and splice two records. A full
 run tore 14-16 lines and lost ~30 records, a different set each run; the live
-sink held 51 torn lines. Each record is now ONE write of the whole encoded line
+sink held 58 splice artefacts: 51 unparseable lines and 7 blank ones (a record
+overwritten at its own offset by one exactly its length minus the newline
+leaves only the newline, so a blank line is a lost record too; the readers
+count both). Each record is now ONE write of the whole encoded line
 under an exclusive cross-process lock: a byte-range lock at offset
 0x7FFFFFFF_00000000 (`LockFileEx`; `flock` elsewhere), far past any data, so it
 needs no second file and the OS drops it if a worker dies holding it. A lock

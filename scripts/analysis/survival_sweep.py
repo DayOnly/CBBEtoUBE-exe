@@ -220,6 +220,7 @@ def main() -> int:
     if sink.exists():
         for line in sink.read_text("utf-8").splitlines():
             if not line.strip():
+                torn += 1      # a blank line is a splice artefact too
                 continue
             try:
                 r = json.loads(line)

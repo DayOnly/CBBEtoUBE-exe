@@ -158,6 +158,7 @@ def load(path, nif=None, shape=None):
         for line in f:
             line = line.strip()
             if not line:
+                torn += 1               # a blank line is a splice artefact too
                 continue
             try:
                 r = json.loads(line)

@@ -709,6 +709,7 @@ def read_lift_log(path):
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             if not line.strip():
+                out.torn += 1           # a blank line is a splice artefact too
                 continue
             try:
                 rec = json.loads(line)

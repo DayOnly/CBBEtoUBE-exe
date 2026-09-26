@@ -88,6 +88,9 @@ def load(path: Path):
         for line in f:
             line = line.strip()
             if not line:
+                # Every record is written with its own newline, so a blank
+                # line is what a splice leaves: count it with the torn ones.
+                torn += 1
                 continue
             try:
                 rows.append(json.loads(line))
