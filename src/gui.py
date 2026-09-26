@@ -224,6 +224,22 @@ def _mod_eta(started: float, nif_done: int, nif_total: int, now: float) -> str:
     return _fmt_eta(per_file * max(0, nif_total - nif_done))
 
 
+def _nif_status(mod: dict, nif_done: int, nif_total: int, run_eta: str,
+                now: float) -> str:
+    """The status line on a per-file marker. `mod` is the current mod marker
+    {i, n, name, t0}. With several mods the per-file estimate is this mod's and
+    the run's comes from the gaps between mod markers. With ONE bar -- a
+    one-mod run, or the batch-wide NIF phase that converts every source's
+    files together (#global-schedule) -- there is no second marker to measure,
+    so the per-file estimate IS the run's."""
+    left = _mod_eta(mod["t0"], nif_done, nif_total, now)
+    head = (f"Converting {mod['i']}/{mod['n']}: {mod['name']} — file "
+            f"{nif_done}/{nif_total}, ")
+    if mod["n"] == 1:
+        return head + left
+    return head + f"{left} for this mod" + (f" — {run_eta}" if run_eta else "")
+
+
 def _eta_step(eta: dict, done: int, total: int, now: float,
               alpha: float = 0.25) -> str:
     """Advance the per-mod ETA on a progress marker and return a 'time left'
@@ -3023,11 +3039,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             prog.configure(value=_bar_value(m["i"], nif_done, nif_total))
         except Exception:
             pass
-        run_eta = state.get("_eta_text") or ""
-        status.set(f"Converting {m['i']}/{m['n']}: {m['name']} — file "
-                   f"{nif_done}/{nif_total}, "
-                   f"{_mod_eta(m['t0'], nif_done, nif_total, time.time())} for this mod"
-                   + (f" — {run_eta}" if run_eta else ""))
+        status.set(_nif_status(m, nif_done, nif_total,
+                               state.get("_eta_text") or "", time.time()))
 
     def _poll():
         if not root.winfo_exists():

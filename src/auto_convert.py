@@ -732,14 +732,30 @@ def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
                             make_steps, convert_serial, checkpoint):
     """#global-schedule: plan every source, convert all their NIFs on one
     schedule, then finish each source in source order. Appends
-    (source, result, error) to `results` in source order and calls
-    `checkpoint()` after each, as the one-source-at-a-time loop does.
+    (source, result, error) to `results` in source order.
 
-    `make_steps(src)` -> that source's `_auto_convert_mod_steps` generator;
-    `convert_serial(src)` -> the whole source converted in this process with
-    no pool (the vanilla sweep's self-heal)."""
+    `make_steps(src)` -> that source's `_auto_convert_mod_steps` generator
+    (driven with `batch_schedule=True`: its patch and snapshot are written at
+    its finish); `convert_serial(src)` -> the whole source converted in this
+    process with no pool (the vanilla sweep's self-heal, run at the sweep's
+    turn, where one source at a time ran it). `checkpoint(view, progress)`
+    writes the report of the run so far: `view` is `results` plus every source
+    whose planning failed and whose turn has not come, `progress` the NIF
+    phase so far ({files_done, files_total, sources_nifs_done}) or None. It is
+    called when a planning failure happens, when a source's last NIF is in,
+    and after each finish -- a run that dies in the NIF phase leaves a report
+    that says how far it got."""
     n = len(sources)
     slots: list = []
+    phase_rec: dict = {}          # the NIF phase so far, once it has begun
+
+    def _view():
+        return list(results) + [
+            (s["src"], None, s["error"]) for s in slots[len(results):]
+            if s["error"] is not None]
+
+    def _checkpoint():
+        checkpoint(_view(), dict(phase_rec) if phase_rec else None)
 
     def _failed(err):
         warn(f"conversion failed: {plain_error(err)}",
@@ -764,7 +780,8 @@ def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
                   "lowest-priority source ===")
         print(f"\n--- [{i}/{n}] planning '{disp}' ---")
         slot = {"src": src, "disp": disp, "sweep": is_sweep, "steps": None,
-                "phase": None, "result": None, "error": None, "claims": set()}
+                "phase": None, "result": None, "error": None, "claims": set(),
+                "retry": None}
         before = set(claimed_dst_paths) if is_sweep else None
         try:
             steps = make_steps(src)
@@ -775,18 +792,20 @@ def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
                 slot["result"] = done.value
         except Exception as e1:
             if is_sweep:
-                try:
-                    slot["result"] = _sweep_serial_retry(
-                        src, e1, set(claimed_dst_paths) - before)
-                except Exception as e2:
-                    slot["error"] = e2
+                # Its serial self-heal runs at its turn, after every source
+                # before it -- where one source at a time ran it -- not ahead
+                # of their NIFs and outside the chain their shared bases keep.
+                slot["retry"] = e1
+                print(f"  vanilla sweep planning failed ({plain_error(e1)}) -- "
+                      "retried serially at its turn")
             else:
                 slot["error"] = e1
-            if slot["error"] is not None:
-                _failed(slot["error"])
-        if is_sweep and slot["steps"] is not None:
+                _failed(e1)
+        if is_sweep:
             slot["claims"] = set(claimed_dst_paths) - before
         slots.append(slot)
+        if slot["error"] is not None:
+            _checkpoint()             # a failure is on disk when it happens
 
     per_source = [(k, s["phase"].work_items) for k, s in enumerate(slots)
                   if s["phase"] is not None]
@@ -796,17 +815,26 @@ def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
     t0 = time.perf_counter()
     state = {"done": 0, "last": t0}
     last_done = {}
+    phase_rec.update(files_done=0, files_total=total, sources_nifs_done=[])
     if total:
         print(f"\n=== NIF conversion: {total} file(s) from {len(per_source)} "
               f"source(s) on one schedule, {workers} worker(s), largest first ===")
         # ONE bar for the whole phase: every source's files fill it together.
-        # "[progress] 1 1 <label>" then "[progress-nif] <done> <total>".
+        # "[progress] 1 1 <label>" then "[progress-nif] <done> <total>"; with a
+        # single bar the window takes its per-file estimate as the run's.
         # #per-file-progress
         print("[progress] 1 1 NIF conversion (all sources)", flush=True)
 
     def _deliver(k, r):
-        slots[k]["phase"].result.nif_results.append(r)
+        phase = slots[k]["phase"]
+        phase.result.nif_results.append(r)
         state["done"] += 1
+        phase_rec["files_done"] = state["done"]
+        if len(phase.result.nif_results) == len(phase.work_items):
+            # Every NIF of this source is in; its patch and post-conversion
+            # steps wait for its turn. Say so on disk. #report-checkpoint
+            phase_rec["sources_nifs_done"].append(slots[k]["src"].name)
+            _checkpoint()
         now = time.perf_counter()
         last_done[k] = now - t0
         if now - state["last"] >= 5.0 or state["done"] == total:
@@ -819,7 +847,13 @@ def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
     def _finish(k):
         slot = slots[k]
         r, err = slot["result"], slot["error"]
-        if slot["steps"] is not None:
+        if slot["retry"] is not None:
+            try:
+                r = _sweep_serial_retry(slot["src"], slot["retry"], slot["claims"])
+            except Exception as e2:
+                err = e2
+                _failed(err)
+        elif slot["steps"] is not None:
             phase = slot["phase"]
             m = len(phase.work_items)
             if m:
@@ -843,7 +877,7 @@ def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
                 if err is not None:
                     _failed(err)
         results.append((slot["src"], r if err is None else None, err))
-        checkpoint()
+        _checkpoint()
 
     sched = _GlobalNifSchedule(nif_pool, units, n, _deliver, _finish)
     sched.run()
@@ -2154,6 +2188,99 @@ def refresh_mod_esp(
     return result
 
 
+def _write_source_patches(result, output_dir, src_esps, *, output_esp_name,
+                          unmerged_patch_subdir, master_data_dirs,
+                          body_mesh_rel_paths, bsa_mesh_rel_paths,
+                          converted_rel_paths) -> None:
+    """One source's patch ESP(s) and, beside each, the `.espgen.json` snapshot
+    `--plugins-only` replays; results and notes go to `result`.
+
+    Every input is decided by planning (the source ESPs, the planned
+    converted-mesh set, the source's own mesh paths), none by a NIF. One
+    source at a time writes them before its NIFs; on the batch-wide schedule
+    they are written when the source finishes, after the schedule converted
+    its NIFs -- so a run killed in the NIF phase leaves no patch or snapshot
+    naming a NIF it had not yet written, only the previous run's.
+    #global-schedule"""
+    if not src_esps:
+        result.notes.append("no source ESP found — skipping ESP generation")
+    else:
+        result.source_esps = src_esps
+        result.source_esp = src_esps[0]  # backward compat
+        # Route unmerged patches into a subfolder so MO2's plugin scanner
+        # ignores them; only the merged Combined ESP at the mod root is active.
+        if unmerged_patch_subdir and unmerged_patch_subdir not in (".", "/"):
+            esp_out_dir = output_dir / unmerged_patch_subdir
+            esp_out_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            esp_out_dir = output_dir
+        for i, src_esp in enumerate(src_esps):
+            # Honor `output_esp_name` only for single-ESP mods. With
+            # multiple ESPs we use the auto-generated stem to keep
+            # each output distinct.
+            if output_esp_name is not None and len(src_esps) == 1:
+                cur_out_name = output_esp_name
+            else:
+                # '<stem> (CBBEtoUBE src).esp'. #source-patch-rename
+                cur_out_name = _source_patch_name(src_esp.stem)
+            out_esp = esp_out_dir / cur_out_name
+            # Skip ESPs with no armor addons (no ARMA group) entirely. Big bundle
+            # mods (merged xEdit output, overhaul patch packs) carry many
+            # landscape/navmesh/quest/patch ESPs with no armour -- attempting a
+            # patch for them only raises "no ARMA group", which would be
+            # miscounted as a failure claiming "armor absent / invisible" for
+            # armour that never existed. A benign skip, not a failure.
+            try:
+                from . import esp as _esp
+                if _esp.ESP.load_cached(src_esp).group(b"ARMA") is None:
+                    result.esp_skipped_no_armor += 1
+                    continue
+            except Exception:
+                pass  # unreadable -> let generate_ube_patch surface the real error
+            try:
+                stats = ube_patcher.generate_ube_patch(
+                    src_esp, out_esp,
+                    master_data_dirs=master_data_dirs,
+                    body_mesh_rel_paths=body_mesh_rel_paths,
+                    bsa_mesh_rel_paths=bsa_mesh_rel_paths,
+                    converted_rel_paths=converted_rel_paths,
+                )
+                out_path = Path(stats.get("output", out_esp))
+                result.output_esps.append(out_path)
+                result.esp_stats_list.append(stats)
+                # ESP-refresh snapshot: the per-mod inputs generate_ube_patch
+                # needs besides live master dirs. `--plugins-only` replays the
+                # ESP phase from these in minutes (no NIF work) -- safe under
+                # FULL SKYPATCHER because patch content depends only on source
+                # ARMAs + the converted-mesh set (see refresh_mod_esp).
+                try:
+                    import json as _json
+                    from .atomic_io import atomic_write_bytes
+                    # Atomic so a crash/kill mid-write can't leave a torn snapshot
+                    # that a later --plugins-only refresh would silently skip
+                    # (dropping that source's armor from the re-merge).
+                    atomic_write_bytes(
+                        Path(str(out_esp) + ".espgen.json"),
+                        _json.dumps({
+                            "source_esp": str(src_esp),
+                            "converted_rel_paths": sorted(converted_rel_paths or []),
+                            "body_mesh_rel_paths": sorted(body_mesh_rel_paths or []),
+                        }).encode("utf-8"))
+                except OSError:
+                    pass
+                # Backward compat: primary fields = first successful patch
+                if result.output_esp is None:
+                    result.output_esp = out_path
+                    result.esp_stats = stats
+                for w in stats.get("validation_warnings", []) or []:
+                    result.notes.append(
+                        f"!! patch validator ({src_esp.name}): {w}")
+            except Exception as e:
+                result.notes.append(
+                    f"ESP generation failed for {src_esp.name}: {e}")
+                result.esp_gen_failures.append(src_esp.name)
+
+
 def auto_convert_mod(source_dir, output_dir, **kwargs) -> "AutoConvertResult":
     """Run the full pipeline on one source mod: plan it, convert its NIFs, then
     its post-conversion steps. The pipeline itself, and every argument, is
@@ -2162,7 +2289,7 @@ def auto_convert_mod(source_dir, output_dir, **kwargs) -> "AutoConvertResult":
     steps = _auto_convert_mod_steps(source_dir, output_dir, **kwargs)
     try:
         next(steps)
-    except StopIteration as done:        # nothing planned: no pause
+    except StopIteration as done:        # steps that end without pausing
         return done.value
     return _resume_source_steps(steps, run_nifs=True)
 
@@ -2261,15 +2388,23 @@ def _auto_convert_mod_steps(
     # mod already built for UBE is left to it, and an earlier run's copy is moved
     # out of meshes\. None => convert it anyway (the old rule). #skip-built-ube-path
     built_ube_twin: "callable[[str], str | None] | None" = None,
+    # True when the batch-wide schedule drives these steps
+    # (`_convert_sources_global`): the patch ESP and its snapshot are written
+    # only once the schedule has converted this source's NIFs, and a base an
+    # earlier source claimed in this run is held, not superseded. False (one
+    # source at a time) -> the order the steps always had. #global-schedule
+    batch_schedule: bool = False,
 ):
     """Run the full M2 + M3 phase 1 pipeline on a single CBBE armor mod.
 
-    A generator, paused ONCE: after planning (claims, the patch ESP, the work
-    items) it yields a `_NifPhase` and is sent whether to convert those NIFs
-    itself. The batch-wide schedule plans every source to that point, runs all
-    their NIFs together, then resumes each source in order with False. Driven
-    by `_resume_source_steps`; `auto_convert_mod` is the one-call form.
-    Nothing planned (no armour meshes resolved) -> no pause. #global-schedule
+    A generator, paused ONCE: after planning (claims, the work items) it
+    yields a `_NifPhase` and is sent whether to convert those NIFs itself.
+    The batch-wide schedule plans every source to that point, runs all their
+    NIFs together, then resumes each source in order with False. Driven by
+    `_resume_source_steps`; `auto_convert_mod` is the one-call form. A source
+    with no armour meshes resolved pauses too, with no work items, so its
+    post-conversion steps (the texture copy) keep their place in source
+    order. #global-schedule
 
     Args:
       source_dir: a CBBE armor mod folder (the kind MO2 would install)
@@ -2525,83 +2660,15 @@ def _auto_convert_mod_steps(
             bsa_mesh_rel_paths = None
 
     src_esps = _sweep_esps or _find_source_esps(source_dir)
-    if not src_esps:
-        result.notes.append("no source ESP found — skipping ESP generation")
-    else:
-        result.source_esps = src_esps
-        result.source_esp = src_esps[0]  # backward compat
-        # Route unmerged patches into a subfolder so MO2's plugin scanner
-        # ignores them; only the merged Combined ESP at the mod root is active.
-        if unmerged_patch_subdir and unmerged_patch_subdir not in (".", "/"):
-            esp_out_dir = output_dir / unmerged_patch_subdir
-            esp_out_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            esp_out_dir = output_dir
-        for i, src_esp in enumerate(src_esps):
-            # Honor `output_esp_name` only for single-ESP mods. With
-            # multiple ESPs we use the auto-generated stem to keep
-            # each output distinct.
-            if output_esp_name is not None and len(src_esps) == 1:
-                cur_out_name = output_esp_name
-            else:
-                # '<stem> (CBBEtoUBE src).esp'. #source-patch-rename
-                cur_out_name = _source_patch_name(src_esp.stem)
-            out_esp = esp_out_dir / cur_out_name
-            # Skip ESPs with no armor addons (no ARMA group) entirely. Big bundle
-            # mods (merged xEdit output, overhaul patch packs) carry many
-            # landscape/navmesh/quest/patch ESPs with no armour -- attempting a
-            # patch for them only raises "no ARMA group", which would be
-            # miscounted as a failure claiming "armor absent / invisible" for
-            # armour that never existed. A benign skip, not a failure.
-            try:
-                from . import esp as _esp
-                if _esp.ESP.load_cached(src_esp).group(b"ARMA") is None:
-                    result.esp_skipped_no_armor += 1
-                    continue
-            except Exception:
-                pass  # unreadable -> let generate_ube_patch surface the real error
-            try:
-                stats = ube_patcher.generate_ube_patch(
-                    src_esp, out_esp,
-                    master_data_dirs=master_data_dirs,
-                    body_mesh_rel_paths=body_mesh_rel_paths,
-                    bsa_mesh_rel_paths=bsa_mesh_rel_paths,
-                    converted_rel_paths=converted_rel_paths,
-                )
-                out_path = Path(stats.get("output", out_esp))
-                result.output_esps.append(out_path)
-                result.esp_stats_list.append(stats)
-                # ESP-refresh snapshot: the per-mod inputs generate_ube_patch
-                # needs besides live master dirs. `--plugins-only` replays the
-                # ESP phase from these in minutes (no NIF work) -- safe under
-                # FULL SKYPATCHER because patch content depends only on source
-                # ARMAs + the converted-mesh set (see refresh_mod_esp).
-                try:
-                    import json as _json
-                    from .atomic_io import atomic_write_bytes
-                    # Atomic so a crash/kill mid-write can't leave a torn snapshot
-                    # that a later --plugins-only refresh would silently skip
-                    # (dropping that source's armor from the re-merge).
-                    atomic_write_bytes(
-                        Path(str(out_esp) + ".espgen.json"),
-                        _json.dumps({
-                            "source_esp": str(src_esp),
-                            "converted_rel_paths": sorted(converted_rel_paths or []),
-                            "body_mesh_rel_paths": sorted(body_mesh_rel_paths or []),
-                        }).encode("utf-8"))
-                except OSError:
-                    pass
-                # Backward compat: primary fields = first successful patch
-                if result.output_esp is None:
-                    result.output_esp = out_path
-                    result.esp_stats = stats
-                for w in stats.get("validation_warnings", []) or []:
-                    result.notes.append(
-                        f"!! patch validator ({src_esp.name}): {w}")
-            except Exception as e:
-                result.notes.append(
-                    f"ESP generation failed for {src_esp.name}: {e}")
-                result.esp_gen_failures.append(src_esp.name)
+    _patch_args = dict(
+        output_esp_name=output_esp_name,
+        unmerged_patch_subdir=unmerged_patch_subdir,
+        master_data_dirs=master_data_dirs,
+        body_mesh_rel_paths=body_mesh_rel_paths,
+        bsa_mesh_rel_paths=bsa_mesh_rel_paths,
+        converted_rel_paths=converted_rel_paths)
+    if not batch_schedule:
+        _write_source_patches(result, output_dir, src_esps, **_patch_args)
 
     # --- NIFs ---
     # Output paths planned for this call; scoped to THIS mod so the post-conversion
@@ -2609,6 +2676,9 @@ def _auto_convert_mod_steps(
     planned_output_nifs: "set[Path]" = set()
     if not resolved_pairs:
         result.notes.append("no convertible armour meshes resolved")
+        # Nothing to convert, but the steps below (the texture copy) still
+        # wait for this source's turn in source order. #global-schedule
+        yield _NifPhase(result, [], 1)
     else:
         # Scan source ESPs' ARMA records for slot-49 meshes (skirts / hip cloth)
         # so the converter can bump inflation for them. Use source ESPs (pre-rewrite)
@@ -2729,10 +2799,14 @@ def _auto_convert_mod_steps(
                 "(earlier source mod won the output path)")
         if skipped_built:
             _stuck: list = []
-            # A base an EARLIER source claimed this run is its conversion, not
-            # an earlier run's copy: it stays. #global-schedule
+            # On the batch-wide schedule a base an EARLIER source claimed this
+            # run is that source's conversion, still to be written, not an
+            # earlier run's copy: it stays. One source at a time, the earlier
+            # source's copy is already written and moves with the rest, as it
+            # always did. #global-schedule
             _to_move, _held = _split_claimed_supersedes(
-                [r for r, _m in skipped_built], nif_dst_root, claimed_dst_paths)
+                [r for r, _m in skipped_built], nif_dst_root,
+                claimed_dst_paths if batch_schedule else None)
             _moved = _supersede_built_ube_outputs(
                 output_dir, nif_dst_root, _to_move,
                 failed=_stuck)
@@ -2855,6 +2929,11 @@ def _auto_convert_mod_steps(
             result.notes.append(
                 f"NIF conversion: {len(work_items)} files in "
                 f"{elapsed:.1f}s ({rate:.1f}/s) with {nif_workers} worker(s)")
+
+    if batch_schedule:
+        # This source's NIFs are all written now: only now may its patch and
+        # snapshot name them. #global-schedule
+        _write_source_patches(result, output_dir, src_esps, **_patch_args)
 
     # --- textures ---
     # Sweep: never texture-copy from the Data dir (same usvfs merged-view /
@@ -3398,7 +3477,7 @@ def write_conversion_report_json(output_dir, results,
                                  workers=None,
                                  orphan_temps_removed=0,
                                  *, planned=None,
-                                 complete=True) -> "Path | None":
+                                 complete=True, progress=None) -> "Path | None":
     """Machine-readable sibling of conversion_summary.txt, for the GUI health
     panel. Same batch stats plus the postflight invisibility-risk signal
     (weight-partner divergence). Best-effort; never raises.
@@ -3467,6 +3546,11 @@ def write_conversion_report_json(output_dir, results,
             # start. #orphan-temps
             "orphan_temps_removed": int(orphan_temps_removed or 0),
         }
+        if progress is not None:
+            # A checkpoint inside the batch-wide NIF phase: files converted so
+            # far, and the sources whose every NIF is in but whose turn to
+            # finish (their patch included) had not come. #global-schedule
+            rep["nif_phase"] = dict(progress)
         # Attribution: which build, which settings (RESOLVED, not just the
         # env overrides), which settings file. Also written on its own as
         # conversion_settings.json so a pack carries its recipe with it.
@@ -3487,13 +3571,14 @@ def write_conversion_report_json(output_dir, results,
 
 
 def _checkpoint_report(output_dir, results, *, planned, workers,
-                       orphan_temps_removed=0) -> "Path | None":
+                       orphan_temps_removed=0, progress=None) -> "Path | None":
     """conversion_report.json for the run SO FAR, marked incomplete: one small
-    atomic write after every source. #report-checkpoint"""
+    atomic write after every source. `progress`: the batch-wide NIF phase so
+    far, written as `nif_phase` (#global-schedule). #report-checkpoint"""
     out = write_conversion_report_json(
         output_dir, results, workers=workers,
         orphan_temps_removed=orphan_temps_removed, planned=planned,
-        complete=False)
+        complete=False, progress=progress)
     if out is None:
         warn("could not write the conversion_report.json checkpoint",
              where=f"under {output_dir}",
@@ -4758,12 +4843,14 @@ def _split_claimed_supersedes(rels, nif_dst_root, claimed_dst_paths):
     source of this run claimed is held back whole: those files are that
     source's conversion from this run, not an earlier run's copy.
 
-    One source at a time, the later source's move ran after the earlier source
-    had written the base, and moved the fresh conversion out; with every source
-    planned first it runs BEFORE, and moves only the old copy -- the result
-    would depend on the schedule. Holding the base makes both schedules keep
-    the earlier source's conversion. Switched off (CBBE2UBE_NO_GLOBAL_SCHEDULE)
-    or without claims, everything moves, as before."""
+    One source at a time, the later source's move runs after the earlier source
+    has written the base, and moves the fresh conversion out with the rest; with
+    every source planned first it runs BEFORE, would move only the old copy, and
+    the earlier source would then write its half beside the builder's. So the
+    batch-wide schedule holds the base and keeps the earlier source's
+    conversion; one source at a time (`--workers 1` too) passes no claims and
+    keeps the old behaviour. Switched off (CBBE2UBE_NO_GLOBAL_SCHEDULE) or
+    without claims, everything moves, as before."""
     rels = list(rels)
     if not claimed_dst_paths or not _global_schedule():
         return rels, []
@@ -5712,12 +5799,14 @@ def _cmd_convert(args):
             _convert_sources_global(
                 sources, results, shared_pool, claimed_dst_paths,
                 make_steps=lambda _s: _auto_convert_mod_steps(
-                    _s, output, **_source_kwargs(shared_pool, args.workers)),
+                    _s, output, batch_schedule=True,
+                    **_source_kwargs(shared_pool, args.workers)),
                 convert_serial=lambda _s: _convert_one(_s, _pool=None, _workers=1),
-                checkpoint=lambda: _checkpoint_report(
-                    output, results, planned=len(sources),
+                checkpoint=lambda _view, _progress: _checkpoint_report(
+                    output, _view, planned=len(sources),
                     workers=_planned_workers,
-                    orphan_temps_removed=_orphans_removed))
+                    orphan_temps_removed=_orphans_removed,
+                    progress=_progress))
         for i, src in enumerate(() if _one_schedule else sources, 1):
             # Vanilla sweep = its own PASS: distinct header + progress label,
             # and (below) its failure never blocks the merge -- a dead sweep

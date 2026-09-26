@@ -378,6 +378,12 @@ def test_the_sweeps_planning_failure_self_heals_serially(tmp_path, monkeypatch, 
     assert "claimed-by-the-failed-attempt" not in plans[1][3], (
         "the retry must not skip its own meshes as collisions")
     assert ("finish", "Data", True, []) in record, "the retry converts in-process"
+    # Where one source at a time ran it: after every earlier source finished,
+    # its NIFs converted on the schedule -- not ahead of them, in-process.
+    order = [r[:3] for r in record]
+    assert order.index(("finish", "SomeMod", False)) < order.index(
+        ("plan", "Data", False)), order
+    assert ("finish", "SomeMod", False, ["SomeMod_piece"]) in record
     assert rc == 0, log
 
 
@@ -399,14 +405,18 @@ def test_switched_off_every_supersede_moves(tmp_path, monkeypatch):
         ["armor/set/cuirass_0.nif"], root, claimed) == (["armor/set/cuirass_0.nif"], [])
 
 
-@pytest.mark.parametrize("switched_off", [False, True], ids=["default", "switched-off"])
+@pytest.mark.parametrize("case", ["one-schedule", "one-source-at-a-time",
+                                  "switched-off"])
 def test_the_planner_keeps_an_earlier_sources_conversion(
-        load_order, tmp_path, monkeypatch, switched_off):
+        load_order, tmp_path, monkeypatch, case):
     """A later source that leaves a base to its builder must not move out the
-    copy an EARLIER source converted in this run. Switched off it does (the old
-    order-dependent behaviour), which is the control."""
+    copy an EARLIER source claimed in this run while that copy is still to be
+    written: on the batch-wide schedule it is held. One source at a time --
+    `--workers 1` too, whatever the switch -- the earlier copy is already
+    written and moves with the rest, as it always did; so does the batch-wide
+    planner switched off. Those two are the control."""
     from tests.test_coverage_ube_twin import _twin_of
-    if switched_off:
+    if case == "switched-off":
         monkeypatch.setenv(SWITCH, "1")
 
     class _First(BaseException):
@@ -427,9 +437,212 @@ def test_the_planner_keeps_an_earlier_sources_conversion(
     fresh.write_bytes(b"this run")
     ref = tmp_path / "ube_ref.nif"
     ref.write_bytes(b"x")
-    with pytest.raises(_First):
-        ac.auto_convert_mod(load_order, out, ube_body_ref_path=ref,
-                            master_data_dirs=[], nif_workers=1,
-                            claimed_dst_paths={fresh.resolve()},
-                            built_ube_twin=_twin_of(*dress, mod="Outfit UBE"))
-    assert fresh.exists() is not switched_off
+    kw = dict(ube_body_ref_path=ref, master_data_dirs=[], nif_workers=1,
+              claimed_dst_paths={fresh.resolve()},
+              built_ube_twin=_twin_of(*dress, mod="Outfit UBE"))
+    if case == "one-source-at-a-time":
+        with pytest.raises(_First):
+            ac.auto_convert_mod(load_order, out, **kw)
+    else:
+        steps = ac._auto_convert_mod_steps(load_order, out, batch_schedule=True, **kw)
+        assert isinstance(next(steps), ac._NifPhase)   # planned: the supersede ran
+        steps.close()
+    assert fresh.exists() is (case == "one-schedule")
+
+
+# ------------------------------------------------------------ a run that dies
+
+class _Kill(BaseException):
+    """What a cancelled or killed run looks like from inside: nothing catches it."""
+
+
+def _no_pynifly(monkeypatch):
+    """The post-conversion load check reads each written NIF back; these are
+    placeholder bytes, so it gets a loader that rejects them."""
+    import sys
+    import types
+
+    def _reject(**_k):
+        raise ValueError("not a NIF")
+    fake = types.ModuleType("pyn")
+    fake.pynifly = types.SimpleNamespace(NifFile=_reject)
+    monkeypatch.setitem(sys.modules, "pyn", fake)
+
+
+def _writing_worker(kill_on=()):
+    def _convert(item):
+        if Path(item[0]).name in kill_on:
+            raise _Kill()
+        Path(item[1]).parent.mkdir(parents=True, exist_ok=True)
+        Path(item[1]).write_bytes(b"converted")
+        return ConvertResult(src_path=Path(item[0]), dst_path=str(item[1]),
+                             status="converted (copy)")
+    return _convert
+
+
+def _unwritten_names(out):
+    """(snapshot, NIF) for every NIF an on-disk `.espgen.json` names that is
+    not on disk -- what a `--plugins-only` refresh would point a patch at."""
+    import json
+    bad = []
+    for snap in sorted((out / "_unmerged_patches").glob("*.espgen.json")):
+        for rel in json.loads(snap.read_text(encoding="utf-8"))["converted_rel_paths"]:
+            if not (out / "meshes" / "!UBE" / rel).is_file():
+                bad.append((snap.name, rel))
+    return bad
+
+
+@pytest.mark.parametrize("case", ["killed", "completed"])
+def test_a_run_killed_in_the_nif_phase_leaves_no_patch_naming_an_unwritten_nif(
+        load_order, tmp_path, monkeypatch, case):
+    """Planning used to write every source's patch ESP and `.espgen.json` up
+    front, so a run that died in the NIF phase left snapshots naming NIFs it
+    never wrote, and a `--plugins-only` refresh replayed them into a patch
+    aimed at missing meshes. Now a source's patch is written at its finish.
+    The completed run is the control: its snapshot names both pieces, both on
+    disk, and the refresh builds a patch from it."""
+    from src import ube_patcher
+    mesh = load_order / "meshes" / "armor" / "outfit"
+    pairs = [(mesh / "dress_1.nif", "armor/outfit/dress_1.nif"),
+             (mesh / "boots_1.nif", "armor/outfit/boots_1.nif")]
+    monkeypatch.setattr(ac, "_resolve_armor_meshes", lambda *a, **k: list(pairs))
+    monkeypatch.setattr(ac, "_nif_convert_worker", _writing_worker(
+        kill_on={"boots_1.nif"} if case == "killed" else set()))
+    _no_pynifly(monkeypatch)
+    out = tmp_path / "out"
+    ref = tmp_path / "ube_ref.nif"
+    ref.write_bytes(b"x")
+    mgr = ac._NifPool(1, pool_factory=lambda: _Pool())
+    claimed: set = set()
+    results: list = []
+
+    def _run():
+        ac._convert_sources_global(
+            [load_order], results, mgr, claimed,
+            make_steps=lambda s: ac._auto_convert_mod_steps(
+                s, out, batch_schedule=True, nif_pool=mgr, claimed_dst_paths=claimed,
+                ube_body_ref_path=ref, master_data_dirs=[]),
+            convert_serial=lambda s: pytest.fail("no serial retry here"),
+            checkpoint=lambda view, progress: None)
+    if case == "killed":
+        with pytest.raises(_Kill):
+            _run()
+        assert (out / "meshes" / "!UBE" / "armor" / "outfit" / "dress_1.nif").is_file()
+    else:
+        _run()
+    assert _unwritten_names(out) == []
+    snaps = sorted((out / "_unmerged_patches").glob("*.espgen.json"))
+    assert len(snaps) == (1 if case == "completed" else 0)
+    # The --plugins-only refresh that follows.
+    r = ac.refresh_mod_esp(load_order, out)
+    for esp in r.output_esps:
+        missing = [w for w in ube_patcher.validate_patch(esp, out / "meshes")
+                   if w.startswith("missing-nif")]
+        assert missing == [], missing
+    assert len(r.output_esps) == (1 if case == "completed" else 0)
+
+
+def _run_killed_batch(tmp_path, monkeypatch, kill_on):
+    """Sources ModA (a1, a2), ModC (its planning fails), ModB (b1) on the
+    batch path; the run dies when `kill_on` starts converting."""
+    import json
+    mods = [tmp_path / n for n in ("ModA", "ModC", "ModB")]
+    for m in mods:
+        m.mkdir()
+    pool = _Pool()
+    ns = _setup_batch(tmp_path, monkeypatch, pool, mods)
+
+    def _kill_or_convert(item):
+        if item[0] == kill_on:
+            raise _Kill()
+        return ConvertResult(src_path=item[0], dst_path=str(item[1]),
+                             status="converted (copy)")
+    monkeypatch.setattr(ac, "_nif_convert_worker", _kill_or_convert)
+    items = {"ModA": [_item("a1", "a"), _item("a2", "a")], "ModB": [_item("b1", "b")]}
+    monkeypatch.setattr(ac, "_auto_convert_mod_steps", _steps_recording(
+        [], lambda n: items[n],
+        fail_planning=lambda n, kw: n == "ModC"))
+    with pytest.raises(_Kill):
+        ac._cmd_convert(ns)
+    return json.loads((ns.output / "conversion_report.json").read_text(encoding="utf-8"))
+
+
+def test_a_planning_failure_is_in_the_report_before_any_nif(tmp_path, monkeypatch):
+    rep = _run_killed_batch(tmp_path, monkeypatch, kill_on="a1")
+    assert rep["complete"] is False
+    assert [f["name"] for f in rep["failed_mods"]] == ["ModC"], rep
+
+
+def test_a_run_killed_mid_phase_reports_how_far_its_nifs_got(tmp_path, monkeypatch):
+    """No source can FINISH before the phase ends (each waits for its smallest
+    unit and every earlier source), so the checkpoint also records the NIF
+    phase: files converted and the sources whose every NIF is in."""
+    rep = _run_killed_batch(tmp_path, monkeypatch, kill_on="b1")
+    assert rep["complete"] is False
+    assert rep["nif_phase"] == {"files_done": 2, "files_total": 3,
+                                "sources_nifs_done": ["ModA"]}, rep
+    assert [f["name"] for f in rep["failed_mods"]] == ["ModC"]
+
+
+# ------------------------------------------------------------ the window
+
+def test_one_bar_takes_the_per_file_estimate_as_the_runs():
+    """The batch-wide phase prints ONE mod marker, so the gaps between mod
+    markers the run estimate comes from never exist: the run estimate would
+    read 'estimating…' for the whole phase, beside a per-file estimate
+    labelled 'for this mod'. With one bar the per-file estimate is the run's."""
+    one = {"i": 1, "n": 1, "name": "NIF conversion (all sources)", "t0": 100.0}
+    line = gui._nif_status(one, 500, 3216, "estimating…", 1000.0)
+    assert line == ("Converting 1/1: NIF conversion (all sources) — file "
+                    "500/3216, ~81m 29s left"), line   # 1.8 s a file, 2716 to go
+    many = dict(one, n=3, name="Some Mod")
+    line = gui._nif_status(many, 5, 10, "~2m 00s left", 150.0)
+    assert line == ("Converting 1/3: Some Mod — file 5/10, ~50s left for this "
+                    "mod — ~2m 00s left"), "control: several mods keep both"
+
+
+# ------------------------------------------------------------ --copy-textures
+
+@pytest.mark.parametrize("switched_off", [False, True],
+                         ids=["one-schedule", "switched-off"])
+def test_textures_land_in_source_order_whatever_the_schedule(
+        load_order, tmp_path, monkeypatch, switched_off):
+    """Two sources ship the same texture path; the later one wins, as one
+    source at a time always gave. A source with no armour meshes resolved
+    used to copy during planning, ahead of every earlier source."""
+    if switched_off:
+        monkeypatch.setenv(SWITCH, "1")
+    tex = Path("textures") / "x" / "y.dds"
+    (load_order / tex).parent.mkdir(parents=True)
+    (load_order / tex).write_bytes(b"A" * 10)
+    later = tmp_path / "mods" / "Texture Only"
+    (later / tex).parent.mkdir(parents=True)
+    (later / tex).write_bytes(b"B" * 20)
+    mesh = load_order / "meshes" / "armor" / "outfit"
+    monkeypatch.setattr(
+        ac, "_resolve_armor_meshes",
+        lambda bases, vfs, root, nifs: (
+            [(mesh / "dress_1.nif", "armor/outfit/dress_1.nif")]
+            if root is not None else []))
+    monkeypatch.setattr(ac, "_nif_convert_worker", _writing_worker())
+    _no_pynifly(monkeypatch)
+    out = tmp_path / "out"
+    ref = tmp_path / "ube_ref.nif"
+    ref.write_bytes(b"x")
+    mgr = ac._NifPool(1, pool_factory=lambda: _Pool())
+    claimed: set = set()
+    kw = dict(copy_textures=True, nif_pool=mgr, claimed_dst_paths=claimed,
+              ube_body_ref_path=ref, master_data_dirs=[])
+    if switched_off:
+        for s in (load_order, later):
+            ac.auto_convert_mod(s, out, **kw)
+    else:
+        results: list = []
+        ac._convert_sources_global(
+            [load_order, later], results, mgr, claimed,
+            make_steps=lambda s: ac._auto_convert_mod_steps(
+                s, out, batch_schedule=True, **kw),
+            convert_serial=lambda s: pytest.fail("no serial retry here"),
+            checkpoint=lambda view, progress: None)
+        assert [e for _s, _r, e in results] == [None, None]
+    assert (out / tex).read_bytes() == b"B" * 20

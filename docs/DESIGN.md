@@ -195,7 +195,8 @@ workers idle behind it.
 with its `_NifPhase` (the work items and the result it fills). Everything a
 source decides is decided before that pause -- its claims on output paths
 (first writer wins, in source order), the #skip-built-ube-path supersede moves
-and the patch ESP -- and nothing after it reads another source's output, so:
+and the converted-mesh set its patch ESP is built from -- and nothing after it
+reads another source's output, so:
 
 - **Plan every source first**, in source order, exactly as before.
 - **One schedule** (`_GlobalNifSchedule`): all units, largest source bytes first.
@@ -215,22 +216,42 @@ and the patch ESP -- and nothing after it reads another source's output, so:
 - **Finish in source order.** A source's post-conversion steps (load check,
   VirtualBody re-hide, postflight invariants, report) run once all its units
   are in and every earlier source has finished, with the same content as
-  before; the result list and the per-source report checkpoint keep source
-  order.
+  before; the result list keeps source order. The patch ESP and its
+  `.espgen.json` snapshot are written here too (`_write_source_patches`, from
+  inputs planning fixed), not at planning: a run cancelled or killed in the NIF
+  phase leaves no patch or snapshot naming a NIF it had not yet written, so a
+  `--plugins-only` refresh after it replays the previous run's. A source with
+  no armour resolved pauses as well, with no units, so its `--copy-textures`
+  copy lands in source order (the later source's file wins, as before).
+- **Checkpoints.** No source can finish before the phase ends (each waits for
+  its own smallest unit and every earlier source), so the report checkpoint is
+  also written when a source's planning fails (the failure is on disk when it
+  happens) and when every NIF of a source is in, with a `nif_phase` record:
+  files converted so far and the sources whose NIFs are all in.
 - **Retries.** A dead worker's in-flight units, and any unit whose answer shows
   a MemoryError (raised, or caught inside a fit pass), are re-run one item at a
   time once nothing else is in flight; only the re-run is delivered. An
-  out-of-memory answer is never kept -- its patch ESP already points at the
+  out-of-memory answer is never kept -- the source's patch ESP points at the
   planned NIF.
+- **The vanilla sweep's self-heal.** When the sweep's planning fails, its
+  serial retry (no pool, in-process) runs at the sweep's turn to finish --
+  after every source before it, where one source at a time ran it -- not
+  during planning, ahead of their NIFs and outside the chain their shared
+  bases keep.
 - **Supersede guard.** Planned first, a later source's supersede would move an
-  earlier source's base BEFORE that source wrote it (one source at a time it
-  moved the fresh conversion). A base an earlier source claimed this run is
-  held back (`_split_claimed_supersedes`), so both orders keep that conversion.
+  earlier source's base BEFORE that source wrote it, and the earlier source
+  would then write its half beside the builder's. On this schedule a base an
+  earlier source claimed this run is held back (`_split_claimed_supersedes`)
+  and that conversion stays. One source at a time -- the switch set, or
+  `--workers 1` -- the earlier copy is already written and moves out with the
+  rest, as it always did.
 - **Progress.** One `[progress] 1 1` marker, then `[progress-nif] <done> <total>`
-  over every source's files: the window's bar fills once.
+  over every source's files: the window's bar fills once, and with a single
+  bar the window takes the per-file estimate as the run's (`gui._nif_status`).
 
-`CBBE2UBE_NO_GLOBAL_SCHEDULE=1` converts one source at a time again (and moves
-a claimed base again); `--workers 1` and `--plugins-only` never use it.
+`CBBE2UBE_NO_GLOBAL_SCHEDULE=1` converts one source at a time again, all of the
+above included; `--workers 1` (no shared pool) and `--plugins-only` never use
+the batch-wide schedule, so they behave as they did without it.
 
 **Measured 2026-09-25**, full All-mods runs from source into scratch outputs
 each seeded with a copy of the live output, PYTHONHASHSEED=1, 15 workers,
@@ -249,8 +270,9 @@ between the two one-schedule runs as much as against the old schedule, and the
 live file already carried 58 torn lines. The #hdt-xml-race destination-stem
 class (175 NIFs, 88 garments, in this output) did not differ. Heavy units at
 once: up to 3-4; memory re-runs: 0; supersedes held back: 0.
-The finishes all land at the end (every source's smallest unit runs last), so
-a run that dies in the NIF phase checkpoints no source finished.
+The finishes all land at the end (every source's smallest unit runs last):
+first finish 1718 s into a 1756 s schedule, which is why the checkpoint
+records the phase itself and a source's patch waits for its finish.
 
 ---
 
