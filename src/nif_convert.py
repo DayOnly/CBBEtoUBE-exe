@@ -7139,26 +7139,45 @@ LEG_MOTION_ON_MORPHTRI = (
 # sits at a median standoff of 0.6-1.9u.
 #
 # So on the TRI-owning shapes this instance reaches only through the opt-out, a
-# row takes the full match inside _MORPHTRI_HUG_NEAR, none beyond
-# _MORPHTRI_HUG_FAR, and a linear share between (a hard cut would put a hinge in
-# a plate that spans the band). Measured, zeroed UBE body, weight 1, seed 1:
+# row that stands over ANOTHER visible layer of the piece (the line to its body
+# point passes through one, more than a plate's thickness in:
+# _MORPHTRI_HUG_LAYER_GAP) takes the full match inside _MORPHTRI_HUG_NEAR, none
+# beyond _MORPHTRI_HUG_FAR, and a linear share between (a hard cut would put a
+# hinge in a plate that spans the band). A row that is the ONLY layer over the
+# skin keeps the full reach.
+#
+# WHY THE LAYER CONDITION. Distance alone was built first and censused on the
+# live pack: 545 admitted shapes on 328 pieces have rows at 2-9u, many of them
+# skirts and outfits. A parent-vs-lane sample of the most affected (11 pieces,
+# multipose, zeroed UBE body) lost coverage on 2: a lower panel over a swinging
+# thigh (thigh 0.25% -> 0.75%, walk/crouch/stride/knee bend) and a steel body
+# (upper chest, arms crossed 1.36% -> 1.63%) -- rows that were the only layer
+# over the skin. With the layer condition all 9 measurable pieces read exactly
+# as the build. Nothing separates the two classes by PART: the plates are
+# stitched to the leggings, so the welded plate+leggings is one 2619-vert part.
+#
+# Measured, zeroed UBE body, weight 1, seed 1:
 #   plated cuirass, NEW self-crossing pairs vs bind, plate x plate:
-#       stride L    build 13 / 7   feather 8 / 7   switch-off 8 / 7
-#       thighs fwd  build 26 / 7   feather 19 / 5  switch-off 19 / 5
+#       stride L    build 13 / 7   this 8 / 7    switch-off of the 09-23 fix 8 / 7
+#       thighs fwd  build 26 / 7   this 19 / 5   switch-off of the 09-23 fix 19 / 5
 #     body exposure (multipose, every region): identical in all three -- the
 #     match bought that piece nothing. NOT a full revert: the fitted leggings
 #     under the plates (0.8u) keep the match, so THEIR own crossings at the
-#     crotch stay at the build's level (stride L 24, switch-off 13) -- the
+#     crotch stay at the build's level (stride L 24, 09-23 build 13) -- the
 #     trousers class the 09-23 fix is for, under the plate.
-#   reported trousers, multipose thigh 1.25% / butt 0.00% with the feather, the
-#     same as the build (switch-off 2.50% / 0.25%): the fix is kept.
-# Insensitive to the exact distances: 1.5-2.5 / 2.0-3.0 / 2.5-3.5 read the same
-# on the plated piece. Other shapes are untouched (the population is only what
-# the opt-out admits). CBBE2UBE_NO_MORPHTRI_HUG_FEATHER=1 restores the 9u reach.
+#   reported trousers: multipose thigh 1.25% / butt 0.00%, the same as the
+#     build (the 09-23 build 2.50% / 0.25%): the fix is kept.
+# The distances are not sensitive: 1.5-2.5 / 2.0-3.0 / 2.5-3.5 read the same on
+# the plated piece. Other shapes are untouched (the population is only what the
+# opt-out admits). CBBE2UBE_NO_MORPHTRI_HUG_FEATHER=1 restores the 9u reach.
 MORPHTRI_HUG_FEATHER = (
     not _flag("CBBE2UBE_NO_MORPHTRI_HUG_FEATHER", False))
 _MORPHTRI_HUG_NEAR = _knob("CBBE2UBE_MORPHTRI_HUG_NEAR", 2.0)
 _MORPHTRI_HUG_FAR = _knob("CBBE2UBE_MORPHTRI_HUG_FAR", 3.0)
+# A row is faded only when the line to its body point passes through another
+# visible surface of the piece at least this far in -- more than a plate's own
+# thickness.
+_MORPHTRI_HUG_LAYER_GAP = _knob("CBBE2UBE_MORPHTRI_HUG_LAYER_GAP", 0.75)
 # Fraction of the body-vs-garment leg-share gap to close (1.0 = full match).
 _LEG_MOTION_STRENGTH = _knob("CBBE2UBE_LEG_MOTION_STRENGTH", 1.0)
 # Only match verts within this distance of the body: beyond it the cloth is drape, not

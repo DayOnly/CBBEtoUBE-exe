@@ -1858,6 +1858,58 @@ def _limb_tri_admitted(src_nif_path, ignore_morph_tri: bool, tri_hug,
     return _source_morph_tri_shape_names(Path(src_nif_path)) - set(skipped)
 
 
+def _layer_soup(shapes, skip_names) -> tuple:
+    """World-space triangles of every VISIBLE garment surface in the NIF -- the
+    layers a standing-off row can cover (#morphtri-hug-feather). Leaves out the
+    body, colliders and proxies (by the piece's XML and by the structural name
+    keys), which a row may stand over without being an outer layer."""
+    keys = tuple(_nc()._CONFORM_SKIP_STRUCTURAL) + ("proxy", "stabil")
+    Vs, Ts, off = [], [], 0
+    for sh in shapes:
+        nm = sh.name or ""
+        if nm in skip_names or any(k in nm.lower() for k in keys):
+            continue
+        try:
+            V = _verts_skin_to_world(np.asarray(sh.verts, dtype=np.float64),
+                                     _shape_global_to_skin(sh))
+            T = np.asarray(sh.tris, dtype=np.int64).reshape(-1, 3)
+        except Exception:
+            continue
+        if not len(V) or not len(T):
+            continue
+        Vs.append(V)
+        Ts.append(T + off)
+        off += len(V)
+    if not Vs:
+        return None, None
+    return np.vstack(Vs), np.vstack(Ts)
+
+
+def _rows_covering_a_layer(O, P, lay_V, lay_T, gap: float):
+    """True where the straight line from a garment row `O` to its body point `P`
+    passes through another garment surface first -- the row is an OUTER layer.
+
+    The ray starts `gap` along the line, so the row's own triangles and a
+    plate's own thickness are not counted, and must hit before it is within
+    0.1u of the body (#morphtri-hug-feather)."""
+    O = np.asarray(O, dtype=np.float64)
+    out = np.zeros(len(O), dtype=bool)
+    if not len(O) or lay_V is None or not len(lay_T):
+        return out
+    D = np.asarray(P, dtype=np.float64) - O
+    L = np.linalg.norm(D, axis=1)
+    ok = L > gap + 0.1
+    if not ok.any():
+        return out
+    Dn = D[ok] / L[ok, None]
+    tmax = L[ok] - gap - 0.1
+    tester = fit_metrics._ClipTester(lay_V, lay_T, tmax=float(tmax.max()) + 1e-3)
+    t = np.asarray(fit_metrics.cast_chunked(tester, O[ok] + Dn * gap, Dn,
+                                            finite_only=False), dtype=np.float64)
+    out[np.flatnonzero(ok)] = np.isfinite(t) & (t <= tmax)
+    return out
+
+
 def _hug_feather(dist, near: float, far: float):
     """Share of the limb match a row takes by its distance to the body
     (#morphtri-hug-feather): 1 at or inside `near`, 0 at or beyond `far`, linear
@@ -2096,6 +2148,7 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                                            ignore_morph_tri, keep_draping_skip)
     _tri_admitted = _limb_tri_admitted(src_nif_path, ignore_morph_tri, tri_hug,
                                        morph_tri_names)
+    _lay = None              # the piece's visible layers, built on first need
     # Does a physics XML exist for this piece at all? Drives the inert-chain
     # allowance below. Stem is per-armor (weight suffix stripped), matching where
     # both the generator and the source-XML copy write.
@@ -2614,6 +2667,21 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                 _hug_f = None
                 if s.name in _tri_admitted:
                     _hug_f = _hug_feather(dist, tri_hug[0], tri_hug[1])
+                    # ... but only on a row that stands over ANOTHER layer of the
+                    # piece. A row that is the only layer over the skin keeps the
+                    # full reach: a panel over a swinging thigh lost coverage
+                    # without it (see MORPHTRI_HUG_FEATHER).
+                    _cand = np.flatnonzero(_sel & (_hug_f < 1.0))
+                    if len(_cand):
+                        if _lay is None:
+                            _lay = _layer_soup(
+                                nf.shapes,
+                                set(collider_names) | {"BaseShape"}
+                                | set(_nc().UBE_BODY_INJECT_NAMES))
+                        _cov = _rows_covering_a_layer(
+                            wv[_cand], Vb[np.asarray(near)[_cand]],
+                            _lay[0], _lay[1], _nc()._MORPHTRI_HUG_LAYER_GAP)
+                        _hug_f[_cand[~_cov]] = 1.0
                     _sel &= _hug_f > 0.0
                 rows = np.where(_sel)[0]
                 if len(rows) == 0:

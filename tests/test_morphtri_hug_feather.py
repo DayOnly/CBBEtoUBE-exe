@@ -130,10 +130,11 @@ def _grid(x0, x1, z0, z1, y, n=5):
     return verts, tris
 
 
-def _build(path):
+def _build(path, offsets=(-1.0, -2.5, -4.0)):
     """BaseShape: a flat patch at y=0 over the leg band, left half on the left
-    thigh, right half on the right. Plate: three strips in front of it at 1u,
-    2.5u and 4u, each Pelvis 0.6 / thighs 0.2 -- a CBBE-style pelvis-heavy row
+    thigh, right half on the right. Plate: one strip in front of it per offset
+    (default 1u, 2.5u and 4u, STACKED, so each outer strip covers the one
+    inside it), each Pelvis 0.6 / thighs 0.2 -- a CBBE-style pelvis-heavy row
     the leg match would re-split onto the thigh under it."""
     pyn = nc._pynifly()
     nif = pyn.NifFile()
@@ -164,7 +165,7 @@ def _build(path):
     add("BaseShape", bv, bt,
         [{LT: 1.0} if x < 0 else {RT: 1.0} for x, _y, _z in bv])
     pv, pt = [], []
-    for y in (-1.0, -2.5, -4.0):
+    for y in offsets:
         v, t = _grid(-4.0, 4.0, 45.0, 65.0, y)
         off = len(pv)
         pv += v
@@ -183,10 +184,10 @@ def _pelvis(path):
     return out
 
 
-def _run(tmp_path, monkeypatch, *, tri_owned, feather):
+def _run(tmp_path, monkeypatch, *, tri_owned, feather, offsets=(-1.0, -2.5, -4.0)):
     p = tmp_path / ("f" if feather else "n") / "piece_1.nif"
     p.parent.mkdir(parents=True)
-    pv = _build(p)
+    pv = _build(p, offsets)
     monkeypatch.setattr(nc, "MATCH_LEG_MOTION", True)
     monkeypatch.setattr(nc, "LEG_MOTION_ON_MORPHTRI", True)
     monkeypatch.setattr(nc, "MORPHTRI_NO_LEG_GRAFT", True)
@@ -209,6 +210,66 @@ def test_a_standoff_row_keeps_the_authors_weights(tmp_path, monkeypatch):
     assert np.all(pel[near] < 0.05), "a hugging row must still take the full match"
     assert np.allclose(pel[mid], 0.3, atol=0.02), "half-way row takes half the match"
     assert np.allclose(pel[far], 0.6, atol=1e-3), "a standoff row keeps its own weights"
+
+
+@pytestmark_e2e
+def test_a_standoff_row_over_bare_skin_keeps_the_full_match(tmp_path, monkeypatch):
+    """The feather is for a plate over ANOTHER layer. A panel that is the only
+    layer over the skin -- a lower panel over a swinging thigh -- lost coverage
+    in the parent-vs-lane sample without the match, so it keeps it."""
+    pv, pel = _run(tmp_path, monkeypatch, tri_owned=True, feather=True,
+                   offsets=(-4.0,))
+    assert np.all(pel < 0.05), "nothing under it: the full 9u reach applies"
+
+
+def test_the_layer_test_sees_a_plate_over_a_sheet_and_not_a_plate_alone():
+    V, T = _grid(-5.0, 5.0, 40.0, 70.0, -0.5, n=11)
+    Pv, Pt = _grid(-3.0, 3.0, 45.0, 65.0, -3.0, n=7)
+    O = np.asarray(Pv)
+    P = O.copy(); P[:, 1] = 0.0                       # the body point behind it
+    both_V = np.vstack([np.asarray(V), O])
+    both_T = np.vstack([np.asarray(T), np.asarray(Pt) + len(V)])
+    assert ncw._rows_covering_a_layer(O, P, both_V, both_T, 0.75).all()
+    alone = ncw._rows_covering_a_layer(O, P, O, np.asarray(Pt), 0.75)
+    assert not alone.any(), "a plate's own triangles are not a layer under it"
+    assert not ncw._rows_covering_a_layer(O, P, None, None, 0.75).any()
+
+
+def test_a_layer_closer_than_the_gap_is_the_plates_own_thickness():
+    V, T = _grid(-5.0, 5.0, 40.0, 70.0, -2.5, n=11)   # 0.5u under the plate
+    Pv, _ = _grid(-3.0, 3.0, 45.0, 65.0, -3.0, n=7)
+    O = np.asarray(Pv)
+    P = O.copy(); P[:, 1] = 0.0
+    assert not ncw._rows_covering_a_layer(O, P, np.asarray(V), np.asarray(T), 0.75).any()
+
+
+def test_a_layer_behind_the_body_point_is_not_under_the_row():
+    """Rays are cast together with one reach, the longest row's. A surface past
+    a SHORT row's own body point (inside the body, or on the far side) is within
+    that reach but is not between the row and its skin."""
+    V, T = _grid(-5.0, 5.0, 40.0, 70.0, 1.5, n=11)    # behind the body (y=0)
+    O = np.array([[-2.0, -6.0, 55.0], [2.0, -2.0, 55.0]])
+    P = O.copy(); P[:, 1] = 0.0
+    got = ncw._rows_covering_a_layer(O, P, np.asarray(V), np.asarray(T), 0.75)
+    assert not got.any()
+
+
+class _Shape:
+    def __init__(self, name, y):
+        v, t = _grid(-1.0, 1.0, 50.0, 52.0, y, n=3)
+        self.name, self.verts, self.tris = name, v, t
+
+
+def test_the_layers_are_the_visible_garment_surfaces_only():
+    """A collider, a proxy or the body is not a layer a plate can cover: a row
+    standing over one of those alone is still the only visible layer."""
+    shapes = [_Shape("Armor", -3.0), _Shape("Leggings", -1.0), _Shape("Proxy", -2.0),
+              _Shape("Collision", -2.0), _Shape("BaseShape", 0.0),
+              _Shape("SkirtStabilizer", -2.0), _Shape("XmlCollider", -2.0)]
+    V, T = ncw._layer_soup(shapes, {"XmlCollider", "BaseShape"})
+    assert sorted(set(np.round(V[:, 1], 3))) == [-3.0, -1.0]
+    assert len(T) == 2 * len(shapes[0].tris)
+    assert ncw._layer_soup([_Shape("Proxy", -2.0)], set()) == (None, None)
 
 
 @pytestmark_e2e
