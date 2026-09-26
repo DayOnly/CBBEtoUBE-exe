@@ -153,16 +153,22 @@ def print_summary(rows, title):
 
 
 def load(path, nif=None, shape=None):
-    rows = []
+    rows, torn = [], 0
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
+                torn += 1               # a blank line is a splice artefact too
                 continue
             try:
                 r = json.loads(line)
             except ValueError:
-                continue          # a torn line costs one record, not the file
+                # A torn line costs one record, not the file -- but SAY so: a
+                # sink written before #atomic-audit-append can splice two
+                # workers' records, and an A/B must not read that as a row
+                # one arm did not produce.
+                torn += 1
+                continue
             if r.get("kind") != "survival":
                 continue
             if nif and nif not in r.get("nif", ""):
@@ -170,6 +176,9 @@ def load(path, nif=None, shape=None):
             if shape and shape not in r.get("shape", ""):
                 continue
             rows.append(r)
+    if torn:
+        print(f"  {path}: {torn} torn line(s) skipped (records of unknown "
+              f"kind, lost)", file=sys.stderr)
     return rows
 
 
