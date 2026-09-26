@@ -13342,6 +13342,38 @@ PAIRS = (
          expect=('test_the_stranded_files_are_the_ones_still_in_the_stamp_folder',
                  'test_a_base_wholly_stranded_keeps_its_record'),
     ),
+    # Review of 736122f: a journal whose 'planned' is not a list is left alone,
+    # anything else raising is one counted problem, and the NOTE counts what
+    # did not go back.
+    Pair('SRE-o', "a foreign journal's non-list 'planned' is iterated",
+         edits=(
+             ('src/stale_sweep.py',
+              '        if not isinstance(planned, list):\n'
+              '            continue  # not a journal this tool wrote',
+              '        if False:  # MUTATED\n'
+              '            continue  # not a journal this tool wrote', 1),
+         ),
+         tests=('tests/test_sweep_recover_every_run.py',),
+         expect=('test_a_journal_this_tool_did_not_write_is_left_alone',),
+    ),
+    Pair('SRE-p', 'the start-of-run recovery lets an exception kill the run',
+         edits=(
+             ('src/auto_convert.py',
+              '    except Exception as e:  # noqa: BLE001 -- a start-of-run step must not kill the run',
+              '    except ZeroDivisionError as e:  # MUTATED', 1),
+         ),
+         tests=('tests/test_sweep_recover_every_run.py',),
+         expect=('test_a_recovery_that_raises_is_a_counted_warning_not_a_dead_run',),
+    ),
+    Pair('SRE-q', "the recovery NOTE says 'back' when files did not go back",
+         edits=(
+             ('src/auto_convert.py',
+              '                                    if failed else\n',
+              '                                    if False else\n', 1),
+         ),
+         tests=('tests/test_sweep_recover_every_run.py',),
+         expect=('test_the_note_says_which_files_did_not_go_back',),
+    ),
     # #sweep-sidecar-base (2026-09-26): a .tri/.xml belongs to the weight base
     # of `<its stem>_1.nif`, the one the converter named it from.
     Pair('SSB-a', 'a sidecar loses a second weight suffix and joins the wrong base',
