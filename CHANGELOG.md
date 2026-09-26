@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Changed — folder names in a new output no longer depend on which piece was written first
+
+Sometimes two armour pieces spell the same folder with different capital
+letters, such as `Armor` and `armor`. In a new, empty output folder, that
+folder used to be named after whichever piece the tool happened to write
+first, so two runs could name it differently. Converting one mod at a time
+gave `Armor` on the reported modlist, and converting all mods together gave
+`armor`. Windows, Mod Organizer and the game treat both names the same, and
+every file inside was the same. Now the tool names each folder before it
+converts anything: the first mod in your load order to use the folder names
+it, and within a mod its first piece does. You get the same name every run,
+whichever way the tool converts. An output folder you already have keeps its
+names. A folder that was made for a piece that turned out to have nothing to
+convert is removed at the end of the run.
+`CBBE2UBE_NO_PLANNED_FOLDERS=1` (set to 1) turns it off.
+
 ### Fixed — a run stopped while converting the armour pieces now shows how far it got
 
 The tool now converts the armour pieces of all your mods together, and a mod

@@ -496,6 +496,64 @@ def _global_schedule() -> bool:
     return not _flag("CBBE2UBE_NO_GLOBAL_SCHEDULE", False)
 
 
+# --- #planned-folders: a folder is spelled by the plan, not by a race -------
+#
+# Windows keeps the spelling a folder was created with, and a worker creates
+# its piece's folder when it starts writing. Two sources that spell one folder
+# differently (`Armor\` in a mod, `armor\` in the vanilla sweep) therefore got
+# the spelling of whichever piece reached it first: an earlier source's, one
+# source at a time, and the largest piece's on the batch-wide schedule
+# (measured on a fresh output: 485 files under `meshes\!UBE\armor` against
+# `\Armor`, every byte the same). Each source now creates its pieces' folders
+# at the end of its planning, in plan order, so the first source to plan a
+# folder spells it on both schedules, whatever converts first. A folder this
+# made that is still empty once the batch is done (only a skipped piece asked
+# for it) is removed again.
+
+def _planned_folders() -> bool:
+    """#planned-folders (2026-09-26): create each source's destination folders
+    in plan order before its NIFs convert? Yes, by default.
+    CBBE2UBE_NO_PLANNED_FOLDERS=1 leaves them to the workers again."""
+    return not _flag("CBBE2UBE_NO_PLANNED_FOLDERS", False)
+
+
+def _make_planned_folders(work_items, made: list) -> None:
+    """Create the folder of every work item's destination, in list order, and
+    append to `made` each folder this call created (ancestors first). A folder
+    that already exists keeps its spelling; one that cannot be created is left
+    to the worker, which reports its own error. #planned-folders"""
+    for it in work_items:
+        d = Path(it[1]).parent
+        if d.is_dir():
+            continue
+        missing = []
+        p = d
+        while not p.exists() and p.parent != p:
+            missing.append(p)
+            p = p.parent
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        made.extend(reversed(missing))
+
+
+def _remove_empty_planned_folders(made: list) -> int:
+    """Remove every folder in `made` that is empty, deepest first (one that
+    only a skipped piece asked for), and forget them all. Only when no NIF
+    is being written: a worker creates its folder at the start and writes at
+    the end. Returns how many were removed. #planned-folders"""
+    removed = 0
+    for d in sorted(set(made), key=lambda p: len(p.parts), reverse=True):
+        try:
+            d.rmdir()             # refuses a folder that is not empty
+            removed += 1
+        except OSError:
+            pass
+    made.clear()
+    return removed
+
+
 # A worker's peak commit tracks the size of the mesh it converts: about 0.36 GB
 # of floor plus about 236 MB per source MB (measured 2026-09-11 against the full
 # pack: the largest source, 14 MB, peaked at 3.79 GB). The pool is sized so each
@@ -993,6 +1051,10 @@ _FINGERPRINT_PLUMBING_WHY = {
     "CBBE2UBE_NO_ESL_CHUNK_DEDUP": "how the coverage plugin is cut into ESL "
                                    "pieces (#esl-chunk-dedup); the plugins are "
                                    "rebuilt every run and no NIF depends on it",
+    "CBBE2UBE_NO_PLANNED_FOLDERS": "who creates a piece's folder, the plan or "
+                                   "the worker (#planned-folders): only how a "
+                                   "NEW folder's name is capitalised; no NIF's "
+                                   "bytes depend on it",
 }
 _FINGERPRINT_PLUMBING = frozenset(_FINGERPRINT_PLUMBING_WHY)
 
@@ -2614,6 +2676,12 @@ def _auto_convert_mod_steps(
     # earlier source claimed in this run is held, not superseded. False (one
     # source at a time) -> the order the steps always had. #global-schedule
     batch_schedule: bool = False,
+    # The folders this source creates for its pieces before they convert are
+    # appended here, SHARED across the batch by `_cmd_convert`, which removes
+    # the ones still empty once no NIF is being written. None -> this call
+    # removes its own after its NIFs (one source at a time only; on the
+    # batch-wide schedule another source may still be writing). #planned-folders
+    planned_folders: "list | None" = None,
 ):
     """Run the full M2 + M3 phase 1 pipeline on a single CBBE armor mod.
 
@@ -3090,6 +3158,12 @@ def _auto_convert_mod_steps(
             nif_workers = default_worker_count()
         nif_workers = max(1, min(nif_workers, len(work_items)))
 
+        # This source's folders, spelled by its plan, before any of its pieces
+        # (or a later source's) converts. #planned-folders
+        _own_folders = [] if planned_folders is None else planned_folders
+        if _planned_folders():
+            _make_planned_folders(work_items, _own_folders)
+
         # THE PAUSE. Everything above decided what this source converts and
         # where (claims, the patch ESP); everything below the batch only reads
         # this source's own outputs. The batch-wide schedule converts the work
@@ -3155,6 +3229,8 @@ def _auto_convert_mod_steps(
             result.notes.append(
                 f"NIF conversion: {len(work_items)} files in "
                 f"{elapsed:.1f}s ({rate:.1f}/s) with {nif_workers} worker(s)")
+        if planned_folders is None and not batch_schedule:
+            _remove_empty_planned_folders(_own_folders)   # #planned-folders
 
     if batch_schedule:
         # This source's NIFs are all written now: only now may its patch and
@@ -6883,6 +6959,9 @@ def _cmd_convert(args):
     _stamp_run_start(output, planned=len(sources), workers=_planned_workers,
                      orphan_temps_removed=_orphans_removed)
     results = []
+    # Every folder a source creates for its pieces before they convert; the
+    # ones still empty are removed once the batch is done. #planned-folders
+    planned_folders: list = []
 
     def _source_kwargs(_pool, _workers):
         return dict(
@@ -6908,6 +6987,7 @@ def _cmd_convert(args):
             npc_worn_armos=batch_npc_worn,
             armo_winner_nonplayable=batch_winner_np,
             built_ube_twin=batch_built_ube,
+            planned_folders=planned_folders,
         )
 
     def _convert_one(_src, *, _pool, _workers):
@@ -7000,6 +7080,8 @@ def _cmd_convert(args):
         # live state, not on top of it. #postflight-release
         gc.collect()
 
+    # The pool is down, so no piece is being written. #planned-folders
+    _remove_empty_planned_folders(planned_folders)
     print(f"\n=== batch auto-conversion done ({len(results)} mod(s)) ===")
     _sos_warns = problem_count()   # warnings up to the end of the batch #stale-output-sweep
 
