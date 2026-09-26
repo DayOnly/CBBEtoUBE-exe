@@ -2250,7 +2250,9 @@ more: 61 pieces better by 0.3u, 12 worse.
 
 **Corrected in round 3 (below).** Both counts compare each arm's OWN worse leg,
 which can be the other leg: leg by leg, 19 pieces have a leg worse by >0.3u
-(7 of them read as unchanged here), and by any margin 112 lose less and 89 more.
+(7 of them not counted as worse here: 5 read as unchanged and 2 were among the
+"better" -- worse-side delta -1.54 and -1.33u), and by any margin 112 lose less
+and 89 more.
 
 ## The 09-19 residual on the paired band
 
@@ -2343,8 +2345,10 @@ src/ untouched.
   painting it was tested on, not any painting: on the synthetic bodies (source
   handover from |x| 1 over 5u) UBE handovers starting at |x| 0 to 5.5 read
   within 0.08u; starting at |x| 6 or 7 the perfect shell reads -0.13u and the
-  census REFUSES (exit 4) -- a false alarm, but closed. The real zeroed bodies
-  read -0.011u.
+  census REFUSES (exit 4) -- a false alarm, but closed. That range holds for a
+  5u-wide handover only: the reading depends on the ramp width too (width 1:
+  start 0 reads +0.093, start 5.5 reads -0.082; start 5.5 at width 5, or start
+  4 at width 8, already refuses). The real zeroed bodies read -0.011u.
 
 ## Re-measured (read-only, `_1`, 1030 NIFs, paired band, n=201)
 

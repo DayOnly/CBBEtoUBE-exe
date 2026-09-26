@@ -3977,8 +3977,9 @@ author (p05 +0.28u), not deeper.
 
 Compare a posed loss LEG BY LEG, never worse side to worse side: each arm's
 worse leg can be the other leg, and a conversion that raises the leg its source
-kept low while the other falls then reads unchanged (7 of 201 pieces on the
-shipped pack; `single_swing_census.leg_compare`, METRICS.md round 3). And the
+kept low can read unchanged or even better (7 of 201 pieces on the shipped
+pack were not counted as worse: 5 read unchanged, 2 better; in 5 of them one
+leg rises while the other falls; `single_swing_census.leg_compare`, METRICS.md round 3). And the
 source arm is only as good as its file: `find_source` pairs by path and garment
 shape names, taking the first mod alphabetically where several ship the path,
 which for 14 of those 201 pieces is not the file the converter read. Each row

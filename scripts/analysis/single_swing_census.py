@@ -547,8 +547,9 @@ def self_check(src_main, src_closed, ube, warp, par, d=SHELL_D) -> dict:
     close enough: on the synthetic bodies (source handing the band skin to the
     thigh from |x| = 1 over 5u) UBE handovers starting at |x| 0 to 5.5 read
     within 0.08u, and one starting at |x| 6 or later reads -0.13u and FAILS the
-    check -- a false alarm, but closed (exit 4), never a silent pass. The real
-    zeroed bodies read -0.011u. The
+    check -- a false alarm, but closed (exit 4), never a silent pass. That range
+    is for a 5u-wide handover; the width matters too (at width 8 a start of 4
+    already fails). The real zeroed bodies read -0.011u. The
     same shell keeping the SOURCE weights on UBE is reported beside it as
     information: what the two bodies' weight painting alone costs a garment the
     converter does not re-weight. Each check runs on the VISIBLE band (each arm

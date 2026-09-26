@@ -25,7 +25,8 @@ tightest 5%), not deeper.
 In the leg swing the census now compares each leg with the SAME leg of the
 original. Comparing each piece's worst leg with the original's worst leg hid
 pieces whose worst leg changed sides: 7 pieces got more than 0.3 units worse on
-one leg while that comparison read them as unchanged. Of 201 pieces with an
+one leg while that comparison did not count them as worse (5 read as unchanged,
+2 even as better). Of 201 pieces with an
 original to compare, 19 have a leg more than 0.3 units worse after conversion
 and 68 have a leg more than 0.3 units better (by the worst-leg comparison: 12
 worse, 62 better; by any margin at all, 89 worse and 112 better). Most of the 19
