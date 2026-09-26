@@ -13201,4 +13201,116 @@ PAIRS = (
          tests=('tests/test_plan_order_results.py',),
          expect=('test_the_sort_places_by_destination_then_source_then_reason',),
     ),
+    # #check-setup-settings, #headless-exclusions (2026-09-26): check-setup
+    # checks with the saved settings and a headless auto skips the saved
+    # exclusions, as the window does.
+    Pair('SPY-a', 'check-setup reads the bare environment again',
+         edits=(
+             ('cbbe_to_ube_main.py',
+              '_SETTINGS_SUBCOMMANDS = frozenset({"auto", "convert", "check-setup"})\n',
+              '_SETTINGS_SUBCOMMANDS = frozenset({"auto", "convert"})  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_settings_parity.py',),
+         expect=('test_cli_check_setup_and_the_window_agree_on_the_picked_body',),
+    ),
+    Pair('SPY-b', 'check-setup no longer says where its settings came from',
+         edits=(
+             ('src/auto_convert.py',
+              '        if _gs.headless_report() is not None:\n'
+              '            print(_gs.settings_source_line().strip())\n',
+              '        if False:  # MUTATED\n'
+              '            print(_gs.settings_source_line().strip())\n', 1),
+         ),
+         tests=('tests/test_settings_parity.py',),
+         expect=('test_check_setup_says_where_its_settings_came_from',),
+    ),
+    Pair('SPY-c', 'the run never reads the saved exclusions',
+         edits=(
+             ('src/auto_convert.py',
+              '    _apply_saved_exclusions(args, mr)\n',
+              '    pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_settings_parity.py',),
+         expect=('test_the_run_itself_skips_them',),
+    ),
+    Pair('SPY-d', 'an All-mods run only withholds coverage from them',
+         edits=(
+             ('src/auto_convert.py',
+              '            _add("exclude_mods", armor)\n',
+              '            _add("coverage_exclude_mods", armor)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_settings_parity.py',),
+         expect=('test_an_all_mods_auto_skips_them_as_the_window_does',),
+    ),
+    Pair('SPY-e', 'a picked mod loses its coverage too',
+         edits=(
+             ('src/auto_convert.py',
+              '                 [n for n in armor if n.lower() not in chosen])\n',
+              '                 list(armor))  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_settings_parity.py',),
+         expect=('test_with_only_mods_the_unpicked_ones_get_no_coverage_as_the_window_does',),
+    ),
+    Pair('SPY-f', "the window's child reads the exclusions again",
+         edits=(
+             ('src/auto_convert.py',
+              '        if rep is None or rep.get("by"):\n            return None\n'
+              '        if not _gs._headless_settings_enabled(os.environ):\n',
+              '        if rep is None:  # MUTATED\n            return None\n'
+              '        if not _gs._headless_settings_enabled(os.environ):\n', 1),
+         ),
+         tests=('tests/test_settings_parity.py',),
+         expect=('test_the_windows_child_gets_them_as_arguments_only',),
+    ),
+    Pair('SPY-g', 'the off-switch leaves the exclusions on',
+         edits=(
+             ('src/auto_convert.py',
+              '        if not _gs._headless_settings_enabled(os.environ):\n'
+              '            return None\n        src = _ex.config_path()\n',
+              '        if False:  # MUTATED\n'
+              '            return None\n        src = _ex.config_path()\n', 1),
+         ),
+         tests=('tests/test_settings_parity.py',),
+         expect=('test_switched_off_a_headless_auto_ignores_them_as_before',),
+    ),
+    Pair('SPY-h', 'a run the entry point did not prepare reads them too',
+         edits=(
+             ('src/auto_convert.py',
+              '        if rep is None or rep.get("by"):\n            return None\n'
+              '        if not _gs._headless_settings_enabled(os.environ):\n',
+              '        if rep is not None and rep.get("by"):  # MUTATED\n            return None\n'
+              '        if not _gs._headless_settings_enabled(os.environ):\n', 1),
+         ),
+         tests=('tests/test_settings_parity.py',),
+         expect=('test_a_run_the_entry_point_did_not_prepare_reads_only_its_arguments',),
+    ),
+    Pair('SPY-i', 'an overlay pick is gated by the overlay exclusions',
+         edits=(
+             ('src/auto_convert.py',
+              '            and not getattr(args, "overlay_mods", None):\n'
+              '        _add("overlay_exclude_mods", overlay)\n',
+              '            and True:  # MUTATED\n'
+              '        _add("overlay_exclude_mods", overlay)\n', 1),
+         ),
+         tests=('tests/test_settings_parity.py',),
+         expect=('test_overlay_exclusions_follow_the_overlay_selection',),
+    ),
+    Pair('SPY-j', 'a name the command line holds is added again',
+         edits=(
+             ('src/auto_convert.py',
+              '        new = [n for n in names if n.lower() not in have]\n',
+              '        new = list(names)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_settings_parity.py',),
+         expect=('test_a_name_on_the_command_line_is_kept_and_not_added_twice',),
+    ),
+    Pair('SPY-k', 'an overlays-only run passes the armour exclusions',
+         edits=(
+             ('src/auto_convert.py',
+              '    if armor and not getattr(args, "overlays_only", False):\n',
+              '    if armor:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_settings_parity.py',),
+         expect=('test_an_overlays_only_run_passes_no_armour_exclusions',),
+    ),
 )

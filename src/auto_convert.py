@@ -10817,6 +10817,78 @@ def _split_mod_arg(vals, mods_root=None):
     return out or None
 
 
+def _apply_saved_exclusions(args, mods_root=None) -> "dict | None":
+    r"""A headless `auto` skips the mods saved in CBBEtoUBE_exclusions.json, as
+    the window's Convert button does. #headless-exclusions
+
+    The window turns its Exclusions list into arguments for its child
+    (`gui._armor_selection_argv`, `--overlay-exclude-mods`). A headless `auto`
+    applied the saved settings (#settings-everywhere) but never read this file,
+    while USING.md said such a run matches the Convert button: a mod marked as
+    already built for UBE was converted again, which breaks its meshes, and its
+    armour was covered. The window's mapping, here:
+
+      All mods (no --only-mods)   each armour exclusion -> --exclude-mods
+      --only-mods                 each one not picked   -> --coverage-exclude-mods
+      overlays, no --overlay-mods each overlay one      -> --overlay-exclude-mods
+
+    Added to what the command line names, never replacing it; a name it already
+    holds is not added twice. Only for a run the entry point prepared
+    (`gui_settings.headless_report()` is set): the window's child carries
+    CBBE2UBE_SETTINGS_APPLIED and gets them as arguments already, and
+    `python -m src.auto_convert` or a direct call reads only what it is given.
+    CBBE2UBE_NO_HEADLESS_SETTINGS=1 ignores the file, as before. Returns
+    {attr: [names added]}, or None when the file was not read. Never raises."""
+    try:
+        from . import exclusions as _ex
+        from . import gui_settings as _gs
+        rep = _gs.headless_report()
+        if rep is None or rep.get("by"):
+            return None
+        if not _gs._headless_settings_enabled(os.environ):
+            return None
+        src = _ex.config_path()
+        state = _ex.load(src)
+        armor = _ex.excluded_names(state, "armor")
+        overlay = _ex.excluded_names(state, "overlay")
+    except Exception as e:
+        print(f"note: the saved exclusions were not read ({type(e).__name__}: {e})")
+        return None
+    added: dict = {"exclude_mods": [], "coverage_exclude_mods": [],
+                   "overlay_exclude_mods": []}
+
+    def _add(attr, names):
+        have = {n.lower() for n in (_split_mod_arg(getattr(args, attr, None),
+                                                   mods_root) or ())}
+        new = [n for n in names if n.lower() not in have]
+        if new:
+            setattr(args, attr, list(getattr(args, attr, None) or []) + new)
+            added[attr] = new
+
+    if armor and not getattr(args, "overlays_only", False):
+        only = getattr(args, "only_mods", None)
+        if only:
+            chosen = {n.lower() for n in (_split_mod_arg(only, mods_root) or ())}
+            _add("coverage_exclude_mods",
+                 [n for n in armor if n.lower() not in chosen])
+        else:
+            _add("exclude_mods", armor)
+    if overlay and (getattr(args, "overlays_only", False)
+                    or getattr(args, "convert_overlays", False)) \
+            and not getattr(args, "overlay_mods", None):
+        _add("overlay_exclude_mods", overlay)
+    _what = {"exclude_mods": "armour mod(s) not converted (--exclude-mods)",
+             "coverage_exclude_mods": "armour mod(s) given no coverage "
+                                      "(--coverage-exclude-mods)",
+             "overlay_exclude_mods": "overlay mod(s) left as they are "
+                                     "(--overlay-exclude-mods)"}
+    for attr, names in added.items():
+        if names:
+            print(f"  saved exclusions ({src}): {len(names)} {_what[attr]}: "
+                  + ", ".join(names))
+    return added
+
+
 def _list_overlays_only(args, output, lay, overlay_transfer) -> int:
     """`auto --overlays-only --list-only`: name the overlays a transfer would
     remap, per region and per mod, and write nothing. #dry-run-writes-nothing
@@ -10888,6 +10960,8 @@ def _cmd_auto(args):
     print(f"  mods root: {mr}")
     if lay.game_data_dirs:
         print(f"  game Data: {lay.game_data_dirs[0]}")
+    # The saved exclusions, as the window passes them. #headless-exclusions
+    _apply_saved_exclusions(args, mr)
 
     output = (args.output if getattr(args, "output", None)
               else mr / "CBBEtoUBE Auto")
@@ -11364,8 +11438,20 @@ def _cmd_validate(args):
 
 def _cmd_check_setup(args) -> int:
     """`check-setup`: the GUI's Check setup without a window -- for a command
-    line, or a user whose GUI will not start. #check-setup"""
+    line, or a user whose GUI will not start. #check-setup
+
+    Run through the entry point, it checks with the saved settings, as the
+    window does (a UBE body picked on the Paths tab); its first line then says
+    where they came from, so a setup.txt in a bug report says which setup it
+    checked. A direct call prints the checks alone, as before.
+    #check-setup-settings"""
     from . import preflight
+    try:
+        from . import gui_settings as _gs
+        if _gs.headless_report() is not None:
+            print(_gs.settings_source_line().strip())
+    except Exception:
+        pass
     checks = preflight.run_checks()
     for line in preflight.format_checks(checks):
         print(line)

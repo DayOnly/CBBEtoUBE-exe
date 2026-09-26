@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed — `check-setup` and a run without the window use what you saved, like the window
+
+`CBBEtoUBE.exe check-setup` (the setup check for when the window will not
+start) ignored your saved settings, so a UBE body you picked on the Paths tab
+showed as OK in the window but as a failure there. It now checks with the same
+settings as the window, and its first line says where they came from.
+
+Running `CBBEtoUBE.exe auto` without the window now also skips the mods on your
+Exclusions list, as the Convert button does. Before, only the settings reached
+such a run, so a mod you had marked as already built for UBE could be converted
+again, which breaks it. Mods you name on the command line are still skipped as
+well; with `--only-mods`, a mod you name there is converted even if it is on the
+list, again as in the window. `CBBE2UBE_NO_HEADLESS_SETTINGS=1` (set to 1) turns
+off both, together with the saved settings.
+
 ### Fixed — colour variants of a piece left to your own UBE build recolour the right layer
 
 Since this tool leaves a piece alone when your own UBE BodySlide build (or

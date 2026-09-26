@@ -2017,7 +2017,7 @@ def settings_source_line(environ=None) -> str:
         if by:
             return f"  effective settings: from {by}"
         return ("  effective settings: settings file NOT read by this process "
-                "(the window and CBBEtoUBE.exe auto/convert apply it)")
+                "(the window and CBBEtoUBE.exe auto/convert/check-setup apply it)")
     if rep.get("by"):                   # the window's child #settings-source-line
         return f"  effective settings: from {rep['by']}"
     if rep["skipped"]:

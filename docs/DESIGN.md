@@ -3332,6 +3332,38 @@ reported through `_report_coverage_holds`:
   `{"by": "the settings window"}` (log: `effective settings: from the settings
   window`); `NOT applied` is kept for a file that really was not (switched off,
   absent, torn).
+- **`check-setup` checks with the saved settings** (`#check-setup-settings`).
+  USING.md and REPORTING.md send a user whose window will not start to
+  `CBBEtoUBE.exe check-setup > setup.txt`, which "writes the same checks", but
+  it was left out of `_SETTINGS_SUBCOMMANDS` and read the bare environment: a
+  UBE body picked on the Paths tab was OK in the window and `UBE body reference
+  built: FAIL` (exit 1) here, and a body found by name could pass although the
+  run would use another. It is now in the set, so it goes through
+  `apply_saved_settings` like `auto`: same marker, same switch, and a variable
+  already set in the environment wins, as it does for the headless run it
+  checks (the window's overlay lays the file over its own environment instead;
+  the two differ only when the shell sets a `CBBE2UBE_*` path itself). Through
+  the entry point its first line is the `effective settings:` line; a direct
+  `_cmd_check_setup` call (`python -m src.auto_convert`) prints the checks alone,
+  as before. `scan` and `discover-body-ref` still read the environment only.
+  `CBBE2UBE_NO_HEADLESS_SETTINGS=1`.
+- **A headless `auto` skips the saved exclusions** (`#headless-exclusions`).
+  The window turns `CBBEtoUBE_exclusions.json` into its child's arguments
+  (`gui._armor_selection_argv`, `--overlay-exclude-mods`); a headless `auto`
+  applied the settings file but never read this one, so a mod marked as already
+  built for UBE was converted again (the geometry backstop catches only a
+  high-confidence fit) and its armour covered. `_apply_saved_exclusions`
+  (called in `_cmd_auto` once the mods root is known) makes the same mapping:
+  no `--only-mods` -> `--exclude-mods`; with `--only-mods` the unpicked ones ->
+  `--coverage-exclude-mods`; an overlay run without `--overlay-mods` ->
+  `--overlay-exclude-mods`; an `--overlays-only` run passes no armour ones.
+  Added to the command line's names, never replacing them, without duplicates.
+  Only when the entry point prepared the run (`headless_report()` set, no
+  `"by"`): the window's child already has them as arguments, and `python -m
+  src.auto_convert` reads only its arguments. It changes a headless user's
+  output only when the file lists a mod; the live file lists none. Under the
+  same switch as the settings file, `CBBE2UBE_NO_HEADLESS_SETTINGS=1`, because
+  it is the same decision: whether a run without the window is the window's run.
 - **A bad Worker processes value cannot strand the window**
   (`#workers-box-guard`). The box is free text; `_launch` locked the window
   (running, Convert off, selection locked, bar spinning) and only then read
