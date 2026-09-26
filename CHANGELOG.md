@@ -373,9 +373,8 @@ body-morph file carried a single set of morphs meant for one shell. Now each lay
 of a shared name gets its own name before conversion ("fur", "fur:1", "fur:2" and
 so on) in the author's order, so every layer follows body sliders with its own
 morphs, and colour variants in the armour mod's own plugin still reach the right
-layer (they pick layers by position). A colour variant that this tool's merged
-plugin carries for several same-named layers still recolours only the first of
-them -- a known limit. A name the garment's physics
+layer (they pick layers by position), as do those this tool's merged plugin
+carries (next entry). A name the garment's physics
 file uses is left as it is, because the physics finds that layer by its name, and
 so is a body layer's name; the run reports either case. The tool also no longer
 writes one layer's shape onto a layer of a different size (it read memory it
@@ -669,6 +668,101 @@ engine does, without trimming spaces (no file on the reported pack has any).
 Guarded by `tests/test_physics_cloth_health.py`,
 `tests/test_physics_rest_depth.py` and mutation pairs `PCH-zp`..`PCH-zv`,
 `PRD-zf`..`PRD-zm` (`PCH-j` re-anchored). No converter behaviour changes.
+
+### Fixed — a colour variant recolours every same-named layer
+
+A colour variant lists the layers it recolours, each by name and position. On a
+garment whose layers share a name (the fur coat above), the variant copied into
+this tool's merged plugin kept only one entry for that name, so only the first
+fur shell took the new colour and the others stayed in the original one. Now
+each entry goes to the layer it names. To know which one that is, the tool
+reads the armour's original mesh again -- the same file it converted, found
+the same way, without changing anything -- and repeats the renaming on it, so
+it knows exactly which original layer became "fur", "fur:1", "fur:2" and so on.
+It does this when the converted mesh shows renamed layers, when a colour
+variant lists one layer name more than once, which proves the garment had
+several layers of that name even if every renamed one was lost, when the
+converted mesh has two layers whose names differ only in capitals ("Fur" and
+"fur"), which the tool otherwise matches as one name, and when the converted
+mesh has two layers with exactly the same name. Having no name counts as a
+name here: two layers with no name at all, or a variant with two entries that
+give no name, make the tool read the original mesh too. When the merged plugin is
+split into several files (CBBE_to_UBE_Combined.esp, CBBE_to_UBE_Combined2.esp,
+...), the tool looks at all of them together: a variant in one file that
+lists a name twice counts for the same garment's variants in the other files
+too, and each original mesh is read once. Layers the previous fix
+leaves with their shared name (named in the physics file, or a body), layers
+named alike up to capitals, layers with no name, and any name a variant lists
+twice or the converted mesh carries twice are told apart by their vertex count, triangle
+count and texture coordinates, and each entry goes to the layer that matches
+its original one.
+
+A layer can miss its colour in these cases, and keeps its original colour:
+- the layer was lost in conversion (the entry for it is dropped; the other
+  layers keep theirs);
+- the entry's position in the original mesh is not a layer of the name the
+  entry gives;
+- the original mesh cannot be found or read, or it is not the mesh that was
+  converted (its layer names, vertex and triangle counts or texture
+  coordinates differ, for example after the armour mod was updated): then
+  every entry for that garment's same-named layers is dropped, and the run
+  says how many garments this happened to;
+- two layers with one name (spelled the same, or both with no name) are
+  identical in vertex count, triangle count and texture coordinates, or one
+  of them matches no original layer: every entry for that name is dropped.
+
+Dropping is on purpose: keeping one entry "for the name" would put whichever
+colour the mod lists first on one layer of that name, and that can be another
+layer's colour. A layer can still get the colour of another layer of the same
+name (having no name counts as a name) in two cases:
+- two layers identical in vertex count, triangle count and texture
+  coordinates that only their names tell apart (two renamed layers, or
+  "Fur" and "fur"), whose order the armour mod swapped after the conversion;
+- every other layer of the name was lost in conversion, so the converted mesh
+  has the name once, no variant of the garment in any of the merged plugin's
+  files lists it twice, and the tool did not read the original mesh (nothing
+  else about the garment made it) or could not use it. The one entry goes to
+  the layer that is left, as before, and that is another layer's colour when
+  the entry was written for a lost layer.
+A variant's entry with no name, on a garment with two or more layers with no
+name, now goes to the nameless layer whose shape matches its original one, or
+is dropped; before, it went to the last layer with no name, even when the tool
+had read the original mesh. No mesh a colour variant of the reported modlist
+uses has two layers with no name.
+This holds when the colour variants are fixed once, right after the merge,
+which is what a run does. When a converted mesh will not load, its colour
+variants keep their original entries, and the run says so.
+None of the meshes the reported modlist converts has renamed layers, so
+current output does not change. One converted mesh has two layer names that
+differ only in capitals (a small collision layer and the feet), but no colour
+variant uses it. One mesh left in the output by an older
+version, a fur coat converted before its layers were renamed, no longer
+matches its original: if its colour variants are merged again against that
+old mesh, the one entry each kept (on one of its six fur layers) is dropped.
+Converting the coat again gives each of its layers its own colour.
+`CBBE2UBE_NO_ALTTEX_DUP_OCCURRENCE=1` (set to 1) turns it off and keeps one
+entry per name as before; it is also off when `CBBE2UBE_NO_DUP_SHAPE_NAMES=1`
+is set. `CBBE2UBE_NO_ALTTEX_EXACT_PROVENANCE=1` stops reading the original mesh
+and guesses from the converted mesh's layout instead, as the previous test
+build did; that guess can put a colour on the wrong layer when a layer at the
+end was lost. `CBBE2UBE_NO_ALTTEX_FAMILY_STRICT=1` matters only together with
+it, and drops the guess's layout and count checks.
+`CBBE2UBE_NO_ALTTEX_SET_PROVENANCE=1` reads the original mesh only when the
+converted mesh shows renamed layers and keeps one entry per name for layers
+left with their shared name, as the previous test build did; that can put a
+lost layer's colour on the layer that survived when every renamed layer of a
+name was lost. `CBBE2UBE_NO_ALTTEX_CASE_PROVENANCE=1` (read only when the
+switch above is not set) treats "Fur" and "fur" as different names when it
+reads the original mesh, as the previous test build did: a variant's entry
+for one of them can then go to the other.
+`CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY=1` (read only when none of the
+`..._DUP_OCCURRENCE`, `..._DUP_SHAPE_NAMES`, `..._EXACT_PROVENANCE`,
+`..._SET_PROVENANCE` and `..._CASE_PROVENANCE` switches is set) fixes each file of a split merged plugin on its own, does not
+read the original mesh just because two layers share a name exactly, and
+matches an entry with no name by name, as the previous test build did: a
+variant naming a layer once can then put a lost layer's colour on the one
+left, when only another file's variant lists the name twice, or put its
+colour on the last of two same-named layers or of two layers with no name.
 
 ### Changed — whether you can wear an item is read from the plugin the game uses
 
