@@ -15262,8 +15262,8 @@ PAIRS = (
     Pair('OTR-k', 'merge exits 0 with its postflight skipped',
          edits=(
              ('src/auto_convert.py',
-              '        return 1 if _merge_unverified_exit() else 0\n',
-              '        return 0  # MUTATED\n', 1),
+              '        _rc = 1 if _merge_unverified_exit() else 0\n',
+              '        _rc = 0  # MUTATED\n', 1),
          ),
          tests=('tests/test_one_tally_round2.py',),
          expect=('test_merge_exits_1_when_its_postflight_could_not_run',

@@ -12711,13 +12711,14 @@ def _cmd_merge(args):
             print(f"  postflight: {len(_pf['soft'])} soft warning(s) "
                   "(invisible/cosmetic, non-fatal)")
     except Exception as _pfe:
+        _rc = 1 if _merge_unverified_exit() else 0
         warn(f"postflight validation skipped: {plain_error(_pfe)}",
              consequence="the plugin was not checked for load-breaking issues; "
-                         "`merge` exits 1",
+                         f"`merge` exits {_rc}",
              fix="run `validate` on the merged plugin's folder before enabling it")
         # `merge` keeps no run record: its exit code is its result, so a plugin
         # nobody checked is not reported as a clean merge. #merge-unverified-exit
-        return 1 if _merge_unverified_exit() else 0
+        return _rc
     return 0
 
 

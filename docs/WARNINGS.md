@@ -268,7 +268,7 @@ at run time), what it means for the run, and what to do next.
 - `!! POSTFLIGHT CTD on merged output: … load-breaking issue(s)`
   - means: NOT safe to load; listed below
 - `!! postflight validation skipped: …`
-  - means: the plugin was not checked for load-breaking issues; `merge` exits 1
+  - means: the plugin was not checked for load-breaking issues; `merge` exits …
   - fix: run `validate` on the merged plugin's folder before enabling it
 - `!! …`
   - means: … warning(s), listed below
