@@ -3329,7 +3329,8 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
     "slots unknown" and was covered again -- two bodies on UBE actors. Now the
     slots are the load-order WINNER's: `active_plugins` in order, each name
     resolved to its file through `plugin_index` (`_winner_walk_plugin_index`,
-    the root-only index: overwrite > enabled mods > game Data), our own
+    the root-only index: overwrite > enabled mods > game Data; under
+    CBBE2UBE_NO_WINNER_WALK_ROOT_INDEX=1 the caller's index again), our own
     output skipped. When the winning record still cannot be read (no load order or index, the record
     in no loaded plugin, an unreadable plugin that may hold it, no BOD2), a
     target a `!UBE\` addon names is excluded as before the slot check and
