@@ -282,11 +282,15 @@ create its piece's folder when it started converting it. When pieces spell one
 folder differently, the folder was named by whichever piece reached it first,
 on both schedules. For example, a loose mod file sits under `meshes\Armor\`
 while an archive's pieces sit under lowercase `armor\`. One source at a time,
-the race was among a source's concurrently started pieces. On the batch-wide
+it depended on which of a source's concurrently started pieces made the
+folder first. Both measured one-at-a-time runs gave `Armor`, but nothing
+fixed that order, so both schedules now follow plan order rather
+than copying one observed spelling. On the batch-wide
 schedule it was the largest-first order across sources. Now each source
 creates its pieces' folders at the end of its planning
 (`_make_planned_folders`), in plan order, before any NIF converts. The first
-source to plan a folder spells it, and within a source the first piece in plan
+source to plan a folder (sources plan highest MO2 priority first, the
+vanilla sweep last) spells it, and within a source the first piece in plan
 order does. Both schedules plan every source in source order, so they spell
 every folder alike on every run. A folder that exists already keeps its
 spelling. A folder the plan made that is still empty once the batch is done

@@ -321,6 +321,15 @@ def _unfinished_run_text(rep: dict) -> str:
         whole = len(phase.get("sources_nifs_done") or [])
     except (TypeError, KeyError, ValueError, AttributeError):
         total = 0
+    if total > 0 and done >= total:
+        # The checkpoint keeps the finished phase through the plugin and
+        # patch work that follows it, so a run stopped there has every
+        # piece in; saying it stopped mid-phase would be wrong.
+        return (f"This run did not finish. All {total} armour pieces were "
+                "converted; it stopped after that, while finishing the mods "
+                f"and building their patches. The report covers the "
+                f"{finished} of {planned} planned mods that were finished, "
+                "patches included. The run log says why.")
     if total > 0:
         return (f"This run did not finish. It stopped while converting the "
                 f"armour pieces of all mods together: {done} of {total} "

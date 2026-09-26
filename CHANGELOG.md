@@ -22,8 +22,9 @@ first, so two runs could name it differently. Converting one mod at a time
 gave `Armor` on the reported modlist, and converting all mods together gave
 `armor`. Windows, Mod Organizer and the game treat both names the same, and
 every file inside was the same. Now the tool names each folder before it
-converts anything: the first mod in your load order to use the folder names
-it, and within a mod its first piece does. You get the same name every run,
+converts anything: the first mod the tool converts that uses the folder
+(mods convert highest Mod Organizer priority first) names it, and within a
+mod its first piece does. You get the same name every run,
 whichever way the tool converts. An output folder you already have keeps its
 names. A folder that was made for a piece that turned out to have nothing to
 convert is removed at the end of the run.
@@ -36,7 +37,8 @@ counts as finished (its patch written) only near the end of that step. If you
 cancelled a run, or it stopped, during that step, the Results tab said
 something like "the report covers 2 of 9 planned mods", even when most pieces
 were already converted. It now also says how many pieces were converted, and
-how many mods had all of theirs converted.
+how many mods had all of theirs converted. A run stopped after every piece
+was converted, while the patches were being built, now says that instead.
 
 ### Fixed — two warnings in the log now also reach the end-of-run count and list
 

@@ -633,6 +633,21 @@ def test_the_results_tab_says_how_far_the_nif_phase_got(tmp_path, monkeypatch):
     assert "1 of 3 planned mods" in line, line
 
 
+def test_a_run_stopped_after_the_nif_phase_does_not_read_as_mid_phase():
+    """The batch-wide checkpoint keeps the finished `nif_phase` through the
+    ESP merge and coverage patches. A run cancelled there had every piece in,
+    so the row must not say it stopped while converting them."""
+    rep = {"source_mods": 9, "sources_planned": 9,
+           "nif_phase": {"files_done": 762, "files_total": 762,
+                         "sources_nifs_done": ["M%d" % i for i in range(9)]}}
+    line = gui._unfinished_run_text(rep)
+    assert "All 762 armour pieces were converted" in line, line
+    assert "stopped while converting" not in line, line
+    assert "9 of 9 planned mods" in line, line
+    rep["nif_phase"]["files_done"] = 761
+    assert "stopped while converting" in gui._unfinished_run_text(rep)
+
+
 def test_a_checkpoint_without_a_nif_phase_keeps_the_old_row():
     """Control: one source at a time (or a report from an older build) there
     is no `nif_phase`, and a torn one is not trusted."""
