@@ -31,13 +31,13 @@ _CHILD = textwrap.dedent("""
     sys.path.insert(0, os.getcwd())
     from src import nif_io
     out = {"at_import": nif_io.pynifly is not None}
-    lib = nif_io.library()
-    out["library"] = lib is not None
     nif = sys.argv[1]
-    try:
+    try:            # FIRST, as the zeroed-body check does: nothing loaded yet
         out["shapes"] = len(nif_io.open_nif_retry(nif, attempts=1).shapes)
     except Exception as e:
         out["open_error"] = type(e).__name__ + ": " + str(e)
+    lib = nif_io.library()
+    out["library"] = lib is not None
     if lib is not None:
         from src import nif_convert
         out["same_as_conversion"] = nif_convert._pynifly() is lib
