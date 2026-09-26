@@ -2539,6 +2539,19 @@ lost piece from a dropped one. What ships (`src/stale_sweep.py`, glue in
   An exception out of `_cmd_convert` puts them back from `_cmd_auto`; a journal a
   killed run left unsettled is put back at the start of the next `auto` run of any
   kind (below). Report: `_superseded\stale_output_report.json` and the log.
+- **The read-back reads the merge's own files** (`#sweep-piece-family`).
+  `stale_sweep.combined_references` globbed `<stem>*.esp`, so a user's
+  `<stem> - Copy.esp` or `<stem>_backup.esp` of an older Combined -- which names the
+  old meshes -- put every move back on every run, and an unreadable one did the same
+  ("could not be read back"). The sweep landed before `#piece-family-match` narrowed
+  every other post-merge reader, and no merge carried the change over. It now walks
+  `ube_patcher._combined_piece_family(<Combined>, ".esp")` (the Combined and its
+  numbered split pieces), so `CBBE2UBE_NO_PIECE_FAMILY_MATCH=1` reaches it too. Such
+  a copy is not the merge's file: the game loads it only if the user enables it, and
+  then it duplicates every record of the Combined as well. Live: the output holds
+  only `Combined.esp` and `Combined2.esp`; the read-back over every base on disk
+  finds the same 3,284 model paths either way. `CBBE2UBE_NO_SWEEP_PIECE_FAMILY=1`:
+  every `<stem>*.esp`, as before.
 - **A killed run's moves go back on the next run of any kind**
   (`#sweep-recover-every-run`). The GUI's Cancel is `taskkill /T /F`, so the
   `finally` in `_cmd_auto` never runs and the journal stays `moving` / `waiting for

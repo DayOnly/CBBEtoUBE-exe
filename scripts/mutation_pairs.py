@@ -13378,4 +13378,39 @@ PAIRS = (
                  'test_each_base_holds_the_sidecars_named_from_it',
                  'test_moving_a_stale_double_suffix_base_takes_its_own_sidecars'),
     ),
+    # #sweep-piece-family (2026-09-26): the sweep's read-back after the merge
+    # reads the Combined and its numbered pieces, never a user's copy.
+    Pair('SPF-a', "a copy of an old Combined is read as the new one",
+         edits=(
+             ('src/stale_sweep.py',
+              '        pieces = _combined_piece_family(combined_path, ".esp")',
+              '        pieces = sorted(combined_path.parent.glob(combined_path.stem'
+              ' + "*.esp"))  # MUTATED', 1),
+         ),
+         tests=('tests/test_sweep_piece_family.py',),
+         expect=('test_a_copy_of_an_old_combined_does_not_put_the_moves_back'
+                 '[Combined - Copy.esp]',
+                 'test_a_copy_of_an_old_combined_does_not_put_the_moves_back'
+                 '[Combined_backup.esp]',
+                 'test_an_unreadable_copy_does_not_put_the_moves_back'),
+    ),
+    Pair('SPF-b', 'the off-switch no longer switches anything off',
+         edits=(
+             ('src/stale_sweep.py',
+              '    return not _flag("CBBE2UBE_NO_SWEEP_PIECE_FAMILY", False)',
+              '    return True  # MUTATED', 1),
+         ),
+         tests=('tests/test_sweep_piece_family.py',),
+         expect=('test_switched_off_a_copy_puts_every_move_back',),
+    ),
+    Pair('SPF-c', 'a numbered split piece goes unread',
+         edits=(
+             ('src/stale_sweep.py',
+              '        pieces = _combined_piece_family(combined_path, ".esp")',
+              '        pieces = [combined_path]  # MUTATED', 1),
+         ),
+         tests=('tests/test_sweep_piece_family.py',),
+         expect=('test_a_numbered_split_piece_naming_a_moved_mesh_still_puts_it_back',
+                 'test_an_unreadable_split_piece_still_puts_them_back'),
+    ),
 )

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed — a backup copy of the combined plugin no longer stops old meshes from being moved aside
+
+After the merge, a full run checks that the new combined plugin does not use
+any of the old meshes it moved into `_superseded\`; if it does, they all go
+back. That check also read any other plugin whose name starts the same way,
+such as `CBBE_to_UBE_Combined - Copy.esp` or `CBBE_to_UBE_Combined_backup.esp`.
+A backup of an older combined plugin uses the old meshes, so every run put
+everything back and warned about it. The check now reads only the combined
+plugin and its numbered parts (`CBBE_to_UBE_Combined2.esp`, ...), like the rest
+of the tool. Nothing changes on the reported modlist, which has no such copy.
+`CBBE2UBE_NO_SWEEP_PIECE_FAMILY=1` (set to 1) turns it off.
+
 ### Fixed — moving an old mesh no longer takes a current mesh's physics and morph files with it
 
 Some armour folders hold two pieces whose names differ only by an extra `_1`

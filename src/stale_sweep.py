@@ -617,12 +617,27 @@ def stranded_files(output) -> "tuple[set[str], set[str]]":
     return bases, patches
 
 
+def piece_family_on() -> bool:
+    r"""#sweep-piece-family: the read-back after the merge reads the merge's own
+    files -- the Combined and its numbered split pieces
+    (`ube_patcher._combined_piece_family`, #piece-family-match) -- not every
+    `<stem>*.esp` beside it, so a user's `<stem> - Copy.esp` or
+    `<stem>_backup.esp` no longer puts every move back.
+    CBBE2UBE_NO_SWEEP_PIECE_FAMILY=1: every `<stem>*.esp`, as before."""
+    return not _flag("CBBE2UBE_NO_SWEEP_PIECE_FAMILY", False)
+
+
 def combined_references(combined_path, bases) -> "list[str]":
     r"""The `!UBE` model paths in the written Combined (and its split pieces)
     whose weight base is in `bases` -- a moved mesh the plugin still names.
-    Raises when a piece cannot be read: an unread plugin is not a clean one."""
+    Raises when a piece cannot be read: an unread plugin is not a clean one.
+    #sweep-piece-family"""
     combined_path = Path(combined_path)
-    pieces = sorted(combined_path.parent.glob(combined_path.stem + "*.esp"))
+    if piece_family_on():
+        from .ube_patcher import _combined_piece_family
+        pieces = _combined_piece_family(combined_path, ".esp")
+    else:
+        pieces = sorted(combined_path.parent.glob(combined_path.stem + "*.esp"))
     hits: list = []
     for piece in pieces:
         for m, b in _ube_models(piece):
