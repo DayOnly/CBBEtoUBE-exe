@@ -7318,4 +7318,24 @@ PAIRS = (
          tests=('tests/test_alttex_batch_ambiguity.py',),
          expect=('test_an_unnamed_entry_of_another_shapes_index_is_dropped',),
     ),
+    # The two gates that keep the empty-name behaviour behind the switch:
+    # without them the switch no longer reproduces 8317cd7 for unnamed shapes.
+    Pair('ABA-l', 'the empty name joins the kept groups with the switch set',
+         edits=(
+             ('src/ube_patcher.py',
+              '    unnamed = fold and _alttex_batch_ambiguity_on()\n',
+              '    unnamed = fold  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_alttex_batch_ambiguity.py',),
+         expect=('test_switched_off_a_source_read_for_another_name_leaves_unnamed_by_name',),
+    ),
+    Pair('ABA-m', 'a set naming the empty name twice reads the source with the switch set',
+         edits=(
+             ('src/ube_patcher.py',
+              '                    rep = _repeated_entry_names(data, unnamed=batch)\n',
+              '                    rep = _repeated_entry_names(data, unnamed=True)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_alttex_batch_ambiguity.py',),
+         expect=('test_switched_off_a_set_naming_unnamed_twice_reads_no_source',),
+    ),
 )

@@ -367,3 +367,34 @@ def test_switched_off_an_unnamed_entry_goes_to_the_last_unnamed_shape(
         [("", GREEN, 2), ("coat", TAN, 1)], [("", RED, 2)]], (
         "#alttex-case-provenance as first shipped: the known wrong shell")
     assert seen == []
+
+
+@needs_pynifly
+def test_switched_off_a_source_read_for_another_name_leaves_unnamed_by_name(
+        monkeypatch, tmp_path):
+    """Switched off, the empty name is no group even when the source IS read
+    (here for the repeated 'fur' physics keeps): the '' entry binds by name,
+    to the LAST unnamed shape, exactly as 8317cd7 did."""
+    monkeypatch.setenv(BATCH_OFF, "1")
+    _physics_keeps_fur(monkeypatch)
+    shapes = [("coat", *COAT), ("fur", *SHELL1), ("fur", *SHELL2),
+              ("", *UNNAMED_A), ("", *UNNAMED_B)]
+    src, plugin = _world(tmp_path, shapes, shapes,
+                         [("", RED, 3), ("fur", GREEN, 1), ("fur", BLUE, 2)])
+    seen = _resolve_to(monkeypatch, {KEY: src})
+    assert _reconciled(plugin, tmp_path) == [
+        [("", RED, 4), ("fur", GREEN, 1), ("fur", BLUE, 2)]]
+    assert seen == [[KEY]], "the repeated 'fur' reads the source"
+
+
+@needs_pynifly
+def test_switched_off_a_set_naming_unnamed_twice_reads_no_source(
+        monkeypatch, tmp_path):
+    """Switched off, a set that names '' twice is no repeat: no source read."""
+    monkeypatch.setenv(BATCH_OFF, "1")
+    conv = [("coat", *COAT), ("", *UNNAMED_A)]
+    src, plugin = _world(tmp_path, TWO_UNNAMED, conv,
+                         [("", RED, 1), ("", GREEN, 2), ("coat", TAN, 0)])
+    seen = _resolve_to(monkeypatch, {KEY: src})
+    _reconciled(plugin, tmp_path)
+    assert seen == [], "8317cd7 read no source for a set repeating ''"
