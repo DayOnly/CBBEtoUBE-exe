@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixed — the measurement log no longer loses or garbles lines
+
+During a conversion every worker process writes its measurements to one file,
+`standoff_audit.jsonl` in the output folder. Two workers writing at the same
+moment could land one line inside another, so a run lost a few dozen records and
+left garbled lines behind (the log on the reported modlist has 51 of them, and
+two runs of the same conversion lost different records). Each line is now
+written whole, one worker at a time, so none is lost or garbled. The same
+applies to the glow diagnostic log. The converted meshes and plugins do not
+change; only this log does. The analysis scripts that read the log now say how
+many garbled lines an older log holds instead of skipping them silently.
+`CBBE2UBE_NO_ATOMIC_AUDIT_APPEND=1` (set to 1) turns it off.
+
 ### Fixed — a copy of the combined plugin in the output folder is left alone
 
 If you kept a copy of `CBBE_to_UBE_Combined.esp` in the output folder (for

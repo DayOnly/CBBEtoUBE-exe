@@ -693,18 +693,27 @@ def measure(nif, row, skel, body):
     }, None
 
 
+class LiftLog(defaultdict):
+    """`read_lift_log`'s mapping, plus `torn`: the lines that did not parse."""
+    torn = 0
+
+
 def read_lift_log(path):
     """{path tail (lower-case, '/'): {"moved": {root: [lifts]}, "skipped":
     Counter(reason)}} from the run's `chain-rest-lift` records. The sink
-    appends across runs and pool workers can splice lines, so a torn line is
-    dropped and every distinct lift is kept, not one."""
-    out = defaultdict(lambda: {"moved": defaultdict(set),
-                               "skipped": Counter()})
+    appends across runs, so every distinct lift is kept, not one. A sink
+    written before #atomic-audit-append can hold lines two pool workers
+    spliced: each is dropped and COUNTED in `.torn` -- a torn line is a record
+    of unknown kind that is missing, and the cross-check says how many."""
+    out = LiftLog(lambda: {"moved": defaultdict(set), "skipped": Counter()})
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
+            if not line.strip():
+                continue
             try:
                 rec = json.loads(line)
             except ValueError:
+                out.torn += 1
                 continue
             if not isinstance(rec, dict) or rec.get("pass_") != "chain-rest-lift":
                 continue
@@ -952,6 +961,11 @@ def lift_log_check(rows, lift_log, top):
           f"not the number): {agree} piece(s) lifted exactly the chains "
           f"the log names, {len(differ)} differ, {unlogged} lifted with "
           f"no log record")
+    torn = getattr(lift_log, "torn", 0)
+    if torn:
+        print(f"  {torn} torn line(s) in the log were skipped: records two "
+              f"workers spliced (a sink written before whole-record appends), "
+              f"any of which could be a lift this check reads as missing")
     for path, log_only, file_only in differ[:top]:
         print(f"  log only {log_only}  file only {file_only}  {path}")
     refused_log = {log_key(r["path"]) for r in rows

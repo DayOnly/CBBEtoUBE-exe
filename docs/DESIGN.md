@@ -251,6 +251,28 @@ Frame corrections, chain verdicts and standoff distributions append to
 `standoff_audit.jsonl` at the output mod root. Failed measurements are recorded
 too: one that errored must not look like one that found nothing.
 
+**Every record lands whole** (`#atomic-audit-append`, `src/atomic_io.append_whole`).
+All pool workers append to the one sink. A text-mode append on Windows is
+seek-to-end then write, and a raw `O_APPEND` `os.write` is no better (measured:
+8 processes x 500 records of up to 30 KB tore ~600-800 lines per trial either
+way), so two workers could write at one offset and splice two records. A full
+run tore 14-16 lines and lost ~30 records, a different set each run; the live
+sink held 51 torn lines. Each record is now ONE write of the whole encoded line
+under an exclusive cross-process lock: a byte-range lock at offset
+0x7FFFFFFF_00000000 (`LockFileEx`; `flock` elsewhere), far past any data, so it
+needs no second file and the OS drops it if a worker dies holding it. A lock
+that cannot be taken still writes the record, unlocked. Per-worker files merged
+by the parent were rejected: the sink is also written with no batch parent
+(single converts, several converter processes sharing one
+`CBBE2UBE_STANDOFF_LOG`) and appends across runs by design. The bytes are the
+old writer's (UTF-8, `\n` as `os.linesep`). Record ORDER is still arrival order
+across workers; the MULTISET is what is deterministic, so compare two sinks as
+sorted lines. The glow diagnostic log, the only other file workers append to,
+uses the same writer. The readers (`audit_sink.load`, `physics_rest_depth
+.read_lift_log`, `survival_report.load`, `survival_sweep`) count and report the
+torn lines of older sinks. `CBBE2UBE_NO_ATOMIC_AUDIT_APPEND=1` restores the old
+unlocked writer.
+
 Records carry `entry`, `final` and **`shipped`**. Read `shipped`, not `final`:
 when a rollback fires, `final` is the measurement that was *rejected*. On the
 first pack-wide run that distinction was 174 exposed verts versus 101 actually

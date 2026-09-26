@@ -216,18 +216,22 @@ def main() -> int:
     # Per-piece row counts. A piece that converted but produced no survival rows
     # is NOT the same as a piece with nothing to report, and the difference is
     # invisible in an aggregate.
-    counts = {}
+    counts, torn = {}, 0
     if sink.exists():
         for line in sink.read_text("utf-8").splitlines():
+            if not line.strip():
+                continue
             try:
                 r = json.loads(line)
             except ValueError:
+                torn += 1      # spliced by concurrent writers; a lost record
                 continue
             if r.get("kind") == "survival":
                 counts[r.get("path", "?")] = counts.get(r.get("path", "?"), 0) + 1
     ok = [r for r in results if r["status"] == "ok"]
     print(f"\n{len(ok)}/{len(results)} converted, "
-          f"{sum(counts.values())} survival row(s) over {len(counts)} mesh(es)")
+          f"{sum(counts.values())} survival row(s) over {len(counts)} mesh(es)"
+          f"{f', {torn} TORN line(s) skipped' if torn else ''}")
     for r in results:
         if r["status"] != "ok":
             print(f"  !! {r['piece']}: {r['status']} {r.get('err', '')}")
