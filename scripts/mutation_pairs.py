@@ -12970,6 +12970,19 @@ PAIRS = (
          expect=('test_a_run_stopped_in_the_nif_phase_says_how_many_pieces_were_in',),
          needs=('display',),
     ),
+    # A run stopped after the NIF phase finished (checkpoint files_done ==
+    # files_total, kept through the patch work) must not read as mid-phase.
+    Pair('SFU-q', 'the Results row says mid-phase for a finished NIF phase',
+         edits=(
+             ('src/gui.py',
+              '    if total > 0 and done >= total:
+',
+              '    if False:  # MUTATED
+', 1),
+         ),
+         tests=('tests/test_global_schedule.py',),
+         expect=('test_a_run_stopped_after_the_nif_phase_does_not_read_as_mid_phase',),
+    ),
     # #planned-folders: each source creates its pieces' folders in plan order
     # at the end of its planning, so the first source to plan a folder spells
     # it on both schedules; the ones still empty go once the batch is done.
