@@ -175,6 +175,8 @@ def test_a_wraps_spy_without_a_reload_is_a_leak(probe):
     leaks = mg.settle(snaps)
     assert [ln.split(":")[0] for ln in leaks] == ["src._guard_probe.fill"]
     assert "rebound" in leaks[0]
+    # The line says a wrapper was left, not "rebound to X (was X)".
+    assert "rebound to a wrapper of" in leaks[0], leaks[0]
     assert probe.fill is real
 
 

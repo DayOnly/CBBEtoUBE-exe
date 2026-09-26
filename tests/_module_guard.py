@@ -239,6 +239,11 @@ def _describe(v) -> str:
     q = getattr(v, "__qualname__", None)
     mod = getattr(v, "__module__", None)
     if q:
-        return f"{mod}.{q}" if mod else q
+        name = f"{mod}.{q}" if mod else q
+        # functools.wraps copies the name onto a spy: say it is a wrapper,
+        # or the leak line would read "rebound to X (was X)".
+        if getattr(v, "__wrapped__", None) is not None:
+            return f"a wrapper of {name}"
+        return name
     r = repr(v)
     return type(v).__name__ + " " + (r if len(r) <= 60 else r[:57] + "...")
