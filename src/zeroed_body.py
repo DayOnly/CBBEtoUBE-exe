@@ -493,6 +493,13 @@ def zeroed_body(kind: str, weight: str = "_1", *, mods_root=None, order=None,
     try:
         _shape_sizes(game_file)
     except Exception as e:
+        # A missing NIF library is not a bad file: say which
+        # (#nif-library-one-search).
+        if nif_io.library() is None:
+            raise ZeroedBodyError(
+                f"the NIF library (pynifly) is not loaded, so {game_file} could "
+                f"not be checked ({nif_io.import_error() or 'not importable'})"
+            ) from e
         raise ZeroedBodyError(f"{game_file} is unreadable "
                               f"({type(e).__name__}: {e})") from e
     builds, unusable, any_set = _builds(vfs, kind, weight, _CACHE)
@@ -725,6 +732,9 @@ def _candidate(vfs, kind, provider, pair, game_loads, memo) -> BodyCandidate:
         try:
             sizes = _shape_sizes(p)
         except Exception as e:
+            if nif_io.library() is None:        # #nif-library-one-search
+                return cand("unreadable", False, "the NIF library (pynifly) is "
+                            f"not loaded, so {Path(p).name} could not be read")
             return cand("unreadable", False, f"{Path(p).name} is unreadable "
                         f"({type(e).__name__})")
         # Family = SOME shape of the body's size, not the largest one: an extra

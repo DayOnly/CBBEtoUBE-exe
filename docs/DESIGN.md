@@ -1212,6 +1212,28 @@ golden set (weight 1) garment verts near the body move median 0.000u, p05 −0.1
 p95 +0.51u, bust median +0.014u; off-switch identical 15/15. No in-game verdict
 yet.
 
+**The check reads with the conversion's NIF library** (`#nif-library-one-search`,
+2026-09-26). `src/nif_io.py`, which every zeroed-body read goes through, imported
+pynifly once at import time -- from `PYNIFLY_PATH` alone when that was set --
+while the conversion loads it with `nif_convert._pynifly()` from the repo's
+`.pynifly/`. A source run whose `PYNIFLY_PATH` no longer held the library
+converted, but every `nif_io` read failed (`'NoneType' object has no attribute
+'NifFile'`): the check called both game bodies "unreadable", the run found no
+CBBE body -- so the body-delta warp was skipped and the fit fell back to
+snapping outside the body -- and a UBE body by folder name (measured on the
+live modlist: exactly that pair of lookups), the Reference bodies dialog listed every body
+unreadable and the zeroed garment source switched off. `nif_io.library()` now
+retries the import once with `nif_convert._pynifly()`'s search, so both read
+with the same module. When no library can be loaded at all, the check says so
+("the NIF library (pynifly) is not loaded, so … could not be checked") instead
+of calling the file unreadable; it still falls back, and a run cannot convert
+anyway. The shipped exe bundles `pyn` and never reaches the retry: the
+deployed run logs show the zeroed bodies verified, no fallback line. The live
+replay is byte-identical with and without the switch.
+`CBBE2UBE_NO_NIF_LIBRARY_RETRY=1` keeps the single import (the clearer
+"not loaded" message stays). The retry runs under a lock and is marked done
+only once it has finished, so a concurrent first read waits for it.
+
 **The Reference bodies dialog** (`src/body_choice.py`, `gui.build_body_dialog`)
 lets the user confirm or change both bodies before a GUI run. The choice reaches
 the child as the four `CBBE2UBE_*_BODY_0/_1` overrides for that run only (never
