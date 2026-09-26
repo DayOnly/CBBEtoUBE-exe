@@ -913,10 +913,15 @@ def _alttex_source_paths(meshes_root, keys) -> "dict[str, Path]":
     output = Path(meshes_root).parent
     vfs = _ac._BATCH_MESH_INDEX.get(str(Path(mr)).lower())
     if vfs is None:
+        # No batch index (a standalone `convert`, or selection's index failed):
+        # build the one the convert step builds for itself, MO2's overwrite
+        # included (#overwrite-mesh-index), or the two can pick different
+        # copies of one mesh. #alttex-overwrite
         try:
             vfs = discovery.build_mesh_index(Path(mr), order,
                                              target_keys=set(keys),
-                                             skip_mods={output.name})
+                                             skip_mods={output.name},
+                                             overwrite=_ac._modlist_overwrite(Path(mr)))
         except Exception:
             vfs = {}
     elif _alttex_set_provenance_on():
