@@ -6618,7 +6618,7 @@ def report_link_reconciliation(stats: dict) -> "list[str]":
     The other two drops are by design -- `duplicate_pair` is first-writer-wins
     across patches, `render_identical` stops one armour rendering the same mesh
     twice -- so they are reported as plain counts, not warnings.
-    `unsafe_name` (#skypatcher-name-guard) is counted here; the caller warns,
+    `sp_dropped_unsafe_name` (#skypatcher-name-guard) is counted here; the caller warns,
     naming each plugin.
     """
     seen = int(stats.get("sp_links_seen", 0) or 0)
