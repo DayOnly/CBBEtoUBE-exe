@@ -406,7 +406,7 @@ def _alttex_exact_provenance_on() -> bool:
     keeps the match by name. When the source cannot be found or read, or it is
     not the mesh that was converted (`_alttex_binding`), the entries of every
     name that may have been split are DROPPED for that NIF: a colour missed,
-    not guessed (the three cases that can still bind another same-named
+    not guessed (the two cases that can still bind another same-named
     shell's colour are listed in docs/DESIGN.md, #alttex-exact-provenance).
 
     CBBE2UBE_NO_ALTTEX_EXACT_PROVENANCE=1 binds by the converted NIF's layout,
@@ -498,19 +498,26 @@ def _alttex_batch_ambiguity_on() -> bool:
       LAST shape of the name. Now such a NIF has its source read
       (`_literal_duplicate_names`), and the name binds by print or is
       dropped, as a repeat's does.
+    - The EMPTY name was never taken as shared: an entry with no name on a
+      NIF carrying two or more unnamed shapes went to the last of them, even
+      with the source read and matched. Now it is a name like any other:
+      two unnamed shapes in the NIF, or two entries with no name in a set,
+      read the source, and each such entry binds by print
+      (`_kept_group_shells`) or is dropped.
 
-    CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY=1 reconciles each piece on its own and
-    reads no source for a literal duplicate alone, as #alttex-case-provenance
-    first did."""
+    CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY=1 reconciles each piece on its own,
+    reads no source for a literal duplicate alone and binds an entry with no
+    name by name, as #alttex-case-provenance first did."""
     return not _flag("CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY", False)
 
 
 def _literal_duplicate_names(names) -> "frozenset[str]":
-    """#alttex-batch-ambiguity: the non-empty shape names a NIF carries more
-    than once under one exact spelling (a group the rename left as authored).
-    The reconcile's name map keeps the last such shape, so an entry of such a
-    name cannot be bound by its name."""
-    count = Counter(str(n) for n in names if n)
+    """#alttex-batch-ambiguity: the shape names a NIF carries more than once
+    under one exact spelling (a group the rename left as authored) -- the
+    EMPTY name too, for two or more unnamed shapes, which the rename never
+    renames. The reconcile's name map keeps the last such shape, so an entry
+    of such a name cannot be bound by its name."""
+    count = Counter(str(n or "") for n in names)
     return frozenset(n for n, c in count.items() if c > 1)
 
 
@@ -547,15 +554,20 @@ def _entry_lname(name: bytes) -> str:
     return name.split(b"\x00", 1)[0].decode("latin-1", "ignore").lower()
 
 
-def _repeated_entry_names(data: bytes) -> "frozenset[str]":
+def _repeated_entry_names(data: bytes, unnamed: bool = False
+                          ) -> "frozenset[str]":
     """#alttex-set-provenance: the lowercased shape names an MO?S set gives
     more than one entry -- proof its source had same-named shells. Empty for a
-    set that does not parse."""
+    set that does not parse. The empty name counts only with `unnamed`
+    (#alttex-batch-ambiguity: two entries with no name prove two unnamed
+    shells, as for any other name)."""
     try:
         entries = _alttex_entries(data)
     except Exception:
         return frozenset()
     count = Counter(_entry_lname(nm) for nm, _t, _s in entries)
+    if unnamed and count[""] > 1:
+        return frozenset({""}) | _repeated_entry_names(data)
     return frozenset(nm for nm, c in count.items() if nm and c > 1)
 
 
@@ -706,13 +718,21 @@ def _kept_group_shells(source: "_AltTexSource",
     'Fur' beside 'fur', which the rename never touches), and every name of
     `ambiguous` not renamed is bound the same way, even one the source has
     once: an entry of a name the reconcile knows was shared is never bound
-    by its name."""
+    by its name.
+
+    #alttex-batch-ambiguity: the EMPTY name is a name like any other here --
+    two or more unnamed source shells are a group the rename left as
+    authored -- so each entry with no name binds by print or is dropped,
+    never to the last unnamed shape by name."""
     out: "dict[str, dict[int, int]]" = {}
     fold = _alttex_case_provenance_on()
-    groups = Counter((n.lower() if fold else n) for n in source.names if n)
+    unnamed = fold and _alttex_batch_ambiguity_on()
+    groups = Counter((n.lower() if fold else n) for n in source.names
+                     if n or unnamed)
     shared = [g for g, c in groups.items() if c > 1]
     if fold:
-        shared += sorted(nm for nm in ambiguous if nm and groups[nm] < 2)
+        shared += sorted(nm for nm in ambiguous
+                         if (nm or unnamed) and groups[nm] < 2)
     for g in shared:
         low = g.lower()
         if low in split or low in out:
@@ -977,7 +997,9 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
     # #alttex-case-provenance: a NIF carrying one name under two spellings
     # ('Fur', 'fur') has its source read too.
     case_prov = set_prov and _alttex_case_provenance_on()
-    # #alttex-batch-ambiguity: so does a NIF carrying one name twice.
+    # #alttex-batch-ambiguity: so does a NIF carrying one name twice, the
+    # empty name included (two unnamed shapes), and a set naming two entries
+    # with no name.
     batch = case_prov and _alttex_batch_ambiguity_on()
 
     def shapes_for(model_path: str):
@@ -1021,7 +1043,7 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
             owner.append(pi)
             for sig, data in subs:
                 if set_prov and sig in SLOT_FOR and models.get(SLOT_FOR[sig]):
-                    rep = _repeated_entry_names(data)
+                    rep = _repeated_entry_names(data, unnamed=batch)
                     if rep:
                         _repeats.setdefault(models[SLOT_FOR[sig]].lower(),
                                             set()).update(rep)

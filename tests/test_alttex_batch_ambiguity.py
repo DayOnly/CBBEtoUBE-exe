@@ -25,6 +25,9 @@ piece (`<stem>.esp`, `<stem>2.esp`) on its own. A set in one piece repeating
 the surviving 'fur'. (2) A converted NIF carrying two literal 'fur' shapes (a
 group the rename kept as authored) read no source unless a set repeated the
 name, so a set naming 'fur' once put its colour on the LAST 'fur' shape.
+(3) The EMPTY name was never taken as shared: an entry with no name on a NIF
+carrying two unnamed shapes went to the LAST of them by name, even with the
+source read and matched.
 `CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY=1` restores #alttex-case-provenance as it
 first shipped.
 """
@@ -36,7 +39,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import esp, ube_patcher as up                           # noqa: E402
-from tests.synthetic_nif import build_skinned_shapes_nif          # noqa: E402
+from tests.synthetic_nif import (build_skinned_shapes_nif,       # noqa: E402
+                                 uv_sphere)
 from tests.test_alttex_exact_provenance import (                 # noqa: E402
     BLUE, GREEN, RED, TAN, _alt, _parse, _resolve_to)
 from tests.test_alttex_set_provenance import (                   # noqa: E402
@@ -205,7 +209,9 @@ def test_literal_duplicate_names_are_the_names_carried_twice():
     assert up._literal_duplicate_names(["fur", "fur", "coat"]) == {"fur"}
     assert up._literal_duplicate_names(["Fur", "fur", "coat"]) == frozenset(), (
         "two spellings are a case variant, not a literal duplicate")
-    assert up._literal_duplicate_names(["", "", "coat"]) == frozenset()
+    assert up._literal_duplicate_names(["", "", "coat"]) == {""}, (
+        "two unnamed shapes carry the empty name twice")
+    assert up._literal_duplicate_names(["", "coat"]) == frozenset()
 
 
 @needs_pynifly
@@ -231,4 +237,133 @@ def test_switched_off_a_name_carried_twice_binds_by_name(monkeypatch,
     seen = _resolve_to(monkeypatch, {KEY: src})
     assert _reconciled(plugin, tmp_path) == [[("fur", GREEN, 2),
                                               ("coat", TAN, 0)]]
+    assert seen == []
+
+
+# --- 3. the empty name is a name like any other -----------------------------
+
+UNNAMED_A = uv_sphere(15.0, rings=7, segs=9)
+UNNAMED_B = uv_sphere(16.0, rings=5, segs=11)
+UNNAMED_TWIN = uv_sphere(17.0, rings=7, segs=9)   # UNNAMED_A's print
+TWO_UNNAMED = [("coat", *COAT), ("", *UNNAMED_A), ("", *UNNAMED_B)]
+# The conversion reordered them: B first, A last.
+TWO_UNNAMED_CONV = [("", *UNNAMED_B), ("coat", *COAT), ("", *UNNAMED_A)]
+
+
+def test_a_sets_two_unnamed_entries_are_a_repeat_only_when_asked():
+    two = _alt([("", RED, 1), ("", GREEN, 2), ("coat", TAN, 0)])
+    assert up._repeated_entry_names(two) == frozenset()
+    assert up._repeated_entry_names(two, unnamed=True) == {""}
+    assert up._repeated_entry_names(_alt([("", RED, 1), ("fur", GREEN, 2),
+                                          ("fur", BLUE, 3)]),
+                                    unnamed=True) == {"fur"}
+
+
+@needs_pynifly
+def test_an_unnamed_entry_binds_by_print_with_the_source_read_and_matched(
+        monkeypatch, tmp_path):
+    # The source is read for the literal duplicate 'fur' and matches. The
+    # entry for unnamed shell A (3) went to the LAST unnamed shape, B (4).
+    _physics_keeps_fur(monkeypatch)
+    shapes = [("coat", *COAT), ("fur", *SHELL1), ("fur", *SHELL2),
+              ("", *UNNAMED_A), ("", *UNNAMED_B)]
+    src, plugin = _world(tmp_path, shapes, shapes,
+                         [("", RED, 3), ("fur", GREEN, 1)])
+    seen = _resolve_to(monkeypatch, {KEY: src})
+    assert _reconciled(plugin, tmp_path) == [[("", RED, 3), ("fur", GREEN, 1)]], (
+        "shell A's colour must not land on shell B")
+    assert seen == [[KEY]]
+
+
+@needs_pynifly
+@pytest.mark.parametrize("found", [True, False])
+def test_two_unnamed_shapes_read_the_source_and_bind_by_print(
+        monkeypatch, tmp_path, found):
+    # Nothing but the two unnamed shapes makes the reconcile read the source:
+    # no set names no-name twice.
+    src, plugin = _world(tmp_path, TWO_UNNAMED, TWO_UNNAMED_CONV,
+                         [("", GREEN, 2), ("coat", TAN, 0)], [("", RED, 1)])
+    seen = _resolve_to(monkeypatch, {KEY: src} if found else {})
+    assert _reconciled(plugin, tmp_path) == (
+        [[("", GREEN, 0), ("coat", TAN, 1)], [("", RED, 2)]]
+        if found else [[("coat", TAN, 1)], []]), (
+        "by name B's GREEN landed on the last unnamed shape, A")
+    assert seen == [[KEY]]
+
+
+@needs_pynifly
+def test_two_unnamed_shapes_with_one_print_lose_their_entries(monkeypatch,
+                                                              tmp_path):
+    shapes = [("coat", *COAT), ("", *UNNAMED_A), ("", *UNNAMED_TWIN)]
+    src, plugin = _world(tmp_path, shapes, shapes,
+                         [("", RED, 1), ("coat", TAN, 0)])
+    _resolve_to(monkeypatch, {KEY: src})
+    assert _reconciled(plugin, tmp_path) == [[("coat", TAN, 0)]], (
+        "nothing tells the two unnamed shells apart")
+
+
+@needs_pynifly
+@pytest.mark.parametrize("found", [True, False])
+def test_a_sets_two_unnamed_entries_read_the_source(monkeypatch, tmp_path,
+                                                    found):
+    # Unnamed shell B was lost; the set lists B's GREEN first. By name GREEN
+    # landed on A.
+    src, plugin = _world(tmp_path, TWO_UNNAMED,
+                         [("coat", *COAT), ("", *UNNAMED_A)],
+                         [("", GREEN, 2), ("", RED, 1), ("coat", TAN, 0)])
+    seen = _resolve_to(monkeypatch, {KEY: src} if found else {})
+    assert _reconciled(plugin, tmp_path) == (
+        [[("", RED, 1), ("coat", TAN, 0)]] if found
+        else [[("coat", TAN, 0)]])
+    assert seen == [[KEY]]
+
+
+@needs_pynifly
+def test_an_unnamed_entry_of_another_shapes_index_is_dropped(monkeypatch,
+                                                             tmp_path):
+    # One unnamed shape; the set names no-name twice, first for the coat (0).
+    shapes = [("coat", *COAT), ("", *UNNAMED_A)]
+    src, plugin = _world(tmp_path, shapes, shapes,
+                         [("", GREEN, 0), ("", RED, 1)])
+    _resolve_to(monkeypatch, {KEY: src})
+    assert _reconciled(plugin, tmp_path) == [[("", RED, 1)]], (
+        "the coat's GREEN must not land on the unnamed shape")
+
+
+@needs_pynifly
+@pytest.mark.parametrize("off", [False, True])
+def test_one_unnamed_shape_binds_by_name_as_before(monkeypatch, tmp_path, off):
+    if off:
+        monkeypatch.setenv(BATCH_OFF, "1")
+    shapes = [("coat", *COAT), ("", *UNNAMED_A)]
+    src, plugin = _world(tmp_path, shapes, [("", *UNNAMED_A), ("coat", *COAT)],
+                         [("", RED, 1), ("coat", TAN, 0)])
+    seen = _resolve_to(monkeypatch, {KEY: src})
+    assert _reconciled(plugin, tmp_path) == [[("", RED, 0), ("coat", TAN, 1)]]
+    assert seen == [], "one unnamed shape reads no source"
+
+
+@needs_pynifly
+def test_one_unnamed_shape_binds_by_name_with_the_source_read(monkeypatch,
+                                                              tmp_path):
+    _physics_keeps_fur(monkeypatch)
+    shapes = [("coat", *COAT), ("fur", *SHELL1), ("fur", *SHELL2),
+              ("", *UNNAMED_A)]
+    src, plugin = _world(tmp_path, shapes, shapes,
+                         [("", RED, 3), ("fur", GREEN, 1)])
+    seen = _resolve_to(monkeypatch, {KEY: src})
+    assert _reconciled(plugin, tmp_path) == [[("", RED, 3), ("fur", GREEN, 1)]]
+    assert seen == [[KEY]]
+
+
+@needs_pynifly
+def test_switched_off_an_unnamed_entry_goes_to_the_last_unnamed_shape(
+        monkeypatch, tmp_path):
+    monkeypatch.setenv(BATCH_OFF, "1")
+    src, plugin = _world(tmp_path, TWO_UNNAMED, TWO_UNNAMED_CONV,
+                         [("", GREEN, 2), ("coat", TAN, 0)], [("", RED, 1)])
+    seen = _resolve_to(monkeypatch, {KEY: src})
+    assert _reconciled(plugin, tmp_path) == [
+        [("", GREEN, 2), ("coat", TAN, 1)], [("", RED, 2)]], (
+        "#alttex-case-provenance as first shipped: the known wrong shell")
     assert seen == []
