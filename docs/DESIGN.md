@@ -678,7 +678,9 @@ already-UBE path among the additions.
   another. Now `_read_by_a_source` asks, in order: (1) winner not directly in the
   mods root (overwrite, game Data) -> not handled, the mod's copy is read: no
   source reads it and no exclusion names it, and `_armos_defined_by_mods` owns
-  nothing there; (2) winner folder in `_RUN_USER_EXCLUSIONS` (matched by
+  nothing there (false when an excluded mod holds a root copy under overwrite's:
+  ownership read overwrite's copy and withheld it -- review of a6dc74b, fixed by
+  `#one-plugin-owner` below); (2) winner folder in `_RUN_USER_EXCLUSIONS` (matched by
   `_mod_name_excluded`, as ownership is) -> handled, the mod's copy is dropped:
   the 09-23 decision, an excluded mod's armour is left alone, and ownership is
   the defining plugin read from this very loaded copy; decision (b) is untouched,
@@ -686,7 +688,8 @@ already-UBE path among the additions.
   which never depended on a source reading them; (3) a body mod (`_body_mod_names`,
   cached per selection in `_BODY_MODS_SEEN`) -> not handled: skipped by what it
   ships, not by the user, and coverage does not withhold it -- the parent's
-  answer; (4) otherwise `_source_gate_ok` with NO exclusion list -- child content,
+  answer under `auto` only (a standalone `convert` has no body mods in its gate,
+  and f057ba9 dropped the copy there); (4) otherwise `_source_gate_ok` with NO exclusion list -- child content,
   a hard non-source name hint (`cbbetoube` covers our output) -> not handled,
   those are the tool's guesses about the folder, not a user's choice, and coverage
   does not withhold them; else handled. `_RUN_USER_EXCLUSIONS` is exactly the set
@@ -701,6 +704,55 @@ already-UBE path among the additions.
   Latent (all 77 winning mods excluded, as `auto` would): f057ba9 reads all 85
   losing copies, 36 of them plugins coverage withholds as the excluded owner's;
   this rule reads 0. Switch set: identical to f057ba9.
+- **One owner per plugin** (`#one-plugin-owner`, `CBBE2UBE_NO_ONE_PLUGIN_OWNER`,
+  2026-09-26). The rule above and `#exclude-owned-coverage` still decided apart,
+  and the review of a6dc74b found them disagreeing: (a) an excluded mod's copy
+  under an overwrite copy -- sources read a lower mod's copy (step 1) while
+  ownership withheld the armour (probe: read ['Quest.esp'], owned
+  [('quest.esp', 0x801)]); (b) an excluded mod's copy that LOSES to mod A --
+  ownership read A's loaded copy and withheld A's armour while A converted;
+  (c) a body-mod winner -- `auto` read the lower copy, a standalone `convert`
+  did not. Now ONE function, `_plugin_owner(name)`, answers for both: the
+  highest-priority ENABLED mod folder with a root copy of the name
+  (`paths._plugin_file_index_root(lay, copies)` lists every mod's root copy in
+  priority order in the same walk that builds the loaded index). That is the mod
+  the game loads the plugin from; when overwrite holds a copy, the mod whose
+  copy it shadows -- overwrite is where tools run through MO2 save (xEdit
+  cleaning, patchers), and the shadowed copy is what loads with it emptied. Game
+  Data loses to every mod, so a name any enabled mod ships is never Data's; a
+  name no enabled mod ships has no owner. THE SINGLE RULE: (1) a mod's root copy
+  is read iff that mod owns the plugin (or no enabled mod does) -- another mod's
+  copy never is, whatever the owner is; (2) coverage withholds a plugin's ARMOs
+  iff its owner is in the run's exclusions (`_armos_defined_by_mods` skips an
+  excluded folder's root plugin another mod owns; the ARMOs are still read from
+  the loaded copy); (3) every entry point asks the same function, and the keep
+  decision reads no exclusion list at all, so All mods, Select mods, the GUI list
+  and a standalone `convert` read the same copies. An owner that is no source for
+  a reason of its own -- a body mod, child clothing, a hard non-source name --
+  leaves the plugin UNCONVERTED rather than converted from another copy: the game
+  loads the owner's records, and a per-source patch built from a copy it does not
+  load would override them (the reason #loaded-source-plugins exists); no user
+  decision covers these, and the 09-23 one (an excluded mod's armour is left
+  alone) is the nearest analogue. So nothing goes silently unconverted, each
+  mod's log names the copy left out and why (`_owner_skip_reason`: the owner,
+  overwrite's shadowing, "which you excluded" or "a body mod, which this tool
+  does not convert"), and every convert batch starts by listing, for the whole
+  modlist, each plugin whose owner is no source while another mod ships a
+  readable copy (`_plugins_no_source_owns`; a mod left with no plugin is no
+  source and would never say it; user exclusions are not listed, coverage
+  reports those). Owner = the MOD, not the loaded file: the kept copy under an
+  overwrite copy is noted when their armatures differ, as before. The switch, and
+  the switch of each earlier step (#loaded-source-plugins, #loaded-copy-reader,
+  #excluded-copy-left-alone), restore the separate rules in both passes; the
+  LCR/ECL test files run under this switch, tests/test_one_plugin_owner.py under
+  the default. Live (deployed exclusions empty): overwrite holds 0 plugins, all
+  85 losing root copies (81 mods) lose to a mod the gate admits (0 body, 0
+  gate-refused, 0 overwrite), so 0 change: loaded-copy census, 77-winners-
+  excluded census and owner census identical, coverage replay byte-identical
+  (9927 links), 0 plugins in the new list. Latent (b), every one of the 81 losing
+  mods excluded: a6dc74b withholds 3397 armours of 33 plugins whose owner is a
+  converted winner (1419 links, 1391 armours left with none); this rule withholds
+  10, the losers' own (4 links). Switch set: identical to a6dc74b in all of it.
 - **Masters are read from the copy the game loads** (`#master-search-load-order`,
   `CBBE2UBE_NO_MASTER_SEARCH_LOAD_ORDER`). `_discover_master_data_dirs(sources[0])`
   -- the batch's one master search list, also the merge's, the coverage passes'
@@ -1583,7 +1635,10 @@ follower (converted male Ebony boots on her UBE body):
   used to remove a mod from the sources and nothing else. Owned means the ARMO's
   DEFINING plugin ships in that mod's folder — of four readings, the only one that
   caught all 14 of her minted armours (an overhaul patch wins 11 of their
-  overrides, and a BodySlide output supplies most of her meshes). Armour withheld
+  overrides, and a BodySlide output supplies most of her meshes). The defining
+  plugin is the excluded mod's only when that mod OWNS it (`_plugin_owner`,
+  `#one-plugin-owner`, the owner the sources read by): a root copy that loses to
+  another mod's belongs to that mod. Armour withheld
   this way that no mod covers is named in a warning. The window's Select-mods run
   passes its exclusion list as `--coverage-exclude-mods`, because coverage covers
   the whole load order on every run. `CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE=1` covers

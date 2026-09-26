@@ -61,27 +61,34 @@ their armour is still converted, from the copy the game loads, so the converted
 armour and the merged plugin are unchanged. `CBBE2UBE_NO_LOADED_SOURCE_PLUGINS=1`
 (set to 1) reads every copy again.
 
-A mod's copy is left out when the mod the game loads the plugin from is one the
-tool reads plugins from (not a body mod, and not a mod it skips by its name, such
-as child clothing or BodySlide output), even if this run does not convert that
-mod (you did not pick it in Select mods, or its armour is already built for UBE):
-its copy is the one that counts, and a patch made from another copy would
-override the plugin the game loads. It is also left out when you excluded the
-mod the game loads the plugin from: an exclusion means "leave this plugin's
-armour alone", so no other mod's copy is converted in its place, just as the
-excluded mod's armour gets no coverage. This holds in All mods and Select mods
-runs alike, and for `convert --exclude-mods`. When the loaded copy sits where the
-tool never reads plugins and you did not exclude it -- Mod Organizer's overwrite
-folder (a plugin cleaned or edited and saved there), a body mod, or a mod the
-tool skips by its name -- the mod's own copy is read as before; otherwise no mod
-read that plugin and its armour was not converted at all. If the two copies'
-armour differs, the log says so. Measured on the reported modlist: its overwrite
-folder holds no plugins, nothing is excluded, and in each of the 85 cases where a
-mod's plugin loses to another mod's copy that other mod is one the tool reads, so
-nothing changes. `CBBE2UBE_NO_LOADED_COPY_READER=1` (set to 1) leaves the mod's
-copy out in every case; `CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE=1` (set to 1) goes
-back to reading the mod's own copy when an All mods run excludes the mod the
-game loads the plugin from.
+Each plugin belongs to one mod, and every part of a run uses that same answer:
+the highest mod in the mod list that has the plugin at the top of its folder.
+That is the mod the game loads the plugin from -- or, when Mod Organizer's
+overwrite folder holds a copy (a plugin cleaned or edited and saved there), the
+mod whose copy it replaces. Only that mod's copy is converted, never another
+mod's, even if this run does not convert that mod (you did not pick it in Select
+mods, or its armour is already built for UBE): a patch made from another copy
+would override the plugin the game loads. Excluding a mod leaves alone the armour
+of the plugins that belong to it, and only those: a plugin that belongs to a mod
+you did not exclude is converted and covered as usual, even when the excluded mod
+ships a losing copy of it. This is the same in All mods and Select mods runs and
+for `convert --exclude-mods`. When a plugin belongs to a mod the tool does not
+convert -- a body mod, or a mod it skips by its name, such as child clothing or
+BodySlide output -- its armour is not converted from another mod's copy either,
+since the game loads that mod's version; the log lists each such plugin when the
+conversion starts. When the game loads an overwrite copy whose armour differs
+from the copy converted, the log says so. Measured on the reported modlist: its
+overwrite folder holds no plugins, nothing is excluded, and in each of the 85
+cases where a mod's plugin loses to another mod's copy the plugin belongs to a
+mod the tool reads plugins from, so nothing changes.
+`CBBE2UBE_NO_ONE_PLUGIN_OWNER=1` (set to 1) goes back to deciding the two apart:
+a lower mod's copy is then read when the loaded copy is in overwrite, a body mod
+or a mod skipped by its name, and an exclusion also holds back the armour of a
+plugin whose copy in the excluded mod is not the one that counts.
+`CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE=1` (set to 1) turns that off too and goes
+back to reading the mod's own copy when an All mods run excludes the mod the game
+loads the plugin from; `CBBE2UBE_NO_LOADED_COPY_READER=1` (set to 1) turns it off
+too and leaves the mod's copy out in every case.
 
 ### Fixed — the run log and the per-mod reports name the right plugin for each patch
 

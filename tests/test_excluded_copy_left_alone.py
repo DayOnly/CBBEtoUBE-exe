@@ -33,6 +33,10 @@ is judged by the gate without an exclusion list; a body mod, overwrite, child
 content and a non-source name still leave the mod's own copy read.
 `CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE=1` judges by the selection's gate with its
 exclusions again.
+
+Since #one-plugin-owner these rules are what its switch restores, so every test
+here sets `CBBE2UBE_NO_ONE_PLUGIN_OWNER=1`; the default is tested in
+tests/test_one_plugin_owner.py.
 """
 import argparse
 
@@ -65,6 +69,7 @@ def _clean(monkeypatch):
     for v in (OFF, "CBBE2UBE_NO_LOADED_COPY_READER",
               "CBBE2UBE_NO_LOADED_SOURCE_PLUGINS"):
         monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("CBBE2UBE_NO_ONE_PLUGIN_OWNER", "1")
     monkeypatch.setattr(ac, "_BsaMeshIndex", _NoArchives)
     stores = (ac._LOADED_PLUGIN_INDEX, ac._SOURCE_GATE, ac._ARMOR_MOD_DIRS_CACHE,
               ac._ARMOR_MOD_DIRS_UNREADABLE, ac._BATCH_MESH_INDEX,

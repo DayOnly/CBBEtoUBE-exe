@@ -618,19 +618,11 @@ def _body_mod_names(mods_root: Path) -> "set[str]":
     itself fell out of the exclusion and its collision-body NIFs entered
     All-mods runs; and a Reference bodies pick changed which mods converted,
     while the GUI's mod list (built without the pick) could not show it."""
-    from . import zeroed_body as _zb
-    out = set()
     try:
         dirs = [d for d in mods_root.iterdir() if d.is_dir()]
     except OSError:
-        return out
-    for kind, (out_path, out_file, _verts, _label) in _zb.KINDS.items():
-        for w in ("_0", "_1"):
-            parts = [p for p in f"{out_path}/{out_file}{w}.nif".split("/") if p]
-            for d in dirs:
-                if _zb._ci_join(d, parts) is not None:
-                    out.add(d.name)
-    return out
+        return set()
+    return {d.name for d in dirs if _ships_a_body(d)}
 
 
 def _find_ube_body_ref(search_roots: list[Path] | None = None) -> Path | None:
@@ -1348,17 +1340,15 @@ def _loaded_source_plugins_on() -> bool:
     return not _flag("CBBE2UBE_NO_LOADED_SOURCE_PLUGINS", False)
 
 
-# {(mods root, mod order, overwrite, game Data): (mods root, root plugin index)}.
+# {(mods root, mod order, overwrite, game Data): (mods root, root plugin index,
+# {plugin name lower -> every enabled mod's root copy, highest priority first})}.
 # One entry; cleared when a selection or a convert batch starts, so a GUI
 # session reads the plugin files as they are then. #loaded-source-plugins
+# #one-plugin-owner
 _LOADED_PLUGIN_INDEX: dict = {}
 
 
-def _loaded_plugin_index() -> "tuple[Path, dict[str, Path]] | None":
-    """(mods root, {plugin name lower -> the file the game loads}) for the
-    discovered modlist, or None without a mods root or a readable mod order
-    (then nothing says which copy loads). Built once per key (~0.7 s on a
-    3,254-plugin modlist). #loaded-source-plugins"""
+def _loaded_plugin_entry() -> "tuple[Path, dict[str, Path], dict[str, list[Path]]] | None":
     lay = paths.discover_layout()
     if lay.mods_root is None:
         return None
@@ -1369,10 +1359,59 @@ def _loaded_plugin_index() -> "tuple[Path, dict[str, Path]] | None":
            tuple(str(d) for d in (lay.game_data_dirs or ())))
     hit = _LOADED_PLUGIN_INDEX.get(key)
     if hit is None:
-        hit = (Path(lay.mods_root), paths._plugin_file_index_root(lay))
+        copies: "dict[str, list[Path]]" = {}
+        idx = paths._plugin_file_index_root(lay, copies)
+        hit = (Path(lay.mods_root), idx, copies)
         _LOADED_PLUGIN_INDEX.clear()
         _LOADED_PLUGIN_INDEX[key] = hit
     return hit
+
+
+def _loaded_plugin_index() -> "tuple[Path, dict[str, Path]] | None":
+    """(mods root, {plugin name lower -> the file the game loads}) for the
+    discovered modlist, or None without a mods root or a readable mod order
+    (then nothing says which copy loads). Built once per key (~0.7 s on a
+    3,254-plugin modlist). #loaded-source-plugins"""
+    hit = _loaded_plugin_entry()
+    return None if hit is None else (hit[0], hit[1])
+
+
+def _plugin_copies(mods_root) -> "dict[str, list[Path]] | None":
+    """{plugin name lower -> every enabled mod folder's ROOT copy of it, highest
+    MO2 priority first} for the discovered modlist when `mods_root` is its mods
+    folder; None without a readable mod order or for another folder (then no
+    one is known to own a plugin). The same index, built in the same walk, as
+    `_loaded_plugin_index`. A modlist it cannot read is None too: coverage asks
+    this, and must never fail for it. #one-plugin-owner"""
+    try:
+        hit = _loaded_plugin_entry()
+    except Exception:
+        return None
+    if hit is None or not _same_path(hit[0], mods_root):
+        return None
+    return hit[2]
+
+
+def _plugin_owner(name: str, mods_root) -> "Path | None":
+    r"""#one-plugin-owner: the ONE mod folder that owns plugin `name` this run,
+    for every question the run asks about it: whose copy a source reads, and
+    whose armour an exclusion withholds.
+
+    It is the highest-priority ENABLED mod folder with a root copy of that
+    name. When that copy is the one the game loads, the owner is the mod the
+    game loads the plugin from. When MO2's overwrite folder holds a copy, the
+    game loads that one, but overwrite is no mod: it holds what tools run
+    through MO2 saved there (a plugin cleaned or edited in xEdit, a
+    patcher's output), and the copy it shadows -- the one the game would load
+    with overwrite emptied -- names the mod the plugin comes from. A copy only
+    in the game's Data folder loses to every mod copy, so a plugin some mod
+    ships is never owned by Data; one no enabled mod ships has no owner
+    (None), as without a readable mod order."""
+    copies = _plugin_copies(mods_root)
+    if not copies:
+        return None
+    c = copies.get(str(name).lower())
+    return c[0].parent if c else None
 
 
 def _same_path(a, b) -> bool:
@@ -1473,14 +1512,22 @@ def _body_mods_seen(mods_root: Path) -> frozenset:
     return hit
 
 
-def _read_by_a_source(loaded: Path, mods_root: Path) -> bool:
+def _read_by_a_source(loaded: Path, mods_root: Path,
+                      source_dir: "Path | None" = None) -> bool:
     """Is `loaded`, the copy of a plugin the game loads, handled by this run:
     read by a conversion source, or left alone because the user excluded its
     mod? Only a folder directly in the mods root that the selection's gate
     admits is ever a source; MO2's overwrite folder and the game Data folder
-    never are. #loaded-copy-reader #excluded-copy-left-alone"""
+    never are. #loaded-copy-reader #excluded-copy-left-alone
+
+    By default (#one-plugin-owner) the one question is whether a mod other than
+    `source_dir`, the mod whose copy is asked about, owns the plugin: then that
+    copy is left out, whether or not the owner is converted."""
     if not _loaded_copy_reader_on():
         return True
+    if source_dir is not None and _one_plugin_owner_on():
+        owner = _plugin_owner(Path(loaded).name, mods_root)
+        return owner is not None and not _same_path(owner, source_dir)
     folder = Path(loaded).parent
     if not _same_path(folder.parent, mods_root):
         return False
@@ -1492,6 +1539,134 @@ def _read_by_a_source(loaded: Path, mods_root: Path) -> bool:
             return False    # the body: skipped by the run, not by the user
         excl = frozenset()  # no exclusion list: the same in every entry point
     return _source_gate_ok(folder, excl, enabled, True)
+
+
+def _one_plugin_owner_on() -> bool:
+    r"""#one-plugin-owner (2026-09-26): does every question about a plugin --
+    which copy a source reads, whose armour an exclusion withholds -- ask the
+    same owner (`_plugin_owner`)? Yes, by default.
+
+    The two passes decided apart. Sources read a losing copy whenever the
+    winner's folder was no source (overwrite, a body mod, a skipped name), while
+    #exclude-owned-coverage owned every root plugin of an excluded folder, read
+    from the copy the game loads. So an excluded mod whose copy sat under an
+    overwrite copy had its armour withheld by coverage and converted from a
+    lower mod's copy in the same run; an excluded mod whose copy LOST to mod A
+    had A's armour withheld while A was converted; and a body mod's plugin was
+    converted from another mod's copy in `auto` but not in a standalone
+    `convert`. Now a mod's root plugin is read only when that mod owns it, never
+    another mod's losing copy; coverage withholds a plugin's armour only when
+    its owner is excluded. When the owner is no source (a body mod, child
+    clothing, a skipped name), the plugin's armour is not converted from
+    another copy either: the game loads the owner's records, and a patch built
+    from other records would override them. The convert step names such plugins.
+    CBBE2UBE_NO_ONE_PLUGIN_OWNER=1 restores the two separate rules; the switch
+    of each earlier step of the chain (#loaded-source-plugins,
+    #loaded-copy-reader, #excluded-copy-left-alone) turns this off with it, so
+    each still restores its own parent in both passes."""
+    return (not _flag("CBBE2UBE_NO_ONE_PLUGIN_OWNER", False)
+            and _loaded_source_plugins_on() and _loaded_copy_reader_on()
+            and _excluded_copy_left_alone_on())
+
+
+_EXCLUDED_BY_YOU = "you excluded it"
+
+
+def _ships_a_body(mod_dir: Path) -> bool:
+    """Does this mod folder ship a race body (the test `_body_mod_names` puts
+    every folder through)? #body-mod-exclusion"""
+    from . import zeroed_body as _zb
+    for kind, (out_path, out_file, _verts, _label) in _zb.KINDS.items():
+        for w in ("_0", "_1"):
+            parts = [p for p in f"{out_path}/{out_file}{w}.nif".split("/") if p]
+            if _zb._ci_join(Path(mod_dir), parts) is not None:
+                return True
+    return False
+
+
+def _owner_not_source_why(owner: Path) -> "str | None":
+    """Why the mod that owns a plugin is no conversion source, or None when it
+    is one. The user's exclusion first; then what selection skips a folder for
+    without asking: a body, child clothing, a non-source name. #one-plugin-owner"""
+    if _mod_name_excluded(owner.name, _RUN_USER_EXCLUSIONS):
+        return _EXCLUDED_BY_YOU
+    if _ships_a_body(owner):
+        return "a body mod"
+    if _is_child_content_mod(owner.name):
+        return "child clothing"
+    if not _source_gate_ok(owner, frozenset(), None, True):
+        return "a mod skipped by its name"
+    return None
+
+
+def _owner_skip_reason(owner: Path, loaded: "Path | None") -> str:
+    """Why a mod's copy of a plugin another mod owns is not read. #one-plugin-owner"""
+    if loaded is None or _same_path(loaded.parent, owner):
+        line = f"the game loads the copy in '{owner.name}'"
+    else:
+        line = (f"the game loads the copy in '{loaded.parent}', over the copy in "
+                f"'{owner.name}', the mod it belongs to")
+    why = _owner_not_source_why(owner)
+    if why is None:
+        return line
+    if why == _EXCLUDED_BY_YOU:
+        return f"{line}, which you excluded, so its armour is left alone"
+    return (f"{line}, {why}, which this tool does not convert, so this plugin's "
+            "armour is not converted this run")
+
+
+def _left_out_why(loaded: Path, where: str, mods_root: Path) -> str:
+    """The reason logged for a mod's copy left out because the game loads
+    `loaded` (from `where`). #loaded-source-plugins #one-plugin-owner"""
+    if _one_plugin_owner_on():
+        owner = _plugin_owner(Path(loaded).name, mods_root)
+        if owner is not None:
+            return _owner_skip_reason(owner, loaded)
+    return f"the game loads the copy in '{where}'"
+
+
+def _plugins_no_source_owns() -> "list[str]":
+    """Plugins some mod ships a copy of that the tool could read, whose owner
+    (`_plugin_owner`) it does not convert for a reason of its own (a body mod,
+    child clothing, a skipped name): no copy of them is converted this run. The
+    user's exclusions are not listed -- coverage reports what they withhold.
+    #one-plugin-owner"""
+    if not _one_plugin_owner_on():
+        return []
+    hit = _loaded_plugin_entry()
+    if hit is None:
+        return []
+    _skip = {m.lower() for m in ube_patcher.VANILLA_DLC_MASTERS}
+    out: "list[str]" = []
+    for name in sorted(hit[2]):
+        c = hit[2][name]
+        if (len(c) < 2 or name in _skip or name.endswith("ube patch.esp")
+                or name.endswith(_SRC_PATCH_SUFFIX.lower())):
+            continue
+        why = _owner_not_source_why(c[0].parent)
+        if why is None or why == _EXCLUDED_BY_YOU:
+            continue
+        readers = [f.parent.name for f in c[1:]
+                   if _owner_not_source_why(f.parent) is None]
+        if readers:
+            out.append(f"{c[0].name}: owned by '{c[0].parent.name}' ({why}), "
+                       "which this tool does not convert; the copy in "
+                       + ", ".join(f"'{r}'" for r in readers)
+                       + " is not converted in its place")
+    return out
+
+
+def _note_plugins_no_source_owns() -> None:
+    """Say, once per batch, which plugins no copy of is converted because the
+    mod that owns them is no source. #one-plugin-owner"""
+    lines = _plugins_no_source_owns()
+    if not lines:
+        return
+    print(f"  plugins not converted from another mod's copy: {len(lines)} "
+          "plugin(s) belong to a mod this tool does not convert, and the game "
+          "loads that mod's records, so no other copy is converted in their place:")
+    for ln in lines:            # every one: this is the only place they are named
+        print(f"    - {ln}")
 
 
 def _armature_models(plugin: Path) -> "frozenset | None":
@@ -1544,7 +1719,12 @@ def _loaded_copies_only(source_dir: Path, plugins: "list[Path]",
     from a folder no source reads keeps this mod's copy, and `differs` receives
     (plugin, where) when the two copies' armatures differ). Unchanged for a
     folder that is not directly in the modlist's mods root. `skipped` receives
-    (plugin, why). #loaded-source-plugins"""
+    (plugin, why). #loaded-source-plugins
+
+    #one-plugin-owner (by default): a root copy is left out exactly when another
+    mod owns the plugin (`_plugin_owner`), whether or not that mod is converted;
+    this mod's copy is read when it owns the plugin (under an overwrite copy
+    too) or no enabled mod does."""
     loaded = _loaded_plugin_index()
     if loaded is None:
         return plugins
@@ -1561,9 +1741,9 @@ def _loaded_copies_only(source_dir: Path, plugins: "list[Path]",
         if w is not None and not _same_path(w, p):
             _where = (w.parent.name if _same_path(w.parent.parent, mods_root)
                       else str(w.parent))
-            if _read_by_a_source(w, mods_root):
+            if _read_by_a_source(w, mods_root, source_dir):
                 if skipped is not None:
-                    skipped.append((p, f"the game loads the copy in '{_where}'"))
+                    skipped.append((p, _left_out_why(w, _where, mods_root)))
                 continue
             # No source reads the game's copy: this one is read, else nothing
             # converts the plugin's armour. #loaded-copy-reader
@@ -4020,6 +4200,12 @@ def _armos_defined_by_mods(mods_root, mod_names, ordered_plugin_paths,
     never withheld, and the `vanilla` pseudo-name (the vanilla-sweep switch) is
     ignored. Only ACTIVE plugins count, read from the copy the game loads.
 
+    #one-plugin-owner (by default): a plugin is the excluded mod's only when that
+    mod OWNS it (`_plugin_owner`, the owner the sources read by too): a copy that
+    loses to another mod's belongs to that mod, and one under an overwrite copy
+    still belongs to the mod. Without a readable mod order no owner is known and
+    every root plugin of the folder counts, as before.
+
     A folder whose name holds a comma arrives split by `_split_mod_arg` (the
     CLI's comma separator); it matches when every piece of its name was given.
     Names that match no folder are appended to `missing`, for a warning."""
@@ -4030,6 +4216,7 @@ def _armos_defined_by_mods(mods_root, mod_names, ordered_plugin_paths,
     wanted.discard("vanilla")
     if mods_root is None or not wanted:
         return owned, per_mod
+    owners = _plugin_copies(mods_root) if _one_plugin_owner_on() else None
 
     def _named(d: Path) -> bool:
         n = d.name.lower()
@@ -4052,6 +4239,10 @@ def _armos_defined_by_mods(mods_root, mod_names, ordered_plugin_paths,
     for md in folders:
         for pl in sorted(list(md.glob("*.esp")) + list(md.glob("*.esm"))
                          + list(md.glob("*.esl"))):
+            if owners is not None:
+                own = owners.get(pl.name.lower())
+                if not own or not _same_path(own[0].parent, md):
+                    continue      # another mod owns it, or none does
             src = loaded.get(pl.name.lower())
             if src is None:
                 continue          # not active: its armour is not in the game
@@ -5465,6 +5656,13 @@ def _cmd_convert(args):
     # Clearing first ensures the patcher's caches don't carry over from a prior run.
     ube_patcher.clear_batch_caches()
     _LOADED_PLUGIN_INDEX.clear()     # #loaded-source-plugins
+    # Plugins whose owner is no source: no copy of them is converted. Said for
+    # the whole modlist, since a mod left with no plugin is no source either and
+    # never gets to say it. #one-plugin-owner
+    try:
+        _note_plugins_no_source_owns()
+    except Exception as _e:
+        print(f"  (could not list the plugins no source owns: {plain_error(_e)})")
     batch_master_data_dirs = (_discover_master_data_dirs(sources[0])
                               if sources else None)
     if batch_master_data_dirs:
@@ -8715,6 +8913,8 @@ def _find_armor_mod_dirs(mods_root: Path,
             # ...and so do the user's exclusions, through the copies they
             # leave alone. #excluded-copy-left-alone
             _excluded_copy_left_alone_on(), frozenset(_RUN_USER_EXCLUSIONS),
+            # ...and whether one owner decides for every copy. #one-plugin-owner
+            _one_plugin_owner_on(),
             # The female-only rule's pairs change the mesh keys indexed.
             # #female-slot-pairs #female-slot-absent
             _female_slot_pairs_on(), _female_slot_absent_on(),

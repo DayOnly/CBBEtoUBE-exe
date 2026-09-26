@@ -33,6 +33,10 @@ A winning copy in a mod the user excluded counts as handled since
 #excluded-copy-left-alone (tests/test_excluded_copy_left_alone.py); the tests
 here that judge by the selection's exclusions set its switch,
 `CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE=1`.
+
+Since #one-plugin-owner these rules are what its switch restores, so every test
+here sets `CBBE2UBE_NO_ONE_PLUGIN_OWNER=1`; the default is tested in
+tests/test_one_plugin_owner.py.
 """
 import pytest
 
@@ -55,6 +59,7 @@ class _NoArchives:
 def _clean(monkeypatch):
     for v in (OFF, GATE_EXCL, "CBBE2UBE_NO_LOADED_SOURCE_PLUGINS"):
         monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("CBBE2UBE_NO_ONE_PLUGIN_OWNER", "1")
     monkeypatch.setattr(ac, "_BsaMeshIndex", _NoArchives)
     stores = (ac._LOADED_PLUGIN_INDEX, ac._SOURCE_GATE, ac._ARMOR_MOD_DIRS_CACHE,
               ac._ARMOR_MOD_DIRS_UNREADABLE, ac._BATCH_MESH_INDEX,
