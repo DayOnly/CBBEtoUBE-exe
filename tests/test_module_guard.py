@@ -291,7 +291,10 @@ def test_the_suite_fails_the_leaking_test_and_no_other(tmp_path):
         cwd=REPO, capture_output=True, text=True, timeout=300)
     out = r.stdout + r.stderr
     assert r.returncode == 1, out
-    errors = [ln.rsplit("::", 1)[-1] for ln in out.splitlines()
+    # The summary line is "ERROR <path>::<test> - <reason>" when the terminal is
+    # wide enough to hold the reason (CI's is; an 80-column one drops it), so
+    # cut the reason off before taking the test name.
+    errors = [ln.split(" - ", 1)[0].rsplit("::", 1)[-1] for ln in out.splitlines()
               if ln.startswith(("ERROR ", "FAILED "))]
     assert errors == ["test_1_leaks_on_a_split_sibling",
                       "test_4_leaks_a_wraps_spy",

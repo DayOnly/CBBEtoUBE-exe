@@ -65,12 +65,20 @@ def _lookup(tmp_path):
     return ac._mesh_exists_anywhere(tmp_path / "mods" / "Out")
 
 
+def _in_meshes(p) -> bool:
+    """A path INSIDE a `meshes` folder -- by component, not by substring: a mod
+    named "No Meshes Mod" is not a meshes folder. From Python 3.11 pathlib lists
+    through os.scandir, so the archive scan's listing of that mod folder reached
+    this counter and read as a second listing (3.10's pathlib bypassed it)."""
+    return any(part.lower() == "meshes" for part in pathlib.PurePath(str(p)).parts)
+
+
 def _count_scandir(monkeypatch) -> list:
     calls = []
     real = os.scandir
 
     def scandir(p="."):
-        if "meshes" in str(p).lower():
+        if _in_meshes(p):
             calls.append(str(p))
         return real(p)
     monkeypatch.setattr(ac.os, "scandir", scandir)
@@ -82,7 +90,7 @@ def _no_file_checks(monkeypatch) -> list:
     real = pathlib.Path.is_file
 
     def is_file(self):
-        if "meshes" in str(self).lower():
+        if _in_meshes(self):
             calls.append(str(self))
         return real(self)
     monkeypatch.setattr(pathlib.Path, "is_file", is_file)
