@@ -22,6 +22,13 @@ re-sourced mesh's converted !UBE output for the breast-band STANDOFF that the fi
 targets. A fixed piece should now sit close to the body (covered-mean well under the
 pre-fix gap); anything still high is flagged for a look.
 
+WEIGHTS: both weights, via `standoff_audit.output_nifs`. The `_1` paths built the
+`target_keys` set fed to `build_mesh_index`, so the re-sourcing question was only
+ever ASKED about weight 1 -- and source selection is decided per FILE, on that
+file's own candidates. Standoff is then measured per file too, against a `_0`
+mesh that is separately authored rather than a scaled copy of `_1`. Both halves
+ship and both are worn, so both are re-sourced and both are measured here.
+
     python scripts/analysis/verify_bodymatch.py
 
 Reads the live MO2 instance via CBBE2UBE_MO2_INI (or the auto-discovered layout) and
@@ -40,6 +47,7 @@ sys.path.insert(0, str(_REPO / ".pynifly"))
 from pyn import pynifly                       # noqa: E402
 from src import paths, discovery              # noqa: E402
 from src.body_zones import BREAST_Z               # noqa: E402
+from scripts.analysis import standoff_audit as sa  # noqa: E402
 
 OUT_MOD = os.environ.get("CBBE2UBE_OUT_MOD", "CBBEtoUBE Auto")
 
@@ -116,9 +124,10 @@ def main():
         print(f"output not found: {out_root}\n(run a reconvert first)")
         return 1
 
+    # BOTH weights -- see WEIGHTS: above. `output_nifs` also owns the
+    # first-person filter, which the hand-rolled test here spelled too narrowly.
     rels = {p.as_posix().split("/!UBE/", 1)[1].lower()
-            for p in out_root.rglob("*_1.nif")
-            if "1stperson" not in p.as_posix().lower()}
+            for p in sa.output_nifs(out_root)}
     print(f"scanning {len(rels)} converted meshes; resolving re-sourced set...", flush=True)
 
     os.environ["CBBE2UBE_NO_BODYMATCH_SELECT"] = "1"

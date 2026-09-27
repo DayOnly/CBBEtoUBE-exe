@@ -375,8 +375,11 @@ def _split_bust_collider_shape(dst_path, src_path=None) -> int:
             _note_pass_effect("#collider-declared-bones",
                               f"redirected undeclared bone(s) on {name}Col",
                               dst_path)
+        # `gsh` lives in the DESTINATION (`nf_src` opened `dst_path`), so its
+        # chain-bone read must not take the filename fallback. #dst-xml-no-stem-scan
         clone = _nc()._copy_shape(gsh, nf, preserve_authored_skin=True,
-                            override_skin=_skin)
+                            override_skin=_skin,
+                            xml_stem_scan=_nc()._dst_xml_stem_scan())
         if clone is None:
             return 0        # nothing saved yet -> file untouched
         try:
@@ -613,8 +616,10 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
     # lookup that RAISED tells us nothing about the piece, so skip it entirely
     # and RECORD why (a bare fallback made a protection-less run read as clean).
     try:
-        collider_names = _nc()._hdt_collider_shape_names(dst_path, nif=nf)
-        softbody_names = _nc()._hdt_softbody_shape_names(dst_path, nif=nf)
+        collider_names = _nc()._hdt_collider_shape_names(
+            dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
+        softbody_names = _nc()._hdt_softbody_shape_names(
+            dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
     except Exception as _pe:
         _note_pass_failure(
             "_sync_bust_plate_follow_postwrite/physics-names", _pe, dst_path)

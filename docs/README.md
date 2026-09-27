@@ -29,8 +29,8 @@ the two largest documents in the repo reachable only by knowing they were there.
 
 | file | what it is |
 |---|---|
-| [worklog/2026-09-09_NEXT_RECONVERT.md](worklog/2026-09-09_NEXT_RECONVERT.md) | **Start here before a reconvert.** The recipe as measured, what each setting buys and costs, the control figures to re-score against afterwards, and the three levers not to turn on. |
-| [worklog/2026-09-09_BUST_FITMENT.md](worklog/2026-09-09_BUST_FITMENT.md) | The session behind that recipe: where a bust push goes to die, the morphed-clip gate rows, and four defects found in the gate change made the same day. |
+| [worklog/2026-09-09_NEXT_RECONVERT.md](worklog/2026-09-09_NEXT_RECONVERT.md) | **Start here before a reconvert.** The recipe as measured, what each setting buys and costs, the control figures to re-score against afterwards, and the three levers not to turn on. Its author-relative figures (bust gap vs author) were read through the old reference-body lookup, not the zeroed build the game loads (and that file was replaced on 2026-09-15, so what they measured is unknown) — re-baseline them with the current harness rather than re-score against them. |
+| [worklog/2026-09-09_BUST_FITMENT.md](worklog/2026-09-09_BUST_FITMENT.md) | The session behind that recipe: where a bust push goes to die, the morphed-clip gate rows, and four defects found in the gate change made the same day. Its bust-gap-vs-author figures predate the zeroed reference body: do not compare them with current numbers. |
 | [worklog/2026-09-02_PHASE1_ANTIPOKE_POPULATION.md](worklog/2026-09-02_PHASE1_ANTIPOKE_POPULATION.md) | `#phase1-antipoke` population A/B — and the measurement bug that voided the first one. |
 | [worklog/2026-09-04_NIPPLE_OUTLINE_THROUGH_PLATE.md](worklog/2026-09-04_NIPPLE_OUTLINE_THROUGH_PLATE.md) | Nipple outlines through plate, traced end to end. The fix belongs on the inner layer, not the plate. |
 | [worklog/2026-09-05_FIELD_SCREEN_PHYSICAL.md](worklog/2026-09-05_FIELD_SCREEN_PHYSICAL.md) | The clearance solve measures its feather in EDGES, not distance — why a feather larger than the square root of the area does nothing. |
@@ -49,7 +49,7 @@ the two largest documents in the repo reachable only by knowing they were there.
 
 | file | what it is |
 |---|---|
-| [worklog/2026-09-06_CONSOLIDATION_PLAN.md](worklog/2026-09-06_CONSOLIDATION_PLAN.md) | The execution kit. **Read §5–6 first**: several items in §2 were refuted or closed by measuring them. |
+| [worklog/2026-09-06_CONSOLIDATION_PLAN.md](worklog/2026-09-06_CONSOLIDATION_PLAN.md) | The execution kit. **Read §5–6 first**: several items in §2 were refuted or closed by measuring them. Its bust-gap-vs-author figures predate the zeroed reference body. |
 | [worklog/2026-07-27_PLAN_PASS_CONSOLIDATION.md](worklog/2026-07-27_PLAN_PASS_CONSOLIDATION.md) | The earlier pass-interaction study and six-step plan. Step 1 done, step 3 partly; carries a status note on what drifted. |
 | [worklog/2026-09-03_UNIFY_STEP0_AND_DEDUP.md](worklog/2026-09-03_UNIFY_STEP0_AND_DEDUP.md) | Two-path unification step (0), and the mechanical de-duplication — including why the two hooks were not duplicates. |
 | [worklog/2026-09-02_F010_COPY_PATH_VERDICT.md](worklog/2026-09-02_F010_COPY_PATH_VERDICT.md) | F010, copy-path early panel rigidity: a real win that still ships OFF, because it strands zero-weight bones. |

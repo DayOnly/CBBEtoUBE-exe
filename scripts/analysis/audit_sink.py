@@ -66,9 +66,11 @@ BANDS = ("underbust", "bust", "upperchest", "strap")
 
 
 def load(path: Path):
-    """Records plus a torn-line count. The sink is appended by pool workers
-    with no line-atomic append, so a line can tear; that is a lost record, not
-    a failure.
+    """Records plus a torn-line count. The sink is appended by pool workers.
+    Since #atomic-audit-append each record is one write under a cross-process
+    lock and does not tear; a sink written BEFORE it (or with
+    CBBE2UBE_NO_ATOMIC_AUDIT_APPEND=1) can hold torn lines, each a lost
+    record, not a failure. What follows describes those files.
 
     CORRECTED 2026-09-08: this said "the LAST line can be mid-write", which
     reads as a truncated tail. Measured on two 1502-NIF arms of the SAME code,
@@ -77,13 +79,18 @@ def load(path: Path):
     one record into another. Two consequences before this file is used as
     evidence: the tear count differs between two arms of one code state (1 vs 2
     here), and a record present in one arm can be absent from the other purely
-    because it was spliced. **`standoff_audit.jsonl` cannot serve as an A/B
-    artefact, and a diff on it is not a finding.**"""
+    because it was spliced. **A sink with torn lines cannot serve as an A/B
+    artefact, and a diff on it is not a finding.** One with 0 torn lines can
+    be compared as a MULTISET of records -- their order is still arrival
+    order across workers."""
     rows, torn = [], 0
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
             if not line:
+                # Every record is written with its own newline, so a blank
+                # line is what a splice leaves: count it with the torn ones.
+                torn += 1
                 continue
             try:
                 rows.append(json.loads(line))

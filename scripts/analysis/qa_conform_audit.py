@@ -51,6 +51,7 @@ sys.path.insert(0, str(_REPO / ".pynifly"))
 
 import numpy as np                                  # noqa: E402
 from src import nif_convert as nc                   # noqa: E402
+from scripts.analysis import standoff_audit as sa   # noqa: E402
 from pyn import pynifly                             # noqa: E402
 
 
@@ -86,7 +87,15 @@ def classify_shape(s, body_w, body_bones, tree):
     leg_dom = sum(1 for d in vw if d and nc._is_leg_rigid_bone(max(d, key=d.get)))
     leg_frac = leg_dom / n
     g2s = nc._shape_global_to_skin(s)
-    Vw = nc._verts_skin_to_world(V, g2s)
+    # Chosen, not assumed. 84 shipped shapes already sit on the body, and
+    # transforming those reads here as hug -> 0, which demotes a GARMENT to
+    # LOOSE -- a class this audit excludes BY DESIGN, so the shape drops out of
+    # the report rather than appearing in it wrongly. Measured impact is small
+    # and is stated rather than implied: 1 shape of those 84 changes class, and
+    # no jiggle-strip suspect and no matched_frac was affected. The defect is
+    # real, the blast radius is not; it is fixed because the next shape to hit
+    # it may not be a RIGID one.
+    Vw, _frame = sa.pick_frame(V, nc._verts_skin_to_world(V, g2s), tree)
     d, idx = tree.query(Vw)
     hug = float((d < nc._CONFORM_FIT_PROX).mean())
     info = {"n": n, "jig": jig, "hug": hug, "leg_frac": leg_frac}

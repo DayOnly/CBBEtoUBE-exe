@@ -29,14 +29,34 @@ same rule the converter uses) and reports `ours - declared - (author - declared)
 exactly as the guard computes it -- then splits by shape class and, for the ones
 we can act on, by whether a declared ancestor exists ON THAT SHAPE.
 
-    python scripts/analysis/registered_bone_audit.py [<pack meshes/!UBE>] [<MO2 ini>]
+    python scripts/analysis/registered_bone_audit.py [<pack meshes/!UBE>] [<MO2 ini>] [--out PATH]
 
 Exit 0 clean / 1 a violation we caused / 2 nothing measured.
+
+WRITES NOTHING unless `--out PATH` is given; then the per-shape rows go to
+PATH as JSON, and only there. The default pack lives INSIDE the modlist
+instance, and a measuring tool must not change what it measures: until
+2026-09-21 this wrote `registered_bone_audit.json` beside the pack on every
+run -- into the instance, and before the verdict printed. The tables and the
+verdict on stdout are the report; the JSON is an opt-in extract.
 
 MEASURED 2026-08-23 on the pre-fix pack: 10 violating shapes over 174 checked
 pieces, every one a shape WE create (a `<name>Col` bust-split clone), and ZERO
 authored shapes carrying bones we added. After #collider-declared-bones the
-expected result is 0.
+expected result is 0. Those numbers were counted over WEIGHT 1 ONLY (this
+enumerated `*_1.nif` until 2026-09-21) and are not comparable to a run now.
+
+WEIGHTS: both weights, first-person INCLUDED, via
+`standoff_audit.output_nifs(PACK, exclude_first_person=False)`. This is a
+per-SHAPE physics census, and `x_0.nif` carries its own registered shapes and
+its own bones: a bone that lands on the weight-0 half free-falls that piece
+exactly as one on weight 1 would. Weight 0 is also where a post-guard repair
+can act -- `_postflight_sync_weight_partner_jiggle` grafts a partner's jiggle
+bone onto whichever weight lacks it, after the in-converter guard has run -- so
+a `_1`-only census was blind to a plausible producer, not just to half a count.
+First-person is kept ON PURPOSE: `output_nifs` drops it by default for a
+BUST-COVERAGE reason, which has nothing to do with a physics bone. A
+first-person mesh that registers physics can free-fall like any other.
 
 Do NOT widen this to "any undeclared bone on a registered shape": that counts the
 AUTHOR's own arrangement and reads 250 where the defect is 10. Only bones we
@@ -45,6 +65,7 @@ added can free-fall a piece that previously worked.
 SKELETON DISCIPLINE: paths exported before the first nif_convert call, bone count
 asserted -- an unloaded skeleton makes every bone read as unparented.
 """
+import argparse
 import collections
 import json
 import os
@@ -59,21 +80,33 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO / ".pynifly"))
 sys.path.insert(0, str(_REPO))
-if len(sys.argv) > 2:
-    os.environ["CBBE2UBE_MO2_INI"] = sys.argv[2]
+_ap = argparse.ArgumentParser(
+    description="Collider/softbody bones WE added that the piece's own physics "
+                "XML never declares. Exit 0 clean / 1 violation / 2 nothing "
+                "measured.")
+_ap.add_argument("pack", nargs="?", type=Path,
+                 help="pack meshes/!UBE (default: the CBBEtoUBE Auto mod's)")
+_ap.add_argument("mo2_ini", nargs="?", help="ModOrganizer.ini to resolve sources")
+_ap.add_argument("--out", type=Path, metavar="PATH",
+                 help="write the violating rows as JSON to PATH (default: "
+                      "write nothing)")
+ARGS = _ap.parse_args()
+if ARGS.mo2_ini:
+    os.environ["CBBE2UBE_MO2_INI"] = ARGS.mo2_ini
 
 from src import paths                                   # noqa: E402
 _lay = paths.discover_layout()
 paths.export_to_env(_lay)
 from pyn import pynifly                                 # noqa: E402
 from src import nif_convert as nc                       # noqa: E402
+from scripts.analysis import standoff_audit as sa       # noqa: E402
 
 _parents = nc._actor_skeleton_bone_parents()
 print(f"actor skeleton: {len(_parents)} parent link(s)")
 if len(_parents) < 100:
     raise SystemExit("SKELETON UNLOADED -- refusing to report.")
 
-PACK = Path(sys.argv[1]) if len(sys.argv) > 1 else (
+PACK = ARGS.pack or (
     Path(paths.mods_root()) / "CBBEtoUBE Auto" / "meshes" / "!UBE")
 _en = paths.enabled_mods(_lay)
 _mods = [d for d in sorted(_lay.mods_root.iterdir())
@@ -96,8 +129,10 @@ by_shape = collections.Counter()
 by_bone = collections.Counter()
 rows = []
 
-nifs = sorted(PACK.rglob("*_1.nif"))
-print(f"{len(nifs)} `_1` pack NIF(s)", flush=True)
+# BOTH weights, first-person KEPT -- see WEIGHTS: in the docstring.
+nifs = sa.output_nifs(PACK, exclude_first_person=False)
+print(f"{len(nifs)} pack NIF(s), both weights, first-person included",
+      flush=True)
 for i, p in enumerate(nifs):
     if i % 300 == 0:
         print(f"  ...{i}", flush=True)
@@ -162,11 +197,14 @@ for k, v in by_shape.most_common(25):
 print("\n=== BONES WE ADDED ===")
 for k, v in by_bone.most_common(15):
     print(f"  {v:5}  {k}")
-# BESIDE THE PACK, not in the repo: an audit must not leave artefacts in
-# the source tree (repo hygiene fails on them, and they go stale).
-out = PACK.parent.parent / "registered_bone_audit.json"
-out.write_text(json.dumps(rows, indent=1), encoding="utf-8")
-print(f"\nwrote {out} ({len(rows)} violating shape instance(s))")
+# ONLY where the caller says. Never beside the pack (that is inside the modlist
+# instance) and never in the repo (hygiene fails on artefacts, and they go stale).
+if ARGS.out:
+    ARGS.out.write_text(json.dumps(rows, indent=1), encoding="utf-8")
+    print(f"\nwrote {ARGS.out} ({len(rows)} violating shape instance(s))")
+else:
+    print(f"\n{len(rows)} violating shape instance(s); no file written "
+          f"(--out PATH writes them as JSON)")
 
 # EXIT CODE so a reconvert can be GATED on this, not merely informed by it.
 #   0 clean   1 a violation WE caused   2 nothing measured

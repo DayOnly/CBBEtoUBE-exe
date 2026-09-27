@@ -55,8 +55,8 @@ def test_it_scores_standoff_difference_not_raw_position():
     position diff would score the body swap. Pin the two-body comparison in the
     source, since getting it wrong still produces plausible-looking numbers."""
     src = Path(se.__file__).read_text(encoding="utf-8")
-    assert '_find_cbbe_base_body' in src and '_find_ube_femalebody' in src, (
+    assert 'canonical_cbbe(weight=w)' in src and 'canonical_ube(weight=w)' in src, (
         "the metric must measure the author against the CBBE body and ours "
-        "against the UBE body")
+        "against the UBE body, each at the file's own weight")
     assert "o_off - a_off" in src, (
         "the error must be the difference of two STANDOFFS, not of positions")

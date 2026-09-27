@@ -160,7 +160,8 @@ def test_degenerate_body_normals_abort_the_run(monkeypatch):
     clean 0.000u instead of an unusable body."""
     v, _t = _slab(0.0, n=8)
     shape = _FakeShape("BaseShape", v)
-    monkeypatch.setattr(ncl, "canonical_ube", lambda: ("body.nif", "BaseShape"))
+    monkeypatch.setattr(ncl, "canonical_ube",
+                        lambda weight="_1": ("body.nif", "BaseShape"))
     monkeypatch.setattr(ncl, "NifFile", lambda _p: _FakeNif([shape]))
     monkeypatch.setattr(ncl.nc, "_body_normals_or_compute",
                         lambda s: np.zeros((len(s.verts), 3)))
@@ -176,7 +177,8 @@ def test_a_body_with_no_nipple_weight_aborts_rather_than_scoring_nothing(
     vertices."""
     v, _t = _slab(0.0, n=8)
     shape = _FakeShape("BaseShape", v)
-    monkeypatch.setattr(ncl, "canonical_ube", lambda: ("body.nif", "BaseShape"))
+    monkeypatch.setattr(ncl, "canonical_ube",
+                        lambda weight="_1": ("body.nif", "BaseShape"))
     monkeypatch.setattr(ncl, "NifFile", lambda _p: _FakeNif([shape]))
     monkeypatch.setattr(ncl.nc, "_body_normals_or_compute",
                         lambda s: np.tile([0.0, 1.0, 0.0], (len(s.verts), 1)))
@@ -192,7 +194,8 @@ def test_the_tip_mask_selects_only_the_peak_of_the_weight(monkeypatch):
     v, _t = _slab(0.0, n=8)
     shape = _FakeShape("BaseShape", v)
     w = np.linspace(0.0, 1.0, len(v))
-    monkeypatch.setattr(ncl, "canonical_ube", lambda: ("body.nif", "BaseShape"))
+    monkeypatch.setattr(ncl, "canonical_ube",
+                        lambda weight="_1": ("body.nif", "BaseShape"))
     monkeypatch.setattr(ncl, "NifFile", lambda _p: _FakeNif([shape]))
     monkeypatch.setattr(ncl.nc, "_body_normals_or_compute",
                         lambda s: np.tile([0.0, 1.0, 0.0], (len(s.verts), 1)))

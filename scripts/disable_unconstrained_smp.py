@@ -30,9 +30,25 @@ skirts the source author rigged), which are stable.
 Dry-run by default (lists what it would do); pass --apply to rename.
 """
 import argparse
+import os
+import re
 from pathlib import Path
 
 SUFFIX = ".nosmp"
+
+# #constraint-group-scan: any of FSMP's three constraint elements counts, nested
+# in a <constraint-group> or not. `<generic-constraint-default>` is NOT one: it
+# sets parameters for constraints that follow and adds no spring by itself.
+# CBBE2UBE_NO_CONSTRAINT_GROUP_SCAN=1 restores the old substring test.
+_CONSTRAINT_RE = re.compile(
+    r"<(?:generic|stiffspring|conetwist)-constraint[\s/>]")
+
+
+def _has_constraint(text: str) -> bool:
+    if os.environ.get("CBBE2UBE_NO_CONSTRAINT_GROUP_SCAN", "").strip().lower() in (
+            "1", "true", "yes", "on"):
+        return "<generic-constraint" in text
+    return _CONSTRAINT_RE.search(text) is not None
 
 
 def is_broken_collision_pair(text: str) -> bool:
@@ -42,7 +58,7 @@ def is_broken_collision_pair(text: str) -> bool:
     per-vertex-only cloth (no collider to diverge against) or any constrained
     chain is NOT this pattern and is left alone."""
     return ("<per-vertex-shape" in text and "<per-triangle-shape" in text
-            and "<generic-constraint" not in text)
+            and not _has_constraint(text))
 
 
 def main():
@@ -52,6 +68,13 @@ def main():
     ap.add_argument("--restore", action="store_true")
     a = ap.parse_args()
     root = Path(a.root)
+
+    # rglob on a path that does not exist yields nothing and raises nothing, so
+    # a typo used to read exactly like a pack with no crash-pattern XMLs: "=0",
+    # exit 0. Fail on the typo instead of reporting a clean result about it.
+    if not root.is_dir():
+        print(f"no such directory: {root}")
+        raise SystemExit(2)
 
     if a.restore:
         n = 0
@@ -73,21 +96,37 @@ def main():
             kept += 1                   # constrained chain / cloth-only / non-hdt
 
     unconstrained = broken              # (name reused by the apply loop below)
+    # A directory that exists but holds no XML at all is still the wrong
+    # directory -- state the population so "=0" cannot be read as "clean".
+    if len(broken) + kept == 0:
+        print(f"examined NO xml under {root} -- nothing was classified, so "
+              "this is not a verdict about that pack. Check the path.")
+        raise SystemExit(3)
     print(f"unconstrained collision-PAIR (disable, crash pattern)={len(broken)}  "
-          f"kept(constrained / cloth-only / non-hdt)={kept}")
+          f"kept(constrained / cloth-only / non-hdt)={kept}  "
+          f"examined={len(broken) + kept}")
     for p in broken[:6]:
         print("   would disable:", p.relative_to(root))
     if not a.apply:
         print("\n(dry-run; pass --apply to rename)")
         return
     n = 0
+    errs = 0
     for p in unconstrained:
         try:
             p.rename(p.with_name(p.name + SUFFIX))
             n += 1
         except Exception as e:
+            errs += 1
             print("  ERR", p.name, e)
     print(f"\ndisabled {n} unconstrained HDT XML(s) (-> *{SUFFIX}); restore with --restore")
+    # Every rename failing (files locked by a running FSMP/MO2) used to print
+    # ERR lines and still exit 0, so a partial patch read as a complete one.
+    # The armors that did NOT get renamed are the ones that still OOB-crash.
+    if errs:
+        print(f"FAILED to rename {errs} of {len(unconstrained)} -- those armors "
+              "are STILL the crash pattern. Close the game/MO2 and re-run.")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

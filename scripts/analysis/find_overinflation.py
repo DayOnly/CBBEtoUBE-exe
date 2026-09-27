@@ -26,10 +26,18 @@ Per converted body-swap torso piece it measures, at the breast band:
   shell = mean armor thickness there (thin = a single-layer band, not a cuirass)
 Flags gap > 1.2u AND shell < 1.8u, ranked worst-first. Read-only; run any time after a
 reconvert. Complements verify_bodymatch.py (which checks only the re-sourced set).
+
+WEIGHTS: both weights, via `standoff_audit.output_nifs`. Gap and shell are
+measured per SHAPE against the body injected into that same NIF, so a `_0` file
+brings its own weight-0 body and its own separately authored band -- an
+independent observation, not a duplicate of its `_1` partner. A band that hugs
+at weight 100 can stand off at weight 0, which is exactly the over-inflation
+class this exists to find, so a `_1`-only scan was looking at the silhouette
+least likely to show it. The `/m/` male-path exclusion is the female-only
+policy and is KEPT; only the weight scoping changed.
 """
 import os
 import sys
-import glob
 from pathlib import Path
 
 import numpy as np
@@ -41,6 +49,7 @@ sys.path.insert(0, str(_REPO / ".pynifly"))
 from pyn import pynifly                        # noqa: E402
 from src import paths                          # noqa: E402
 from src.body_zones import BREAST_Z               # noqa: E402
+from scripts.analysis import standoff_audit as sa   # noqa: E402
 
 OUT_MOD = os.environ.get("CBBE2UBE_OUT_MOD", "CBBEtoUBE Auto")
 GAP_MIN = float(os.environ.get("CBBE2UBE_OVERINFLATE_GAP", "1.2"))
@@ -92,9 +101,11 @@ def main():
     if not root.is_dir():
         print(f"output not found: {root}\n(run a reconvert first)")
         return 1
-    files = [f for f in glob.glob(str(root / "**" / "*_1.nif"), recursive=True)
-             if "1stperson" not in f.lower()
-             and "/m/" not in f.replace("\\", "/").lower()]
+    # BOTH weights -- see WEIGHTS: above. `output_nifs` owns the first-person
+    # rule (regex `1stperson|1stp`, wider than the bare `1stperson` test that
+    # was here); the `/m/` male-path exclusion is kept as-is.
+    files = [str(p) for p in sa.output_nifs(root)
+             if "/m/" not in p.as_posix().lower()]
     print(f"scanning {len(files)} converted meshes for thin-band over-inflation...",
           flush=True)
     rows = []

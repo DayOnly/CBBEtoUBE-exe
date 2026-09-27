@@ -77,10 +77,13 @@ def _write_bsa(path, entries, *, compress_default=False, embed_names=False):
                 body += bytes([len(full)]) + full
             if compress:
                 body += struct.pack("<I", len(payload)) + _pack(payload, compress)
-                size = len(body)
             else:
                 body += payload
-                size = len(payload)
+            # The size is the whole block, an embedded name's prefix included,
+            # compressed or not -- as in the vanilla archives. It used to leave
+            # the prefix out of an uncompressed entry, which the reader's old
+            # end bound matched. #bsa-embed-name-end
+            size = len(body)
             toggle = bool(compress) != compress_default
             size_fields.append(size | (bs._FILE_SIZE_COMPRESS_TOGGLE if toggle else 0))
             file_offs.append(cur)
@@ -172,3 +175,17 @@ def test_the_interface_strings_archive_is_opened_table_only(tmp_path):
     assert resolver._table_for("Skyrim.esm").get(0x10) == "Robe"
     assert resolver._bsa is not None and resolver._bsa._eager is False, (
         "the 101 MB interface archive is loaded whole to read one strings table")
+
+
+@pytest.mark.parametrize("eager", [True, False])
+def test_an_uncompressed_entry_with_an_embedded_name_ends_at_its_own_end(tmp_path, eager):
+    """#bsa-embed-name-end: in an embed-names archive the size counts the name
+    prefix, so an uncompressed entry read to `start of data + size` came back
+    with 1 + len(name) bytes of the next file on its end."""
+    p = _write_bsa(tmp_path / "a.bsa",
+                   [(r"meshes\armor\c", "helmet_1.nif", b"Gamebryo helmet", None),
+                    (r"meshes\armor\c", "helmet_0.nif", b"NEXTFILEBYTES" * 40, None)],
+                   embed_names=True)
+    a = bs.BSAArchive(p, eager=eager)
+    assert a.read_file("meshes/armor/c/helmet_1.nif") == b"Gamebryo helmet"
+    assert a.read_file("meshes/armor/c/helmet_0.nif") == b"NEXTFILEBYTES" * 40

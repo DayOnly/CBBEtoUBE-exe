@@ -174,8 +174,9 @@ def _table(cl):
               "tri_names_dead", "tri_names_scored"):
         c["ctrl"][k] = c["cand"][k] = 0
     d = (0, 0.0, 0, 0, 0.0, [])
-    g = {"skip": {}}
-    tp = {"tip_skipped": True, "tip_p50_control": None}
+    g = {"skip": {}, "w0_bust_skipped": True}
+    tp = {"tip_skipped": True, "tip_p50_control": None,
+          "w0_tip_skipped": True}
     zw = {"newly_emptied": 0, "rescued": 0, "both_empty": 0}
     fo = {"follow_worst_delta": None, "follow_note": "SKIPPED"}
     return acc.verdict_table(c, d, g, tp, zw, fo, False, False, None, cl)

@@ -337,6 +337,12 @@ NOT_A_FIT_PASS = {
         "entry", "the phase-2 entry point itself, not a pass"),
     "_copy_shape": (
         "both", "shared plumbing; most passes are reached THROUGH it"),
+    # #override-contract: a length/index CHECK on _copy_shape's input and its
+    # switch; they read the overrides, they never write a vert.
+    "_check_override_contract": (
+        "both", "refuses a wrong-length override; writes nothing"),
+    "_override_contract_on": (
+        "both", "the contract's switch; writes nothing"),
     "_reauthor_nif_fresh": (
         "both", "shared plumbing; the writer both paths end in"),
     "_install_skin": (

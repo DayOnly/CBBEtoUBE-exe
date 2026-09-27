@@ -22,9 +22,14 @@ Usage: python scripts/strip_nude_handfeet.py <path-to-esp> [--apply]
 Without --apply: dry run (reports what would change).
 """
 from __future__ import annotations
-import io, sys, struct, shutil
+import sys, struct, shutil
 from pathlib import Path
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# See the note in augment_nude_tri.py: wrapping sys.stdout.buffer makes the
+# wrapper close that buffer on GC, under whoever else is holding it.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src import esp
 from src.ube_patcher import _is_nude_skin_model
@@ -44,13 +49,22 @@ def models(r):
 
 def main():
     if len(sys.argv) < 2:
-        print("need esp path"); return
+        print("need esp path"); raise SystemExit(2)
     path = Path(sys.argv[1])
     apply = "--apply" in sys.argv[1:]
     e = esp.ESP.load(path)
 
     arma_g = next((g for g in e.groups if g.label == b"ARMA"), None)
     armo_g = next((g for g in e.groups if g.label == b"ARMO"), None)
+
+    # With no ARMA group every loop below iterates an empty list, so the tool
+    # reported "0 to remove / 0 refs / 0 preserved" and -- with --apply -- re-
+    # saved the ESP and printed "saved". Pointed at the wrong plugin that is a
+    # successful strip of nothing. There is nothing here to examine: say so.
+    if arma_g is None:
+        print(f"{path.name} has no ARMA group -- nothing to examine. "
+              "Wrong plugin?")
+        raise SystemExit(3)
 
     # 1. Identify nude/actor-skin ARMAs.
     nuke_fids = set()
@@ -88,6 +102,14 @@ def main():
     if not apply:
         print("\nDRY RUN. re-run with --apply to write.")
         return
+
+    # Nothing matched: re-serialising the ESP for a no-op edit is a silent
+    # mutation of a deployed plugin, and "saved <name>" then reads as a strip
+    # that happened. Refuse the write and say which it was.
+    if not nuke_fids:
+        print(f"\nNOTHING MATCHED in {path.name} -- no nude/actor-skin ARMA "
+              "found, so the file was NOT rewritten.")
+        raise SystemExit(3)
 
     # backup
     bak = path.with_suffix(path.suffix + ".prenude.bak")

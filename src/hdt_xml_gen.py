@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .atomic_io import atomic_write_bytes
+from .envflags import flag as _flag
 
 
 # -- Bone classification ----------------------------------------------------
@@ -649,6 +650,32 @@ def pick_body_collision_shape_name(nif_shape_names: Iterable[str]) -> "str | Non
 
 # -- Validation -------------------------------------------------------------
 
+# #constraint-group-scan. FSMP has three constraint elements, and an XML may
+# place any of them at the top level OR inside a <constraint-group> (the
+# generator above writes every chain constraint inside one). The validator
+# used to ask `root.find("generic-constraint")` -- DIRECT children, one kind --
+# so a grouped chain read as "NO constraints". Measured on the live output:
+# 75 of 137 physics XMLs are constrained only inside a group, and all 26
+# "the piece has NO constraints" lines in the conversion reports named such a
+# piece. A <constraint-group> with nothing in it is NOT a constraint: an empty
+# group has no springs, and calling it constrained would tell the reader body
+# collision can be added safely to the crash pattern.
+_CONSTRAINT_TAGS = ("generic-constraint", "stiffspring-constraint",
+                    "conetwist-constraint")
+
+
+def _constraint_group_scan() -> bool:
+    return not _flag("CBBE2UBE_NO_CONSTRAINT_GROUP_SCAN", False)
+
+
+def _constraint_elements(root) -> list:
+    """Every constraint the XML declares, wherever it sits (off: the old
+    generic-only read)."""
+    if not _constraint_group_scan():
+        return list(root.iter("generic-constraint"))
+    return [el for el in root.iter() if el.tag in _CONSTRAINT_TAGS]
+
+
 def validate_armor_hdt_xml(xml_path: "Path",
                            nif_bone_names: Iterable[str]) -> "list[str]":
     """Inspect a generated HDT XML for the kind of issues that cause
@@ -688,11 +715,27 @@ def validate_armor_hdt_xml(xml_path: "Path",
             "HDT XML declares a DOCTYPE/ENTITY (rejected: entity-expansion DoS)")
         return warnings
     try:
-        tree = ET.parse(xml_path)
+        root = ET.fromstring(raw)
     except ET.ParseError as e:
-        warnings.append(f"HDT XML failed to parse: {e}")
-        return warnings
-    root = tree.getroot()
+        # Junk AFTER the root close (`</system>undefined</xml>`) is how most
+        # authored files fail here, and FSMP never reads past `</system>`. So
+        # the declarations are still what ships: validate them, and say what the
+        # tail is, instead of skipping every check on the piece. Damage INSIDE
+        # the root is not repaired by the sanitiser and still fails here.
+        fixed, note = sanitise_hdt_xml_bytes(raw)
+        root = _hdt_xml_parse_check(fixed) if note is not None else None
+        if root is None:
+            warnings.append(f"HDT XML failed to parse: {e}")
+            return warnings
+        warnings.append(
+            f"HDT XML has text after its root element ({note}); FSMP ignores "
+            f"it, strict XML tools reject the file -- "
+            f"CBBE2UBE_HDT_XML_SANITISE=1 trims it")
+    # A default namespace (`<system xmlns="...">`) prefixes every tag with
+    # `{uri}`, which FSMP does not care about and every lookup below misses.
+    for el in root.iter():
+        if isinstance(el.tag, str) and el.tag.startswith("{"):
+            el.tag = el.tag.split("}", 1)[1]
     if root.tag != "system":
         warnings.append(f"HDT XML root tag != 'system' (got {root.tag!r})")
         return warnings
@@ -720,7 +763,7 @@ def validate_armor_hdt_xml(xml_path: "Path",
     except Exception:
         actor = set()
     referenced = set(xml_bones)
-    for c in root.iter("generic-constraint"):
+    for c in _constraint_elements(root):
         for attr in ("bodyA", "bodyB"):
             v = c.get(attr)
             if v:
@@ -767,7 +810,8 @@ def validate_armor_hdt_xml(xml_path: "Path",
     # whether the piece is constrained, because that is what decides whether it
     # is fixable at all.
     body_tags = {"body", "body2", "colbody", "bodycol"}
-    constrained = root.find("generic-constraint") is not None
+    constrained = (bool(_constraint_elements(root)) if _constraint_group_scan()
+                   else root.find("generic-constraint") is not None)
     for sh in root.findall("per-vertex-shape"):
         sh_name = sh.get("name") or "?"
         can = {(t.text or "").strip().lower()
@@ -819,11 +863,13 @@ def sanitise_hdt_xml_bytes(data: bytes) -> "tuple[bytes, str | None]":
     WHY. Ten authored physics XMLs in this modlist end with junk after the
     root close: `</system>undefined</xml>` (6) or `</system></xml>` (4). A
     stray `</xml>` is a close for a wrapper its authoring tool never opened.
-    XML forbids ANY non-whitespace after the root element, so every strict
-    parser rejects the whole file -- and the converter copies these VERBATIM
-    into the pack, so 94 shipped NIFs referenced an XML that nothing can read.
-    Every collider/soft-body protection then runs on an empty set for those
-    pieces, which is the state BUG-00 recorded as disarming every guard.
+    XML forbids ANY non-whitespace after the root element, so every STRICT
+    parser rejects the whole file, and the converter copies these VERBATIM
+    into the pack (20 shipped NIFs point at one). Nothing that matters to the
+    game is blinded by it: FSMP stops reading at the root's close, and the
+    converter's own consumers are regex-based (corrected 2026-09-25; an earlier
+    note here said every collider guard ran on an empty set). The value is
+    hygiene: the shipped file passes strict tools.
 
     ONLY content after the root's closing tag is removed. That content cannot
     carry physics meaning -- it is outside the document element -- so this

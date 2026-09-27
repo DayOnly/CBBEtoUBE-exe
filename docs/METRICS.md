@@ -265,6 +265,14 @@ motion defect. See `project_antipoke_vertex_blind`.
    never converts. Quoting either number without the filter misleads, in
    opposite directions. See also the repeated failure of censuses that counted
    never-converted clutter as results.
+10. **Measure against the body the population was built on, and prove which
+   file that is.** A reference picked by name or path is a guess. Added
+   2026-09-21: `canonical_cbbe` ("3BA in the path, then the shortest path")
+   picked the 3BA body mod's own preset build, while the game loads BodySlide's
+   zeroed build and 248 of 340 paired source garments bundle that one
+   bit-exact. Every author-side number, the crotch-band lead included, moved
+   when the reference did. Resolve the file the game loads, check it is the
+   build you assume, and say which file each number was read on.
 
 ---
 
@@ -272,7 +280,7 @@ motion defect. See `project_antipoke_vertex_blind`.
 
 ## The same wrong metric got rebuilt from scratch
 
-`scripts/mesh_penetration.surface_penetration` decides inside/outside from the nearest
+`scripts/analysis/mesh_penetration.surface_penetration` decides inside/outside from the nearest
 TRIANGLE's normal — which is the metric already recorded above as **REPLACED**. It was
 re-derived from first principles, given eight passing unit tests on synthetic spheres,
 and run over the whole pack before anyone re-read this file.
@@ -293,9 +301,9 @@ not be used.
 
 ## Sound: ray exposure, and a census built on it
 
-`scripts/mesh_penetration.ray_exposure` — march each body vertex along its own outward
-normal; if no garment triangle blocks it, that vertex is visible from outside.
-Unambiguous by construction, and it is what a player sees. Positive controls in
+`scripts/analysis/mesh_penetration.ray_exposure` — the ray test listed first under
+**Sound** above, reimplemented as a library function: unambiguous by construction,
+and it is what a player sees. Positive controls in
 `tests/test_mesh_penetration.py`: enclosed body **0.0%** exposed, uncovered body
 **100%**, a garment hanging 4u away still reads 0% (it blocks the ray), and a one-sided
 hole localises to that side.
@@ -349,6 +357,10 @@ Ignore those rows or widen the filter before quoting a worst-offender list.
 > (An earlier draft of this note said "49%". That was strictly-surrounded and partial
 > added together and quoted as one number; the strict figure is 9.0%. Keep the two
 > separate — partial means *some* garment nearby, not body-through-armour.)
+>
+> **The containment cone recommended here was itself discredited and deleted on
+> 2026-07-29** — anti-correlated with in-game ground truth (see "Discredited and
+> DELETED" below). The validated replacement is `clipping_report`.
 
 The upper chest looked like the worst region in the census above (62% of armors over
 5% "exposed and garment within 2u"). Almost all of it is **garment design**.
@@ -379,7 +391,9 @@ design — the same mistake as the reverted rear-clearance feature, one level su
 > **OVERTURNED 2026-07-28 by the containment census — see below.** That conclusion
 > rested on the rim-distance classifier corrected above, which structurally could not
 > return "poke" here. Re-measured with containment, the upper chest is the **worst**
-> region in the pack, not a clean one.
+> region in the pack, not a clean one. That reversal rested on the ray cone and
+> was itself voided on 2026-07-29 (below), so neither verdict on the upper chest
+> rests on a sound metric now.
 
 ---
 
@@ -417,6 +431,18 @@ Two requirements, both learned by getting them wrong first:
   path". Two mods can ship one path with different geometry; picking the wrong one
   inverted a measured delta from +0.7 to +83.3 — from "authored" to "our fault".
 
+> **CORRECTED 2026-09-21 — the canonical CBBE body was itself a wrong pick.**
+> `canonical_cbbe` took "3BA in the path, then the shortest path", which on the
+> shipped modlist is the 3BA body mod's own `femalebody`: a preset build the game
+> never loads (a BodySlide output wins that path). It sits up to 1.97u off the
+> body the game loads over 16,061 torso verts, and its weight-1 morph grows the
+> bust ~1u THROUGH garments built on the zeroed body (248 of 340 paired source
+> NIFs bundle the zeroed build bit-exact). Canonical now means BodySlide's zeroed
+> build as the game loads it (`src/zeroed_body.py`, via `canonical_body`); the UBE
+> side resolves to the same file as before. The source-side re-run on that body is
+> recorded in the 2026-09-21 reference-body entry at the end of this file. The
+> requirement stands, made stricter: canonical AND the body the game loads.
+
 ## LIMIT: `convert_one_armor.py` does not exactly reproduce the auto pipeline
 
 The single-piece harness is the basis of most measurements here, and memory described
@@ -433,6 +459,16 @@ effect.
 of a few tenths of a percent are inside this noise; the large ones measured here
 (11.0% → 0.2%) are not. Diffing the `convert_nif` call arguments between the two paths
 is the obvious next step.
+
+> **RESOLVED 2026-07-29.** The harness now builds the batch's own work item and
+> hands it to the same `auto_convert._nif_convert_worker` — one conversion path,
+> not two (`scripts/convert_one_armor.py` docstring; pinned by
+> `tests/test_single_batch_parity.py`). The differences it removed: slots
+> resolved to 0 for a mod with no ESP, silently disabling every slot-gated pass
+> (a slots=0 run is now a hard error); an output root without `!UBE`, which
+> changes the relative paths baked into the NIF; and alt-texture shape names
+> never passed. The consequence above applies to single-piece numbers taken
+> before that date.
 
 ## Reminder: the pose harness poses but does NOT morph
 
@@ -637,9 +673,8 @@ picked by geometry rather than by the metric (picking it by the metric would be
 circular), must read mostly COVERED. Under the same inversion it collapses
 **100.0% → 0.0%** and fails. The run aborts if either control cannot be built.
 
-**Generalised:** a control that cannot fail is not a control. Before trusting one,
-break the thing it guards and confirm it screams. This is the third time on this
-project that a passing control was measuring nothing.
+**Generalised** as checklist item 3 above: break the thing a control guards and
+confirm it screams before trusting it.
 
 ## Cost, since it decides what is affordable
 
@@ -656,10 +691,9 @@ correctness rather than cost: see `DESIGN.md`.
 
 # 2026-09-09 — the gate judged one row backwards, and a stage it could not see
 
-Two findings about the ACCEPTANCE GATE rather than about a single metric. Both
-matter more than a metric bug, because the gate is what turns a metric into a
-verdict, and a gate that scores the wrong direction launders a regression into
-a pass.
+Two findings about the ACCEPTANCE GATE rather than a single metric: the gate
+turns a metric into a verdict, so one that scores the wrong direction launders a
+regression into a pass.
 
 ## Wrong: the bust-gap row rewarded drifting AWAY from the author
 
@@ -689,6 +723,22 @@ FAIL and took the overall verdict from 2 failing rows to 3.
 The same row was independently blind to DEAD SLIDERS: a piece whose morph never
 fires has no gap to measure, so it contributed nothing and could not fail.
 
+> **2026-09-21 — the author side of this row was read off the wrong body.**
+> `bust_gap_score` takes the author from `canonical_body.canonical_cbbe`, which
+> until then picked the 3BA body mod's own preset `femalebody` — a build the
+> game never loads — instead of BodySlide's zeroed build. On the shipped pack
+> (677 shapes at weight 1 in both runs) the author's bust standoff p50 moves
+> 1.104 → 1.416u and the gap p50 +0.624 → +0.297u (body-swap +0.738 → +0.471,
+> copy +0.485 → +0.094); at weight 0 the author moves 1.310 → 1.255u and the gap
+> the OTHER way, +0.325 → +0.392u. Our side moves only through which shapes
+> qualify, at equal count (path split 352/325 → 354/323; bust p50 1.888 →
+> 1.876u), and penetration not at all (3410 verts). The `|gap|` rule stands.
+> Gap VALUES from before — the +0.682 and +0.900 above included — are not
+> comparable with values after. A verdict is most at risk where a gap sits
+> near zero, and the copy-path gap now does (+0.094u): under that rule (TOL
+> 0.005) a uniform inward move of more than ~0.19u now reads FAIL on the
+> copy-path row, where the old body allowed ~0.98u.
+
 ## The gate could not see the LAST stage
 
 The working notes (kept on the `testing` branch under `docs/worklog/`, not
@@ -717,3 +767,1687 @@ Reference figures on the acceptance population: rate p50 0.1495%, p90 2.0217%,
 edge deviation p50 0.0331, over 598 shapes = 299 garments, 0 sources
 unresolved. A garment is TWO shapes — halve any shape count before comparing it
 with a garment count.
+
+---
+
+# 2026-09-20 — the harness assumed a coordinate frame, and four tools inherited it
+
+`seat_error_vs_author` was found double-transforming its converted arm. That is
+a defect in one tool; the question this audit asked is whether it is a CLASS.
+It is. Every tracked consumer of `_verts_skin_to_world` outside the converter
+was read, and four of the seven were placing shapes by assumption.
+
+## The population, and why the first answer was wrong
+
+7246 shapes in 2605 NIFs of the shipped pack (both weights, no `_bsa_staging`,
+no first-person), 0 unreadable.
+
+The first cut counted NON-IDENTITY TRANSFORMS and found 534, 7.4% of the pack.
+**That number is not the defect and must not be quoted as one.** A converted
+shape may genuinely store skin-space verts, and then the transform is correct.
+Splitting by which frame actually lands the shape on the body:
+
+| | shapes | naive `_world()` is |
+|---|---|---|
+| genuinely stored in skin | 403 | correct |
+| agrees either way | 47 | harmless |
+| **already on the body** | **84** | **wrong — throws it off** |
+
+Median throw for those 84 is 11.3u, max 2496.7u, across 56 files.
+
+**No name filter substitutes for the measurement.** Of the 84, ZERO match the
+proxy-name idiom and ZERO are `BaseShape`. They are `robe`, `Boots`,
+`Gauntlets`, `ArmorF`. The class is NOT colliders, which is what the first
+reading of the `seat_error` fix suggested. 78 of the 84 RENDER, so the
+"renders nothing" filter three tools rely on catches 6 of them.
+
+## Verdicts
+
+| tool | verdict | the number |
+|---|---|---|
+| `bust_verdict.py` | **BROKEN → fixed** | 6 of 486 subjects; a shipped robe read covered 0.0%, standoff over 9 verts, and returned "clean at rest ... next step is an in-game A/B" at exit 0 with all four controls passing. Correctly framed: covered 34.8%, 459 verts, 0.43% clipping. |
+| `survey_motion_clipping.py` | **BROKEN → fixed** | four silent exclusions; 55 colliders scored as garment, 463 of 5939 shapes dropped with no trace, `skipped` never printed, and `*_1.nif` only so half the pack was never surveyed. |
+| `postflight_1_2.py` | **BROKEN → fixed** | 78 of the 84 survive its collider and not-rendered filters. NOT on the suspect list — found by following the call sites. |
+| `qa_conform_audit.py` | **BROKEN (latent) → fixed** | 1 of the 84 changes class; 0 jiggle-strip suspects missed, 0 `matched_frac` corrupted, hug error median 0.053. Small because 60 of the 84 are RIGID on weight alone, decided before `hug` is read — not because the code was right. |
+| `chain_flag_census.py` | **BROKEN (latent) → fixed** | same insufficient "renders" filter; placed garments before it placed the body. |
+| `phase1_antipoke_population_ab.py` | **BROKEN (latent) → fixed** | same. |
+| `snugness_census.py` | **SOUND** (frame) | already chooses by evidence, documents the exact trap, and asserts its reference stands upright. Nothing to do for the frame. Its AUTHOR body was a separate defect, fixed 2026-09-21: it read the 3BA body mod's own preset `femalebody`, and on BodySlide's zeroed build its body-swap reading flips from "LOOSER than authored" to "fit preserved" (median ratio 1.202 → 1.058; the copy path only crosses the tool's 1.15 line, 1.150 → 1.141). The right body also exposes 18 body stand-in shapes among those scored (authored standoff ~0: they sit on that body), 14 of them filling its loosest-15 — an exclusion gap, OPEN; excluding them moves the medians 0.001-0.002. |
+| `collect_fit_dataset.py` | **SOUND** | records `ident` as a COLUMN instead of branching on it, so a consumer can filter. |
+| `scripts/tool_audit.py` | **SOUND, scope-limited** | clean on all tracked tools — but it only audits SOURCE-PARSING tools for a population floor. Every defect above is in a NIF-READING tool, which it does not look at. A clean `tool_audit` is not evidence about this class. |
+
+## What actually found these
+
+Not the frame. Three of the four were found by asking **what does this tool
+refuse to report on, and does it say so** — the exclusion, not the arithmetic.
+
+- An exclusion that prints only a COUNT, or no count at all. `survey`'s
+  `skipped` list was built and then discarded; its identity check excluded 7.8%
+  of the pack with no line anywhere.
+- **A control that cannot fail is not a control.** `bust_verdict` has four, and
+  every one passed on a garment sitting 42u off the body: the calf control
+  expects ~0% and got it, the body-vs-itself control never touches the garment,
+  and the equality selftest compared two identical zeros. The file's own note
+  above the ORIENTATION control says a control that can be skipped is not a
+  control — it had been applied to the body and never to the garment.
+- **Score the COMPOSED rule, never its components.** `Cylinder.015` reads like
+  a collider and carries a full texture set over 33k verts; `ButtCol` reads like
+  a garment suffix and has none. Token alone and rendering alone each pick the
+  wrong one.
+
+## The guard, and the one that generalises
+
+`standoff_audit.pick_frame` places a shape by proximity, so the decision exists
+once instead of five times. But the frame fix only removes a CAUSE. The guard
+that removes the class is `bust_verdict`'s COVERAGE control: a garment covering
+less than 1% of the band it is judged on has not been measured, and 0.00%
+clipping is then indistinguishable from a perfect fit — whatever put it there.
+
+Mutation pairs TFF-a..e, all CAUGHT. The chooser is armed in BOTH directions on
+purpose: a pair arming only one would pass for a chooser hardcoded to the other.
+
+**No in-game verdict is owed.** Every change here is to a measurement tool;
+none can move a vertex.
+
+## Still open — closed 2026-09-20, bar one
+
+`morph_clip_test._aligned`, `snugness_census.pick_frame` and the fix on PR #9
+were three more copies of this decision, held back until #9 landed. It did, and
+PR #12 folded two of them: `seat_error_vs_author` and `snugness_census` now
+delegate to `pick_frame`, their output byte-identical on the shipped pack
+before and after (seat error over 4053 paired shapes, snugness over 171).
+`morph_clip_test._aligned` stays out on purpose: it has no agree band (under a
+0.25u disagreement it takes the nearer frame where `pick_frame` returns raw),
+and it is verified-safe for the acceptance gate, so folding it in means
+re-running the GATE, not just the suite. Its docstring says why.
+
+## The second class the same day — half the pack, undeclared
+
+Same audit, different heuristic: **an exclusion you cannot explain.** The frame
+class was about placing a shape wrongly. This one is about never looking at it.
+
+`standoff_audit.output_nifs` was written because validation scripts glob
+`*_1.nif` only, and weight 0 is a SEPARATELY AUTHORED mesh, not a scaled copy.
+Its own docstring records the measurement and the count at the time:
+
+    bust-front clipping, one cuirass:  weight 1  4.52%    weight 0  9.48%
+    "Fifteen validation scripts in this repo independently glob *_1.nif only"
+
+Counted 2026-09-20: **23 tools enumerate the pack that way, and 21 never say
+so.** On the shipped pack that is **1032 of 2064 NIFs — exactly 50.0%**, and by
+the measurement above the missing half is the WORSE half. The number went from
+fifteen to twenty-three with nobody deciding it should.
+
+**The fix is NOT "always read both weights", and that distinction carries the
+design.** `morph_sweep` scopes to `_1` for a real reason — `_0` and `_1` are one
+garment at two weights, so scoring both double-counts a per-garment RATE — and
+it says so in its docstring. That is all that is asked: declare the population.
+Using `output_nifs` counts as declaring it.
+
+So `tool_audit.py` grew a fourth section and `tests/test_pack_population_declared.py`
+freezes the 21 by name. It is a RATCHET, not a cleanup: it fails when a new tool
+joins the list, or when a listed one stops qualifying and the list starts lying
+about the tree. Rewriting 21 populations blind would change what every one of
+them reports with nothing to validate the new numbers against — and several feed
+leads that are currently open.
+
+Mutation pairs HPK-a and HPK-b, both CAUGHT. HPK-a mutates the DETECTOR rather
+than the list, because a detector that matched nothing would leave every
+assertion in that file passing forever — which is precisely the failure this
+audit exists to find.
+
+### What did NOT survive triage, recorded so it is not re-run
+
+**"Reports a MEAN with no MEDIAN"** sounds like the heuristic that found
+`seat_error` (9.18 vs 0.35). Swept over every tool it yields 13 hits and
+roughly 3 are real: most are `(d < PROX).mean()`, which is a PROPORTION, where
+the mean is exactly right and a median would be 0 or 1. Of the four genuine
+distribution means, `golden_output` and `verify_chain_shift` both print `max`
+beside the mean, so the tail is already visible. **Do not mechanize this one** —
+at ~30% precision it is a reading aid, not a gate.
+
+The one candidate worth measuring was `find_morph_follow_gaps.py`, which
+THRESHOLDS on a mean (`follow < 0.15` over covered verts) and reports no spread.
+A garment whose covered verts sat half at 0.30 and half at 0.00 would pass that
+test with half the piece carrying no follow at all.
+
+**Measured, and REFUTED.** Over 500 pieces, mirroring the tool's own scoring:
+288 zone rows scored, 186 flagged, 102 passed as clean — and of those 102,
+**zero** carry no-follow on more than 40% of their covered verts. The
+distribution is not bimodal in this population, the mean is hiding nothing, and
+the threshold stands. Recorded because the hunch is plausible and cheap to
+re-form: it has been checked. Do not re-open it without a population where that
+number is not zero.
+
+# 2026-09-20 — six tools could not report failure, and four of them write to disk
+
+The frame audit closed on a question it could not answer about itself: `bust_verdict`
+returned "clean at rest ... next step is an in-game A/B" at **exit 0** on a robe 42u
+from the body. Nothing consumed that exit code — a person read the sentence. So the
+follow-up question is not "which tools are wrong" but **which tools are incapable of
+being wrong**.
+
+## The census
+
+An AST pass over the 101 script paths named in `docs/TOOL_MAP.md`, collecting every
+`sys.exit` / `exit` / `raise SystemExit` argument and flagging files where every
+argument is a constant `0`/`None`:
+
+| | count |
+|---|---|
+| library modules (no `__main__`) | 15 |
+| runnable tools that CAN exit nonzero | 80 |
+| **runnable tools that CANNOT** | **6** |
+
+The predicate misses `argparse`'s `.error()`, which exits 2. Re-checked by hand:
+one of the six (`build_body_collider_proxy`) has one, and it is a *usage* guard.
+None of the six could report a **semantic** failure. An uncaught exception still
+exits nonzero, so these tools failed loudly when they crashed and silently when
+they did nothing — which is the wrong way round.
+
+## Measured before the fix, each pointed at an empty pack
+
+```
+scan_output_health          rc=0  "=== SCAN DONE ==="
+disable_unconstrained_smp   rc=0  "(dry-run; pass --apply to rename)"
+build_body_collider_proxy   rc=0  "processed 0 NIFs"
+strip_nude_handfeet         rc=0  "need esp path"
+scan_nude_skin_chain        rc=0  "FATAL: no UBE_AllRace.esp found"
+```
+
+The last one prints the word FATAL and returns success. The first prints an
+affirmative all-clear over zero NIFs.
+
+## Verdicts
+
+| tool | verdict | the number |
+|---|---|---|
+| `scan_output_health` | **BROKEN** | `=== SCAN DONE ===` over 0 NIFs, rc=0; a wrong `out_dir` = a healthy pack |
+| `scan_nude_skin_chain` | **BROKEN** | two `FATAL` paths, both `return` → rc=0 |
+| `disable_unconstrained_smp` | **BROKEN** | rglob on a missing dir yields nothing, raises nothing → "0 to disable"; all renames failing → rc=0 |
+| `strip_nude_handfeet` | **BROKEN** | no ARMA group → every loop empty → `--apply` re-serialises a deployed ESP and prints "saved" |
+| `build_body_collider_proxy` | **BROKEN** | "processed N" counted NIFs VISITED; NIF and XML halves could diverge unreported |
+| `augment_nude_tri` | **BROKEN** | `seam_n` — the control the whole method rests on — printed and never acted on |
+
+`TOOL_MAP.md`'s `gate` column now reads a real exit code for all six, where it
+read `—` for every one of them before.
+
+## What the fix is, and what it is not
+
+None of the six is invoked by another script or by CI — the consumer is a **person
+reading a terminal**. So an exit code alone would not have helped; the no-data case
+also has to *look* different from the clean case. Both halves were applied: the
+existing shared `require_population` (exit 3, "0/0 is not a pass") where there is a
+countable population, and verdict lines that carry the population instead of a bare
+`DONE`.
+
+**Not done, deliberately:** `scan_nude_skin_chain`'s coverage matrix is not graded
+into an exit code. `--MISSING` cells are legitimate mid-build, and turning them red
+would change what an existing run reports with no measurement behind it.
+
+**Named, not fixed:** `augment_nude_tri.nif_verts` reads `shape.verts` RAW. Body and
+part are separate NIFs with their own transforms, so a non-identity global-to-skin on
+either drives `seam_n` to 0 — the `standoff_audit.pick_frame` class again, reached
+from the other side (a tool that *should* normalise and never did). Measuring it needs
+a nude build; the new guard at least makes the symptom impossible to miss.
+
+## A landmine found on the way
+
+Six tools carry `sys.stdout = io.TextIOWrapper(sys.stdout.buffer, ...)`. The new
+wrapper **owns** that buffer and closes it when garbage-collected, under whoever else
+holds it. Importing one inside pytest closes the global capture file and every later
+test dies on "I/O operation on closed file" — which is how the first draft of these
+tests came to assert on an empty string while only the exit code was really checked.
+Both the no-seam path and the nothing-augmented path exit 3, so without the message
+the test could not tell which guard had fired.
+
+All six converted to `sys.stdout.reconfigure()`, which mutates the existing stream
+instead and is a no-op on one that does not support it; non-ascii output verified
+unchanged. The other three — `fit_audit`, `scan_morph_issues`,
+`sanity_check_converted` — had no test importing them *yet*; the first one to do so
+would have hit it.
+
+Ratcheted, with the **mechanism pinned rather than assumed**: a test wraps a
+`BytesIO`, drops the wrapper, collects, and asserts the buffer is closed. If CPython
+ever stops doing that the test fails and says the ratchet's reason is gone, instead
+of a banned string outliving the justification nobody can any longer explain.
+`mutation_pairs.py` is exempt — CAC-k arms this ratchet by carrying the banned idiom
+as a replacement string — and the exemption asserts the file really is the pair
+catalogue before skipping it. That collision was caught by the ratchet itself, and
+the gate correctly refused to judge anything while the baseline was red.
+
+## The control
+
+Every guard was checked in the direction that matters *and* the direction that does
+not: a directory holding a properly constrained XML still exits 0, a plugin that does
+have a nude-skin ARMA still strips and saves, and a seam-coincident part still
+transfers and writes. A guard that turns healthy runs red is worse than the bug.
+
+11 mutation pairs, CAC-a..k, all CAUGHT.
+
+## Found while converting the three: `fit_audit.py` has never run
+
+Smoke-testing the three tools converted off the stdout wrapper turned up a
+different defect in one of them, and it is the opposite of this lane's class:
+
+```
+fit_audit.py  rc=1  AttributeError: module 'src.sliderset_gen'
+                    has no attribute 'MORPH_SHAPE_CAP'
+```
+
+Line 306 at the time (310 since the stdout fix), before any work. Reproduced
+on unmodified `testing`, so it is not
+this lane's doing. `MORPH_SHAPE_CAP` appears **nowhere else in the repo** —
+not in `sliderset_gen`, not anywhere — and `git log -S` finds nothing because
+the constant predates the clean-slate re-root. **The tool has not run since.**
+
+Verdict: **BROKEN — dead reference.** Deliberately NOT patched. `cap` feeds
+`morphing = set(tri_order[:cap])`, which is what makes `CUT_NO_FALLBACK` and
+`CUT_HIGH_MORPH` fire at all. The nearest real constant, `tri.TRI_MAX_SHAPES
+= 0xFFFF`, is the PIRT header's encoding ceiling, not a per-NIF morph cap;
+substituting it would let every shape morph, so both checks would never fire
+again — a tool that runs, reports, and cannot find anything. That is strictly
+worse than one that crashes, and it is the exact failure this audit exists to
+remove.
+
+The open question is not "what number goes there" but **whether the per-NIF
+morph cap still exists as a concept in this codebase**. `sliderset_gen:413`
+still orders shapes so that "if the per-NIF morph cap ever fires, low-impact
+rigid props are dropped first", so something believes in it. Resolve that
+before assigning a value.
+
+# 2026-09-20 — conform CANNOT manufacture the too-close population it is blamed for
+
+Read-only follow-up to the open caveat on the crotch-band lead, which read:
+*"reading `conform_to_source_standoff` at defaults it should be a no-op on
+already-too-close verts, so either the stage covers more or the two measure
+offset differently; resolve before editing that function."*
+
+**Resolved: the two measure offset differently. The stage does not cover more.**
+
+`authored_offset_ledger` counts "too CLOSE" as `err < 0`, where `err = ours −
+authored`. It attributes the growth 24.1% → 64.8% to the `conform` stage. But at
+defaults the arithmetic bounds the result:
+
+```
+tight   = max(min(s_src, s_cur), min_clear_v)        # min_clearance = 0.25
+blend_v = blend_tight + _b*(1 - blend_tight)         # blend_tight = 0.3, so blend_v <= 1
+target  = s_cur + (tight - s_cur) * blend_v
+move    = min(target - s_cur, 0.0)                   # pull IN only
+```
+
+When `move < 0` we need `tight < s_cur`, which forces `min(s_src, s_cur) = s_src`,
+hence `tight >= s_src`; and `blend_v <= 1` gives `target >= tight`. So
+**`target >= s_src` always** — conform can never land a vertex closer to the body
+than the author's own standoff, as conform measures it.
+
+Brute-forced over 2,000,000 random `(s_src, s_cur)` pairs on `[-2, 6]u`, replicating
+`nif_convert_fitgeom.py:1469-1537` exactly:
+
+| | |
+|---|---|
+| verts conform MOVED | 920,618 of 2,000,000 (46.0%) |
+| of those, ending closer than the author (`err_after < 0`) | **0** |
+| worst `err_after` among moved verts | **+0.000000** (bound is tight, never crossed) |
+| pushed from not-too-close INTO too-close | **0** |
+| already too close, and moved | **0** — max `abs(move)` = 0.000000 |
+
+The bust anti-poke block further down the same function pushes **out**, so it cannot
+create `err < 0` either, and `conform_margin` only raises `tight`.
+
+**So do NOT edit `conform_to_source_standoff` on the strength of the ledger's
+attribution.** The number to chase is the disagreement between the two
+measurements, not the function. Candidates, in the order they are cheap to check:
+
+1. conform derives `s_src` from its **own** nearest-neighbour correspondence
+   (`cKDTree(src_body_verts).query(src_cloth)`); the ledger pairs independently, so
+   the same vertex can carry two different "authored" values.
+2. the ledger measures the **shipped** garment — after anti-poke, panel rigidity and
+   coherence repair — not conform's immediate output.
+3. the stage dump labelled `conform` may bracket neighbouring passes, so the label
+   attributes more than the function.
+
+This does not touch the finding itself: we still sit −0.432u deeper at p05 over
+n=97. It removes one candidate mechanism, and it removes the temptation to "fix" a
+function whose arithmetic already forbids the defect.
+
+> **SUPERSEDED 2026-09-21 — the −0.432u was read on the wrong reference body.**
+> Re-measured with the source arm on the zeroed body the game loads: p05
+> **−0.917u** over n=98 (89 deeper / 1 shallower by more than 0.25u), bulk p50 **−0.159u**
+> (closer, not looser). The bound above is arithmetic, not a measurement, and
+> stands. See "the CBBE reference body was the wrong body" (2026-09-21) below.
+
+# 2026-09-20 — eighteen of the 21 half-pack tools resolved, and one of them was right all along
+
+The ratchet (`tests/test_pack_population_declared.py`) froze 21 tools that
+enumerate the pack with a `*_1.nif` glob and never say so. Freezing stops the
+count growing; it fixes nothing. This is the first tranche actually resolved,
+in small groups with the tool's output captured on the shipped pack BEFORE and
+AFTER each change.
+
+**The rule is DECLARE, not "always both weights".** Ten of the eighteen here
+read both weights now. One was already correct and only needed to say so; SEVEN
+are declared blind spots that a glob swap would have corrupted, because they
+measure every file against a body pinned to weight 1. Finding those is the
+result, not a failure to convert them.
+
+## The population, and why the ratio is not 2.0
+
+    raw rglob("*_1.nif") on the shipped pack        1295
+      of those, first-person (1stperson OR 1stp)     263
+    output_nifs(root) default, BOTH weights         2064   (1032 + 1032)
+    output_nifs(root, weights="1")                  1032
+
+So a tool that already filtered first-person moves **1039 -> 2064 = x1.987**
+(+1032 weight-0, MINUS 7 short-prefix `1stp*` meshes), and a tool that did not
+filter at all moves **1295 -> 2064 = x1.594**. Every count below is one of
+those two cases; where a headline moved differently, the reason is stated.
+
+**A second, uncounted bug fell out of this.** Four of the five hand-rolled the
+first-person test as `"1stperson" not in f.lower()`; the fifth,
+`sanity_check_converted`, had no such filter AT ALL. `output_nifs` uses the
+regex `1stperson|1stp`, and the short prefix is real: it leaked 7 weight-1
+meshes into the four that filtered, and first-person meshes accounted for **94
+of the 336 rows in `sanity_check_converted`'s body-slot population**. Routing
+the enumeration through the shared helper fixes that for free and puts the rule
+in one place instead of five.
+
+## Verdicts
+
+| tool | verdict | headline before -> after |
+|---|---|---|
+| `verify_weight_invariant` | BOTH WEIGHTS | bad-sum verts **868 -> 2469** |
+| `verify_bodymatch` | BOTH WEIGHTS | re-sourced 18 -> 36; cut-in **0 -> 1** |
+| `verify_layered_cloth` | BOTH WEIGHTS | layered 12 -> 24; grafted 0 -> 0 |
+| `verify_motion_match` | `_1` ONLY, CORRECT | findings **byte-identical** |
+| `sanity_check_converted` | BOTH WEIGHTS | body-slot NIFs 336 -> 484 |
+| `find_morph_follow_gaps` | BOTH WEIGHTS | zone-flags 386 -> 772, **different sets** |
+| `find_overinflation` | BOTH WEIGHTS | flagged 9 -> 15; weight 0 NOT the worse half |
+| `verify_bust_clearance` | BOTH WEIGHTS | **poking 54 -> 116**; measured 221 -> 441 |
+| `bust_gap_score` | **`_1` ONLY, DECLARED BLIND SPOT** | AST byte-identical (docstring only) |
+| `registered_bone_audit` | BOTH WEIGHTS, first-person kept | checked 144 -> 288; violations 1 -> 2 (one garment) |
+| `postreconvert_audit` | BOTH WEIGHTS, first-person kept | skirt_proxies 6 -> 12; encloses 0 -> 0 |
+| `band_class_census` | **`_1` ONLY, DECLARED BLIND SPOT** | AST byte-identical; 3 pins, 5 gate rows |
+| `nipple_clearance` | **`_1` ONLY, DECLARED BLIND SPOT** | AST byte-identical; gate |
+| `collect_fit_dataset` | **`_1` ONLY, DECLARED BLIND SPOT** | AST byte-identical |
+| `source_delta_census` | **`_1` ONLY, DECLARED BLIND SPOT** | AST byte-identical; both sides pinned |
+| `single_swing_census` | **`_1` ONLY, DECLARED BLIND SPOT** (live lead) | AST byte-identical; lead unmoved |
+| `snugness_census` | **`_1` ONLY, DECLARED BLIND SPOT** (live lead) | AST byte-identical; lead unmoved |
+| `collect_penetration_census` | BOTH WEIGHTS | rows 236 -> 472; **w0 worse in all 6 regions** |
+
+> **UPDATED 2026-09-21:** four of the seven declared blind spots now measure
+> weight 0 on its own bodies -- `bust_gap_score`, `nipple_clearance`,
+> `collect_fit_dataset`, `source_delta_census` (see "weight-aware reference
+> bodies" below). `band_class_census`, `single_swing_census` and
+> `snugness_census` are still `_1` only.
+
+## `verify_weight_invariant` — it was half a gate
+
+    meshes         1039 -> 2064   (x1.99)
+    shapes         3134 -> 6242   (x1.99)
+    bad-sum verts   868 -> 2469   (x2.84)   <- the finding
+    worst dev     +0.171 -> +0.173
+    exit code         1 -> 1
+
+The file count doubled and the defect count nearly TRIPLED. Weight 0 carries
+about **1601 of the 2469** offending verts against weight 1's 868 — roughly
+1.8x the damage on the half that was never read. Spot-checked per piece first,
+using the repo's own `check_weight_invariant`, and it held there too: on the
+two worst pairs, 984 bad verts at weight 0 vs 420 at weight 1, and 593 vs 426.
+
+This tool EXITS 1. It was gating the build over half its own defect population.
+
+## `verify_bodymatch` — a real defect was hiding at weight 0
+
+    scanned              1039 -> 2064   (x1.99)
+    re-sourced             18 ->   36   (exactly x2)
+    cut in over an area     0 ->    1
+
+The re-sourced set doubling exactly is itself a result: the body-match rule
+re-sources both halves of every pair, as it should. The new flag is a weight-0
+draugr cuirass cutting in over **12 vertices**; its `_1` partner reads 6, under
+the `>=8` area threshold. The piece sat just below the flag line on the half
+that was measured and above it on the half that was not, and the tool printed
+"the rest sit clean" over it.
+
+## `verify_layered_cloth` — a clean negative worth having
+
+    scanned        1039 -> 2064
+    layered meshes   12 ->   24   (exactly x2)
+    grafted SMP       0 ->    0
+
+The failure this hunts is a stale exe or an incremental skip, and both are
+per-FILE: a `_0` half could have kept the graft that CTDs FSMP while its `_1`
+was rebuilt. It did not. That is now measured instead of assumed.
+
+## `verify_motion_match` — `_1` only is CORRECT, and now says so
+
+The rubric's per-file heuristic points at "both weights" and is WRONG here.
+What the tool measures is not the `_1` mesh, it is the per-garment BODYTRI:
+
+* `#tri-write-once` — the tri stem drops the weight suffix, so `x_0.nif` and
+  `x_1.nif` derive the SAME `x.tri`.
+* Confirmed on the shipped pack: **1889 `.tri` files, ZERO carrying a `_0`/`_1`
+  suffix.** One table per garment pair.
+* `_tri_is_owning_variant` records that **`_0` owns it**, measured.
+* The tool builds the tri path by stripping `_1.nif`, so the glob is a PAIRING
+  KEY onto that one shared file.
+
+Enumerating `_0` too would re-open the identical table and print every row
+twice. Worse, the hugging mask is taken against a body pinned to weight 100, so
+feeding `_0` meshes through it would measure a low-weight garment against a
+high-weight body and manufacture false hits.
+
+Routed through `output_nifs(root, weights="1")` anyway, to own the first-person
+rule in one place:
+
+    scanned  1039 -> 1032        (-7 short-prefix `1stp*`)
+    hugging shapes off ratio       12 -> 12
+    rigid props at shear risk       0 ->  0
+
+**The whole before/after diff is ONE LINE, the scan count.** Every finding is
+byte-identical — the proof that the 7 dropped meshes were arms-only and
+contributed nothing.
+
+DECLARED BLIND SPOT, not fixed: the hug mask is weight-dependent, so a shape
+that hugs only on the LOW-weight silhouette is never scored. Closing that needs
+a second body load, not a glob change.
+
+## `sanity_check_converted` — reconciles to zero residual
+
+    body-slot NIFs (--max 100000)   336 -> 484
+    all pass                        336 -> 484
+    exit code                         0 ->   0
+
+336 -> 484 is x1.44, neither of the two expected ratios, and it reconciles
+exactly:
+
+    BEFORE  336 = 242 non-first-person + 94 FIRST-PERSON
+    AFTER   484 = 242 weight-1         + 242 weight-0, first-person 0
+
+The weight-1 set is **identical across the change: 0 rows added, 0 removed.**
+The delta is exactly -94 first-person +242 weight-0. This tool had NO
+first-person filter at all, so **28% of what it sanity-checked as body-slot
+armor was first-person arm meshes**, while the entire weight-0 half went
+unchecked. It is the gate you run INSTEAD of loading a savegame.
+
+## The two triage tools — and a result that points the other way
+
+Both measure per-shape against the body injected into the SAME NIF, so a `_0`
+file brings its own weight-0 body and its own separately authored garment.
+Neither loads a weight-pinned reference body and neither parses a preset, so
+the population swap alone is sound. Both keep the `/m/` male-path exclusion.
+
+    find_morph_follow_gaps   scanned 1038 -> 2062   zone-flags 386 -> 772
+    find_overinflation       scanned 1038 -> 2062   flagged      9 ->  15
+
+`find_morph_follow_gaps`: the total doubled, **but the sets are not the same.**
+In the printed worst-ranked rows, 10 zone-flags exist ONLY at weight 0 and 2
+ONLY at weight 1. Equal counts, different content — weight 0 was not a copy of
+what was already reported, it was 386 unexamined observations that happen to
+number the same. The tool's own first line names the morph it is about as
+`_0<->_1`, the weight slider, so reading one weight was measuring the
+follow-through of one silhouette and calling it the pack's.
+
+`find_overinflation`: **weight 0 is NOT the worse half here, and that is the
+result.**
+
+    weight-1 flag set   IDENTICAL before and after (all 9 kept, none added)
+    flagged at BOTH      6
+    flagged at w1 only   3
+    flagged at w0 only   0
+
+Every weight-0 flag belongs to a piece already flagged at weight 1, and three
+pieces stand off at weight 1 while sitting clean at weight 0. The class thesis
+— "the missing half is the WORSE half" — was measured on bust-front CLIPPING.
+It does not transfer to STANDOFF. The gain here is coverage, and an unchanged
+weight-1 set proving no regression; it is not a bigger number.
+
+Why 2062 and not 2064: `output_nifs` returns 2064 and the `/m/` filter removes
+2 male-path meshes. Before was 1038 for the same reason. 1038 -> 2062 is
+x1.986, i.e. +1031 weight-0 MINUS the 7 leaked `1stp*` meshes — and those 7
+contributed no flags, which is why both weight-1 halves are unchanged.
+
+## `verify_bust_clearance` — the tool this rule was written about
+
+`output_nifs`' own docstring cites bust-front clipping at **4.52% on weight 1
+against 9.48% on weight 0**, and this tool's check 1, "body poking through at
+the breast", IS that measurement. The check most known to be worse at weight 0
+was the one still never run there.
+
+Safe to swap the population alone: the body is the BaseShape injected into THAT
+SAME NIF — the file says so itself at `_SKIP` ("The armor's own injected body is
+the reference") — so a `_0` file measures its own separately authored garment
+against its own weight-0 body. No preset, no weight-pinned reference body.
+
+    scanned                     1039 -> 2064   (x1.987)
+    body-armor meshes measured   221 ->  441
+    mean breast clearance      +1.18u -> +1.13u
+    mean back clearance        +1.14u -> +1.12u   (over 220 -> 439)
+    1) POKING THROUGH AT BREAST   54 ->  116 armors
+    2) REAR CLEARANCE LEAKED      44 ->   89 armors
+
+**Poking went 54 -> 116 — MORE than double — and it splits exactly: weight 1
+still contributes 54, weight 0 contributes 62.** Weight 0 carries **1.15x** the
+bust-front poke-through of weight 1. That is the class thesis confirmed on the
+metric it was originally measured on. Rear leak splits 43 + 46 = 89.
+
+EVERY COUNT RECONCILES TO ZERO RESIDUAL. 441 is not 2x221 because of the 7
+short-prefix `1stp*` meshes the hand-rolled filter leaked: run each through the
+tool's own `_measure`, and **exactly one** returns a result. It reads breast
+frac 0.0053 (under the 0.01 poking threshold) and back +2.45u (over the 1.5u
+leak threshold), so it sat in the rear-leak list and NOT the poking list —
+which is exactly how the two headlines move:
+
+    weight 1 measured   221 -> 220   (-1, the dropped first-person cuirass)
+    weight 0 measured           221
+                                ---
+                                441
+
+Weight 0 ends with ONE MORE measurable mesh than weight 1: one garment carries
+a qualifying BaseShape and panel in its `_0` file but not its `_1`.
+
+### METHOD NOTE — rc=0 is not evidence that a tool reported anything
+
+The first BEFORE capture of this tool returned **rc=0 with only the header line
+and no traceback.** It prints its results in one block at the end, and that
+block was lost; a stderr RuntimeWarning was the only other output. Taken at face
+value it would have produced a confidently wrong before/after. Re-run in the
+foreground with `PYTHONUNBUFFERED=1` it produces all 58 lines. **Check that the
+output is COMPLETE, not just that the exit code is 0** — this is the same
+family as the closed cannot-abort class, arriving from the opposite direction:
+there the tool said "clean" over nothing; here it said nothing at all, cleanly.
+
+## Three more — and the one that must NOT be glob-swapped
+
+**`bust_gap_score`: `_1` ONLY, DECLARED AS A BLIND SPOT — not a correct scoping.**
+It counts penetrating vertices per shape, so a `_0` mesh can be independently
+defective, and a change landing on `_0` reads as NOT FIRED — the tool's own
+defect 1 ("SCORE THE POPULATION THE CHANGE CAN REACH") on the weight axis. But
+it fails the safe-to-swap test twice, both verified in code:
+
+* the AUTHOR body — `canonical_body.canonical_cbbe` globs `femalebody_1.nif` only
+* the COPY-PATH body — `_body_for(nf, "_1")` in `measure_arm`
+
+Either would put every `_0` row in the wrong frame as a believable wrong number.
+It is also a GATE instrument — `acceptance.py` reads two of its rows — so
+widening re-baselines both with nothing to validate against. Declared, with the
+fix path written into the docstring.
+
+Neutrality PROVED for a docstring-only change: the AST with the module docstring
+removed is byte-identical before and after (`3728ab2d06458b9e...`, 43862). A
+control copy with one token changed hashes differently (`b890d2480fb0cf34...`),
+so the check does detect code changes.
+
+**`registered_bone_audit`: BOTH WEIGHTS, first-person KEPT.**
+
+    enumerated        1295 -> 2590   (exactly x2)
+    pieces checked     144 ->  288   (exactly x2)
+    violating shapes     1 ->    2
+
+The 2 is **one garment at both weights**: a robe whose generated `VirtualGround`
+shape carries an undeclared `NPC Root` bone in its `_0` and its `_1`. Weight 0
+surfaced the partner of a known defect, not a new one — said plainly because
+the SHAPES table prints "2 VirtualGround", which reads as two defects.
+
+First-person is kept on purpose: `output_nifs` excludes it for a BUST-COVERAGE
+reason, which has nothing to do with a physics bone.
+
+OPEN, independent of this change: this gate **already exits 1 on the shipped
+pack at weight 1 alone.** Its docstring's last measurement (10 over 174, then 0
+after the fix) predates the current pack.
+
+**`postreconvert_audit`: BOTH WEIGHTS for the proxy rows, first-person kept.**
+The entire before/after diff is one line — `skirt_proxies 6 -> 12`. Every other
+row is byte-identical, including `proxy_encloses_chain` 0 -> 0: the zero-target
+row that can exit 1 now covers both weights and stays clean. No baseline file
+existed yet, so nothing could falsely "regress".
+
+### SAFETY — a measuring tool that writes into what it measures
+
+`registered_bone_audit` writes its JSON **beside the pack, unconditionally** —
+for the shipped pack, inside the read-only modlist instance, and BEFORE its
+verdict prints. Every run here went through a wrapper that keeps all paths
+intact (physics-XML resolution depends on the NIF's real location, so a junction
+was ruled out), redirects that one write to the scratchpad, and refuses any
+other write into the instance. The wrapper was self-tested on a fake path first,
+and the instance was checked afterwards: the file was never created there.
+Flagged as its own task — where the report *should* go is a design decision.
+
+**RESOLVED (same day, the user's call): it writes only to an explicit
+`--out PATH`.** A default run prints its tables and verdict and writes nothing.
+`tests/test_registered_bone_audit_writes.py` runs the real script end to end
+against a stand-in instance and fingerprints it before and after. Each run must
+reach its VERDICT line first, because a run that died early would also write
+nothing. Against the old script the guard fails for the right reason (it
+reaches the verdict at exit 1, then finds the instance changed), and mutation
+pair RBW-a reinstates the old default write. `postreconvert_audit --record`
+writes into the pack's mod folder too, but only when asked; the user kept that
+behaviour and it is now stated in the tool's docstring.
+
+## Four more declared blind spots — the swap-safety test decides it
+
+A keyword scan flagged weight-1 pin signals in ALL SEVEN remaining expensive
+tools. That was not evidence: a pin only matters if a `_0` file is actually
+measured against it. Each tool got an independent trace of every reference it
+measures a garment against, plus an adversarial pass trying to refute the
+verdict. All verdicts survived, and three of the seven turned out SAFE — the
+keyword hits were per-weight calls taking a variable, not literal pins.
+
+**The rule that falls out:** a population swap is sound only when every
+reference is either taken from the NIF itself (its own injected `BaseShape`) or
+resolved from the file's own weight suffix. `canonical_body` is the recurring
+trap — `canonical_ube()` and `canonical_cbbe()` take no weight, cache ONE body
+each, and resolve to `femalebody_tangent_1.nif` / `femalebody_1.nif`.
+
+| tool | pin a `_0` file would hit | consumer |
+|---|---|---|
+| `band_class_census` | copy-path template `_find_ube_femalebody("_1")`; preset `big` side only; `--every` stride | 5 acceptance rows |
+| `nipple_clearance` | tip rays from `canonical_ube()`, in-file body discarded | 3 acceptance rows |
+| `collect_fit_dataset` | `body_context()` -> `_find_ube_femalebody("_1")`, built once | none |
+| `source_delta_census` | BOTH sides: `canonical_ube()` and `canonical_cbbe()`, plus pose inputs | none |
+
+**Measured, not asserted — the stride trap.** On the shipped pack all 1032
+garments have both weights, and after a naive widening:
+
+    --every 2   1032 picked, 100.0% `_0`
+    --every 3    688 picked,  50.0% `_0`
+    --every 4    516 picked, 100.0% `_0`
+
+Every change here is docstring-only and proved neutral by AST equality with the
+module docstring removed (band_class `889ca57f`, nipple `cfbef515`, fit_dataset
+`1ba22813`, source_delta `2b298377`).
+
+**Ratchet hole checked and found empty.** The detector clears any tool whose
+text merely contains `output_nifs`. Audited every tool still globbing `*_1.nif`:
+none is cleared by a bare mention — each is on the list, calls `output_nifs`,
+or declares in its docstring. The ratchet's own test treats an IMPORT as
+declaring, so the looseness is by design.
+
+## The last four — two live-lead declarations, one conversion, one rule confirmed
+
+**The two live-lead censuses are declared WITHOUT moving the lead.**
+`single_swing_census` and `snugness_census` feed the open crotch-band
+investigation, so their population was not touched. Both are blind spots, not
+correct scopings — per-file and per-shape units respectively, neither a rate the
+two weights share — and both are measured against weight-1 bodies:
+
+* `single_swing_census` — converted side uses the in-file body (fine), but the
+  SOURCE side is `canonical_body.canonical_cbbe()` (`femalebody_1.nif`, one key);
+* `snugness_census` — `nc._find_cbbe_base_body("_1")` and
+  `nc._find_ube_femalebody("_1")` at the call sites. Both helpers already take a
+  weight and cache per weight (`cbbe{weight}`, `ube{weight}`), so its fix is
+  two call sites; the `canonical_body` tools need that module changed first.
+
+Both changes are docstring-only and AST byte-identical, so **nothing moved**: the
+lead stands at -0.432u deeper than the author at p05 over n=97 (70 deeper / 2
+shallower), bulk p50 +0.206u further off, single-swing class at 1 clean residual
+of 224. TOOL_MAP byte-identical too.
+
+> **SUPERSEDED 2026-09-21.** Both censuses now read the author on BodySlide's
+> zeroed body (`snugness_census` through `canonical_body`, still `_1` only).
+> On it the lead reads p05 **-0.917u** over n=98 (89 deeper / 1 shallower by more than 0.25u) and
+> bulk p50 **-0.159u**: an INWARD offset across the band, not a looser bulk over
+> a deeper tail. The recorded bulk +0.206u does not reproduce by the
+> recomputation's method even on the old body (+0.169u). The single-swing
+> residual (1 of 224) is a converted-side count and is unchanged.
+
+**`collect_penetration_census`: BOTH WEIGHTS.** Body from the same NIF, no
+external reference, verified first-hand. First-person left to its OWN stem rule
+(broader than `output_nifs`' regex), so the change is the weight axis only.
+
+    scanned 1295 -> 2590   rows 236 -> 472   skipped 1059 -> 2118   (all exactly x2)
+
+All 236 weight-1 rows are BYTE-IDENTICAL before and after. Paired over 236
+garments, pieces with >5% of a region exposed-and-near:
+
+    region        w1        w0        median dist_p50 w1 / w0
+    breast        55/233    59/233    1.258 / 1.240
+    upper_chest  137/234   144/234    1.322 / 1.276
+    belly         44/235    46/235    1.208 / 1.197
+    butt          17/235    19/235    2.949 / 2.684
+    lower_back    56/235    58/235    1.431 / 1.418
+    thigh         25/234    26/234    1.620 / 1.612
+
+**Weight 0 is worse in all six regions** (334 -> 352 region-flags, +5.4%) and
+closer to the body at the median in all six. Modest, and the regions share
+garments so it is not six independent votes — but the direction is uniform, and
+it sides with `verify_bust_clearance` (clipping) rather than `find_overinflation`
+(standoff).
+
+## What was NOT done, and why — the three left on the list
+
+* `fit_audit.py` — **BLOCKED.** Dead: AttributeError at line 310
+  (`sliderset_gen.MORPH_SHAPE_CAP` exists nowhere). No before/after is possible.
+* `multipose_census.py` — **convertible, deferred.** References are safe (body
+  from the NIF itself). Two costs kept it out: ~1.2-1.5 h before and ~2.5-3 h
+  after, and a DOWNSTREAM consumer — `underbust_census` reads its default
+  `multipose_census.jsonl` and uses an under-curve band calibrated on the
+  weight-1 body, so widening this silently widens that consumer too. Needs its
+  own change that checks the band on `_0`. Keep its own first-person stem rule
+  (broader than `output_nifs`') on top of any swap.
+* `phase1_antipoke_population_ab.py` — **references safe (the body resolves per
+  weight), deferred.** It is an A/B of an OFF build against an ON build; the
+  shipped pack is only the ON arm, so a real before/after needs a full reconvert
+  with `CBBE2UBE_NO_PHASE1_ANTIPOKE=1`. And its aggregate tallies count PIECES, so
+  a naive widening makes each garment vote twice — the tallies need splitting by
+  weight first.
+Neither deferred tool is declared: both are safe to widen, so calling them blind
+spots would misstate them. The ratchet keeps them visible, which is its job.
+
+## OPEN, found while converting: `output_nifs`' first-person filter misses a SUFFIX form
+
+Its regex is `1stperson|1stp`, which is anchored on the marker appearing as a
+PREFIX. On the shipped pack **34 meshes (17 per weight) carry `1st` as a name
+SUFFIX** (`...f1st_1.nif`, `..._1st_1.nif`) and all 34 pass straight through.
+
+**It is NOT a one-line regex fix, and the tempting fix is wrong.** Measured the
+z-span of all 17 weight-1 candidates (UBE feet ~z11, head ~z114):
+
+    FULL-BODY  span ~103u, 29k-34k verts     8 of 17
+    arms-only  span 35-47u, 533-4290 verts   9 of 17
+
+So 9 really are first-person meshes leaking into fit censuses — exactly the
+trap `output_nifs`' own docstring describes ("a first-person mesh, arms only,
+no torso, flagged at 8.47u standoff — a meaningless number"). But the other 8
+are genuine full-body armors that merely have `1st` in the name, and excluding
+them by name would silently drop real meshes from every tool that now shares
+this helper.
+
+**The discriminator has to be GEOMETRIC (torso span / body coverage), not
+nominal.** Left OPEN deliberately: changing `output_nifs` now would move every
+number in this entry, and it needs its own before/after and its own mutation
+pair.
+
+Checked and REFUTED along the way: the two `_1st` rows among
+`find_overinflation`'s weight-1 flags are NOT false positives — both are
+full-body meshes (span 103.3u, ~30k verts), so the flags stand.
+
+## Correction to the record
+
+`registered_bone_audit.py` and `phase1_antipoke_population_ab.py` have been
+described as LIBRARY MODULES. They are not. Neither has a `__main__` guard, but
+both are top-level scripts with module-level code that reads `sys.argv`, and
+neither is imported anywhere. They run as `python <path> [pack]`, so a CLI
+before/after capture IS possible for them.
+
+KNOWN_HALF_PACK: **21 -> 3.** HPK-a and HPK-b both CAUGHT.
+
+# 2026-09-21 — weight-aware reference bodies: the gate now sees weight 0
+
+The half-pack work (above) left seven tools DECLARED as blind spots: each
+measured every file against a reference body pinned to weight 1, so widening
+its population would have scored `_0` garments in the wrong frame. Most of them
+traced to one module. This fixes the root cause, converts the tools that
+depended on it, and teaches the acceptance gate to judge weight 0.
+
+## The root cause, and the rule that replaces it
+
+`canonical_body.canonical_ube()` / `canonical_cbbe()` took no weight and cached
+ONE body each. They now take `weight="_1"` (default, unchanged) or `"_0"`, and
+resolve weight 0 through one rule, `weight_sibling`:
+
+* **Weight 0 is the SIBLING of the chosen weight-1 file, from the same
+  directory** -- not a second lookup. Each body is chosen by a rule (3BA first,
+  shortest path; first mod with a tangent output); running it again for weight
+  0 can land on a different preset in a modlist with two body mods, which is
+  exactly what `nif_convert_bodyrefs._find_user_preset_body` does (an
+  independent glob per weight).
+* **It never falls back.** A missing sibling raises. `nif_convert.
+  _weight_matched_ube_ref` DOES return the weight-1 body when the sibling is
+  missing -- right for the converter, which must inject something; wrong for a
+  measurement, which would print a believable number in the wrong frame.
+
+Control: the default calls are byte-identical before and after. And each
+weight-0 body is a genuine variant, not a stray copy -- identical topology,
+different geometry:
+
+    CBBE  18436/18436 verts, all move, max 1.74u, mean radius 10.00 -> 9.47
+    UBE   29298/29298 verts, 1800 move, max 0.91u, mean radius  9.57 -> 9.56
+
+That also bounds what the old pin cost on this pack: up to 1.74u over the whole
+SOURCE body, up to 0.91u over ~6% of the CONVERTED body.
+
+> **SUPERSEDED 2026-09-21 for the CBBE side.** "3BA first, shortest path"
+> picked the 3BA body mod's own femalebody, a preset build the game never
+> loads, and the CBBE line above is ITS weight morph. The body the game loads
+> -- BodySlide's zeroed build, now what `canonical_cbbe` returns through
+> `src/zeroed_body.py` -- differs between its weights on 1262 verts, max
+> 0.72u: the neck, wrist and ankle seams; the torso is identical at both. The
+> UBE line stands (same file). So do the sibling and never-fall-back rules;
+> `zeroed_body` enforces the sibling rule itself.
+
+**Copy-path bodies use the converter's own resolver instead.** For a copy-path
+garment the right reference is the body the converter FITTED it to, and every
+tier of `nc._find_ube_femalebody(weight)` is weight-specific (it never returns
+the other weight). On this pack it resolves the same file as the sibling rule;
+all four UBE resolutions share one directory.
+
+## Two gate instruments, and the gate
+
+The weight-1 output of both scorers is byte-for-byte unchanged, because
+`acceptance.py` parses it. Weight 0 follows in its own block, worded so the
+gate's patterns cannot land on it -- and the patterns are different per tool:
+
+* `nipple_clearance` -- the gate takes the FIRST `^control|candidate` row and
+  the FIRST `tighter N`, and ANY "0/0 IS NOT A PASS" marks the whole tip row
+  unmeasured. Printed in the weight-0 block, that phrase would switch the tip
+  gate off for weight 1 too.
+* `bust_gap_score` -- the dangerous one. The parser's section is STICKY and its
+  LAST row match wins, so a matching weight-0 row would silently OVERWRITE a
+  gated weight-1 value.
+
+Both use a `w0 ` label prefix and their own wording, pinned by tests that run
+the REAL parser. Measured on the shipped pack (control = candidate = the pack):
+
+    bust_gap_score            weight 1    weight 0
+      population (shapes)        677         675
+      author standoff p50     1.104u      1.310u
+      gap to author p50       +0.624u     +0.325u
+      penetrating verts         3410        3464   (+1.6%)
+
+    nipple_clearance          weight 1    weight 0
+      pieces covering tip        424         422
+      tip clearance p50       1.379u      1.221u   (-11%)
+      tip clearance p05       0.296u      0.216u   (-27%)
+
+In both the weight-1 report is BYTE-IDENTICAL before and after, and fed through
+the real parser the AFTER output yields the same weight-1 keys as the BEFORE
+output (8 and 7 keys).
+
+> **SUPERSEDED 2026-09-21 — the `bust_gap_score` AUTHOR figures above were read on
+> the wrong reference body.** On the zeroed body: author standoff p50
+> **1.416u** (w1) / **1.255u** (w0), gap to author p50 **+0.297u** / **+0.392u**,
+> weight-0 population 675 -> 677. Weight 0 now sits FURTHER from the author
+> than weight 1 does, not closer. Penetrating verts (3410 / 3464) are
+> converted-side and unchanged; `nipple_clearance` reads the UBE body only,
+> which resolves to the same file, and was not re-run.
+
+**The gate now judges weight 0** under the same rules as weight 1: bust gap per
+path, bust-band penetration, tip p50 / p05, pieces with less tip room, worst
+single tip. A candidate worse at weight 0 ALONE fails. An unmeasured weight
+reads SKIPPED with its reason -- never ok, never FAIL -- but a weight-0 row that
+simply vanished still reads UNPARSED and fails, because treating "no weight-0
+keys" as SKIPPED would let a silent parse failure through.
+
+## collect_fit_dataset
+
+Both weights, first-person kept (it is a column), each against its own body
+via the converter's resolver. 2897 -> 5794 shape rows; all 2897 weight-1 rows
+identical to the pre-change run with the new `weight` field removed. Paired by
+garment and shape (2788 pairs; 109 shapes carry different names at the two
+weights and cannot pair):
+
+                       median w1   median w0
+    bust clear p10       1.028u      0.970u
+    bust clear p50       1.735u      1.626u
+    butt clear p50       1.239u      1.229u
+
+## source_delta_census
+
+Both sides of the delta posed on the file's OWN weight: `canonical_cbbe(w)` for
+the source, `canonical_ube(w)` for the converted side. Population: 235 armours
+per weight -> 470 files, 468 scored (one per weight has no converted garment
+shapes), 0 skipped for want of a body. CONTROL: all 234 weight-1 rows are
+IDENTICAL to the pre-change run with the new `weight` field removed.
+
+                              weight 1    weight 0
+    scored                       234         234
+    regressions > 5pt             55          59
+      > 8pt / > 10pt / > 15pt  34/25/16    34/28/16
+    gated clean                   52          49
+    no matched source             13          14
+
+**No weight-0 penalty in pose-induced exposure.** Paired by garment (234
+pairs), 44 regress at both weights, 15 at weight 0 only, 11 at weight 1 only --
+and 8 of those 15 and 6 of those 11 sit within 1pt of the 5pt line. Over the
+167 pairs with a source at both weights, worst delta w0 - w1 has median
++0.03pt; weight 0 is worse in 85, better in 76 (sign test p = 0.53).
+
+> **SUPERSEDED 2026-09-21 — the source side was read on the wrong reference body.**
+> Re-run with the source on the body the game loads (converted side identical;
+> see the 2026-09-21 reference-body entry below): regressions >5pt **61** (w1) /
+> **60** (w0), >8 / >10 / >15pt 35/30/23 and 32/27/16; gated clean and no
+> matched source unchanged. Paired: 52 regress at both weights, 8 at weight 0
+> only, 9 at weight 1 only; worst delta w0 - w1 median +0.00pt, weight 0 worse
+> in 50, better in 80 (sign test p = 0.01). Still no weight-0 penalty -- if
+> anything weight 0 regresses less. Not 1:1 with the table above: 26 more
+> regions pass the joint coverage floor.
+
+**The one region that moves is the source side learning to see the bust.**
+breast_side is the worst region of 3 weight-1 regressions and 14 weight-0 ones,
+but the CONVERTED side does not change between weights (median conv w0 - w1
+0.00pt, coverage 287 -> 287 breast, 300 -> 300 breast_side). The SOURCE side
+does, and through its denominator: coverage is a ray test (a body vert is
+covered when its outward ray hits the garment), and at weight 1 the CBBE
+reference body pokes through most source garments at the bust.
+
+    garments with < 150 of 300 sampled verts covered, source side
+                     weight 1    weight 0     median covered w1 -> w0
+    breast            98/143      12/143           83 -> 291
+    breast_side       67/148       6/148          157 -> 295
+
+So weight 0 is the first half where both sides see the whole bust, and the
+breast_side rise is where the census can now look, not evidence the converter
+does worse at weight 0. The flip side is OPEN: the weight-1 bust deltas have
+always been measured over a minority of bust verts on the source side -- the
+ones the reference body happens not to poke through -- so weight-1 bust
+regressions may be undercounted. The weight-1 CBBE body is the larger of the two
+(mean radius 10.00 vs 9.47); whether it is larger than the bodies those garments
+were built for is not measured.
+
+> **RESOLVED 2026-09-21 — it was the wrong body.** The weight-1 CBBE reference was
+> the 3BA body mod's own preset build, not the body the garments were built on
+> (248 of 340 paired source NIFs bundle the zeroed build bit-exact). On the body
+> the game loads, weight 1 sees the bust as well as weight 0 -- under 150 of 300
+> covered: breast 16/157 (w1) vs 19/157 (w0), median 291 -> 291; breast_side
+> 10/153 vs 15/153, median 295 -> 287. breast_side is now the worst region of 8
+> regressions at EACH weight (was 3 / 14). The weight-1 undercount flagged above
+> was real in direction: weight-1 regressions 55 -> 61, under the comparability
+> caveat above.
+
+`--limit` counts FILES, so a limited run now covers about half as many
+garments, each at both weights.
+
+## What all four instruments say about weight 0
+
+Every tool that can see it agrees: **at weight 0 the bust sits closer to the
+body** -- less tip room (-11% p50, -27% p05), lower bust clearance, slightly more
+penetration -- while sitting closer to what the author built. The butt barely
+moves. `find_overinflation` (standoff) is still the exception from the half-pack
+work: weight 0 is not the worse half there.
+
+> **CORRECTED 2026-09-21.** "while sitting closer to what the author built" came
+> from `bust_gap_score`'s author column on the wrong reference body and is
+> REVERSED on the zeroed body (gap p50 +0.297u w1, +0.392u w0). Tip room, bust
+> clearance and penetration are converted-side and stand. `source_delta_census`
+> on the game-loaded source body still shows no weight-0 penalty.
+
+## Method notes
+
+* **Exit codes must stay literal in `main()`.** `tool_map` reads a tool's gate
+  column from the int returns of `main`; a refactor that passed `rc` through
+  silently dropped exit 1 from `bust_gap_score`'s row. Caught on regeneration.
+* **`git stash --keep-index` recorded a staged file too** and conflicted on pop.
+  Each commit's tree was then proved in a temporary detached worktree holding
+  exactly the staged contents, which cannot collide with the working tree.
+
+## Not done yet
+
+* `band_class_census` (five acceptance rows) -- the code path is clear (template
+  per weight, the preset's `small` side for weight 0, `--every` stepping by
+  garment pair), but its runs need `CBBE2UBE_CLIP_PRESET`, a machine-local
+  BodySlide preset that is not configured on this machine, and choosing one is
+  the user's call.
+* `single_swing_census` / `snugness_census` feed the open crotch-band lead;
+  widening them would move numbers it has recorded. Left declared.
+
+# 2026-09-21 — the CBBE reference body was the wrong body, and the author-side numbers moved
+
+Found chasing the weight-1 source-coverage collapse in `source_delta_census`
+(above). `canonical_body.canonical_cbbe` ("3BA in the path, then the shortest
+path") picked the 3BA body mod's own `femalebody`: a build at some preset that
+the game never loads. The converter's `_find_cbbe_base_body` makes the same
+pick; changing what the converter fits against is a behaviour change, made
+separately because it needs an in-game verdict. **No author-side number read
+through either before this was taken on the body the game loads -- the
+crotch-band lead included.** From 2026-09-15, when the 3BA body mod's file was
+last replaced, they were read on its preset build; before then, on contents
+nobody recorded, so older figures are not comparable in either direction.
+
+## The finding
+
+* **The game loads the BodySlide output's `femalebody`** (it wins that path),
+  and that file IS the zeroed build: the slider set's ShapeData base shape plus
+  every slider at its default for that weight, 0.00000u on every vertex at both
+  weights. The game's UBE body is the same kind of build: template +
+  `NipplesShowUp` 100 at both weights + `SkinnyMorph` 100 at weight 0. A zeroed
+  preset lists no sliders, so the defaults are what it builds.
+* **The picked body sits up to 1.97u off the zeroed body over 16,061 torso
+  vertices**, and its weight morph grows the bust ~1u, so at weight 1 it grows
+  THROUGH garments built on the zeroed body.
+* **248 of 340 paired source NIFs bundle the zeroed body bit-exact.** Not all:
+  the BSA-sourced garments (18 weight-1 rows) bundle a third body about 1.6u
+  outside both at the bust, so the zeroed body is the right reference for the
+  majority, not for every garment.
+* How the game's body is determined: the race skin ARMA's model path -> the VFS
+  winner of that path (overwrite, then enabled mods from highest priority down,
+  then the game's Data folder) -> runtime body morphs on top, which are in no
+  file.
+
+## The fix -- harness only, no converter behaviour changes
+
+`src/zeroed_body.py` finds each body's slider sets by what they BUILD, keeps the
+family by base topology (3BA 18,436 verts, UBE 29,298), builds the zeroed
+geometry, finds the file the game loads at that path, and accepts it only if it
+IS that build to 1e-4u on every vertex. Otherwise `ZeroedBodyError` -- a
+`FileNotFoundError`, so callers skip; nothing substitutes another body. Weight 0
+must come from the same folder as weight 1. `canonical_cbbe` / `canonical_ube`
+return it per weight, and `snugness_census`, `seat_error_vs_author` and
+`inflate_census` now read the author there instead of through the converter's
+helper. `paths.overwrite_dir()` reads MO2's overwrite from the ini.
+
+On this pack the UBE reference resolves to the same file as before; only the
+CBBE side moved. So `nipple_clearance`, `collect_fit_dataset` and
+`band_class_census` (UBE side only) are unaffected, and so is
+`authored_offset_ledger` (the source's own bundled body).
+
+Mutation pairs ZBW-a..l, PWO-a, CBZ-a and ICW-a all CAUGHT. ZBW-l was MISSED
+first: its test derived its threshold from the tolerance it guards, so loosening
+one loosened the other; it now pins a literal. CBW-b is retired with the
+per-weight cache it guarded. Suite 3725 passed / 2 skipped. **No in-game verdict
+is owed for this change** -- it cannot move a vertex.
+
+## Before -> after, shipped pack, only the reference body changed
+
+    instrument                                      wrong body        zeroed body
+    bust_gap_score   AUTHOR bust standoff p50  w1     1.104u            1.416u
+                                               w0     1.310u            1.255u
+                     gap to author p50         w1    +0.624u           +0.297u
+                       body-swap / copy              +0.738 / +0.485   +0.471 / +0.094
+                                               w0    +0.325u           +0.392u
+                       body-swap / copy              +0.485 / +0.210   +0.528 / +0.283
+    snugness_census  median ratio   body-swap         1.202             1.058
+                                    copy              1.150             1.141
+                     p90 ratio      body-swap         1.934             1.540
+                                    copy              1.430             1.418
+                     reading, body-swap           LOOSER than authored  fit preserved
+                     (copy crosses the tool's 1.15 line by 0.009)
+    seat_error_vs_author   mean / median          0.4269 / 0.3505u  0.4124 / 0.3625u
+    single_swing_census    SOURCE loss p90, median    0.70u             0.56u
+                           SOURCE pieces over 1u      66                39  (converted 38)
+                           worse / better by 0.3u     11 / 60           28 / 37
+    crotch-band lead       author bind p05, median   -0.416u           +0.054u
+                           ours - author p05         -0.432u  (n=97)   -0.917u  (n=98)
+                             deeper / shallower       70 / 2            89 / 1   (difference over 0.25u)
+                           bulk p50, ours - author   +0.169u           -0.159u
+    inflate_census         moved to the zeroed body, NOT re-measured
+
+Populations and controls. `bust_gap_score`: 677 shapes at weight 1 in both runs
+(path split 352/325 -> 354/323), 675 -> 677 at weight 0; penetrating verts
+identical (3410 / 3464), and the converted bust p50 moved only through that
+population shift (1.888 -> 1.876 at w1, 1.724 -> 1.721 at w0).
+`snugness_census` (still `_1` only): copy 1146 -> 1121 shapes, body-swap
+811 -> 796, "no hugging region" 355 -> 395 -- the hug mask is taken against the
+reference. `seat_error_vs_author`: 4053 paired shapes over 2064 NIFs in both
+runs. `single_swing_census`: the CONVERTED side is identical (n=224; loss p90
+p50 0.43, p90 1.23, max 2.88u); the source rows are the 200 with a matched
+source. The crotch-band lead is that census's paired bind clearance with both
+arms over 90% of their own band. Recomputed on the old body it reproduces the
+recorded -0.432u / n=97 exactly, but its bulk reads +0.169u where +0.206u was
+recorded by a different method, so +0.169u is the like-for-like before.
+
+**What moved, in words.** Weight 1 was the damaged half. On the zeroed body the
+author's weight-1 bust standoff reads 0.31u larger -- the wrong body's weight
+morph had grown the bust into the garments -- so our weight-1 gap to the author
+halves (+0.624 -> +0.297; copy path +0.485 -> +0.094). Weight 0 went the OTHER
+way (+0.325 -> +0.392): the recorded "weight 0 sits closer to the author" is
+REVERSED. The body-swap path no longer reads looser than the author (median
+ratio 1.202 -> 1.058: "fit preserved").
+The crotch band is an INWARD offset across the band, about twice the recorded
+depth, not a looser bulk over a buried tail: the "uniformity defect" reading is
+WITHDRAWN. The author does not bury the crotch band (+0.054u); the old body
+poked through it. Conform still cannot produce the offset (pull-in only, never
+closer than its own `s_src`, above). A new candidate producer is the converter's
+warp keyed on the wrong CBBE body, which sits ~+0.34u outside the zeroed body at
+the crotch.
+
+## `source_delta_census` on the body the game loads
+
+Re-run on the pre-lane code with only `canonical_cbbe` replaced by the
+game-loaded file -- the same file `zeroed_body` resolves (max deviation
+3.8e-6u). 470 files seen, 468 rows in each run, both weights.
+
+**CONTROL, stated exactly.** The converted side is identical on all 2431 regions
+both runs score, and `conv_worst` is identical on all 468 rows. The literal
+row-for-row comparison is NOT identical, and only through region MEMBERSHIP: the
+`MIN_COV = 30` gate (`source_delta_census.py:228`) is JOINT -- a region is scored
+only when BOTH sides cover 30 sampled verts -- so a different source body moves
+regions in (37) and out (11). Gated clean (101) and no matched source (27) are
+unchanged.
+
+Summed source coverage over the shared regions, weight 1:
+
+    breast        17469 -> 39378   +125%
+    breast_side   24259 -> 39987    +65%
+    belly         27171 -> 40430    +49%
+    butt          36076 -> 41998    +16%
+    lower_back    36946 -> 41569    +12.5%
+    upper_chest / upper_back / thigh      +1% to +3%
+
+Weight 0 is flat (all within about 3%) except belly, +33%. **The weight-1
+"source coverage collapse" was the reference body -- confirmed.**
+
+    regressions > 5pt               wrong body   game body
+      weight 1                          55           61
+      weight 0                          59           60
+      > 8 / > 10 / > 15pt, weight 1   34/25/16     35/30/23
+      > 8 / > 10 / > 15pt, weight 0   34/28/16     32/27/16
+
+**NOT comparable 1:1:** 26 more regions now pass the coverage floor, so part of
+the rise is regions that were never scored before. Paired by garment, weight 0
+is worse in 50 and better in 80 (sign test p = 0.01): still no weight-0 penalty.
+
+Caveat on both runs alike: the census poses garments through
+`multipose_clip_test.analyse_with_body`, which reads each garment shape's raw
+verts (`posed_clip_test.read_skin`) with no frame check -- the frame-assumption
+class. The before/after comparison stands, because both runs read the same
+garments the same way; absolute per-garment numbers carry the caveat until
+that reader chooses its frame by evidence.
+
+## OPEN: `snugness_census` now scores body helpers as garment
+
+On the zeroed body 18 shapes read an authored standoff under 0.05u (none did on
+the old body), and they top the LOOSEST-15 list at ratios 5-14.7: body
+stand-ins -- 7 `3BA Ref`, 7 `VirtualBody`, one `collision body`, three more --
+that sit ON the zeroed body. Dropping those 18 rows moves the path medians by
+at most 0.002 (copy 1.141 -> 1.140, body-swap 1.058 -> 1.056), so the headline
+reading stands; the loosest list does not. Same class `seat_error_vs_author`
+closed by excluding untextured proxies. NOT fixed.
+
+## Method: golden baselines drift -- capture the parent in the same session
+
+Golden baselines captured about 16:35-16:50 passed an off-switch check at
+16:54. At about 19:30 the SAME commits, checked against their OWN baselines,
+regressed on one piece, deterministically: `softbody-dress`, `Top`'s weight total
+on `NPC L UpperArm` changed 0.0024 / 0.0021, no vertex moved. No instance file
+changed and the glow debug variables were ruled out; the cause is unknown.
+**To isolate one commit, capture the parent's baseline in the SAME session and
+check the child against it.** A baseline from hours earlier can fail on drift
+alone.
+
+## Still owed
+
+* The in-game verdict on the converter change, which is made separately.
+  Nothing measured here has one.
+* `inflate_census`: moved to the zeroed body, not re-measured.
+* The `snugness_census` helper shapes above.
+* `single_swing_census` / `snugness_census` are still `_1` only; widening them
+  is its own change.
+* The crotch-band lead's conform test is still an in-game A/B with
+  `CBBE2UBE_NO_PHASE2_CONFORM=1`. The converter change removes the wrong-body
+  warp keying; whether that moves the lead is unmeasured.
+
+
+# 2026-09-21 — the converter fits against the zeroed bodies
+
+The converter made the harness's wrong pick too: `_find_cbbe_base_body` skipped
+every mod named like a BodySlide output and landed on the 3BA body mod's own
+preset `femalebody`, up to 1.97u off the zeroed body the game loads. With the
+converter's own warp code that moves weight-1 garments ~0.6u further in than
+weight 0 (the zeroed-keyed control predicts 0.000). Downstream passes erase most
+of it; pieces that skip them ship it whole. Measured on the shipped pack: the
+w1-w0 bust shift survives at median -0.008u over 161 flat body-swap stems and
+-0.032u over 68 flat copy stems (the #00-keyed warp predicts -0.60u); a tail of
+22 of 103 flat copy stems and 8 of 162 flat body-swap stems ships it nearly whole,
+-0.26u to -0.92u (capes, cloaks, scarves, tomes, pouches, belts, skirts). The six
+pieces below come from that tail; which pass erases the shift for the rest is not
+measured. The harness entry of the same day
+records the finding; this one records the converter change.
+
+## What changed
+
+**906580e.** The CBBE body the warp morphs FROM, the UBE body it morphs TOWARD
+and the UBE body injected under body-swap garments come from
+`src/zeroed_body.py` first: BodySlide's zeroed builds, as the game loads them.
+An explicit override still wins. If the game's body is not a zeroed build, the
+old discovery by name runs and the log says so once per process ("!! no zeroed
+CBBE body at weight N: ... -- falling back to discovery by name"); a GUI run
+instead starts its Reference bodies window on the game's body, flagged. Every
+converter lookup of the two reference bodies goes through the resolver (weight
+transfer, the collision-proxy warp, the UBE-native scan, the overlay rebake
+too); only the body-mod exclusion set was compared before and after -- the
+UBE-native skip list was not. Off-switch
+`CBBE2UBE_NO_ZEROED_BODY_REFS=1`, also the Settings toggle "Fit against the
+zeroed BodySlide bodies" (Paths / Bodies, advanced). The UBE side resolves to
+the same files as before on this modlist, now by MO2 priority rather than first
+alphabetical match.
+
+**7876496.** Pressing Convert opens a "Reference bodies" window (skipped for a
+dry run and when the zeroed bodies are switched off): one dropdown per body,
+starting on the verified zeroed build and listing every other provider as
+`[zeroed]` / `[NOT zeroed, off by up to N.NNu]` / `[not checked]`; other-family
+bodies, half pairs, unreadable and missing files are listed with a reason, not
+offered. The choice reaches that run's child environment only. The body injected
+under body-swap armour now follows the UBE choice and overrides -- it ignored
+every override before, the Settings "UBE body reference NIF" included. All-mods
+runs skip body mods by the race-body files they ship
+(`auto_convert._body_mod_names`), not by which body the fit uses; 906580e alone
+would have let the 3BA body mod's 10 collision-body NIFs into All-mods runs.
+**Deliberately NOT following the pick:** the preset bake and the physics
+chain-rest lift keep `_find_user_preset_body`, because they need the user's
+preset, which a zeroed body lacks. That lookup walks mod folders alphabetically,
+disabled mods included -- a separate, pre-existing defect, not fixed here.
+
+## Measured
+
+Tail pieces, both weights, through the batch worker -- weight-1 minus weight-0
+along the UBE normal, median / p05:
+
+                     shipped            switch OFF    ZEROED (default)
+    cloak           -0.361 / -0.851     identical     +0.000 / +0.000
+    cape            -0.028 / -0.518     identical     +0.000 / -0.102
+    belt bags       -0.308 / -0.945     identical     +0.000 / +0.000
+    book            -0.471 / -0.814     identical     +0.000 / +0.000
+    front pouch     -0.247 / -0.314     identical     +0.000 / +0.000
+    skirt front     -0.325 / -0.885     identical     +0.000 / -0.000
+
+"identical" = the same numbers AND vertex counts as the shipped pack: the
+harness reproduces production, and the switch restores it exactly.
+
+Golden set, 15 pieces at weight 1, baseline captured at the lane's base:
+
+    REPEAT CONTROL   two captures of unchanged code: 0 arrays differ
+    OFF-SWITCH       CBBE2UBE_NO_ZEROED_BODY_REFS=1: identical 15/15 (1e-4u)
+    BLAST RADIUS     all 15 move -- intended. Garment verts within 4u of the
+                     body (n=117,842): median +0.000u, p05 -0.188, p95 +0.509;
+                     27% move out >0.05u, 17% in; bust median +0.014u
+                     (`layered-legion` +0.495, `hide-collider` +0.222).
+                     Three shapes gain one bone each (a thigh / skirt bone).
+
+**7876496, same-hour controls.** The earlier baselines drifted (see the harness
+entry), so fresh baselines were captured within the hour from 906580e (zeroed on)
+and from 019e0d3 with the off-switch set, and 7876496 was checked against each:
+**15/15 identical both.** Suite 3780 passed / 2 skipped; full mutation gate 202
+caught, 0 missed, 0 not applied; ZBR-a..e and BDP-a..ac CAUGHT.
+
+The rebuild's release markers gained `src.zeroed_body`, `src.body_choice` and
+`_body_mod_names` (since 1.4.2). The version string is still 1.4.1, so
+`release_gate`'s bundle-scan reports the later markers NOT CHECKED and cannot by
+itself show the new code shipped; a direct `_marker_found` probe did, and
+returned ABSENT on the previous build.
+
+**Owed: an acceptance-gate run on a full pack conversion, and the in-game
+verdict.** Nothing here has one.
+
+# 2026-09-26 — the crotch band on visible skin: never quote the full-band bind across CBBE and UBE
+
+`single_swing_census` scored its bind clearance (body vertex -> nearest garment
+vertex, along the body normal) over the band z55-75 |x|<8 of EACH ARM'S OWN BODY
+and subtracted author from ours. That subtraction is unsound across CBBE and UBE.
+UBE models a dense midline slit: 16% of the covered band vertices on 1.3% of the
+area, normals pointing sideways, 59.5% of UBE band vertices in self-contact
+against 23% on CBBE. A nearest-VERTEX rule reads any CBBE-shaped cloth negative on
+those walls with no conversion error at all, and the author arm was scored on the
+3BA main shape ALONE, which is open at the vulva and anus (they ship as companion
+shapes). The "ours - author p05 -0.86u, we bury it deeper than the author" lead
+was this artefact. The census's own control -- the UBE body shifted along its OWN
+normals -- passed, and was the wrong control: no CBBE garment follows the slit.
+
+**RULE: never quote the full-band bind (or its ours - author difference) across
+CBBE and UBE.** Use the visible band below, or a CLOSED warped-shell control.
+
+## What the census does now (tool-only; src/ untouched)
+
+* Every arm is scored twice. The row's top-level keys are the LEGACY full band,
+  byte-identical to the old tool (control below). A new `vis` block scores the
+  same census over band skin whose outward normal ray leaves the body within 6u
+  (`_census_common.visible_skin`: body-only, no garment, one rule on both bodies).
+* The source body is CLOSED first: the body shape plus its companion shapes
+  (`<body>_*` in the same file). Band vertices, zeroed weight-1 bodies:
+
+      CBBE main shape alone   2979 band   1896 visible (63.6%)
+      CBBE closed             5085 band   2365 visible (46.5%)
+      UBE                     7189 band   2305 visible (32.1%)
+
+* A SELF-CHECK runs on every invocation before any piece is read: a closed shell
+  0.5u off the source crotch region (its 2 genital holes capped with a fan) is
+  pushed through the converter's own warp (`_cached_cbbe_to_ube_delta` +
+  `warp_armor_by_body_delta`) and scored on UBE. It must read ours - author
+  within 0.15u at p05 and p50 on visible skin, and at least 0.3u deeper at p50
+  (`SELF_CHECK_MUST_FAIL`; it reads 0.511) when the warped shell is pushed 0.5u
+  into UBE. Otherwise the tool exits 4 and prints nothing else. `--self-check`
+  runs it alone. (As first landed it checked the BIND rows only; the posed rows
+  and a paired band were added the same day -- see the next section.)
+
+      perfect warped shell, visible band     p05 -0.057  p50 -0.026   PASS
+      same shell buried 0.5u                 p05 -0.280  p50 -0.511   (must be <= -0.3)
+      same perfect shell, LEGACY full band   p05 -0.503  p50 -0.204   <- the artefact's floor
+      planted wrong warps (prototype):  no warp -0.35 / -0.31, 2% scale -0.31 / +0.18,
+                                        0.5u inward -0.28 / -0.51: all fail
+
+## Re-measured on the deployed pack (read-only, `_1`, 1030 NIFs)
+
+Control: the parent tool (77975b2) and this one, same pack and skeleton: all 1030
+rows and 433 scored arms carry IDENTICAL legacy keys (229 converted, 204 source;
+788 no injected body, 13 no covered band).
+
+Bind, ours - author, both arms covering >= 90% of their full band, n=102:
+
+                        p05      deeper/shallower 0.1u    p50      closer/looser
+    FULL (legacy)      -0.861        94 / 6              -0.103       55 / 13
+    VISIBLE            +0.145        12 / 55             +0.101       16 / 51
+
+On visible skin the conversion sits slightly LOOSER than the author, not deeper;
+the self-check's own floor is -0.06u. (The reviewer's mask on the OPEN 3BA shape
+read p05 +0.002, 32/39; closing the source body adds visible vulva skin the
+author's cloth lies tight over, which lowers the author arm.)
+
+Single 45-degree thigh swing, converted, loss p90 on the worse side (n=229):
+
+                        p50    p90    max    over 1u   over 0.5u   src vs conv (n=204)
+    FULL (legacy)       0.37   1.14   3.01      37        93       src>1u 40, conv 36; worse 22 / better 41
+    VISIBLE             0.42   1.17   2.72      34        94       src>1u 71, conv 31; worse 14 / better 64
+
+The posed loss is NOT inflated on UBE by the slit the way the bind was: the
+class size barely moves. The source side grows on visible skin because the
+closed source body adds the vulva, exactly where a one-thigh gusset swings.
+**The "src vs conv" columns above are NOT like-for-like** (withdrawn; see the
+next section): each arm is scored on its own visible skin, and the source arm's
+includes companion vulva skin UBE has no counterpart for. Read the paired band.
+
+## Does "single-swing class exhausted, 1 clean residual" (09-19) still hold?
+
+Same split as 09-19 -- converter's own gate (`_piece_has_hdt_xml` +
+`_conform_skip_keys`) for reachability, discriminator asym > 0.3, then drop
+pieces whose band-covering shape is draping-exempt and pieces negative at bind:
+
+                                     FULL (legacy)   VISIBLE
+    over 1u                                37            34
+    every shape skipped                    14            13
+    reachable, asym > 0.3                  10            11
+      covering shape draping-exempt         7             6
+      bind-negative (p05 -0.74..-0.97)      2             0
+      CLEAN RESIDUAL                        1             5
+
+The legacy split reproduces the recorded 1 on this pack. On visible skin the 2
+bind-negative pieces (and one draping one) drop under 1u, and 4 pieces surface:
+three variants of one steel cuirass (1.19-1.21u, asym 0.44-0.46, bind
+p05 +0.29..+0.49) and one body piece with no matched source (1.02u). Only TWO of
+the three cuirass variants have a matched source (1.19u vs source 0.90u, 1.21u
+vs 0.93u); the third (1.21u) has none. The old residual (a dress, 1.49u) is
+inherited (source 1.55u). So the count moves 1 -> 5 pieces from 3 meshes,
+1.02-1.49u (the dress 0.49u over the 1u line, the other four within 0.21u) and
+none bind-negative.
+
+**Corrected the same day.** This section first read "~0.3u introduced over three
+cuirass variants" and "no new mechanism". Both were unsupported: the ~0.3u came
+from the visible band, where the two sourced variants' source arm is scored on
+different skin from ours (its bind p05 -0.51 / -0.45 against our +0.31 / +0.29),
+and "no new mechanism" was asserted, not shown. The next section re-derives
+both on skin the two arms share.
+
+# 2026-09-26 (round 2) — the crotch census: posed self-check, and source vs converted on shared skin
+
+Review of the section above found the self-check guarded the BIND rows only: it
+scored the shell with empty weights and no skeleton, so the L45/R45 swing-loss
+rows -- and the source-vs-converted swing lines the section reasoned from -- were
+unguarded. And the visible band scores each arm on its OWN visible skin, so
+"source vs converted" there compares different skin. Tool-only; src/ untouched.
+
+## The posed self-check
+
+The warped shell is now skinned and posed with the real skeleton. A perfect
+conversion rides the body it sits on, so each arm's shell carries its own body's
+weights: the author's those of the source body vertex it was made from, ours
+those of the UBE vertex that source vertex corresponds to (the nearest-vertex
+correspondence `_cached_cbbe_to_ube_delta` warps by). The single 45-degree swing
+loss p90 must read ours - author within 0.1u on each side
+(`SELF_CHECK_POSED_TOL`), and the shell with its midline (|x| < 2 over the band)
+riding the left thigh on OUR arm only must read at least 0.3u worse
+(`SELF_CHECK_POSED_MUST_SEE`, the census's own "worse after conversion" line),
+on the visible band and on the paired band below. Otherwise exit 4.
+
+                               author L / R     ours L / R      ours - author    one-thigh plant
+    visible band, perfect      0.037 / 0.038    0.028 / 0.031   -0.009 / -0.007      +1.651
+    paired band,  perfect      0.044 / 0.043    0.033 / 0.033   -0.011 / -0.010      +1.643
+    paired, our shell KEEPING the source weights                +0.073 / +0.075      (information)
+
+The last row is what the two bodies' weight painting alone costs a garment the
+converter does not re-weight: 0.07u at p90, a quarter of the 0.3u line.
+
+Planted, live, through `main` -- every one exits 4:
+
+    the author's shell with its midline on the left thigh   swing L -1.248 (visible), -1.132 (paired)
+    the author arm without its companion shapes             bind p05 -0.184 (visible); the posed
+                                                            rows read -0.017 and do not see it
+    bodies read with no thigh bones                         one-thigh plant +0.000 on both bands
+
+Guarded by `tests/test_single_swing_census_visibility.py` (synthetic bodies:
+a shell weighted to the wrong bone on one arm and bodies that cannot swing both
+exit 4) and mutation pairs SSV-m..SSV-w.
+
+## The paired band: skin visible on BOTH bodies
+
+A source main-shape vertex is paired when it is visible on the closed source body
+and its nearest UBE vertex is visible on UBE; a UBE vertex when it is visible on
+UBE and its nearest source vertex is PAIRED (the round trip). Companion vertices
+are never paired. The first rule tried ("its nearest source vertex is visible")
+let 90 UBE vertices on the slit mouth (x ~ 0, z 65-72) through, and a perfect
+warped shell read p05 -0.146 there, at the edge of the 0.15u tolerance; the
+round trip reads +0.000. Zeroed weight-1 bodies: 1521 source and 1615 UBE
+vertices paired (of 2365 / 2305 visible).
+
+    self-check, paired band: bind perfect p05 +0.000 p50 -0.014, buried 0.5u
+    p05 -0.309 p50 -0.509 (both must hold, as on the visible band)
+
+The census now writes a `pair` block per arm and prints the source-vs-converted
+lines as like-for-like ONLY on this band; on the full and visible bands they
+carry a NOT LIKE-FOR-LIKE warning. An injected body that is not the reference
+UBE body vertex for vertex gets no paired block (3 converted arms on this pack:
+partial bodies). `_census_common.visible_skin`'s triangle pre-filter now grows
+its box by the rays' 0.01u lift as well, so it really never changes a result;
+on this pack it changed nothing.
+
+## Re-measured (read-only, `_1`, 1030 NIFs)
+
+Control: every legacy and `vis` key of all 433 scored arms is identical to the
+previous tool's rows (b6c4892); only the `pair` block is new.
+
+Bind, ours - author, both arms >= 90% full-band cover:
+
+                            n     p05    deeper/shallower 0.1u    p50    closer/looser
+    VISIBLE (not l-f-l)    102  +0.145        12 / 55            +0.101     16 / 51
+    PAIRED                 100  +0.279         3 / 68            +0.175      4 / 67
+
+Single swing, loss p90 worse side:
+
+                n     p50    p90    max   over 1u  over 0.5u   src vs conv, like-for-like
+    PAIRED     226    0.43   1.12   3.04     31       98       n=201: src p50 0.64 / conv 0.44;
+                                                               src>1u 63, conv 29; worse 12 / better 61
+
+On shared skin the converted pack loses LESS than its sources in the swing, not
+more: 61 pieces better by 0.3u, 12 worse.
+
+**Corrected in round 3 (below).** Both counts compare each arm's OWN worse leg,
+which can be the other leg: leg by leg, 19 pieces have a leg worse by >0.3u
+(7 of them not counted as worse here: 5 read as unchanged and 2 were among the
+"better" -- worse-side delta -1.54 and -1.33u), and by any margin 112 lose less
+and 89 more.
+
+## The 09-19 residual on the paired band
+
+                                     FULL (legacy)   VISIBLE   PAIRED
+    over 1u                                37            34        31
+    every shape skipped                    14            13        12
+    reachable, asym > 0.3                  10            11        12
+      covering shape draping-exempt         7             6         7
+      bind-negative                         2             0         0
+      CLEAN RESIDUAL                        1             5         5
+
+The paired residual, against its source on the same skin:
+
+    one dress                  1.50u   source 1.52u   inherited
+    one heavy cuirass          2.20u   source 1.85u   +0.35, BOTH legs (L 2.13 R 2.20; source
+                                                      L 1.81 R 1.85): not a one-thigh swing
+    steel cuirass, variant 1   1.20u   source 1.17u   +0.03
+    steel cuirass, variant 2   1.24u   source 1.17u   +0.07
+    steel cuirass, variant 3   1.25u   no matched source
+
+The ~0.3u "introduced" on the two sourced cuirass variants was the visible band
+comparing different skin: on shared skin they read +0.03 / +0.07, inside the
+0.07u the self-check measures for body painting alone. Their source cloth sits
+INSIDE the source main shape at bind (p05 -0.61 / -0.54 on paired skin; ours
++0.53 / +0.57). The body piece that surfaced on the visible band (1.02u) reads
+0.91u here. No piece in the residual shows a conversion-introduced one-thigh
+swing; the class verdict (closed; no single-piece fixes) stands on this evidence.
+
+**Withdrawn in round 3 (below).** "Inherited", "+0.03" and "+0.07" subtract a
+source maximum on the OTHER leg: the dress's 1.50u is its left leg, its source's
+1.52u its right. Leg by leg every sourced residual piece's worse leg is 0.33 to
+0.36u above the source's same leg.
+
+## The 12 pieces worse after conversion (+0.3u, paired): mechanism
+
+Two decompositions per piece, each re-scored on the paired band: (a) the
+converted geometry with the SOURCE garment's weights carried by vertex index
+(same topology only) -- if the loss falls back, the converter's re-weighting did
+it; (b) the converted piece with the UBE body posed on the SOURCE body's weights
+(each UBE vertex those of its nearest source vertex) -- if it falls back, the two
+bodies' weight painting under an un-reweighted garment did it.
+
+    converter re-weighting                 1   a light iron armour: 0.21 -> 0.52; source
+                                               weights on the converted geometry 0.24
+    body weight painting, in part          2   the heavy cuirass 1.85 -> 2.20, body on source
+                                               weights 1.96; a long dress 1.81 -> 2.20, 1.92
+    UNEXPLAINED (neither)                  8   four skirt/wrap pieces, weights unchanged by the
+                                               converter, body on source weights reads WORSE
+                                               (e.g. 1.22 -> 3.04 -> 3.21); four other pieces
+                                               re-weighted, source weights read the same or worse
+                                               (e.g. 0.47 -> 0.85 -> 0.98)
+    not decomposable                       1   topology changed by the converter (0.14 -> 0.45)
+
+Eight of the twelve have no mechanism this census can show. The four skirt/wrap
+pieces lose on both legs (asym <= 0.11) and are not the single-swing class. This
+is an open lead, not a finding: nothing here says which pass moves them.
+
+(Round 3 re-derives this per leg over 19 pieces, below. The "not decomposable"
+piece was scored against a source file the converter did not read.)
+
+# 2026-09-26 (round 3) — the crotch census: source vs converted leg by leg
+
+Review of round 2 found its worse-side comparisons subtracted maxima on
+OPPOSITE legs. `loss p90 worse side = max(L45, R45)` is taken per arm, so a
+conversion that raises the leg its source kept low while the other leg falls
+reads unchanged: the steel cuirass variants are source L 1.17 R 0.87 and
+converted L 0.35 R 1.20 -- "+0.03" worse side, +0.33 on the right leg. Tool-only;
+src/ untouched.
+
+## What changed in the census
+
+* `leg_compare`: source vs converted LEFT against LEFT and RIGHT against RIGHT,
+  printed under every band's source-vs-converted line (under the NOT
+  LIKE-FOR-LIKE warning on the full and visible bands). The worse-side counts
+  stay beside it and now say what they are. On the paired band the tool lists
+  every piece with a leg worse by >0.3u, flags the ones the worse-side count
+  misses, and names the source file it was scored against. Rows carry
+  `src_path`.
+* `pair_mask_for` carries the reference mask BY INDEX on the reference body
+  (each vertex keeps its own index when the reference vertex there is as near
+  as its nearest, to 1e-3u). Nearest-vertex alone returned either member of a
+  coincident seam twin (586 source / 639 UBE band vertices have one) and
+  flipped 10 source / 6 UBE vertices against the mask the self-check
+  validated. On the pack it moves the paired blocks by at most 0.058u (any
+  loss p90 or bind p05/p50; the legacy and `vis` keys of every row are
+  identical to round 2's), and of the printed paired summary only: better by
+  0.3u 61 -> 62, bind p50 +0.175 -> +0.176, max loss 3.04 -> 3.02u, asym > 0.3
+  median loss 0.78 -> 0.77u.
+* The posed self-check's "a perfect shell rides the body" is true over the
+  painting it was tested on, not any painting: on the synthetic bodies (source
+  handover from |x| 1 over 5u) UBE handovers starting at |x| 0 to 5.5 read
+  within 0.08u; starting at |x| 6 or 7 the perfect shell reads -0.13u and the
+  census REFUSES (exit 4) -- a false alarm, but closed. That range holds for a
+  5u-wide handover only: the reading depends on the ramp width too (width 1:
+  start 0 reads +0.093, start 5.5 reads -0.082; start 5.5 at width 5, or start
+  4 at width 8, already refuses). The real zeroed bodies read -0.011u.
+
+## Re-measured (read-only, `_1`, 1030 NIFs, paired band, n=201)
+
+                                         margin 0.3u               any margin
+    WORSE SIDE (each arm its own leg)    worse 12  better 62       more 89  less 112
+    PER LEG (402 legs)                   worse 26  better 105      more 177 less 225
+    pieces with a leg worse by >0.3u     19  (the worse-side count has 12)
+    pieces with a leg better by >0.3u    68
+
+Round 2's "61 lose less / 12 lose more" were worse-side counts at the 0.3u
+margin; by any margin the worse side reads 112 / 89. The 7 pieces the
+worse-side count misses: two slit-skirt dress variants (L +0.47 R -1.54,
+L +0.35 R -1.33), the dress of the 09-19 residual (L +0.35 R -0.67), the two
+sourced steel cuirass variants (L -0.71 R +0.36, L -0.81 R +0.33), a robe
+(L +0.41 R +0.28) and a duster (L +0.25 R +0.37). Five of them gain on one leg
+while the other falls.
+
+## Is find_source pairing a mirrored sibling? No.
+
+For each of the 19 pieces: the file find_source paired (by path and garment
+shape names), every loose mod shipping the path, the file the deployed
+converter READ (its per-mod conversion report lists each converted NIF's
+source), and the median distance from each converted garment shape to the
+paired source's shape and to its X-mirror.
+
+* 15 of the 19 paths ship from ONE loose mod or an archive, so there is no
+  second file to pick; the other 4 ship from 2-3 mods. The steel variants whose
+  numbers look mirrored (source L 1.17 R 0.87 vs two siblings' L 0.54 R 1.22)
+  are not mirrors: the siblings' band-covering shape is the SAME shape trimmed
+  (2476 of its 4290 vertices, at the same positions: median 0.000u, against
+  1.31u to its X-mirror), worn with a bra.
+* Every shape asymmetric enough to tell sits nearer the same-side source than
+  its mirror (the steel cuirass's main shape 0.52 / 0.55u vs 1.18 / 1.17u
+  mirrored; its one-sided skirt 0.001u vs 9.1u). Symmetric shapes read the
+  same both ways and cannot tell.
+* find_source's file is byte-identical to the file the converter read on 16 of
+  the 19. The other three: the residual dress (paired to the BodySlide build;
+  the converter read the mod's own mesh -- the build is older than it), a
+  vanilla cuirass (paired to the BodySlide build, whose cuirass shape sits
+  ~95u from ours; the converter read an outfit-replacer's mesh), and a vest the
+  conversion reports do not list (2 loose candidates; unresolved).
+
+Re-scored against the file the converter read: the dress stays flagged (source
+L 1.13 R 1.56: L +0.37 R -0.71); the cuirass drops under the margin (L +0.27
+R +0.25). Pack-wide, 186 of the 201 report-listed source-matched pieces pair
+the file the converter read, 15 do not (14 on the paired comparison; all 14
+have 2-3 loose candidates and find_source takes the first mod ALPHABETICALLY
+with every garment shape); 3 are not in the reports. With those 14 re-scored
+on the read file: worse side 12 -> 11 worse, 62 -> 55 better; legs 26 -> 25
+worse, 105 -> 94 better; pieces with a leg worse 19 -> 18 (11 seen), with a leg
+better 68 -> 63; the any-margin counts do not move. find_source is unchanged:
+it is shared by other census tools, it is not picking a mirror, and which file
+is "the source" (the game's winner, or what the converter read) is a question
+for the source-selection lane, not this census. `src_path` in each row names
+the file the source arm was scored on.
+
+## The 09-19 residual, leg by leg
+
+The same split as round 2 (converter gate, asym > 0.3, drop draping-covered
+and bind-negative pieces) gives the same 5 pieces on the paired band. Leg by
+leg against the same leg of the source:
+
+                               converted L / R   source L / R    per leg
+    one dress                  1.50 / 0.84       1.15 / 1.52     L +0.35  R -0.67
+                                  (the file the converter read:  1.13 / 1.56, L +0.37 R -0.71)
+    one heavy cuirass          2.13 / 2.20       1.81 / 1.85     L +0.32  R +0.35
+    steel cuirass, variant 1   0.35 / 1.20       1.17 / 0.87     L -0.81  R +0.33
+    steel cuirass, variant 2   0.45 / 1.23       1.17 / 0.87     L -0.71  R +0.36
+    steel cuirass, variant 3   0.48 / 1.25       no matched source
+
+Every sourced residual piece's worse leg is 0.33-0.36u above the source's same
+leg. Round 2's "inherited" and "+0.03 / +0.07" are withdrawn.
+
+## Per-leg decomposition of the 19 (open lead)
+
+Same two decompositions as round 2, per risen leg, against the file the
+converter read: (a) converted geometry with the source garment's weights by
+index -- the converter's re-weighting; (b) the converted piece with the UBE
+body posed on the source body's weights -- the two bodies' painting. A
+decomposition "explains" a leg when it takes back at least half the rise, "in
+part" when at least 0.1u.
+
+    25 risen legs on 18 pieces (the vanilla cuirass drops under 0.3u)
+    converter re-weighting        1 leg    a light iron armour R: 0.16 -> 0.52, source weights 0.21
+    body painting                 5 legs   the heavy cuirass (both), the two slit-skirt variants
+                                           (L), a long dress (L; body on source weights 1.92 of 2.20)
+    body painting, in part        3 legs   a robe, a common dress, the residual dress (L 1.50,
+                                           body on source weights 1.35)
+    UNEXPLAINED                  16 legs   a towel wrap and three mage-dress variants (both legs,
+                                           weights unchanged by the converter, body on source
+                                           weights WORSE), the steel variants 1 and 2 (R: source
+                                           weights 1.26-1.28, body on source weights 1.41-1.43),
+                                           a jacket, a torso, a duster, a vest, the long dress (R)
+
+The steel variants are the clearest one-leg case: the converter's re-weighting
+took their LEFT leg from 1.42 (converted geometry, source weights) down to
+0.35-0.45, and nothing this census can vary takes their RIGHT leg back from
+1.20-1.23 to the source's 0.87. That is an open lead on the converted geometry,
+not a finding: nothing here says which pass moves it. Both arms carry one-sided
+thigh weight over pelvis-only skin (asym 0.44-0.46 converted, 0.36 source).
+The census does not reopen the single-swing class and does not close it
+again: 16 of 25 risen legs have no mechanism it can show.

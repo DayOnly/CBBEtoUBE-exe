@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**67** problem warnings and **2** notes.
+**107** problem warnings and **7** notes.
 
 ## src/auto_convert.py
 
@@ -14,19 +14,54 @@ at run time), what it means for the run, and what to do next.
   - means: the traceback follows; the piece is counted as an error
 - `!! warm-up task failed: …`
   - means: the first real piece on that worker pays the cold start
+- `!! conversion failed: …`
+  - means: the run stopped; the log above says where
+  - fix: fix the cause and run again
+- `!! vanilla sweep failed (…)`
+  - means: retrying SERIALLY (no worker pool; slower, but immune to pool-environment failures)...
 - `!! … body-ref candidates -- under …`
   - means: scanning only the first 1500 by priority -- a UBE body in a deeply-nested non-'ube' path could be missed
   - fix: set the UBE body reference explicitly if the wrong body is picked
 - `NOTE: … option(s) were added to this build since your settings were last saved.`
 - `NOTE: your saved settings predate new-option tracking, so an option added later`
+- `!! partition pass FAILED on … NIF(s)`
+  - means: their skin partitions were left as written and the over-cap checks did not run; the load check at the end reports a shape over the bone cap, not one over the vertex cap
+  - fix: convert the mod again; if it repeats, report the NIF(s) named
+- `!! … NIF(s) keep a shape over the vertex cap in one partition`
+  - means: the split failed; such a shape may crash the game when equipped
+  - fix: convert the mod again; if it repeats, report the NIF(s) named and do not equip them
+- `!! re-author dropped a shape on … NIF(s)`
+  - means: the fix that re-authors the mesh was not applied; each keeps the complete file written before it
+  - fix: convert the mod again; if it repeats, report the NIF(s) named
+- `!! alt-texture reconcile: … converted NIF(s) with same-named layers could not be matched to their source mesh: …`
+  - means: the colour-variant entries of those layers were dropped, so the layers keep their base colour in every colour variant
+  - fix: check that the mod each mesh came from is installed and enabled, then run again
+- `!! alt-texture reconcile: … model(s) not in this output could not be read from the mod the game loads them from: …`
+  - means: their colour-variant entries are kept as the author wrote them, so variant textures may land on the wrong part
+  - fix: check that the named mesh opens (NifSkope, Outfit Studio) or reinstall the mod that ships it, then run again
+- `!! alt-texture reconcile: … model(s) where another mod's copy outranks ours but could not be read; indexed against ours: …`
+  - means: the game draws that other copy; if its layers are in a different order than ours, variant textures may land on the wrong part
+  - fix: check that the named mesh in the mod above this tool's output in MO2 opens (NifSkope, Outfit Studio) or rebuild it, then run again
+- `!! alt-texture reconcile: … converted NIF(s) failed to load: …`
+  - means: their colour-variant entries keep the source mesh's indices, so variant textures may land on the wrong part
+  - fix: close any program holding the files and run again; if it repeats, report the named meshes
 - `!! could not write the failures file (…)`
   - means: … recorded failure(s) will not appear there
   - fix: check that the folder beside the exe is writable
 - `!! SkyPatcher: …`
   - means: SkyPatcher delivers ALL converted armor -- there is no ESP fallback. Without it every converted piece is INVISIBLE in-game.
   - fix: … (Converting anyway: the output stays valid, no reconvert needed once SkyPatcher is in place.)
+- `!! could not rename the old-named per-source patch …: … -- in …`
+  - means: it keeps its old name; the merge uses it only while no renamed copy of it exists
+  - fix: close any program holding the file and run again
 - `!! refusing traversal output path for "…"`
   - means: the source names a path outside the output mod; the file was skipped
+- `!! … piece(s) from an earlier run could not be moved out of meshes\ (a file is in use): …`
+  - means: each was left whole, with its .tri and physics, so our old conversion still replaces the hand-made UBE version in game
+  - fix: close the program holding the file (the game, NifSkope, Outfit Studio) and run again
+- `!! … piece(s) from an earlier run were only partly moved out of meshes\ and could not be put back: …`
+  - means: the named files are in _superseded\ while the rest of the piece is still in meshes\, so the piece can draw with the wrong morphs
+  - fix: close the program holding the files and run again, or move the named files back from _superseded\
 - `!! post-conversion load check skipped -- pynifly unavailable (…)`
   - means: output was NOT re-loaded or verified
 - `!! could not write the conversion_report.json checkpoint -- under …`
@@ -42,8 +77,75 @@ at run time), what it means for the run, and what to do next.
   - fix: check that mod before trusting this run
 - `!! … coverage validator: … warning(s)`
   - means: the lines below name what it found in the generated race coverage; read them before trusting this run's coverage
+- `!! [unified] could not list the meshes the modlist has, so armour whose meshes exist nowhere could not be told apart`
+  - means: every armature is given a UBE armature, as before, including ones that draw nothing
+- `!! stale-output sweep: stopped by an error (…); every file it moved this run was put back`
+  - means: no old conversion moves this run; the restore, coverage and merge run as they would without the sweep
+  - fix: send the run log; CBBE2UBE_NO_STALE_OUTPUT_SWEEP=1 turns the sweep off
+- `!! stale-output sweep: the conversion manifest …, so no old conversion an earlier run recorded can move this run -- …`
+  - means: they are only listed; the record is written anew at the end of this run, and a later full run can move them again
+  - fix: nothing to do, unless the file was edited by hand
+- `!! stale-output sweep: … old conversion(s) NOT moved -- the plan is incomplete: …`
+  - means: a mesh this run may have lost is not told apart from one it dropped, so nothing moves; they are listed below
+  - fix: fix what the warnings above name and run all mods again
+- `!! stale-output sweep: … old conversion(s) NOT moved -- more than the … one run may move`
+  - means: a share this large is more likely a fault in this run than pieces that went away; they are listed below
+  - fix: read the list; if it is right, move the files by hand or run again after the cause is fixed
+- `!! stale-output sweep: … old conversion(s) could not be moved (a file is in use): …`
+  - means: each was left whole in meshes\!UBE, so it still draws in game
+  - fix: close the program holding the file (the game, NifSkope, Outfit Studio) and run again
+- `!! stale-output sweep: … old conversion(s) were only partly moved and could not be put back: …`
+  - means: the named files are in _superseded\ while the rest of the piece is still in meshes\!UBE
+  - fix: move the named files back from _superseded\ by hand
+- `!! stale-output sweep: the … old conversion(s) moved this run were put back: …`
+  - means: an old Combined plugin may still name them, and a plugin that names a missing mesh crashes the game; they stay in meshes\!UBE until a run completes the merge
+  - fix: fix the merge problem above and run all mods again
+- `!! stale-output sweep: … moved file(s) could not be put back: …`
+  - means: a plugin that still names one of them crashes the game when an actor wearing it loads
+  - fix: move them back by hand from …
+- `!! female-model restore after the stale-output put-back failed: …`
+  - means: a patch may keep a male fallback for a mesh that is back
+- `!! could not write the conversion manifest (…) -- …`
+  - means: the next run cannot tell which old conversions are ours, so it moves none of this run's
+  - fix: check that the output folder is writable and run again
+- `!! stale-output sweep: could not check … for moves an interrupted run left (…: …)`
+  - means: files a stopped run moved aside may still be missing from meshes\!UBE; this run converts as usual
+  - fix: look in … and send the log if files are missing
+- `NOTE: …`
+  - means: …
+- `!! the merged plugin "…" gets no SkyPatcher lines`
+  - means: its file name holds a comma or semicolon, which SkyPatcher reads as a separator; every line names it, so none is written and the converted pieces are invisible on UBE actors
+  - fix: choose a merged plugin name without that character (--merged-name) and run the converter again
+- `!! … armour record(s) of the plugin "…" get no UBE armature`
+  - means: its file name holds a comma or semicolon, which SkyPatcher reads as a separator; a line naming it would silently match nothing, so none is written and these pieces are invisible on UBE actors
+  - fix: rename the plugin file without that character (a plugin that has it as a master needs that master entry renamed too), then run the converter again
+- `!! [unified] … armour(s) of an excluded mod have no UBE armature from any mod -- --exclude-mods`
+  - means: they are not drawn on UBE-race actors
+  - fix: take the mod off the exclusion list to have them covered, or install a UBE patch for it
+- `NOTE: [unified] … non-body armour(s) of an excluded mod are still drawn on UBE-race actors, with no mesh converted for that mod -- --exclude-mods`
+  - means: no other mod patches them and they are not body pieces, so each draws the mesh its armature names (converted only where another mod's conversion shares the path)
+- `!! [unified] … female model slot(s) kept their own unconverted mesh, and … body armature(s) were not minted (… armour(s) left without one), rather than take a converted MALE mesh`
+  - means: those pieces wear their unconverted mesh on UBE, or are not drawn on UBE-race actors, until their female mesh is converted
+  - fix: convert the mod that ships the female mesh
+- `NOTE: [unified] … female model slot(s) name a mesh that exists nowhere, so they keep the converted MALE mesh`
+  - means: the piece is drawn with the male mesh on UBE; with its own path it would not be drawn at all
+- `NOTE: [unified] … female model slot(s) name a mesh that exists nowhere and have nothing to draw instead`
+  - means: those pieces are not drawn on UBE-race actors, as on any female actor
+- `!! [unified] … body armature(s) were not minted because their female world mesh was not converted (… armour(s) left without one, … drawn without the body piece)`
+  - means: those body pieces are not drawn on UBE-race actors, rather than draw their unconverted CBBE mesh on the UBE body
+  - fix: convert the mod that ships the female mesh
+- `!! [unified] … hand/foot armature(s) draw the nude CBBE hands or feet, and the UBE body's own hands/feet were not found, so they were not minted (… armour(s) left without one)`
+  - means: those pieces are not drawn on UBE-race actors
+  - fix: build the UBE body's hands and feet in BodySlide
+- `NOTE: [unified] … armature(s) name only meshes that exist nowhere (drawn by nobody, the source included) -- not minted (… armour(s) left without one)`
+  - means: those pieces draw nothing on any actor, UBE or not; installing the mod that ships their meshes and running again covers them
 - `!! [unified] could not scan for existing UBE patches (…)`
   - means: not excluding any
+- `!! [unified] … excluded mod name(s) match no mod folder: …`
+  - means: their armour is covered as if they were not excluded
+  - fix: use the mod's folder name exactly as MO2 shows it
+- `!! [unified] could not list the excluded mods' armour (…)`
+  - means: coverage may give an excluded mod's armour an armature
 - `!! unified coverage emission failed: …`
   - means: continuing with per-source coverage
 - `!! could not sweep orphaned temp files: … -- under …`
@@ -52,6 +154,9 @@ at run time), what it means for the run, and what to do next.
   - means: those were partial writes a killed run never finished; nothing of yours was touched
 - `!! pre-warm failed (non-fatal): …`
   - means: the first pieces pay the cold start
+- `!! could not locate armour meshes across the enabled mods (…)`
+  - means: each mod converts its own copy of a mesh (or the one in its archive), not a replacer's or BodySlide build's copy the game loads
+  - fix: look for an over-long path or a broken link in the mods folder, then run again
 - `!! incremental floor calc failed: …`
   - means: doing a full convert instead
 - `!! no MO2 mods folder: cannot check other mods for existing UBE patches`
@@ -99,7 +204,8 @@ at run time), what it means for the run, and what to do next.
   - means: the vertex-colour sweep fell back to running one file at a time and finished; nothing was lost
   - fix: if this repeats, lower the worker count in Settings
 - `!! vertex-color sanitize failed: …`
-  - means: vertex colours were left as the source had them
+  - means: the output meshes' vertex-colour flags were not all checked, and a mesh whose shader asks for vertex colours it does not carry crashes the game when equipped
+  - fix: convert again: the sweep checks every output mesh, --plugins-only included
 - `!! female-model restore failed: …`
   - means: continuing with male fallbacks
 - `!! [unified] coverage empty/incomplete (ok=…, targets=…, body=…)`
@@ -110,6 +216,9 @@ at run time), what it means for the run, and what to do next.
 - `!! could not remove stale …: …`
   - means: an old SkyPatcher ini may still apply beside the new one
   - fix: delete it by hand
+- `!! the VANILLA SWEEP ran but the delivered coverage links 0 vanilla/DLC records`
+  - means: vanilla armor will be invisible on UBE actors
+  - fix: check the unified coverage step above for errors, or rerun just the sweep (Select mods -> 'vanilla')
 - `!! the VANILLA SWEEP ran but linked 0 records`
   - means: vanilla armor no mod overrides will be invisible on UBE actors
   - fix: check the VANILLA SWEEP pass above for errors, or rerun just the sweep (Select mods -> 'vanilla')
@@ -141,13 +250,28 @@ at run time), what it means for the run, and what to do next.
   - means: those pieces will not follow body sliders; listed below
 - `!! BSA extract: refusing traversal path "…"`
   - means: the archive entry points outside the extraction folder and was skipped
+- `!! could not read which armour NPCs wear (…)`
+  - means: non-playable armour that female NPCs wear is not converted, and the coverage race-list rule does not link it, this run
+- `!! … active plugin(s) could not be read for armour playability: …`
+  - means: an armour those plugins override keeps the playable flag of the record before them
+- `!! could not read which armour the load order makes playable (…)`
+  - means: each plugin's own record decides whether its armour is playable, as before this rule, this run
+- `!! … mod folder(s) could not be fully read while locating armour meshes`
+  - means: a mesh in the unreadable part of each folder named below was not located; every other mod was located as normal
+  - fix: look for an over-long path or a broken link in each folder, then run again
+- `!! could not read which vanilla armour meshes to locate (…) -- the game Data folder`
+  - means: vanilla armour converts from the game's archives this run, even where a mod replaces its mesh with a loose file
+  - fix: check that the game Data folder and its plugins are readable, then run again
+- `!! could not locate armour meshes across the enabled mods (…) -- …`
+  - means: a mod whose armour meshes are in another mod (a BodySlide build, a replacer, a patch) is not converted this run; the convert step tries again for the rest
+  - fix: look for an over-long path or a broken link in the mods folder, then run again
+- `!! UBE nude-skin morph check:`
+  - means: listed below: a nude part without its morph file stays at base shape while the body morphs
+  - fix: rebuild that part in BodySlide with 'Build Morphs' checked
 - `!! vanilla sweep DISABLED this run: …`
   - means: vanilla armour that no mod overrides stays unlinked, so it is invisible on UBE actors until a run with the sweep
 - `!! overlay transfer FAILED: …`
   - means: overlays were not transferred this run
-- `!! UBE nude-skin morph check:`
-  - means: listed below: a nude part without its morph file stays at base shape while the body morphs
-  - fix: rebuild that part in BodySlide with 'Build Morphs' checked
 - `!! … post-convert phase(s) FAILED`
   - means: see the errors above; the run is reported as failed
 - `!! master re-sort failed: …`
@@ -156,7 +280,8 @@ at run time), what it means for the run, and what to do next.
 - `!! POSTFLIGHT CTD on merged output: … load-breaking issue(s)`
   - means: NOT safe to load; listed below
 - `!! postflight validation skipped: …`
-  - means: the plugin was not checked for load-breaking issues
+  - means: the plugin was not checked for load-breaking issues; `merge` exits …
+  - fix: run `validate` on the merged plugin's folder before enabling it
 - `!! …`
   - means: … warning(s), listed below
 

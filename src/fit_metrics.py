@@ -61,6 +61,7 @@ import json
 import os
 
 from .envflags import flag as _flag, knob as _knob
+from .atomic_io import append_whole
 from pathlib import Path
 
 import numpy as np
@@ -741,9 +742,11 @@ def sink_path(dst_path) -> Path:
 
 
 def _append(dst_path, rec: dict) -> None:
-    # One json line per write, opened in append mode: short writes under the
-    # pipe-buffer size are atomic enough for pool workers, and a torn line
-    # costs one record rather than the file.
+    # One json line per write, whole: every pool worker appends to this one
+    # file, and a plain append-mode write tore lines and lost records (the C
+    # runtime's append is seek-then-write, and two workers can share the
+    # seek). `append_whole` writes the line once under a cross-process lock.
+    # #atomic-audit-append (CBBE2UBE_NO_ATOMIC_AUDIT_APPEND=1: the old writer)
     try:
         # `nif` is a BARE FILENAME, and filenames repeat across mods -- three
         # different mods in one modlist ship a `cuirassmedium_1.nif`. A record
@@ -752,8 +755,7 @@ def _append(dst_path, rec: dict) -> None:
         # matched to one of three candidates. Carry enough of the tail to
         # disambiguate without recording an absolute path.
         rec.setdefault("path", "/".join(Path(dst_path).parts[-4:]))
-        with open(sink_path(dst_path), "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec) + "\n")
+        append_whole(sink_path(dst_path), json.dumps(rec) + "\n")
     except Exception:
         pass
 

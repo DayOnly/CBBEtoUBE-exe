@@ -53,28 +53,453 @@
     },
     {
       "module": "src.child_lifetime",
-      "since": "1.4.2",
-      "claims": "pool workers die with their parent (Unreleased)"
+      "since": "1.5",
+      "claims": "pool workers die with their parent (1.5)"
     },
     {
       "module": "src.failure_summary",
-      "since": "1.4.2",
-      "claims": "run-level warnings are counted and worded for the report (Unreleased)"
+      "since": "1.5",
+      "claims": "run-level warnings are counted and worded for the report (1.5)"
     },
     {
       "name": "check-setup",
-      "since": "1.4.2",
-      "claims": "the check-setup subcommand (Unreleased)"
+      "since": "1.5",
+      "claims": "the check-setup subcommand (1.5)"
     },
     {
       "name": "tool_dir",
-      "since": "1.4.2",
-      "claims": "every state file lives in the tool folder, nothing under AppData (Unreleased)"
+      "since": "1.5",
+      "claims": "every state file lives in the tool folder, nothing under AppData (1.5)"
     },
     {
       "name": "machine.txt",
-      "since": "1.4.2",
-      "claims": "the diagnostics zip records the page-file mode (Unreleased)"
+      "since": "1.5",
+      "claims": "the diagnostics zip records the page-file mode (1.5)"
+    },
+    {
+      "module": "src.zeroed_body",
+      "since": "1.5",
+      "claims": "the fit's reference bodies are BodySlide's zeroed builds, as the game loads them (1.5)"
+    },
+    {
+      "module": "src.body_choice",
+      "since": "1.5",
+      "claims": "Convert confirms the reference bodies first and lets the user pick others (1.5)"
+    },
+    {
+      "name": "_body_mod_names",
+      "since": "1.5",
+      "claims": "an All-mods run skips body mods by the race-body files they ship (1.5)"
+    },
+    {
+      "name": "_prefer_zeroed_outputs",
+      "since": "1.5",
+      "claims": "armour is converted from the verified zeroed BodySlide build, not from meshes made for another body (1.5)"
+    },
+    {
+      "name": "_limb_morph_tri_skip",
+      "since": "1.5",
+      "claims": "the leg-motion match reaches BodySlide-built leg cloth, robes and dresses still excepted (1.5)"
+    },
+    {
+      "name": "_morphtri_gated_detail_bones",
+      "since": "1.5",
+      "claims": "BodySlide-built leg cloth takes the thigh jiggle bones; only the rear-calf bone stays withheld (1.5)"
+    },
+    {
+      "name": "_part_is_bilateral",
+      "since": "1.5",
+      "claims": "a part that spans both legs is no longer moved as a whole toward a one-legged part (1.5)"
+    },
+    {
+      "name": "_layered_cloth_jiggle_regions",
+      "since": "1.5",
+      "claims": "layered cloth follows the butt bounce, never breast or belly (1.5)"
+    },
+    {
+      "name": "_armos_defined_by_mods",
+      "since": "1.5",
+      "claims": "coverage leaves an excluded mod's own armour alone (1.5)"
+    },
+    {
+      "name": "_coverage_female_guard",
+      "since": "1.5",
+      "claims": "no female slot draws a converted male mesh (1.5)"
+    },
+    {
+      "name": "_batch_npc_worn_armos",
+      "since": "1.5",
+      "claims": "non-playable armour that NPCs wear is converted (1.5)"
+    },
+    {
+      "name": "_convert_sources_global",
+      "since": "1.5",
+      "claims": "all mods convert on one batch-wide schedule (1.5)"
+    },
+    {
+      "name": "_stale_recover_at_start",
+      "since": "1.5",
+      "claims": "a killed run's stale-sweep moves go back on the next run of any kind (1.5)"
+    },
+    {
+      "name": "_run_tally",
+      "since": "1.5",
+      "claims": "the end-of-run count comes from the one run record (1.5)"
+    },
+    {
+      "name": "_race_subset_split",
+      "since": "1.5",
+      "claims": "an item with a separate version per race draws one version per race on UBE actors (1.5)"
+    },
+    {
+      "name": "_alttex_binding",
+      "since": "1.5",
+      "claims": "colour variants bind to layers by their source mesh (1.5)"
+    },
+    {
+      "name": "_plugin_owner",
+      "since": "1.5",
+      "claims": "one owner per plugin name decides both source reading and coverage (1.5)"
+    },
+    {
+      "name": "model_path_text",
+      "since": "1.5",
+      "claims": "every armature model path is read in the game's codepage (1.5)"
+    },
+    {
+      "name": "_rows_covering_a_layer",
+      "since": "1.5",
+      "claims": "a plate standing over another layer of BodySlide-built armour keeps its author's leg weights (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_ZEROED_SMP_GAIN",
+      "since": "1.5",
+      "claims": "the vanilla armours' SMP physics gain is an opt-in, off by default (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_MORPHTRI_HUG_FEATHER",
+      "since": "1.5",
+      "claims": "plates that stand off the body move as their author made them again (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_OVERWRITE_MESH_INDEX",
+      "since": "1.5",
+      "claims": "colour variants of an armour built into Mod Organizer's overwrite folder read the right copy (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_VC_SWEEP_FAILURE",
+      "since": "1.5",
+      "claims": "a vertex-colour clean-up that stops now fails the run (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_MERGE_UNVERIFIED_EXIT",
+      "since": "1.5",
+      "claims": "`merge` exits 1 when its plugin could not be checked (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_NIF_LIBRARY_RETRY",
+      "since": "1.5",
+      "claims": "running from source with an outdated `PYNIFLY_PATH` no longer loses the reference bodies (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_BODY_CACHE_BY_INPUTS",
+      "since": "1.5",
+      "claims": "Check setup sees a UBE body you pick while the window is open (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_SWEEP_SETTLE_BEFORE_POSTMERGE",
+      "since": "1.5",
+      "claims": "colour variants of a mesh put back after the merge recolour the right layer (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_SWEEP_PIECE_FAMILY",
+      "since": "1.5",
+      "claims": "a backup copy of the combined plugin no longer stops old meshes from being moved aside (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_SWEEP_SIDECAR_BASE",
+      "since": "1.5",
+      "claims": "moving an old mesh no longer takes a current mesh's physics and morph files with it (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_SWEEP_RECOVER_EVERY_RUN",
+      "since": "1.5",
+      "claims": "meshes moved aside by a cancelled run come back on the next run of any kind (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_RACE_SUBSET_DEDUP_AGREE",
+      "since": "1.5",
+      "claims": "per-race versions that share one mesh are drawn once, and never lost (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_RECONCILE_LOADED_WINNER",
+      "since": "1.5",
+      "claims": "colour variants follow your own UBE build also when our older copy is still there (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_ALTTEX_SOURCE_WINNER",
+      "since": "1.5",
+      "claims": "colour variants of a piece whose mesh two mods' archives both ship (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_ARMA_PATH_BYTES",
+      "since": "1.5",
+      "claims": "a mesh whose file name has an accented letter, a curly apostrophe or a dash is converted (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_RECONCILE_LOADED_MESH",
+      "since": "1.5",
+      "claims": "colour variants of a piece left to your own UBE build recolour the right layer (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_PLAN_ORDER_RESULTS",
+      "since": "1.5",
+      "claims": "the reports list armour pieces in the same order every run (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_PLANNED_FOLDERS",
+      "since": "1.5",
+      "claims": "folder names in a new output no longer depend on which piece was written first (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_ATOMIC_AUDIT_APPEND",
+      "since": "1.5",
+      "claims": "the measurement log no longer loses or garbles lines (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_PIECE_FAMILY_MATCH",
+      "since": "1.5",
+      "claims": "a copy of the combined plugin in the output folder is left alone (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_BSA_LOAD_ORDER_WINNER",
+      "since": "1.5",
+      "claims": "when two archives hold the same mesh, the tool takes the copy the game uses (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_SKYPATCHER_NAME_GUARD",
+      "since": "1.5",
+      "claims": "a plugin whose file name has a comma is now reported instead of silently not working (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_ESL_CHUNK_DEDUP",
+      "since": "1.5",
+      "claims": "the patch no longer carries the same armour piece twice (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_ARMORHELMET_KW_FIX",
+      "since": "1.5",
+      "claims": "a hair-slot helmet is recognised by its helmet keyword (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_WIG_EXCLUDE_KEEP",
+      "since": "1.5",
+      "claims": "an excluded mod's wig is kept like its other non-body pieces (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_WIG_BODY_PASS",
+      "since": "1.5",
+      "claims": "a wig that also claims a leg slot is drawn on UBE actors (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_FINALIZE_REPOINT",
+      "since": "1.5",
+      "claims": "a converted piece loads the physics file the tool fixed up (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_DST_XML_NO_STEM_SCAN",
+      "since": "1.5",
+      "claims": "a garment without its own physics file converts the same way every run (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_THIRD_PARTY_INI_SLOT_CHECK",
+      "since": "1.5",
+      "claims": "another mod's partial or disabled UBE patch no longer hides armour from this tool (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_COVERAGE_RACE_SUBSET",
+      "since": "1.5",
+      "claims": "an item with a separate version per race no longer draws every version at once on UBE actors (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_FINGERPRINT_SKIPS_PLUMBING",
+      "since": "1.5",
+      "claims": "`--incremental` no longer reconverts everything over how it was launched (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_WHOLE_MOD_NAMES",
+      "since": "1.5",
+      "claims": "a mod whose folder name has a comma can be excluded or picked (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_HEADLESS_SETTINGS",
+      "since": "1.5",
+      "claims": "your saved settings apply everywhere, not only to the Convert button (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_MASTER_SEARCH_LOAD_ORDER",
+      "since": "1.5",
+      "claims": "plugins this tool's patches build on are read from the copy the game loads (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_FEMALE_SLOT_PAIRS",
+      "since": "1.5",
+      "claims": "a missing female mesh for the third-person view keeps the male one, even when the first-person one exists (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_LOADED_SOURCE_PLUGINS",
+      "since": "1.5",
+      "claims": "only the copy of a plugin the game loads is converted (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_DUP_SHAPE_NAMES",
+      "since": "1.5",
+      "claims": "a garment whose layers share one name keeps every layer (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_TAIL_FOLD",
+      "since": "1.5",
+      "claims": "the last step of a conversion is quicker (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_STALE_OUTPUT_SWEEP",
+      "since": "1.5",
+      "claims": "old converted meshes that nothing makes any more are moved aside (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_GLOBAL_SCHEDULE",
+      "since": "1.5",
+      "claims": "converting all your mods is much faster (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_ZEROED_PROBE_MEMO",
+      "since": "1.5",
+      "claims": "checking your zeroed BodySlide build is about four times faster (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_COVERAGE_BODY_CLOAK",
+      "since": "1.5",
+      "claims": "a robe's cape shows on UBE actors (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_CONSTRAINT_GROUP_SCAN",
+      "since": "1.5",
+      "claims": "the report no longer says a rigged physics cloth has \"NO constraints\" (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_PHYSICS_DATA_PREFIX",
+      "since": "1.5",
+      "claims": "physics that some armours and cloaks point to with a \"Data\\\" path now carries over (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_ALTTEX_DUP_OCCURRENCE",
+      "since": "1.5",
+      "claims": "a colour variant recolours every same-named layer (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_SELECTION_WINNER_PLAYABLE",
+      "since": "1.5",
+      "claims": "whether you can wear an item is read from the plugin the game uses (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_COVERAGE_DEAD_ARMATURE",
+      "since": "1.5",
+      "claims": "items whose meshes are not installed get no UBE link (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_UBE_RACE_BY_PLUGIN",
+      "since": "1.5",
+      "claims": "characters of a UBE race count when the tool looks at what NPCs wear (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_SOURCE_PATCH_RENAME",
+      "since": "1.5",
+      "claims": "this tool's per-mod working patches have a name of their own (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN",
+      "since": "1.5",
+      "claims": "an item another mod already makes for UBE is no longer drawn twice, and one it only claims to cover is drawn (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_LOOSE_MESH_INDEX",
+      "since": "1.5",
+      "claims": "the coverage step checks which meshes exist much faster (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_EXCLUDE_BODY_ONLY",
+      "since": "1.5",
+      "claims": "an excluded mod's helmets, glasses and other non-body pieces are drawn on UBE actors again (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_COVERAGE_FEMALE_STANDIN",
+      "since": "1.5",
+      "claims": "a piece whose female model is missing draws the base game's female version, else the male one (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_BEAST_VARIANT_NON_ACTOR",
+      "since": "1.5",
+      "claims": "a Khajiit-only item that a mannequin can also display is no longer drawn on UBE actors (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_NPC_WORN_NONPLAYABLE",
+      "since": "1.5",
+      "claims": "the switch for armour only NPCs wear no longer changes which items are drawn on UBE actors (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_COVERAGE_BEAST_VARIANT",
+      "since": "1.5",
+      "claims": "a hooded robe no longer gives UBE actors a second hood (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_CLAIM_MESHES_PREFIX",
+      "since": "1.5",
+      "claims": "a hand-made UBE mesh is linked at the path where the game finds it (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_SUPERSEDE_WHOLE_BASE",
+      "since": "1.5",
+      "claims": "an old copy set aside for a hand-made UBE version no longer comes back (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_COVERAGE_WIGS",
+      "since": "1.5",
+      "claims": "wigs are drawn on UBE actors (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_COVERAGE_HUMAN_RACE_LIST",
+      "since": "1.5",
+      "claims": "rings, amulets and other pieces made for every race show on UBE actors (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_COVERAGE_BODY_ACCESSORY",
+      "since": "1.5",
+      "claims": "hooded robes show their hood on UBE actors (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_SKIP_BUILT_UBE_PATH",
+      "since": "1.5",
+      "claims": "hand-made UBE versions are recognised however their paths are written (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_COVERAGE_WORLD_MESH",
+      "since": "1.5",
+      "claims": "no unconverted CBBE bodies, hands or feet drawn on a UBE actor by the coverage step (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE",
+      "since": "1.5",
+      "claims": "excluded mods and hand-made UBE patches are left alone, and female slots no longer get male meshes (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_BSA_ONLY_SOURCES",
+      "since": "1.5",
+      "claims": "armour that was never converted: packed in archives, named like the body, or worn only by NPCs (1.5)"
+    },
+    {
+      "name": "CBBE2UBE_NO_LEG_MOTION_MORPHTRI",
+      "since": "1.5",
+      "claims": "leg cloth on BodySlide-built armour follows the legs, and a layered skirt follows the butt (1.5)"
     }
   ],
   "absent": [

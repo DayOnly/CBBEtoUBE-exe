@@ -192,8 +192,8 @@ def _run(dst_shapes, src_shapes):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(nc, "_pynifly", lambda: _Pyn)
         mp.setattr(nc, "_nif_has_fx_shape", lambda nf: False)
-        _cs.patch(mp, "_hdt_collider_shape_names", lambda p, nif=None: set())
-        _cs.patch(mp, "_hdt_softbody_shape_names", lambda p, nif=None: set())
+        _cs.patch(mp, "_hdt_collider_shape_names", lambda p, nif=None, stem_scan=True: set())
+        _cs.patch(mp, "_hdt_softbody_shape_names", lambda p, nif=None, stem_scan=True: set())
         mp.setattr(nc, "_hide_virtual_body", lambda nf: False)
         _cs.patch(mp, "atomic_nif_save", lambda nf, p: saved.append(p))
         nc._match_coincident_cross_shape_skin("dst.nif", src_nif_path="src.nif")

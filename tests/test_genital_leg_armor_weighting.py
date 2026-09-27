@@ -277,7 +277,8 @@ def test_hdt_collider_vs_softbody_split(monkeypatch):
            '<per-vertex-shape name="Skirt_Big"></per-vertex-shape>'
            '<per-vertex-shape name="Skirt_Short"></per-vertex-shape>'
            '</system>')
-    _cs.patch(monkeypatch, "_read_source_hdt_xml_text", lambda p, nif=None: xml)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text",
+              lambda p, nif=None, stem_scan=True: xml)
     monkeypatch.setattr(nc, "CHAIN_TO_SOFTBODY", False)
     assert nc._hdt_collider_shape_names(Path("x.nif")) == {
         "WiDu_ColBodySkirt", "ColGround"}
@@ -286,7 +287,8 @@ def test_hdt_collider_vs_softbody_split(monkeypatch):
 
 
 def test_hdt_collider_names_empty_when_no_xml(monkeypatch):
-    _cs.patch(monkeypatch, "_read_source_hdt_xml_text", lambda p, nif=None: None)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text",
+              lambda p, nif=None, stem_scan=True: None)
     assert nc._hdt_collider_shape_names(Path("x.nif")) == set()
 
 

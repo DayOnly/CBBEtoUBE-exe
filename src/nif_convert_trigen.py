@@ -415,10 +415,11 @@ def _tri_fits_variant(src_path, variant_sources=None) -> bool:
             and _variant_suffix(owner.stem) in ("_0", "_1")):
         return True                      # the weight pair, by design
     try:
-        pyn = _nc()._pynifly()
-        mine = {s.name: len(s.verts) for s in pyn.NifFile(filepath=str(p)).shapes}
+        # Both are SOURCES: read with the names conversion gives them.
+        # #dup-shape-names
+        mine = {s.name: len(s.verts) for s in _nc()._open_source_nif(p).shapes}
         theirs = {s.name: len(s.verts)
-                  for s in pyn.NifFile(filepath=str(owner)).shapes}
+                  for s in _nc()._open_source_nif(owner).shapes}
     except Exception:
         return True                      # cannot tell -> behave as before
     shared = set(mine) & set(theirs)
@@ -754,11 +755,12 @@ def pair_alias_map(src_path, variant_sources) -> "dict[str, str]":
         except Exception:
             if str(other) == str(p):
                 return {}
-        pyn = _nc()._pynifly()
+        # Both are SOURCES: read with the names conversion gives them.
+        # #dup-shape-names
         mine = [(s.name, len(s.verts))
-                for s in pyn.NifFile(filepath=str(p)).shapes]
+                for s in _nc()._open_source_nif(p).shapes]
         theirs = [(s.name, len(s.verts))
-                  for s in pyn.NifFile(filepath=str(other)).shapes]
+                  for s in _nc()._open_source_nif(other).shapes]
         return pair_shape_aliases(mine, theirs)
     except Exception as _e:
         _note_pass_failure("pair_alias_map", _e)

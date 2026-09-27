@@ -229,6 +229,53 @@ class ClipTester:
         return o[np.isfinite(o)]
 
 
+AGREE_U = 0.25           # closer than this and the two frames agree
+
+
+def pick_frame(raw, world, tree, *, agree_u: float = AGREE_U,
+               with_margin: bool = False):
+    """(verts, which) -- whichever candidate frame actually lands on `tree`.
+
+    With `with_margin`, returns (verts, which, margin): how DECISIVE the choice
+    was, as the ratio of the loser's distance to the winner's, and `inf` when
+    the frames agree. `snugness_census` excludes a shape whose margin is under
+    3.0 rather than guessing at it, and that exclusion is the only reason this
+    third value exists -- the default stays a 2-tuple so the other callers are
+    untouched.
+
+    `_verts_skin_to_world` is a NORMALIZER, not a conversion: a shape already
+    stored in world carries an identity transform and comes back untouched. The
+    trap is that the converter's OUTPUT is not uniformly one frame, so neither
+    "always transform" nor "never transform" is right -- and both failures are
+    silent, because each produces a plausible number rather than an error.
+
+    Measured 2026-09-20 over the shipped pack (7246 shapes in 2605 NIFs): 534
+    carry a NON-IDENTITY transform. Of those, 403 genuinely store skin verts
+    and NEED the call, 47 land in the same place either way, and 84 already sit
+    on the body -- transforming those throws them a median 11.3u, max 2496.7u,
+    off it. So branching on the transform is wrong 84 times; branching on
+    proximity is wrong none.
+
+    NO NAME FILTER SUBSTITUTES FOR THE MEASUREMENT. Of those 84, ZERO match the
+    proxy-name idiom and zero are BaseShape: they are `robe`, `Boots`,
+    `Gauntlets`, `ArmorF`. The class is not colliders.
+
+    Frames that AGREE are not ambiguous -- either will do. A previous guard that
+    excluded "ambiguous" shapes cut a 20-shape sample to 3, because agreement
+    was being read as disagreement.
+    """
+    raw = np.asarray(raw, np.float64)
+    world = np.asarray(world, np.float64)
+    dr = float(np.median(tree.query(raw)[0]))
+    dw = float(np.median(tree.query(world)[0]))
+    if abs(dr - dw) < agree_u:
+        return (raw, "agree", float("inf")) if with_margin else (raw, "agree")
+    if dr < dw:
+        return (raw, "raw", dw / max(dr, 1e-6)) if with_margin else (raw, "raw")
+    return ((world, "world", dr / max(dw, 1e-6)) if with_margin
+            else (world, "world"))
+
+
 def output_nifs(root, weights: str = "both", exclude_first_person: bool = True):
     """Every converted NIF under `root`, BOTH weight files by default.
 

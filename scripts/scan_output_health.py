@@ -139,6 +139,12 @@ def _parse_combined_arma_meshes(esp_path):
 
 
 def main():
+    # Imported HERE, not at module scope: the MALFORMED pass spawns a process
+    # pool, and on Windows every worker re-imports this module. A module-level
+    # import would make each worker pay for numpy + src.discovery before it
+    # reads its first NIF. main() never runs in a worker.
+    from scripts.analysis._census_common import require_population
+
     out_dir = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\CBBEtoUBE Auto"
     meshes = os.path.join(out_dir, "meshes")
     combined = os.path.join(out_dir, "CBBE_to_UBE_Combined.esp")
@@ -160,11 +166,21 @@ def main():
             print(f"   ARMA {fid:08X} -> {m}")
         if len(missing) > 25:
             print(f"   ... and {len(missing) - 25} more")
+        invisible_ran = True
     else:
-        print(f"\n[INVISIBLE] no Combined ESP at {combined}")
+        # Half the advertised scan did not run. That must not read as a clean
+        # INVISIBLE result, so it is carried to the verdict line below rather
+        # than being a single line scrolled off the top.
+        invisible_ran = False
+        print(f"\n[INVISIBLE] no Combined ESP at {combined} -- pass SKIPPED")
 
     # ---- MALFORMED pass ----
     nifs = glob.glob(os.path.join(meshes, "**", "*.nif"), recursive=True)
+    # A health scan over ZERO NIFs printed "=== SCAN DONE ===" and exited 0 --
+    # a wrong `out_dir` was indistinguishable from a clean pack. 0/0 is not a
+    # pass; exit 3 so "measured nothing" reads differently from "measured and
+    # clean" (and from a real defect, which is what the exit 1 below is for).
+    require_population(nifs, f"NIFs under {meshes}")
     print(f"\n[MALFORMED] scanning {len(nifs)} NIFs ...")
     flagged = []
     with ProcessPoolExecutor(max_workers=max(1, (os.cpu_count() or 2) - 1)) as ex:
@@ -182,7 +198,22 @@ def main():
             print(f"       {i}")
     if len(flagged) > 30:
         print(f"   ... and {len(flagged) - 30} more")
-    print("\n=== SCAN DONE ===")
+
+    # State the POPULATION in the verdict, not just the word DONE. The old
+    # line said "=== SCAN DONE ===" whether it had read 2064 NIFs or none.
+    scope = f"{len(nifs)} NIF(s)"
+    scope += (f", {len(missing)} missing-mesh ref(s)" if invisible_ran
+              else "; INVISIBLE pass NOT RUN")
+    # A REAL defect outranks an incomplete scope: a skipped INVISIBLE pass must
+    # not downgrade a LOAD-FAIL to "just fix your paths" and let it scroll by.
+    # Incomplete is reported only when nothing was actually found wrong.
+    if flagged or missing:
+        print(f"\n=== SCAN FOUND DEFECTS ({scope}) ===")
+        raise SystemExit(1)
+    if not invisible_ran:
+        print(f"\n=== SCAN INCOMPLETE ({scope}) ===")
+        raise SystemExit(3)
+    print(f"\n=== SCAN CLEAN ({scope}) ===")
 
 
 if __name__ == "__main__":

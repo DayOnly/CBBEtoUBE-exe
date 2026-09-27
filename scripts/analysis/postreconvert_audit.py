@@ -38,11 +38,34 @@ measured while the converter is still writing it is a half-finished pack, and
 silently baselining that would poison every comparison afterwards with numbers
 nobody chose.
 
+`--record` WRITES INTO THE PACK'S MOD FOLDER: `<output mod dir>/
+postreconvert_baseline.json`. For the default output mod that folder is INSIDE
+the modlist instance, so a `--record` run against the shipped pack changes the
+instance. Without `--record` this audit only reads. Kept that way on purpose
+(2026-09-21): the write is explicit, and the baseline is per-pack state that
+has to sit with the pack it describes. (`registered_bone_audit.py`, which used
+to write beside the pack on EVERY run, now writes only to an explicit `--out`.)
+
 WHAT IT DOES NOT COVER, said plainly so a clean result is not over-read: order
 fidelity and third-party colour-variant bindings need every NIF opened and are
 left to their own scripts; the registered-bone invariant is
 `registered_bone_audit.py`; which change touched which piece is
 `change_attribution.py`. This is the cheap always-run layer, not all of them.
+
+WEIGHTS: the rows come from THREE different populations, and they are not the
+same, so read them accordingly.
+  * Most rows are lifted from `conversion_report.json` -- whatever the
+    converter counted, both weights.
+  * `pack_nifs` counts every `*.nif` under `meshes/`: both weights AND
+    first-person.
+  * `skirt_proxies` and `proxy_encloses_chain` come from `_proxy_metrics`,
+    which reads both weights, first-person included, via
+    `standoff_audit.output_nifs(meshes, exclude_first_person=False)`.
+The proxy rows used to glob `*_1.nif` only. They are per-SHAPE counts, and a
+`_0` proxy can enclose its own chain independently of its `_1` partner -- and
+`proxy_encloses_chain` is the row that targets ZERO and can exit 1, so the
+half it could not see was the half of a gate. First-person is kept because the
+default exclusion in `output_nifs` is a bust-coverage rule, not a physics one.
 """
 from __future__ import annotations
 
@@ -121,9 +144,11 @@ def _proxy_metrics(meshes: Path) -> dict:
     try:
         import numpy as _np
         from pyn import pynifly as _pyn
+        from scripts.analysis import standoff_audit as _sa
     except Exception:
         return {}
-    for f in sorted(meshes.rglob("*_1.nif")):
+    # BOTH weights, first-person KEPT -- see WEIGHTS: in the module docstring.
+    for f in _sa.output_nifs(meshes, exclude_first_person=False):
         try:
             nf = _pyn.NifFile(filepath=str(f))
             prox = [s for s in nf.shapes
@@ -220,7 +245,9 @@ def main() -> int:
                     help="the converter's output mod dir; discovered from the "
                          "configured MO2 instance when omitted")
     ap.add_argument("--record", action="store_true",
-                    help="write the CURRENT measurement as the new baseline")
+                    help="write the CURRENT measurement as the new baseline, "
+                         "INTO the output mod dir (inside the instance for "
+                         "the default pack)")
     ap.add_argument("--note", default="",
                     help="provenance for the recorded baseline -- WHICH pack "
                          "and WHY it is trustworthy. A baseline whose origin "

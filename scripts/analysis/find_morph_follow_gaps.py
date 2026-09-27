@@ -25,11 +25,19 @@ Flags a zone with cover > 40% AND follow < 0.15 (covers it, but won't move with 
 worst-first. Read-only; run after a reconvert. Complements find_overinflation.py
 (armor OFF body) and verify_bodymatch.py (re-sourced set).
 
+WEIGHTS: both weights, via `standoff_audit.output_nifs`. The morph named in the
+first paragraph IS the weight slider -- `_0<->_1` -- so a `_1`-only scan was
+measuring the follow-through of one silhouette and reporting it as the pack's.
+Cover and follow are computed per SHAPE against the body injected into that same
+NIF, so a `_0` file carries its own weight-0 body and its own separately
+authored garment: a self-consistent, independent observation, not a duplicate of
+its `_1` partner. The `/m/` male-path exclusion is the female-only policy and is
+KEPT; only the weight scoping changed.
+
     python scripts/analysis/find_morph_follow_gaps.py
 """
 import os
 import sys
-import glob
 import numpy as np
 from pathlib import Path
 from scipy.spatial import cKDTree
@@ -40,6 +48,7 @@ sys.path.insert(0, str(_REPO / ".pynifly"))
 from pyn import pynifly                        # noqa: E402
 from src import paths                          # noqa: E402
 from src.body_zones import BREAST_Z, BELLY_Z, BUTT_Z   # noqa: E402
+from scripts.analysis import standoff_audit as sa      # noqa: E402
 
 OUT_MOD = os.environ.get("CBBE2UBE_OUT_MOD", "CBBEtoUBE Auto")
 # morph zone: (z-lo, z-hi, front/back sign for the body normal, jiggle-bone keyword)
@@ -111,8 +120,11 @@ def main():
     if root is None or not root.is_dir():
         print("output not found (set CBBE2UBE_MO2_INI + reconvert first).")
         return 1
-    files = [f for f in glob.glob(str(root / "**" / "*_1.nif"), recursive=True)
-             if "1stperson" not in f.lower() and "/m/" not in f.replace("\\", "/").lower()]
+    # BOTH weights -- see WEIGHTS: above. `output_nifs` owns the first-person
+    # rule (regex `1stperson|1stp`, wider than the bare `1stperson` test that
+    # was here); the `/m/` male-path exclusion is kept as-is.
+    files = [str(p) for p in sa.output_nifs(root)
+             if "/m/" not in p.as_posix().lower()]
     print(f"scanning {len(files)} meshes for morph-follow gaps...", flush=True)
     hits = []
     for i, f in enumerate(files, 1):

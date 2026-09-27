@@ -16,7 +16,7 @@ ask for different evidence:
 ### Attach the diagnostics zip
 
 In the GUI, choose **Help ▸ Save diagnostics zip**. It writes
-`CBBEtoUBE_diagnostics_<timestamp>.zip` next to your output folder, containing:
+`CBBEtoUBE_diagnostics_<timestamp>.zip` in your output folder, containing:
 
 | File | What it is |
 | --- | --- |
@@ -76,11 +76,16 @@ cd CBBEtoUBE-exe
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt pytest pyflakes vulture==2.16
-git config core.hooksPath .githooks
+python scripts/onboard.py
 python -m pytest -q
 ```
 
-**That `core.hooksPath` line is not optional housekeeping.** This repository is
+`scripts/onboard.py` points git at the repository's hooks, sets fast-forward-only
+pulls, an LF-only checkout and the blame ignore file, and then reports what only
+you can supply: a GitHub noreply commit identity and the asset denylist described
+below. Run it again whenever you like; it changes nothing that is already set.
+
+**The hooks are not optional housekeeping.** This repository is
 public, and four kinds of thing must never reach a commit: a file that is
 local-only by policy (they name specific mods), an absolute path identifying
 your machine or modlist, a personal email address, and the name of a real
@@ -107,10 +112,15 @@ the two cannot drift.
 The fourth rule needs one thing you have to supply: a list of the real asset
 names to refuse. That list cannot live in a public repo, so it is read from an
 untracked, gitignored `.asset-denylist` at the repo root — one name per line,
-`#` comments allowed, `re:` for a raw pattern. **Without that file the check
-runs against nothing**, and both the hook and the test say so rather than
-reporting a clean tree. Substitute a real name in tracked content the way the
-existing fixtures do, and keep a local record of what stands in for what.
+`#` comments allowed, `re:` for a raw pattern. **Without that file the hooks
+refuse to commit and to push**, and say so: a check that runs against nothing is
+zero coverage, not a pass. Ask the maintainer for the file; it is never tracked,
+so no clone has it, and a linked worktree reads the primary checkout's copy.
+`CBBE2UBE_HOOKS_NO_DENYLIST=1` lets one command through with the other three
+rules still enforced and a warning that names were not checked -- but a name
+pushed to a lane is already public, so get the file first. Substitute a real
+name in tracked content the way the existing fixtures do, and keep a local
+record of what stands in for what.
 
 Messages written before that hygiene work predate the asset-name rule and have
 not been rewritten. Rewriting them would re-hash every commit and every tag, and
@@ -129,17 +139,73 @@ git config user.email YOUR_USERNAME@users.noreply.github.com
 plus `NiflyDLL.dll`) and added to `sys.path` at import time. `NiflyDLL.dll` is a
 Windows binary, so the suite is Windows-only.
 
-The suite is ~3,400 tests and takes three to five minutes depending on the
+The suite is ~3,800 tests and takes three to five minutes depending on the
 machine. Run it before you push; CI runs the same command on `windows-latest`.
 Capture the exit code directly -- piping pytest into anything reports the pipe's
 status, not pytest's own.
 
+**Patching the converter in a test.** Fake a converter function or switch with
+pytest's `monkeypatch` (`monkeypatch.setattr(nc, "NAME", fake)`), or with
+`tests/_converter_sources.patch(monkeypatch, "NAME", fake)` when the name is
+bound on more than one of the split `src/nif_convert*.py` modules -- each
+module looks a name up in its own globals, so a patch on `nif_convert` alone
+misses callers inside a sibling. Outside a test function, use
+`with pytest.MonkeyPatch.context() as mp:`. Never assign `nc.NAME = fake`
+yourself: a fake that outlives its test decides whether later tests pass, by
+the order they run in. A test that reloads a module under a changed
+environment must reload it again after restoring the environment. An autouse
+guard in `tests/conftest.py` (`tests/_module_guard.py`) snapshots every
+`src.*` and `scripts.*` module before each test and fails any test that leaves
+one rebound, naming `module.attr`; it puts the module back first, so the
+failure stays with the test that caused it. Names the converter's own code
+rebinds (a `global` cache, or `_nc().NAME = ...`) never fail a test, but are
+put back too. Only a module the test actually reloaded may come back as
+look-alike copies (same code, a fresh empty table); anywhere else a
+`functools.wraps` spy or an emptied table fails the test like any fake.
+
+The mutation gate (`python scripts/mutation_gate.py run`, described in
+[docs/RELEASING.md](docs/RELEASING.md)) is far slower: every seeded pair runs its
+tests once more. `--only ID ...` judges the pairs your change added or moved;
+`--jobs N` splits a full run into N shards judged at once, each in its own
+worktree. Each shard is a pytest process of its own and commits the ~1.5 GB BLAS
+arena, so N shards need about N x 1.5 GB of commit charge on top of everything
+else the machine runs -- a Windows "out of memory" there is the page file, not
+the working set.
+
 Rebuilding the tracked `dist/` bundle and pushing have an order that the release
 gate enforces; [docs/RELEASING.md](docs/RELEASING.md) says what it is and why.
 
+### Branches, lanes and worktrees
+
+`main` and `testing` are integration branches. On GitHub a ruleset lets them
+change only by a merged pull request with the three `pytest` checks green, and
+only as a merge commit: a squash or rebase merge re-hashes the commit that built
+the tracked exe, and the release gate then cannot find the commit the exe's
+stamp names. Nobody pushes to them directly, the maintainer included; the
+primary checkout tracks `testing` and moves by `git pull --ff-only`.
+
+Work happens on a lane: one branch in its own worktree beside the primary
+checkout.
+
+```bash
+python scripts/lane.py new my-change     # ../<checkout>.my-change on branch my-change, from origin/testing
+python scripts/lane.py list
+python scripts/lane.py rm my-change      # after the merge
+```
+
+The lane gets a copy of the denylist and shares the primary checkout's build
+environment, so a rebuild in a lane reproduces byte for byte. The pre-commit
+hook refuses a commit on `main` or `testing` and a commit in the primary
+checkout on any branch, and names that command in the refusal; for a deliberate
+exception set `CBBE2UBE_HOOKS_COMMIT_HERE=1` for the one command.
+
+Pull requests from a lane target `testing`. `main` receives `testing` through
+release pull requests only, so pick the base when you open the PR: GitHub
+offers `main` first because it is the default branch.
+
 ### Pull requests
 
-Branch off `main`, and open the PR against `main`. Keep the diff scoped to one
+Work on a lane and open the PR against `testing`. Keep the diff scoped to one
 change — this codebase encodes a lot of hard-won geometry behaviour, and a small
 diff is far easier to reason about against a symptom nobody can reproduce
 without the exact modlist.

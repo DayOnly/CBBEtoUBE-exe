@@ -28,8 +28,9 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
 1. **Discovers** candidate CBBE/3BA armor mods by walking the MO2 mod tree, and
    resolves every armor mesh through the full virtual file system (BodySlide
    output, BSAs, and loose files all count). Only **player-equippable** armor on
-   body slots is selected — non-equippable items (gore / dismemberment effect
-   "armor" flagged non-playable) are skipped. Because UBE is a female body, only
+   body slots is selected, plus non-playable outfits a female NPC of a
+   UBE-capable race actually wears or carries; other non-equippable items (gore /
+   dismemberment effect "armor" flagged non-playable) are skipped. Because UBE is a female body, only
    the **female** mesh of each piece is converted; the male mesh is skipped unless
    the piece is male-only (a female actor falls back to the male mesh, so it still
    needs the refit).
@@ -39,7 +40,8 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
    a **body-swap**: the baked skin slice is dropped and the real UBE body is
    injected, so exposed skin morphs and jiggles like the actual body.
 3. Writes the converted meshes under `meshes/!UBE/...` in a single output mod.
-4. Generates a **per-mod UBE patch ESP** for each source, then merges them into
+4. Generates a **per-mod UBE patch ESP** for each source
+   (`_unmerged_patches/<plugin> (CBBEtoUBE src).esp`, never loaded), then merges them into
    one **ESL-flagged combined plugin** with a correct master order. If the
    merge outgrows the 2048-record ESL cap it **splits** into numbered pieces
    (`CBBE_to_UBE_Combined.esp`, `CBBE_to_UBE_Combined2.esp`, ...) — enable
@@ -94,7 +96,8 @@ For each shape in an armor NIF:
 1. Find the closest point on the CBBE reference body for every armor vertex —
    a triangle on the CBBE mesh plus barycentric coordinates inside it.
 2. Evaluate the same (triangle, barycentric) on the UBE reference body. The
-   delta between the two surface points is the per-vertex deformation.
+   delta between the two surface points is the per-vertex deformation (which
+   two bodies: [Reference bodies](#reference-bodies)).
 3. Apply the deformation to the armor vertex.
 4. Copy bone weights from the nearest UBE reference vertices (a weighted blend
    across the k nearest neighbours) and renormalize.
@@ -313,9 +316,6 @@ dist\CBBEtoUBE\CBBEtoUBE.exe
 dist\CBBEtoUBE\CBBEtoUBE.exe auto
 ```
 
-Running the exe with **no arguments** launches the GUI — the default when MO2
-runs it or you double-click it. Run the headless one-click pipeline directly
-with the `auto` subcommand (what the GUI's convert button runs under the hood).
 Point MO2 at `CBBEtoUBE.exe` and the tool auto-discovers the modlist layout.
 
 ## Running from source
@@ -327,6 +327,11 @@ pip install -r requirements.txt
 python cbbe_to_ube_main.py            # launches the GUI (default)
 python cbbe_to_ube_main.py auto       # headless full pipeline
 ```
+
+To work on the code rather than run it, `python scripts/onboard.py` configures
+the clone (the hooks, fast-forward-only pulls, an LF-only checkout) and reports
+what it cannot set for you; [CONTRIBUTING.md](CONTRIBUTING.md) describes the
+branch and worktree flow.
 
 ### Installing pynifly
 
@@ -369,7 +374,9 @@ Useful `auto` flags:
 - `--merged-name NAME` — filename of the merged Combined ESP
 - `--exclude-mods NAME …` — never convert the named mod folders. Use this for
   armor **already built for UBE**: converting it again would double-convert and
-  break it.
+  break it. Repeat the flag or comma-separate the names; a name that is exactly
+  a mod folder's name is kept whole, even when it contains a comma. The mods on
+  the window's Exclusions list are added to these (see USING.md §7).
 - `--no-ube-native-scan` — turn off the geometry check that skips mods whose
   armor **already fits the UBE body**. Meshes under `meshes/!UBE/` are skipped
   by path regardless; this check is the backstop for UBE-native armor shipped
@@ -414,24 +421,63 @@ When running it from outside the instance, point it explicitly:
 > README does not list may still be environment-only.
 > Settings persist to `CBBEtoUBE_settings.json` beside the exe.
 >
-> This is not a hypothetical: a measured fit improvement sat unused for weeks
-> because it was reachable only by environment variable, and so could never be
-> switched on by a normal launch. If you add a flag meant to be play-tested, give it
-> a row in `src/gui_settings.py`.
+> Adding a flag meant to be play-tested? Give it a row in `src/gui_settings.py`
+> (docs/PIPELINE.md §0, rule 1).
 
 ## Reference bodies
 
-The converter needs the source (CBBE) and target (UBE) base body meshes — the
-CBBE 3BA body and the matching UBE body built via BodySlide (the
-`femalebody_0.nif` / `femalebody_1.nif` pair from each), for example:
+The fit moves each garment from the **CBBE 3BA** body it was built on to the
+**UBE** body it will be worn over, at both weights:
 
-- CBBE: `<modlist>/mods/CBBE 3BA (3BBB)/meshes/actors/character/character assets/femalebody_{0,1}.nif`
-- UBE (BodySlide output): `<modlist>/mods/<UBE BodySlide Output>/meshes/actors/character/character assets/femalebody_{0,1}.nif`
+- CBBE 3BA: `meshes/actors/character/character assets/femalebody_{0,1}.nif`
+- UBE: `meshes/!UBE/Body/femalebody_tangent_{0,1}.nif`
 
-The `auto` pipeline auto-discovers both from the modlist (and `convert` takes
-`--ube-body-ref` to pin the UBE reference explicitly). The low-level
-single-NIF CLI (`src/cli.py`) takes the parent folders via
-`--cbbe-dir` / `--ube-dir`, defaulting to the same auto-discovery.
+Each is **BodySlide's zeroed build, as the game loads it**: the copy that wins
+that path in MO2 (overwrite, then enabled mods by priority, then the game
+`Data` folder), accepted only if it matches, on every vertex, what BodySlide
+builds with zeroed sliders — the slider set's base mesh plus its defaults for
+that weight. Garments built in BodySlide sit on that body. This lookup never
+chooses by mod name, and both weights must come from the same mod.
+
+If that cannot be established — the body the game loads is not a zeroed build,
+no slider set builds it, or the load order cannot be read — a GUI run's Reference
+bodies window starts on the body the game loads, flagged, and asks first; outside
+the GUI the log says so once per body and weight in each process
+(`!! no zeroed CBBE body at weight 1: … -- falling back to discovery by name`)
+and the older lookup runs: an 18,436-vertex `femalebody`, preferring a mod named
+like CBBE/3BA, and for UBE your BodySlide-built body.
+
+**In the GUI, Convert first opens a *Reference bodies* window**: one list per
+body, starting on a usable body you already named (the Paths tab's UBE body, or
+an override), else on the verified zeroed build, else on the body the game loads,
+flagged. Each list offers every other copy in your load order, marked
+`[zeroed]`, `[NOT zeroed, off by up to N.NNu]` or `[not checked]`. Other body
+families, half-installed pairs and unreadable files are named with the reason
+instead of offered. Picking anything but the verified body asks once more, and
+names any Settings or override body the run will then not use. The choice
+applies to that run only. The window is skipped for a dry run and when the
+zeroed bodies are switched off (below).
+
+Not taken from these bodies: on body-swap armour your **BodySlide preset** is
+still baked in from the UBE body your build installed — the first mod folder, by
+name, that ships `meshes/!UBE/Body/femalebody_tangent_{0,1}.nif`, disabled mods
+not skipped — and the physics chain lift clears that same body.
+
+Explicit overrides win over the lookup (in the GUI, the window's pick replaces
+them for that run): `CBBE2UBE_CBBE_BODY_0` / `_1`, and
+`CBBE2UBE_UBE_BODY_0` / `_1` or the single `CBBE2UBE_UBE_BODY` (the Paths tab's
+*UBE body reference NIF*); the UBE one also sets the body injected under
+body-swap armour. A run logs each override it uses as
+`[body-ref] <VAR> = <path> (explicit override)`, and reports one that names a
+missing file (`!! <VAR> names a body that does not exist`) instead of quietly
+using another body. `CBBE2UBE_NO_ZEROED_BODY_REFS=1` (Paths tab, advanced:
+*Fit against the zeroed BodySlide bodies*) turns the zeroed lookup off and
+restores discovery by name.
+
+`convert` takes `--ube-body-ref` to pin the UBE reference explicitly.
+
+An **All mods** run skips body mods — any mod folder that ships either body
+file above — because they are the body, not armour.
 
 ## Layout
 
@@ -471,14 +517,17 @@ cbbe-to-ube/
     atomic_io.py            # crash-safe atomic writes for all game-loaded output
     hdt_xml_gen.py          # per-armor HDT-SMP collision XML generator
     discovery.py / paths.py # MO2 mod-tree discovery + layout auto-detect
+    zeroed_body.py / body_choice.py      # the zeroed BodySlide reference bodies, and the
+                            # Reference bodies window's choice
     bsa_strings.py          # localized ARMO names from .STRINGS tables
     tri.py / osd.py / sliderset_gen.py   # BODYTRI / OutfitStudio / slider data
     hh_offset.py / nif_patch.py          # high-heel offset, binary NIF patching
     preview.py              # headless morph-preview renderer
     gui.py / gui_settings.py             # Tkinter GUI, and the settings registry behind it
     build_mod.py            # output-mod assembly helpers
-    cli.py / refit.py / correspondence.py / weights.py / nif_io.py
-                            # low-level single-armor refit interface
+    correspondence.py / weights.py / nif_io.py
+                            # closest-point deformation, the skin-weight write
+                            # rule, a read-only numpy view of a NIF
     preflight.py / diagnostics.py / report_template.py / failure_summary.py
                             # Check setup, the diagnostics zip, the problem report, the
                             # failures file in words
@@ -545,29 +594,13 @@ Direct links, with your version pre-filled:
 · [armor looks wrong in game](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=conversion_problem.yml)
 · [feature request](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=feature_request.yml)
 
-Before filing an *invisible armor* report, rule out the two causes that account
-for nearly all of them: **SkyPatcher must be installed**, and
-**`iEnableArmorPatching=1`** must be set in `SKSE/Plugins/SkyPatcher.ini` — with
-it at `0` you get exactly the same symptom as no SkyPatcher at all. Then confirm
-**every** `CBBE_to_UBE_Combined*.esp` is enabled; the merge splits into numbered
-pieces past the ESL cap, and a disabled piece means missing armor.
-
-**Help ▸ Save diagnostics zip** writes `CBBEtoUBE_diagnostics_<timestamp>.zip` — the
-filled-in report as `REPORT.txt`, plus the last and previous run logs and failure
-lists, the output mod's `conversion_report.json` and `conversion_settings.json`, a
-`machine.txt` with your RAM and page-file setting, settings, exclusions, the
-discovered MO2 layout, and a fresh setup check — which answers most of the first
-round of questions on its own. **Glance at it before attaching**: it contains your
-MO2 paths, profile name, and the mods in your load order.
-
-A normal run also leaves `CBBEtoUBE_last_run.log` and
-`CBBEtoUBE_last_failures.json` beside the exe, and `conversion_report.json` /
-`conversion_summary.txt` / `conversion_report_<mod>.txt` at the output mod root
-(the GUI's **Results** tab reads the first as a health scoreboard).
-
-There is no automatic crash upload, by design — the exe excludes the `ssl`
-extension for license reasons (see [Building the exe](#building-the-exe)) and so
-cannot make a network request at all. Reporting is manual and file-based.
+Before filing an *invisible armor* report, rule out SkyPatcher and
+`iEnableArmorPatching=1` (see [Dependencies](#dependencies)) and confirm **every**
+`CBBE_to_UBE_Combined*.esp` is enabled — a disabled piece means missing armor.
+The diagnostics zip holds your MO2 paths, profile name and load-order mod names:
+**glance at it before attaching**. REPORTING.md lists what it contains and the
+files a normal run leaves behind. There is no automatic crash upload — the exe
+cannot make a network request at all (see [Building the exe](#building-the-exe)).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup and pull-request notes.
 

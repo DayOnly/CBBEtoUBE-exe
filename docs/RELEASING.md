@@ -14,7 +14,8 @@ So a rebuild is not "one of the commits" — it is **the last one**:
 
 1. commit every source, test and documentation change first;
 2. rebuild;
-3. commit the bundle immediately, touching nothing else.
+3. commit the bundle immediately, touching nothing else but
+   `release-markers.json` (see Release markers).
 
 Rebuilding before a source commit lands puts a commit between the stamp and the
 exe, and the gate reads `the exe was last set by <a>, whose first parent is <b>,
@@ -50,11 +51,36 @@ dirty flag lies.
 Every seeded mutation (`scripts/mutation_pairs.py`) is applied in a detached
 worktree and must turn its named tests red. An anchor that no longer matches
 reads NOT_APPLIED and fails the gate, because a test that stays green on a
-mutation that was never applied proves nothing; a MISSED pair is a guard that
-has become decoration -- fix the guard, never the pair. It is minutes of
-pytest: run it once per release, after the last source commit and before the
-rebuild, and from the mutation-gate workflow on demand. `tests/test_mutation_gate.py`
+mutation that was never applied proves nothing. A mutated `.py` file that no
+longer compiles reads INVALID, is never run, and fails the gate too: a
+SyntaxError turns every test that imports the file red, the named ones among
+them, whatever the guard does -- rewrite the pair so the file still compiles.
+A MISSED pair is a guard that
+has become decoration -- fix the guard, never the pair. It is slow (40 pairs
+took 879 s when the gate landed; 202 pairs took 1942 s on 2026-09-21): run it once
+per release, after the last source commit and before the rebuild, and from the
+mutation-gate workflow on demand. `tests/test_mutation_gate.py`
 keeps every anchor and test id current between releases.
+
+    python scripts/mutation_gate.py run --jobs 6
+
+`--jobs N` runs the same gate as N shards at once: pair i goes to shard i mod N,
+each shard is a child process with its own fresh worktree and its own baseline
+and control-after (a control run in another worktree cannot vouch for this
+one), and the shards' rows come back as one report in the usual order with one
+verdict. The verdict is FAIL when a shard crashed or failed a control (the
+report names the shard and ends with its log), when a pair was judged by no
+shard or by two, or when any pair was MISSED, NOT_APPLIED or INVALID; `--jobs 1`, the
+default, is the single run above, unchanged. Every worktree is removed on
+success, failure and Ctrl+C. The price is memory: each shard runs pytest, and
+every pytest process that imports the converter commits the ~1.5 GB BLAS arena,
+so six shards commit about 9 GB at once -- check the page file before raising N
+(`CONTRIBUTING.md`). MEASURED 2026-09-24 with the same split made by hand: 674
+pairs in 6 shards took 1098 s, against about 2650 s in one run. MEASURED
+2026-09-25 with `--jobs 6`: 769 pairs, all CAUGHT, in 3549 s on a machine held
+at 100% CPU by other work; the six shards spent about 20,500 s between them, a
+third of it in their own baselines and controls, because round-robin gives
+every shard nearly every test file.
 
 ## The golden check, on the maintainer machine
 
@@ -75,10 +101,28 @@ maintainer machine and not in CI: the runner has no game and no pieces.
 An unintended diff is a regression. An intended one must be explainable shape
 by shape, and then `capture` re-baselines. `check` refuses across a different
 `CBBE2UBE_*` flag set and says so when the baseline was captured on another
-commit; keep the shell free of converter flags for both runs. What it cannot
-see: a class the piece list does not cover (the base-game set unless
+commit; keep the shell free of converter flags for both runs. The verdict
+line counts the pieces it compared: `PASS (PARTIAL)` names how many it did not
+look at (source changed, not in the baseline), and a check that compared none
+exits 3 with `NOTHING COMPARED` instead of passing. Each run empties its work
+folder first, so nothing a killed run left there is read as new output. What
+it cannot see: a class the piece list does not cover (the base-game set unless
 `golden/pieces.json` points it at more), and anything a float on another
 machine would round differently -- it is a same-machine, same-toolchain check.
+
+It is a same-session check too. MEASURED 2026-09-21: baselines captured
+between about 16:35 and 16:50 passed an off-switch check at 16:54; at about
+19:30 the same commits, checked against their own baselines, regressed on one
+piece on four repeats -- a soft-body dress whose top's weight total on one
+upper-arm bone moved 0.0024 and 0.0021, with no vertex moved. No instance file
+had changed and the glow debug variables were ruled out; the cause is not
+known. So to isolate one commit, capture the parent's baseline in the same
+session and check the child against it; a diff against an older baseline is
+not evidence against the commit until a same-session pair reproduces it. For
+an intended change that diff is the blast radius, and the pass/fail is the
+off-switch: with the change's switch set for both the capture and the check,
+`check` must read 15 of 15 ok. `golden/` is read from the checkout the script
+runs in, so copy the primary checkout's into a lane's worktree first.
 
 MEASURED 2026-09-16 on c43a54b: `capture` took 225 s; `check` on the same
 tree read 15 of 15 ok in 237 s and exited 0; the same check on a
@@ -87,6 +131,26 @@ on 15 of 15 pieces (`verts moved max=0.2000u`) in 235 s and exited 1.
 The synthetic counterpart, one conversion per convert path through the batch
 door on a sphere, runs in the suite and in CI:
 `tests/test_convert_paths_through_the_batch_door.py`.
+
+Both `capture` and `check` take `--jobs N` (default 1, one piece after
+another) to convert the pieces in N worker processes. Each worker inherits the
+shell's environment and refuses to convert if its hash seed, BLAS thread caps or
+`CBBE2UBE_*` set differ from the parent's; `--jobs` with no pinned
+`PYTHONHASHSEED` is refused. The parent records and compares in piece order,
+so the baseline and the verdict are the sequential run's. A piece whose worker
+raised reads `FAIL  worker failed: <error>` under its own name. A worker that
+dies takes the whole pool down with it, and every unfinished piece fails with
+the same error that names nobody, so those pieces are converted again one at a
+time in a single-worker pool: the piece that kills its worker there reads
+`FAIL  worker died: <piece>` and every other gets its real verdict. The check
+fails whenever a worker died, even if no piece reproduces the death alone, and a
+`capture` with any failed piece writes nothing. N is capped at the piece count and at the
+batch's own worker count for the machine (each converter process peaks near
+2 GB of commit). MEASURED 2026-09-25 on 94340ee plus this change, 15 pieces,
+on a shared machine: `capture` 187 s at `--jobs 1`, 65 s at `--jobs 5`, with
+every array and the manifest the same (and the same as a `capture` on 94340ee
+itself); `check --jobs 5` read 15 of 15 ok in 57 s against the `--jobs 1`
+baseline, where `check --jobs 1` took 176 s.
 
 ## Rebuilding
 
@@ -100,6 +164,14 @@ which is why the check uses `--all` and an explicit ignore list.
 
 Building from an unlocked interpreter is what put five packages from the build
 machine into the bundle that the notices file never mentioned.
+
+A lane builds with the primary checkout's `.venv-build`, which
+`scripts/lane.py new` joins into the worktree. MEASURED 2026-09-17: a build
+from a fresh venv at another path matched the tracked bundle in the exe and the
+file list but differed in one program file, numpy's dist-info `RECORD`, because
+pip's console-script launchers embed the venv's path; `rebuild-check` failed on
+that file alone, and a build sharing the primary checkout's venv passed every
+clause.
 
 ## The build reproduces, and CI checks that it does
 
@@ -135,26 +207,38 @@ the first tag after this change will say.
 ## Release markers
 
 `release-markers.json` lists, for each fix a release claims, one module or one
-name that exists only with that fix, and what must never ship (`psutil`, the
-test framework, the release tooling). `bundle-scan` reads the exe's bundled
-modules and its entry script — where the log rotation lives — and checks both
-lists; the workflow runs it on the tagged exe and on the rebuilt one.
+name that exists only with that fix, and what must never ship (`psutil`, `ssl`,
+the test framework, the release and hygiene tooling). `bundle-scan` reads the
+exe's bundled modules and its entry script — where the log rotation lives — and
+checks both lists; the workflow runs it on the tagged exe and on the rebuilt one.
 
     python scripts/release_gate.py bundle-scan dist/CBBEtoUBE
     python scripts/release_gate.py bundle-scan v1.4.1
 
-When a CHANGELOG entry claims a fix, add a marker for it in the same change,
-with `since` set to the version that will carry it. A marker claimed by a
-version after the exe's is reported as NOT CHECKED, so an older tag scans clean
-on what it actually claims -- and a version that claims none reads NOT CHECKED
-rather than passing on nothing. The list must always be able to fail:
-`tests/test_release_gate.py` checks every marker against the tracked exe, and
-the gate refuses a list with nothing to find or nothing to refuse.
+When a CHANGELOG entry claims a fix, add a marker for it, with `since` set to
+the version that will carry it, in the rebuild commit that first ships it --
+not in the source commit: `tests/test_release_gate.py` checks every marker
+against the tracked exe whatever `since` says, so a marker committed before the
+rebuild fails the suite on the old exe (the file is not a build input, so the
+stamp is unaffected). That test is also what keeps the list able to fail, and
+the gate refuses a list with nothing to find or nothing to refuse. In
+bundle-scan, a marker claimed by a version after the exe's is reported as NOT
+CHECKED, so an older tag scans clean on what it actually claims -- and a version
+that claims none reads NOT CHECKED rather than passing on nothing.
 
 ## Checking the result before committing it
 
     python scripts/release_gate.py manifest-check dist/CBBEtoUBE
     python scripts/release_gate.py bundle-scan dist/CBBEtoUBE
+
+Until the version is bumped, every marker added since the last release is
+claimed by a later version: bundle-scan reads `later markers` NOT CHECKED and
+still PASSes, so on a lane build it does not show that the new code is in the
+exe. Probe those markers directly with `test_every_marker_holds_on_the_tracked_exe`
+(see Release markers), on the 3.10 interpreter the exe is frozen with -- on any
+other it skips, which proves nothing. MEASURED 2026-09-21 on a lane rebuild
+still versioned 1.4.1: bundle-scan PASSed with the new markers NOT CHECKED, and
+only a direct probe showed them in the exe (and absent from the previous build).
 
 Then commit the bundle and check the whole gate against the commit:
 
@@ -179,6 +263,18 @@ addresses, add that tree to `VENDOR_EMAIL_TREES` with the measurement in the
 comment — do not reach for `SKIP_PREFIXES`, which switches off the path rule too.
 
 ## Pushing
+
+Nothing is pushed to `main` or `testing` directly: a ruleset on GitHub refuses
+a direct push, a force-push and a deletion, requires the three `pytest` checks,
+and allows merge commits only. A rebuild is the last commit on its lane, the
+lane becomes a pull request into `testing`, and the merge commit keeps the stamp
+chain intact: the gate finds the commit that set the exe through a merge,
+because a merge that changes nothing in `dist/` is skipped by the first-parent
+walk. A release is a pull request from `testing` into `main`, tagged on the
+merge commit. Squash and rebase merges are switched off at the repository
+because either re-hashes the rebuild commit, and the stamp would then name a
+commit that no longer exists. `scripts/lane.py` makes the lane; CONTRIBUTING.md
+describes the flow.
 
 `pre-push` scans **every commit the push would publish**, not just the tip, because
 a commit can reach a push without ever passing `pre-commit` (`git rebase`,

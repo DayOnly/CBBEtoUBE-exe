@@ -148,16 +148,24 @@ def test_the_standoff_machinery_is_gone_from_the_module():
 
 
 def test_simulated_cloth_is_never_grafted_regardless_of_mode():
-    """Per-vertex soft-bodies and layered cloth stay excluded unconditionally. The
-    flag relaxes chain_frac, whole-shape fit and leg dominance -- never a rule about
-    simulated cloth."""
-    import inspect
+    """Per-vertex soft-bodies stay excluded unconditionally. The torso flag relaxes
+    chain_frac, whole-shape fit and leg dominance -- never a rule about simulated
+    cloth.
+
+    Layered cloth USED to be pinned here as unconditional too. Since
+    #layered-cloth-butt-follow its skip depends on exactly one thing,
+    `layered_regions` -- the butt, on a piece with no physics XML, decided by
+    `_layered_cloth_jiggle_regions` and pinned in tests/test_layered_cloth_butt_follow.py.
+    It must still never depend on the torso flag or the drape gate."""
     src = _cs.source(nc._transfer_body_jiggle_to_fitted)
     i = src.index("if (s.name in softbody_names")
     skip = src[i:src.index("continue", i)]
     # `_skip_keys` IS the name list, narrowed per piece by #drape-xml-gate; the
-    # soft-body / layered-cloth terms beside it must stay unconditional.
-    assert "layered_cloth_names" in skip and "_skip_keys" in skip
+    # soft-body term beside it must stay unconditional.
+    assert skip.startswith("if (s.name in softbody_names or "), (
+        "the soft-body term must stay a bare, unconditional membership test")
+    assert "(layered and not layered_regions)" in skip and "_skip_keys" in skip
+    assert "layered = s.name in layered_cloth_names" in src
     assert "TORSO_JIGGLE" not in skip, (
         "the soft-body / layered-cloth skip must not be conditional on the flag")
     assert "DRAPE_SKIP_XML_GATED" not in skip, (

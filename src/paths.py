@@ -104,7 +104,7 @@ def parse_mo2_ini(ini_path: Path) -> dict:
         return out
     wanted = {
         "gamepath", "gamename", "base_directory", "mod_directory",
-        "selected_profile",
+        "selected_profile", "overwrite_directory",
     }
     for line in text.splitlines():
         line = line.strip()
@@ -214,6 +214,9 @@ class Layout:
     instance_dir: Path | None = None
     game_path: Path | None = None
     selected_profile: str | None = None
+    # MO2's overwrite folder, from the ini (see `overwrite_dir`). None when no
+    # ini was found.
+    overwrite_dir: Path | None = None
 
     def ok(self) -> bool:
         return self.mods_root is not None and self.mods_root.is_dir()
@@ -246,6 +249,11 @@ def discover_layout(start: Path | None = None) -> Layout:
         gp = cfg.get("gamepath")
         if gp:
             lay.game_path = Path(gp)
+        # MO2 sets Mods, Overwrite and Profiles independently, so overwrite is
+        # NOT beside a moved Mods folder: overwrite_directory, else its default.
+        lay.overwrite_dir = (_expand(base_dir, cfg["overwrite_directory"])
+                             if cfg.get("overwrite_directory")
+                             else base_dir / "overwrite")
 
     # 3. Name-based fallback for mods root.
     if lay.mods_root is None or not lay.mods_root.is_dir():
@@ -256,6 +264,20 @@ def discover_layout(start: Path | None = None) -> Layout:
     # ---- game Data dirs ----
     lay.game_data_dirs = _discover_game_data_dirs(lay)
     return lay
+
+
+def overwrite_dir(lay: "Layout") -> "Path | None":
+    """MO2's overwrite folder -- the highest-priority source in its virtual file
+    system, and where BodySlide run through MO2 writes by default.
+
+    From the ini's `overwrite_directory` (%BASE_DIR% expanded), else MO2's
+    default `<base_directory>/overwrite`. NOT `<mods>/../overwrite`: MO2 lets
+    the Mods path move on its own, and that guess then points at nothing. With
+    no ini at all, that guess is the only one left, so it is the fallback.
+    """
+    if lay.overwrite_dir is not None:
+        return lay.overwrite_dir
+    return lay.mods_root.parent / "overwrite" if lay.mods_root is not None else None
 
 
 def _discover_game_data_dirs(lay: Layout) -> list[Path]:
@@ -432,9 +454,81 @@ def active_plugins_ordered(lay: "Layout") -> "list[str] | None":
     return None
 
 
+def root_plugin_index_on() -> bool:
+    r"""#root-plugin-index (2026-09-25): does `plugin_file_index` read only what
+    the game can load -- plugin files at the ROOT of overwrite, of an ENABLED mod
+    and of the game Data folder? Yes, by default.
+
+    It shares its switch with #coverage-third-party-drawn, because the two only
+    work together: the legacy walk read our own un-loaded per-source copies in
+    `_unmerged_patches` in place of the third-party plugin of the same name, and
+    the coverage rule that judges third-party armatures would then read our old
+    mints as theirs; the root-only index alone left an armour whose third-party
+    UBE mesh exists nowhere with no armature. CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN=1
+    restores the recursive walk for every caller."""
+    from .envflags import flag as _pflag
+    return not _pflag("CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN", False)
+
+
+def _plugin_file_index_root(lay: "Layout",
+                            copies: "dict[str, list[Path]] | None" = None
+                            ) -> "dict[str, Path]":
+    r"""#root-plugin-index: lowercased plugin filename -> the file MO2's virtual
+    file system hands the game. Only ROOT files count -- MO2 never loads a plugin
+    from a mod's subfolder (`_unmerged_patches`, `fomod`, `optional`, an `esp`
+    folder), from a disabled or unlisted mod, or one lying loose in the mods
+    folder. Resolution: overwrite > enabled mods in MO2 priority order > game
+    Data folder(s), first listed first. With no readable modlist every mod
+    folder's root is indexed, in sorted name order, below overwrite. Insertion
+    order is priority order, highest first.
+
+    `copies`, when given, receives every mod folder's root copy of each name,
+    highest priority first (overwrite and game Data are not mod folders): its
+    first copy is the mod that owns the plugin (#one-plugin-owner). The index
+    returned is the same either way."""
+    index: dict[str, Path] = {}
+
+    def _root(d: "Path | None", mod: bool = False) -> None:
+        if d is None:
+            return
+        try:
+            ents = sorted(Path(d).iterdir())
+        except OSError:
+            return          # a missing or unreadable folder costs itself only
+        every = mod and copies is not None
+        for f in ents:
+            fl = f.name.lower()
+            if fl.endswith((".esp", ".esm", ".esl")) and (every or fl not in index):
+                try:
+                    if not f.is_file():
+                        continue
+                except OSError:
+                    continue
+                if every:
+                    copies.setdefault(fl, []).append(f)
+                if fl not in index:
+                    index[fl] = f
+    _root(overwrite_dir(lay))
+    if lay.mods_root is not None and lay.mods_root.is_dir():
+        order = enabled_mods_ordered(lay)   # highest priority first, or None
+        if order is None:
+            try:
+                order = sorted(p.name for p in lay.mods_root.iterdir() if p.is_dir())
+            except OSError:
+                order = []
+        for name in order:
+            _root(lay.mods_root / name, mod=True)
+    for d in (lay.game_data_dirs or []):
+        _root(d)
+    return index
+
+
 def plugin_file_index(lay: "Layout") -> "dict[str, Path]":
-    """Map lowercased plugin filename -> on-disk path. First-seen wins, with mods
-    scanned before game Data and overwrite.
+    """Map lowercased plugin filename -> on-disk path. By default ROOT plugin
+    files only, as the game loads them (#root-plugin-index,
+    `_plugin_file_index_root`). With CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN=1 the
+    legacy recursive walk below: first-seen wins, with mods scanned before game
+    Data and overwrite.
 
     Resolving a plugin filename to a physical file is a VFS/mod-PRIORITY question:
     when the same plugin filename ships in two mods (a mod + its patch/update as
@@ -445,6 +539,8 @@ def plugin_file_index(lay: "Layout") -> "dict[str, Path]":
     records. Disabled / unlisted mod folders are indexed LAST (lowest priority)
     so nothing that used to be found is dropped. Used to resolve
     `active_plugins_ordered` names to files for the winner scan. #plugin-priority"""
+    if root_plugin_index_on():
+        return _plugin_file_index_root(lay)
     index: dict[str, Path] = {}
 
     def _index_dir(r: "Path | None") -> None:

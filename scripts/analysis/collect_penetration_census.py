@@ -31,6 +31,20 @@ Each row also records BOTH metrics, so the disagreement itself is queryable.
     python scripts/analysis/collect_penetration_census.py [--out FILE] [--limit N]
                                                  [--contact U] [--out-mod NAME]
 
+WEIGHTS: both weights, via `standoff_audit.output_nifs(root,
+exclude_first_person=False)`. "The whole converted output" used to mean weight 1
+only. Penetration is a per-file measurement and a `_0` mesh is separately
+authored, so the half that was skipped can be independently wrong.
+
+Safe to widen by population alone: the body is the one injected into THAT SAME
+NIF (`_shapes` takes the shape named in `UBE_BODY_INJECT_NAMES`), so a `_0` file
+is measured against its own weight-0 body. No external body, no preset.
+
+First-person is left to this file's OWN rule in `row_for` (`"1st"` or
+`"firstperson"` in the stem), which is broader than `output_nifs`' regex -- it
+also catches the `..._1st` SUFFIX form that regex misses. The enumeration change
+is therefore the weight axis and nothing else.
+
 Read-only. Resolves the output via the live MO2 instance (CBBE2UBE_MO2_INI).
 """
 from __future__ import annotations
@@ -54,6 +68,7 @@ from src.nif_convert import UBE_BODY_INJECT_NAMES                # noqa: E402
 from src.nif_convert import _body_normals_or_compute             # noqa: E402
 from scripts.analysis.mesh_penetration import (surface_penetration, ray_exposure,  # noqa: E402
                                       boundary_points, classify_exposure)
+from scripts.analysis import standoff_audit as sa                # noqa: E402
 
 # Physics helper shapes are not the visible garment. Counting them as coverage makes
 # the body read as protected where nothing renders.
@@ -221,7 +236,9 @@ def main():
     if not root.is_dir():
         raise SystemExit(f"output not found: {root}")
 
-    files = sorted(root.rglob("*_1.nif"))
+    # BOTH weights -- see WEIGHTS: in the docstring. First-person is NOT
+    # filtered here: `row_for` applies this file's own, broader stem rule.
+    files = sa.output_nifs(root, exclude_first_person=False)
     if limit:
         files = files[:limit]
     print(f"scanning {len(files)} mesh(es) under {root}\n"

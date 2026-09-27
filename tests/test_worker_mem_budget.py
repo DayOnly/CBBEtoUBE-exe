@@ -207,10 +207,14 @@ def test_smp_antipoke_flag_defaults_off(monkeypatch):
     import importlib
     monkeypatch.setenv("CBBE2UBE_NO_SMP_ANTIPOKE", "1")
     nc = importlib.reload(importlib.import_module("src.nif_convert"))
-    assert nc.SMP_COLLISION_ONLY_ANTIPOKE is False
-    # Push budget is the clearance target, NOT the 3.0 default: measured 6.9% ->
-    # 2.4% at 1.0 but WORSE (8.1%) at 0.6 and only 5.7% at 3.0.
-    assert nc.SMP_ANTIPOKE_MAX_PUSH == nc.ANTIPOKE_BUST_CLEAR
+    try:
+        assert nc.SMP_COLLISION_ONLY_ANTIPOKE is False
+        # Push budget is the clearance target, NOT the 3.0 default: measured 6.9% ->
+        # 2.4% at 1.0 but WORSE (8.1%) at 0.6 and only 5.7% at 3.0.
+        assert nc.SMP_ANTIPOKE_MAX_PUSH == nc.ANTIPOKE_BUST_CLEAR
+    finally:
+        monkeypatch.delenv("CBBE2UBE_NO_SMP_ANTIPOKE", raising=False)
+        importlib.reload(nc)      # the switch was left OFF for later tests
 
 
 def test_smp_antipoke_push_is_tunable_without_a_rebuild(monkeypatch):
@@ -255,8 +259,9 @@ def test_smp_antipoke_flag_opt_in(monkeypatch):
     monkeypatch.delenv("CBBE2UBE_NO_SMP_ANTIPOKE", raising=False)
     nc = importlib.reload(importlib.import_module("src.nif_convert"))
     assert nc.SMP_COLLISION_ONLY_ANTIPOKE is True
-    monkeypatch.setenv("CBBE2UBE_NO_SMP_ANTIPOKE", "1")
-    importlib.reload(nc)          # leave the module clean for other tests
+    # Nothing to undo: the env var is unset and the reload read the default.
+    # (This used to set the kill switch and reload -- leaving it OFF for
+    # every later test in the process.)
 
 
 def test_smp_antipoke_relaxation_is_collision_only(monkeypatch):

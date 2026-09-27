@@ -109,6 +109,15 @@ def _aligned(shape, ref):
     So the frame is chosen by evidence, per shape: whichever candidate lands
     nearer the reference wins. Frames that agree (identity transform) are not
     ambiguous -- either will do.
+
+    NOT FOLDED INTO `standoff_audit.pick_frame`, deliberately, on the day the
+    other two copies of this rule were. This one has NO AGREE BAND: on a
+    disagreement under 0.25u it takes the nearer frame, where the shared rule
+    returns raw. That is a real behavioural difference rather than a tidier
+    spelling of the same thing, and this scorer is on record as verified-safe
+    for the acceptance gate -- so unifying it would mean re-verifying the gate
+    to gain nothing. If it is ever unified, the GATE has to be re-run, not just
+    the suite.
     """
     raw = np.asarray(shape.verts, np.float64)
     try:

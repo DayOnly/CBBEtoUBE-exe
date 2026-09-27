@@ -840,18 +840,24 @@ def _conform_weights_core(nf, dst_path, weight,
     if ref is None:
         return False, 0
     _Vb, body_w, _body_bones, tree = ref  # chain test uses _is_skeleton_bone now
+    # #covered-skin-target, second site: see _match_rigid_leg_bend_to_body.
+    _body_nrm = (_nc()._body_conform_normals(weight)
+                 if _nc().COVERED_SKIN_TARGET else None)
     # Precise SMP-collider exclusion. The _CONFORM_SKIP_NAMES substring gate below
     # only catches name-tagged colliders ("...Col..."); re-weighting an UNTAGGED
     # per-triangle collider would re-introduce the exact over-graft the reskin pass
     # is careful to avoid (the collider over-jiggles -> the cloth it stabilises
     # implodes / sinks). Read the collider set straight from the already-open nf so
     # there is NO second disk parse per armor. #smp-collider-graft
-    collider_names = _nc()._hdt_collider_shape_names(dst_path, nif=nf)
-    softbody_names = _nc()._hdt_softbody_shape_names(dst_path, nif=nf)
+    collider_names = _nc()._hdt_collider_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
+    softbody_names = _nc()._hdt_softbody_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
     layered_cloth_names = _layered_cloth_shape_names(nf.shapes)  # keep source skin
     # Lazy: with the gate OFF this pass must do NO extra work at all.
     _skip_keys = _nc()._conform_skip_keys(
-        _nc()._piece_has_hdt_xml(dst_path, nif=nf) if _nc().DRAPE_SKIP_XML_GATED else None)
+        _nc()._piece_has_hdt_xml(dst_path, nif=nf,
+                                 stem_scan=_nc()._dst_xml_stem_scan()) if _nc().DRAPE_SKIP_XML_GATED else None)
     total = 0
     dirty = False
     for s in nf.shapes:
@@ -900,6 +906,25 @@ def _conform_weights_core(nf, dst_path, weight,
         # (c) HUGS the body (a flaring skirt/robe sits away -> excluded)
         if float((d < _nc()._CONFORM_FIT_PROX).mean()) < _nc()._CONFORM_FIT_FRAC:
             continue
+        # #covered-skin-target: the blend below aimed each vertex at the ONE
+        # nearest body vertex. On a coarse crotch panel that is the inner-thigh
+        # skin, while the panel also covers the pelvis-static cleft: the reported
+        # gusset's shipped row IS this blend (0.1 x author + 0.9 x nearest, to
+        # 0.02). Where a vertex covers skin, the clearance-weighted mean of that
+        # skin is the target instead.
+        _cov_target: dict = {}
+        if _body_nrm is not None and len(_body_nrm) == len(_Vb):
+            _zb, _xb = _Vb[:, 2], _Vb[:, 0]
+            _cband = ((_zb >= _nc()._COVER_Z_LO) & (_zb <= _nc()._COVER_Z_HI)
+                      & (np.abs(_xb) < _nc()._COVER_X))
+            _cover, _clr = _covered_skin_map(Vw, _Vb, _body_nrm, _cband,
+                                             _nc()._COVER_REACH)
+            for _gi, _bis in _cover.items():
+                if len(_bis) < _nc()._COVER_MIN_VERTS:
+                    continue
+                _ct0 = _covered_skin_target(_bis, _clr, body_w, _nc()._COVER_EPS)
+                if _ct0:
+                    _cov_target[_gi] = _ct0
         touched: "set" = set()
         removed: dict = {}   # bone -> vert indices that LOST it in the blend
         conf = 0
@@ -911,7 +936,7 @@ def _conform_weights_core(nf, dst_path, weight,
                 continue
             if any(w > 0.1 and not _is_skeleton_bone(b) for b, w in dv.items()):
                 continue  # custom-chain vert -> leave it (partition safety)
-            bd = body_w[idx[i]]
+            bd = _cov_target.get(i) or body_w[idx[i]]
             new = _nc()._conform_blend_vert(dv, bd, _nc()._CONFORM_BLEND, _nc()._CONFORM_DELTA)
             if new is None:
                 continue
@@ -1174,8 +1199,7 @@ def _source_bust_weight_map(src_nif_path, shape_name, n_verts):
     if src_nif_path is None:
         return None
     try:
-        pyn = _nc()._pynifly()
-        snf = pyn.NifFile(filepath=str(src_nif_path))
+        snf = _nc()._open_source_nif(src_nif_path)   # #dup-shape-names
         ss = next((x for x in snf.shapes if x.name == shape_name), None)
         if ss is None or len(ss.verts) != n_verts:
             return None
@@ -1188,6 +1212,62 @@ def _source_bust_weight_map(src_nif_path, shape_name, n_verts):
         return out
     except Exception:
         return None
+
+def _covered_skin_target(cover, clearance, body_w, eps):
+    """The skin a garment vertex COVERS decides its split. `cover` lists the body
+    vertices whose nearest garment vertex this is; `clearance` holds each one's
+    outward distance to the vertex (negative = the vertex sits inside the skin
+    there, which counts as touching). Returns the 1/(max(clearance, 0) + eps)-
+    weighted mean of their weight rows, so the skin the panel would touch first
+    has the most say -- or None for an empty cover. Pure. #covered-skin-target"""
+    if not cover:
+        return None
+    acc: dict = {}
+    tot = 0.0
+    for b in cover:
+        c = float(clearance[b])
+        wgt = 1.0 / (max(c, 0.0) + eps)
+        tot += wgt
+        for bone, w in body_w[b].items():
+            acc[bone] = acc.get(bone, 0.0) + float(w) * wgt
+    if tot <= 0.0:
+        return None
+    return {bone: w / tot for bone, w in acc.items()}
+
+
+def _covered_skin_map(Vg, Vb, Nb, band, reach):
+    """Which body vertices each garment vertex COVERS: for every body vertex in
+    `band`, its nearest garment vertex within `reach`. Returns ({garment vertex:
+    [body vertices]}, clearance per body vertex = dot(garment - body, body normal),
+    NaN where uncovered). Pure. #covered-skin-target"""
+    from scipy.spatial import cKDTree
+    cover: dict = {}
+    clearance = np.full(len(Vb), np.nan)
+    idx = np.flatnonzero(band)
+    if len(idx) == 0 or len(Vg) == 0:
+        return cover, clearance
+    d, j = cKDTree(Vg).query(Vb[idx], k=1)
+    for bi, dist, gi in zip(idx, d, j):
+        if dist > reach:
+            continue
+        cover.setdefault(int(gi), []).append(int(bi))
+        clearance[bi] = float(np.dot(Vg[gi] - Vb[bi], Nb[bi]))
+    return cover, clearance
+
+
+def _morphtri_gated_detail_bones() -> frozenset:
+    """The leg DETAIL bones a morph-TRI shape must not be grafted.
+
+    `#morphtri-no-leg-graft` gated all three detail bones per leg, on evidence
+    that named one: RearCalf landing on a flap tip at calf height. With
+    `#morphtri-thigh-graft` on, only the bones anchored to the CALF stay gated;
+    FrontThigh / RearThigh anchor to the thigh and are grafted like any other
+    shape's. Off, every detail bone is gated as before."""
+    if _nc().MORPHTRI_THIGH_GRAFT:
+        return frozenset(b for leg in _nc()._LEG_DEFORM_BONES
+                         for b, anc in leg["detail"] if anc == leg["calf"])
+    return frozenset(_nc()._LEG_DETAIL_BONE_NAMES)
+
 
 def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
                                   src_nif_path=None) -> int:
@@ -1226,6 +1306,11 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
         return 0
     _Vb, body_w, _bones, tree = ref
     body_stbs, _body_ident = dref
+    # #covered-skin-target: the body's outward normals give each covered skin
+    # vertex a clearance; None (no body, or a non-world skin frame) means the
+    # six-nearest target is used everywhere, as before.
+    _body_nrm = (_nc()._body_conform_normals(weight)
+                 if _nc().COVERED_SKIN_TARGET else None)
     # Body leg-bone STB matrices (anchor + detail) -- inputs to the re-anchoring.
     body_mat: dict = {}
     body_proto = None
@@ -1243,8 +1328,10 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
     if _nc()._nif_has_fx_shape(nf):
         return 0  # effect-shader/glow NIF: a reload+re-save corrupts its controller -> CTD.
                   # Leave it exactly as the main conversion wrote it (see _nif_has_fx_shape).
-    collider_names = _nc()._hdt_collider_shape_names(dst_path, nif=nf)
-    softbody_names = _nc()._hdt_softbody_shape_names(dst_path, nif=nf)
+    collider_names = _nc()._hdt_collider_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
+    softbody_names = _nc()._hdt_softbody_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
     layered_cloth_names = _layered_cloth_shape_names(nf.shapes)  # keep source skin
     # A shape with its OWN source BodySlide morph TRI already tracks body sliders
     # at runtime, keyed to its ORIGINAL skin -- which is exactly why the reskin
@@ -1275,9 +1362,12 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
                   | (set(_nc()._CHEST_JIGGLE_BONES) if _do_chest else set()))
     # The subset a morph-TRI shape must NOT receive -- see #morphtri-keep-jiggle
     # at the top of the loop. Everything else this pass grafts is still allowed.
-    _LEG_DETAIL_BONE_NAME_SET = frozenset(_nc()._LEG_DETAIL_BONE_NAMES)
+    # #morphtri-thigh-graft: only the CALF detail bone (RearCalf, the flap-tip
+    # defect) stays gated; the thigh pair anchors to the thigh and is let through.
+    _LEG_DETAIL_BONE_NAME_SET = _morphtri_gated_detail_bones()
     # Lazy: with the gate OFF this pass must do NO extra work at all.
-    _has_xml = _nc()._piece_has_hdt_xml(dst_path, nif=nf) if _nc().DRAPE_SKIP_XML_GATED else None
+    _has_xml = _nc()._piece_has_hdt_xml(dst_path, nif=nf,
+                                 stem_scan=_nc()._dst_xml_stem_scan()) if _nc().DRAPE_SKIP_XML_GATED else None
     _skip_keys = _nc()._conform_skip_keys(_has_xml)
     total = 0
     dirty = False
@@ -1394,6 +1484,23 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
             d_k = d_k[:, None]
             idx_k = idx_k[:, None]
         d = d_k[:, 0]                # nearest distance still gates the passes
+        # #covered-skin-target: the cover map is body -> garment (which garment
+        # vertex is nearest to each body vertex in the crotch/hip band), the
+        # inverse of the query above, so a coarse panel is charged with every
+        # skin vertex it passes over, not only the six nearest to it.
+        _cov_target: dict = {}
+        if _body_nrm is not None and len(_body_nrm) == len(_Vb):
+            _zb, _xb = _Vb[:, 2], _Vb[:, 0]
+            _cband = ((_zb >= _nc()._COVER_Z_LO) & (_zb <= _nc()._COVER_Z_HI)
+                      & (np.abs(_xb) < _nc()._COVER_X))
+            _cover, _clr = _covered_skin_map(Vw, _Vb, _body_nrm, _cband,
+                                             _nc()._COVER_REACH)
+            for _gi, _bis in _cover.items():
+                if len(_bis) < _nc()._COVER_MIN_VERTS:
+                    continue
+                _ct0 = _covered_skin_target(_bis, _clr, body_w, _nc()._COVER_EPS)
+                if _ct0:
+                    _cov_target[_gi] = _ct0
         # #chest-follow-ratio target, computed HERE (it used to sit below the
         # deferral) because the deferral decision needs it: "does this shape
         # already follow well enough" is a question about FOLLOW, and answering
@@ -1475,6 +1582,11 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
             #  - CHEST: matched, capped breast-jiggle graft (self-gates to the front).
             sgi = _nc()._leg_bend_strength(zi) if di <= _nc()._LEG_BEND_PROX else 0.0
             bgi = (_butt_match_strength(zi) if di <= _nc()._BUTT_PROX else 0.0)
+            # #covered-skin-target: a vertex with a covered-skin target is matched
+            # to THAT skin at full strength, whatever the z-ramp above says.
+            _ct = _cov_target.get(i) if di <= _nc()._BUTT_PROX else None
+            if _ct is not None:
+                bgi = max(bgi, _nc()._COVER_STRENGTH)
             cgi = (_chest_match_strength(zi) if (_do_chest and di <= _nc()._CHEST_PROX) else 0.0)
             if sgi <= 0.0 and bgi <= 0.0 and cgi <= 0.0:
                 continue
@@ -1486,7 +1598,7 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
                 need |= added
             if bgi > 0.0:
                 t2, jadded = _butt_match_vert(
-                    vw[i], bwi, strength=bgi,
+                    vw[i], _ct if _ct is not None else bwi, strength=bgi,
                     jiggle=_do_jiggle, jiggle_strength=_nc()._BUTT_JIGGLE_STRENGTH,
                     rebalance=_nc()._BUTT_REBALANCE)
                 t |= t2
@@ -1708,6 +1820,131 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
             return 0
     return total
 
+def _limb_morph_tri_skip(dst_path, nf, src_nif_path, ignore_morph_tri: bool,
+                         keep_draping_skip: bool) -> set:
+    """Shapes a limb-motion instance must leave on their source skin because the
+    source ships a BodySlide morph TRI naming them (#morphtri-no-leg-graft).
+
+    An instance that ignores that gate gets an empty set -- unless it keeps the
+    DRAPING exemption (#leg-motion-morphtri): then the TRI-owning shapes whose
+    names the leg passes skip (robe / cloak / cape / dress / gown / sarong /
+    loincloth on a piece with no HDT XML, `_conform_skip_keys`) stay skipped.
+    The user kept that exemption on 2026-09-19, and before this instance ignored
+    the TRI gate it never reached them."""
+    if not (src_nif_path and _nc().MORPHTRI_NO_LEG_GRAFT):
+        return set()
+    if ignore_morph_tri and not keep_draping_skip:
+        return set()
+    names = _source_morph_tri_shape_names(Path(src_nif_path))
+    if not ignore_morph_tri:
+        return names
+    keys = _nc()._conform_skip_keys(
+        _nc()._piece_has_hdt_xml(dst_path, nif=nf,
+                                 stem_scan=_nc()._dst_xml_stem_scan())
+        if _nc().DRAPE_SKIP_XML_GATED else None)
+    return {n for n in names if any(k in (n or "").lower() for k in keys)}
+
+
+def _limb_tri_admitted(src_nif_path, ignore_morph_tri: bool, tri_hug,
+                       skipped) -> set:
+    """The TRI-owning shapes a limb-motion instance reaches ONLY because it opted
+    out of the morph-TRI gate -- the population `tri_hug` applies to
+    (#morphtri-hug-feather). Empty unless the instance passes a `tri_hug` AND
+    ignores the gate AND the gate is live; the shapes it still `skipped`
+    (draping names) are not reached, so they are not admitted."""
+    if not (tri_hug and ignore_morph_tri and src_nif_path
+            and _nc().MORPHTRI_NO_LEG_GRAFT):
+        return set()
+    return _source_morph_tri_shape_names(Path(src_nif_path)) - set(skipped)
+
+
+def _layer_soup(shapes, skip_names, body_tree=None) -> tuple:
+    """World-space triangles of every VISIBLE garment surface in the NIF -- the
+    layers a standing-off row can cover (#morphtri-hug-feather). Leaves out the
+    body, colliders and proxies (by the piece's XML and by the structural name
+    keys), which a row may stand over without being an outer layer.
+
+    With `body_tree` (a KD-tree of the body's verts) only triangles that FACE
+    AWAY from the body are kept: an underlying layer is met on its outer face,
+    while a thick part's own back face points at the body. Without this a lone
+    part thicker than the gap read as standing over "another layer" (its own
+    inside) and lost the match (adversarial review of d30720b)."""
+    keys = tuple(_nc()._CONFORM_SKIP_STRUCTURAL) + ("proxy", "stabil")
+    Vs, Ts, off = [], [], 0
+    for sh in shapes:
+        nm = sh.name or ""
+        if nm in skip_names or any(k in nm.lower() for k in keys):
+            continue
+        try:
+            V = _verts_skin_to_world(np.asarray(sh.verts, dtype=np.float64),
+                                     _shape_global_to_skin(sh))
+            T = np.asarray(sh.tris, dtype=np.int64).reshape(-1, 3)
+        except Exception:
+            continue
+        if not len(V) or not len(T):
+            continue
+        if body_tree is not None:
+            a = V[T[:, 0]]
+            n = np.cross(V[T[:, 1]] - a, V[T[:, 2]] - a)
+            c = V[T].mean(axis=1)
+            _, bi = body_tree.query(c)
+            T = T[np.einsum("ij,ij->i", n, c - body_tree.data[bi]) > 0.0]
+            if not len(T):
+                continue
+        Vs.append(V)
+        Ts.append(T + off)
+        off += len(V)
+    if not Vs:
+        return None, None
+    return np.vstack(Vs), np.vstack(Ts)
+
+
+def _rows_covering_a_layer(O, P, lay_V, lay_T, gap: float):
+    """True where the straight line from a garment row `O` to its body point `P`
+    passes through another garment surface first -- the row is an OUTER layer.
+
+    The ray starts `gap` along the line, so the row's own triangles and a
+    plate's own thickness are not counted, and must hit before it is within
+    0.1u of the body (#morphtri-hug-feather)."""
+    O = np.asarray(O, dtype=np.float64)
+    out = np.zeros(len(O), dtype=bool)
+    if not len(O) or lay_V is None or not len(lay_T):
+        return out
+    D = np.asarray(P, dtype=np.float64) - O
+    L = np.linalg.norm(D, axis=1)
+    ok = L > gap + 0.1
+    if not ok.any():
+        return out
+    Dn = D[ok] / L[ok, None]
+    tmax = L[ok] - gap - 0.1
+    try:
+        tester = fit_metrics._ClipTester(lay_V, lay_T, tmax=float(tmax.max()) + 1e-3)
+        # Small chunks: on a dense piece one 512-ray chunk built 9.2M ray/triangle
+        # pairs (1.6 GB) -- a MemoryError there would cost the shape its match.
+        t = np.asarray(fit_metrics.cast_chunked(tester, O[ok] + Dn * gap, Dn,
+                                                chunk=_LAYER_RAY_CHUNK,
+                                                finite_only=False), dtype=np.float64)
+    except MemoryError as _me:
+        # Fail toward the build's behaviour (no row faded), and say so.
+        _note_pass_failure("_rows_covering_a_layer", _me)
+        return out
+    out[np.flatnonzero(ok)] = np.isfinite(t) & (t <= tmax)
+    return out
+
+
+_LAYER_RAY_CHUNK = 64
+
+
+def _hug_feather(dist, near: float, far: float):
+    """Share of the limb match a row takes by its distance to the body
+    (#morphtri-hug-feather): 1 at or inside `near`, 0 at or beyond `far`, linear
+    between. `far <= near` is a hard cut at `near`."""
+    d = np.asarray(dist, dtype=np.float64)
+    if far <= near:
+        return (d <= near).astype(np.float64)
+    return np.clip((far - d) / (far - near), 0.0, 1.0)
+
+
 def _match_leg_motion_to_body(dst_path, biped_slots: int = 0, src_nif_path=None) -> int:
     """LEG instance of the limb-motion match -- see _match_limb_motion_to_body.
 
@@ -1725,7 +1962,13 @@ def _match_leg_motion_to_body(dst_path, biped_slots: int = 0, src_nif_path=None)
         # converted pieces: 39 leg-bearing shapes are gated out of this pass
         # entirely, and every one of them has rows that survive the per-row test,
         # so the shape gate was costing real work rather than protecting a chain.
-        smp_row_gate=True)
+        smp_row_gate=True,
+        # #leg-motion-morphtri: the population this instance was built for --
+        # minus the DRAPING-named shapes the leg passes already skip by name.
+        ignore_morph_tri=_nc().LEG_MOTION_ON_MORPHTRI,
+        keep_draping_skip=True,
+        tri_hug=((_nc()._MORPHTRI_HUG_NEAR, _nc()._MORPHTRI_HUG_FAR)
+                 if _nc().MORPHTRI_HUG_FEATHER else ()))
 
 def _match_arm_motion_to_body(dst_path, biped_slots: int = 0, src_nif_path=None) -> int:
     """ARM instance of the limb-motion match  (#armhole-arm-follow).
@@ -1837,6 +2080,8 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                                full_vector: bool = False,
                                shoulder_z: float = 0.0,
                                shoulder_max_dist: float = 0.0,
+                               keep_draping_skip: bool = False,
+                               tri_hug: tuple = (),
                                src_nif_path=None) -> int:
     """Raise a garment's LIMB-BONE share toward the body's so it travels WITH the
     limb instead of being left behind. Returns the number of verts matched.
@@ -1892,8 +2137,18 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
         flank mask can reach it.
       * `ignore_morph_tri` opts an instance out of the morph-TRI skip. It exists
         because for some defects the TRI-owning shapes ARE the population -- gated,
-        the pass is a measured no-op -- and it is the risk a default-OFF instance
-        carries. Never set it on an instance that ships ON.
+        the pass is a measured no-op. The gate's own evidence was a spine crease
+        and a calf-height flap tip on RIGID plates, so an instance that ships ON
+        with it set needs its own in-game verdict on a TRI-owning piece. The
+        LEG instance (`#leg-motion-morphtri`) takes it from
+        `LEG_MOTION_ON_MORPHTRI`.
+      * `tri_hug` = (near, far) narrows what that opt-out admits: a row that
+        stands over ANOTHER visible, outward-facing layer of the piece takes the
+        full match inside `near`, none beyond `far`, a linear share between; a
+        row that is the only layer over the skin keeps `max_dist`
+        (`#morphtri-hug-feather`, see MORPHTRI_HUG_FEATHER). Only on the
+        TRI-owning shapes the opt-out admitted. Rows the full-vector instance
+        reaches afterwards (z >= 72) are rewritten by it.
       * skips colliders / soft-body / HDT-SMP-rigged shapes, per the standing rule
         that every skin pass leaves authored physics geometry alone.
     """
@@ -1906,17 +2161,21 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
         return 0
     if _nc()._nif_has_fx_shape(nf):
         return 0  # effect-shader NIF: a reload+re-save corrupts its controller -> CTD
-    collider_names = _nc()._hdt_collider_shape_names(dst_path, nif=nf)
-    softbody_names = _nc()._hdt_softbody_shape_names(dst_path, nif=nf)
+    collider_names = _nc()._hdt_collider_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
+    softbody_names = _nc()._hdt_softbody_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
     # A shape driven by its OWN source morph TRI keeps its authored skin: the TRI
     # morphs it at runtime keyed to that skin, and re-sharing its limb mass makes
     # it respond differently to limb/spine rotation. Reported in game as a crease
     # that "raises when leaning forward" -- spine rotation -- while the bind pose
     # measured clean. Measured on a heavy cuirass rear band: Spine1 4.86% -> 0.94%.
     # Same rule as the reskin and the graft gates. #morphtri-no-leg-graft
-    morph_tri_names = (_source_morph_tri_shape_names(Path(src_nif_path))
-                       if (src_nif_path and _nc().MORPHTRI_NO_LEG_GRAFT
-                           and not ignore_morph_tri) else set())
+    morph_tri_names = _limb_morph_tri_skip(dst_path, nf, src_nif_path,
+                                           ignore_morph_tri, keep_draping_skip)
+    _tri_admitted = _limb_tri_admitted(src_nif_path, ignore_morph_tri, tri_hug,
+                                       morph_tri_names)
+    _lay = None              # the piece's visible layers, built on first need
     # Does a physics XML exist for this piece at all? Drives the inert-chain
     # allowance below. Stem is per-armor (weight suffix stripped), matching where
     # both the generator and the source-XML copy write.
@@ -2207,6 +2466,28 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                     # qualified"; make it observable.
                     _note_pass_failure("_match_limb_motion_to_body/ray-pair", _re)
 
+            # #covered-skin-target: a vertex that covers skin is matched to that
+            # skin's shares, not to the ONE body vertex nearest to it (or the ray
+            # hit). This pass may only RAISE a family share, and raising a crotch
+            # panel toward the inner thigh's share is what re-armed the reported
+            # gusset (0.421 -> 0.463) after the reskin had already put it there.
+            _cov_t: dict = {}
+            if _nc().COVERED_SKIN_TARGET and body_tris is not None and len(body_tris):
+                try:
+                    _nb = _nc()._vertex_normals_from_tris(Vb, body_tris)
+                    _zb, _xb = Vb[:, 2], Vb[:, 0]
+                    _cband = ((_zb >= _nc()._COVER_Z_LO) & (_zb <= _nc()._COVER_Z_HI)
+                              & (np.abs(_xb) < _nc()._COVER_X))
+                    _cover, _clr = _covered_skin_map(wv, Vb, _nb, _cband,
+                                                     _nc()._COVER_REACH)
+                    for _gi, _bis in _cover.items():
+                        if len(_bis) < _nc()._COVER_MIN_VERTS:
+                            continue
+                        _t = _covered_skin_target(_bis, _clr, body_pv, _nc()._COVER_EPS)
+                        if _t:
+                            _cov_t[_gi] = _t
+                except Exception as _ce:
+                    _note_pass_failure("_match_limb_motion_to_body/covered-skin", _ce)
             G = np.zeros((n, len(shape_bones)), dtype=np.float64)
             for j, b in enumerate(shape_bones):
                 for vi, w in bw[b]:
@@ -2266,6 +2547,10 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                 # divergence narrows the basis to what a stacked group shares,
                 # so the weak gate became reachable. Below the floor the vert
                 # keeps its authored row, which is the conservative answer.
+                for _gi, _t in _cov_t.items():
+                    for _j, _b in enumerate(shape_bones):
+                        if _b in _fv_basis:
+                            BF[_gi, _j] = _t.get(_b, 0.0)
                 _bs = BF.sum(axis=1)
                 _okb = _bs > max(_nc()._FULL_WEIGHT_BASIS_MIN, 1e-6)
                 BF[_okb] /= _bs[_okb, None]
@@ -2338,6 +2623,9 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                 B = np.zeros((n, len(managed)), dtype=np.float64)
                 for k, b in enumerate(managed):
                     B[:, k] = [body_pv[int(i)].get(b, 0.0) for i in near]
+                for _gi, _t in _cov_t.items():
+                    for _k, _b in enumerate(managed):
+                        B[_gi, _k] = _t.get(_b, 0.0)
 
                 g_mass = G[:, midx].sum(axis=1)
                 b_mass = np.clip(B.sum(axis=1), 0.0, 1.0)
@@ -2400,6 +2688,29 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                         if _b not in ube_bones:
                             foreign += G[:, _j]
                     _sel &= foreign <= 1e-4
+                # #morphtri-hug-feather: see _MORPHTRI_HUG_NEAR. Only on a shape
+                # this instance reached THROUGH the morph-TRI opt-out; 1 at or
+                # inside the near distance, 0 at or beyond the far one.
+                _hug_f = None
+                if s.name in _tri_admitted:
+                    _hug_f = _hug_feather(dist, tri_hug[0], tri_hug[1])
+                    # ... but only on a row that stands over ANOTHER layer of the
+                    # piece. A row that is the only layer over the skin keeps the
+                    # full reach: a panel over a swinging thigh lost coverage
+                    # without it (see MORPHTRI_HUG_FEATHER).
+                    _cand = np.flatnonzero(_sel & (_hug_f < 1.0))
+                    if len(_cand):
+                        if _lay is None:
+                            _lay = _layer_soup(
+                                nf.shapes,
+                                set(collider_names) | {"BaseShape"}
+                                | set(_nc().UBE_BODY_INJECT_NAMES),
+                                body_tree=tree)
+                        _cov = _rows_covering_a_layer(
+                            wv[_cand], Vb[np.asarray(near)[_cand]],
+                            _lay[0], _lay[1], _nc()._MORPHTRI_HUG_LAYER_GAP)
+                        _hug_f[_cand[~_cov]] = 1.0
+                    _sel &= _hug_f > 0.0
                 rows = np.where(_sel)[0]
                 if len(rows) == 0:
                     continue
@@ -2413,6 +2724,11 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                     nzo = o_old > 1e-6
                     sc[nzo] = o_new[nzo] / o_old[nzo]
                     NEW[np.ix_(rows, other)] = G[np.ix_(rows, other)] * sc[:, None]
+                if _hug_f is not None:
+                    # A row between the two distances takes that fraction of the
+                    # match; both ends sum to 1, so the blend does too.
+                    _f = _hug_f[rows][:, None]
+                    NEW[rows] = G[rows] + _f * (NEW[rows] - G[rows])
 
             # 4-INFLUENCE CAP, APPLIED HERE ON PURPOSE. Matching to the body's split
             # can give a vert a 5th influence, and Skyrim's skin partition only holds
@@ -2634,6 +2950,48 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
             return 0
     return total
 
+def _bone_side(name: str) -> "str | None":
+    """'L' or 'R' for a sided bone -- a standalone L / R token, as in
+    `NPC L Thigh [LThg]` or `L Breast01` -- and None for a midline bone
+    (`NPC Pelvis [Pelv]`, and `NPC LB Anus2`, whose token is LB). #part-pair-bilateral"""
+    toks = (name or "").replace("[", " ").split()
+    if "L" in toks:
+        return "L"
+    if "R" in toks:
+        return "R"
+    return None
+
+
+def _part_is_bilateral(rows, idx, frac: float, sample: int = 600) -> bool:
+    """Does this part sit on BOTH sides of the body?
+
+    True when at least `frac` of its verts put more than half their weight on
+    LEFT-sided bones AND at least `frac` put more than half on RIGHT-sided ones.
+    Pass the AUTHOR's rows: the answer is a property of the garment, and no pass
+    of ours should be able to change it. Large parts are sampled evenly.
+    #part-pair-bilateral"""
+    idx = np.asarray(idx)
+    if not len(idx):
+        return False
+    if len(idx) > sample:
+        idx = idx[np.linspace(0, len(idx) - 1, sample).astype(int)]
+    n_l = n_r = 0
+    for vi in idx:
+        left = right = 0.0
+        for b, w in rows[int(vi)].items():
+            sd = _bone_side(b)
+            if sd == "L":
+                left += w
+            elif sd == "R":
+                right += w
+        if left > 0.5:
+            n_l += 1
+        elif right > 0.5:
+            n_r += 1
+    need = max(1, int(np.ceil(frac * len(idx))))
+    return n_l >= need and n_r >= need
+
+
 def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     """Give cross-shape coincident verts ONE weight row. Returns verts unified.
 
@@ -2666,8 +3024,10 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
         return out
 
     # Authored physics geometry is off limits to every skin pass here.
-    collider_names = _nc()._hdt_collider_shape_names(dst_path, nif=nf)
-    softbody_names = _nc()._hdt_softbody_shape_names(dst_path, nif=nf)
+    collider_names = _nc()._hdt_collider_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
+    softbody_names = _nc()._hdt_softbody_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
 
     cand = [s for s in nf.shapes
             if (s.name or "") not in _nc().RESKIN_SKIP_NAMES
@@ -2686,7 +3046,7 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     # rows nothing can use is pure cost.
     src_rows: dict = {}
     try:
-        snf = pyn.NifFile(filepath=str(src_nif_path))
+        snf = _nc()._open_source_nif(src_nif_path)   # #dup-shape-names
         for ss in snf.shapes:
             nm = ss.name or ""
             if (want.get(nm) == len(ss.verts)
@@ -2890,6 +3250,7 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     changed: dict = _dd(set)
     if _nc().PART_PAIR_ALIGN and len(_all_parts) > 1:
         try:
+            _bil_guard = _nc().PART_PAIR_BILATERAL_GUARD
             _pmean = []
             for k, idx in _all_parts:
                 e = ents[k]
@@ -2900,29 +3261,69 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
                         mo[b] += w / len(idx)
                     for b, w in e["src"][int(vi)].items():
                         ma[b] += w / len(idx)
+                bil = (_bil_guard and _part_is_bilateral(
+                    e["src"], idx, _nc()._PART_PAIR_BILATERAL_FRAC))
                 _pmean.append((k, idx, dict(mo), dict(ma),
-                               cKDTree(e["wv"][idx])))
+                               cKDTree(e["wv"][idx]), bil))
             for _i in range(len(_pmean)):
-                ki, ii, moi, mai, ti = _pmean[_i]
+                ki, ii, moi, mai, ti, bi = _pmean[_i]
                 for _j in range(_i + 1, len(_pmean)):
-                    kj, ij, moj, maj, _tj = _pmean[_j]
+                    kj, ij, moj, maj, tj, bj = _pmean[_j]
                     # adjacency, cheapest test first
                     d, _q = ti.query(ents[kj]["wv"][ij])
                     if d.min() > _nc()._PART_PAIR_NEAR:
                         continue
-                    lo = sum(abs(moi.get(b, 0.0) - moj.get(b, 0.0))
-                             for b in set(moi) | set(moj))
-                    la = sum(abs(mai.get(b, 0.0) - maj.get(b, 0.0))
-                             for b in set(mai) | set(maj))
-                    if lo <= la + _nc()._PART_PAIR_MARGIN or lo <= 1e-6:
-                        continue
-                    s = 0.5 * (1.0 - (la + _nc()._PART_PAIR_MARGIN) / lo)
-                    if s <= 0:
-                        continue
-                    for (kk, idxk, mk) in ((ki, ii, moi), (kj, ij, moj)):
-                        other = moj if kk is ki and idxk is ii else moi
-                        M = {b: 0.5 * (mk.get(b, 0.0) + other.get(b, 0.0))
-                             for b in set(mk) | set(other)}
+                    if bi and bj:
+                        continue    # #part-pair-bilateral: neither has a mean to move
+                    if bi or bj:
+                        # #part-pair-bilateral. The two-sided part never moves.
+                        # Its one-sided partner is judged against -- and moved
+                        # toward -- the two-sided part's rows NEAR it, ours and
+                        # the author's over the same verts. Moving one part the
+                        # whole step closes the same share of the excess as two
+                        # parts each moving half of it.
+                        (kb, ib), (ks, iks, mos, mas, ts) = (
+                            ((ki, ii), (kj, ij, moj, maj, tj)) if bi
+                            else ((kj, ij), (ki, ii, moi, mai, ti)))
+                        dl, _ql = ts.query(ents[kb]["wv"][ib])
+                        loc = np.asarray(ib)[dl <= _nc()._PART_PAIR_LOCAL]
+                        if not len(loc):
+                            continue
+                        eb = ents[kb]
+                        mob: dict = _dd(float)
+                        mab: dict = _dd(float)
+                        for vi in loc:
+                            for b, w in eb["rows"][int(vi)].items():
+                                mob[b] += w / len(loc)
+                            for b, w in eb["src"][int(vi)].items():
+                                mab[b] += w / len(loc)
+                        lo = sum(abs(mos.get(b, 0.0) - mob.get(b, 0.0))
+                                 for b in set(mos) | set(mob))
+                        la = sum(abs(mas.get(b, 0.0) - mab.get(b, 0.0))
+                                 for b in set(mas) | set(mab))
+                        if lo <= la + _nc()._PART_PAIR_MARGIN or lo <= 1e-6:
+                            continue
+                        s = 0.5 * (1.0 - (la + _nc()._PART_PAIR_MARGIN) / lo)
+                        if s <= 0:
+                            continue
+                        _moves = ((ks, iks, mos, dict(mob)),)
+                    else:
+                        lo = sum(abs(moi.get(b, 0.0) - moj.get(b, 0.0))
+                                 for b in set(moi) | set(moj))
+                        la = sum(abs(mai.get(b, 0.0) - maj.get(b, 0.0))
+                                 for b in set(mai) | set(maj))
+                        if lo <= la + _nc()._PART_PAIR_MARGIN or lo <= 1e-6:
+                            continue
+                        s = 0.5 * (1.0 - (la + _nc()._PART_PAIR_MARGIN) / lo)
+                        if s <= 0:
+                            continue
+                        _moves = tuple(
+                            (kk, idxk, mk,
+                             {b: 0.5 * (mk.get(b, 0.0) + other.get(b, 0.0))
+                              for b in set(mk) | set(other)})
+                            for (kk, idxk, mk, other) in (
+                                (ki, ii, moi, moj), (kj, ij, moj, moi)))
+                    for (kk, idxk, mk, M) in _moves:
                         e = ents[kk]
                         pal = e["pal"]
                         for vi in idxk:
@@ -3295,7 +3696,7 @@ def _cap_weight_roughness_to_author(dst_path, src_nif_path=None) -> int:
     try:
         pyn = _nc()._pynifly()
         nf = pyn.NifFile(filepath=str(dst_path))
-        snf = pyn.NifFile(filepath=str(src_nif_path))
+        snf = _nc()._open_source_nif(src_nif_path)   # #dup-shape-names
     except Exception as _oe:
         _note_pass_failure("_cap_weight_roughness_to_author/open", _oe)
         return 0
@@ -3580,7 +3981,7 @@ def _hold_weights_at_smp_boundary(dst_path, src_nif_path=None) -> int:
     try:
         pyn = _nc()._pynifly()
         nf = pyn.NifFile(filepath=str(dst_path))
-        snf = pyn.NifFile(filepath=str(src_nif_path))
+        snf = _nc()._open_source_nif(src_nif_path)   # #dup-shape-names
     except Exception as _oe:
         _note_pass_failure("_hold_weights_at_smp_boundary/open", _oe)
         return 0
@@ -4012,6 +4413,39 @@ def _sync_weight_partner_jiggle_loaded(path0, path1, nf) -> int:
                           f"synced {total} vert(s) across the weight pair")
     return total
 
+def _layered_cloth_jiggle_regions(dst_path, nf, layered_cloth_names) -> frozenset:
+    """The jiggle REGIONS `_transfer_body_jiggle_to_fitted` may still graft onto
+    this piece's layered-cloth shapes; empty = skip them outright, as before.
+
+    #layered-cloth-butt-follow: the butt only, and only on a piece with no
+    physics XML -- every SMP interaction behind `#layered-cloth-skin` needed one.
+    See LAYERED_CLOTH_BUTT_JIGGLE for the measurements. The XML is read only when
+    the piece has layered cloth and the flag is on."""
+    if not (layered_cloth_names and _nc().LAYERED_CLOTH_BUTT_JIGGLE):
+        return frozenset()
+    if _nc()._piece_has_hdt_xml(dst_path, nif=nf,
+                                 stem_scan=_nc()._dst_xml_stem_scan()):
+        return frozenset()
+    return frozenset(_nc()._LAYERED_CLOTH_JIGGLE_REGIONS)
+
+def _jiggle_regions_closed(bw, open_regions=None) -> set:
+    """The jiggle regions the graft must NOT touch on a shape with weights `bw`.
+
+    A region the shape already carries on `_CONFORM_MIN_JIGGLE_VERTS` or more
+    verts (#region-jiggle-gate) and, for a layered-cloth shape (`open_regions`
+    given), every region outside `open_regions` (#layered-cloth-butt-follow)."""
+    have = {kw: 0 for kw in _nc().PHYSICS_JIGGLE_SCALE_KEYWORDS}
+    for b, pairs in bw.items():
+        kw = _jiggle_region_of(b)
+        if kw is not None:
+            have[kw] += sum(1 for _vi, w in pairs if float(w) > 0.1)
+    closed = {kw for kw, c in have.items()
+              if c >= _nc()._CONFORM_MIN_JIGGLE_VERTS}
+    if open_regions is not None:
+        closed |= {kw for kw in _nc().PHYSICS_JIGGLE_SCALE_KEYWORDS
+                   if kw not in open_regions}
+    return closed
+
 def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0,
                                     src_nif_path=None) -> int:
     """Graft the UBE body's jiggle (butt/belly/breast) weight onto a fitted
@@ -4028,7 +4462,9 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0,
     identity global-to-skin (the graft is skipped otherwise, see _body_jiggle_ref).
     Leg-dominant garments plus fitted TORSO garments (corset / bra / cuirass);
     the torso path (default ON since 1.2, in-game validated via the bust collider
-    split) is opt-out behind CBBE2UBE_TORSO_JIGGLE=0.  #torso-jiggle-graft"""
+    split) is opt-out behind CBBE2UBE_TORSO_JIGGLE=0.  #torso-jiggle-graft
+    Layered cloth takes the BUTT region only, and only on a piece with no physics
+    XML (#layered-cloth-butt-follow); every other gate applies to it unchanged."""
     if not _nc().TRANSFER_BODY_JIGGLE:
         return 0
     if biped_slots & (_nc().BIPED_SLOT33_BIT | _nc().BIPED_SLOT37_BIT):
@@ -4050,8 +4486,10 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0,
     if _nc()._nif_has_fx_shape(nf):
         return 0  # effect-shader/glow NIF: a reload+re-save corrupts its controller -> CTD.
                   # Leave it exactly as the main conversion wrote it (see _nif_has_fx_shape).
-    collider_names = _nc()._hdt_collider_shape_names(dst_path, nif=nf)
-    softbody_names = _nc()._hdt_softbody_shape_names(dst_path, nif=nf)
+    collider_names = _nc()._hdt_collider_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
+    softbody_names = _nc()._hdt_softbody_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
     # Same rule as the reskin and the leg-bend graft: a shape driven by its OWN
     # source morph TRI already tracks the body at runtime on its ORIGINAL skin.
     #
@@ -4068,14 +4506,19 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0,
                        if (src_nif_path and _nc().MORPHTRI_NO_LEG_GRAFT
                            and not _nc().MORPHTRI_KEEP_JIGGLE) else set())
     layered_cloth_names = _layered_cloth_shape_names(nf.shapes)  # keep source skin
+    # #layered-cloth-butt-follow: what a layered-cloth shape may still take here --
+    # the butt, on a piece with no physics XML. Empty keeps the blanket skip.
+    layered_regions = _layered_cloth_jiggle_regions(dst_path, nf, layered_cloth_names)
     # Lazy: with the gate OFF this pass must do NO extra work at all.
     _skip_keys = _nc()._conform_skip_keys(
-        _nc()._piece_has_hdt_xml(dst_path, nif=nf) if _nc().DRAPE_SKIP_XML_GATED else None)
+        _nc()._piece_has_hdt_xml(dst_path, nif=nf,
+                                 stem_scan=_nc()._dst_xml_stem_scan()) if _nc().DRAPE_SKIP_XML_GATED else None)
     total = 0
     dirty = False
     for s in nf.shapes:
         nm = (s.name or "").lower()
-        if (s.name in softbody_names or s.name in layered_cloth_names
+        layered = s.name in layered_cloth_names
+        if (s.name in softbody_names or (layered and not layered_regions)
                 or s.name in morph_tri_names
                 or any(k in nm for k in _skip_keys)):
             continue
@@ -4133,14 +4576,10 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0,
         #
         # `already` is then used to filter the per-vert graft below, so a region the
         # shape ALREADY carries is left untouched -- this must not re-graft over
-        # chest-follow's measured ratio.
-        have = {kw: 0 for kw in _nc().PHYSICS_JIGGLE_SCALE_KEYWORDS}
-        for b, pairs in bw.items():
-            kw = _jiggle_region_of(b)
-            if kw is not None:
-                have[kw] += sum(1 for _vi, w in pairs if float(w) > 0.1)
-        already = {kw for kw, c in have.items()
-                   if c >= _nc()._CONFORM_MIN_JIGGLE_VERTS}
+        # chest-follow's measured ratio. On a layered-cloth shape every region
+        # outside `layered_regions` counts as closed too, which is what keeps
+        # breast and belly off the cloth (#layered-cloth-butt-follow).
+        already = _jiggle_regions_closed(bw, layered_regions if layered else None)
         if len(already) >= len(_nc().PHYSICS_JIGGLE_SCALE_KEYWORDS):
             continue        # every region present -> genuinely the conform's job
         try:
@@ -4447,6 +4886,28 @@ def compute_body_blend_skinning(
     inv_d = 1.0 / (knn_d + 1e-6)
     inv_d /= inv_d.sum(axis=1, keepdims=True)
 
+    # #covered-skin-target. This K-NN propagation is the FIRST decision on a
+    # body-swap garment's row (traced 2026-09-17: it wrote the reported gusset's
+    # R Thigh 0.421 / Pelvis 0.549 from the inner-thigh skin 0.65u away, while the
+    # same panel passes over the pelvis-static cleft 4u further on). A vertex
+    # that COVERS skin -- the body vertices whose nearest garment vertex it is --
+    # takes the clearance-weighted mean of THAT skin instead, inside the crotch
+    # and hip band. The K-NN answer stands everywhere else.
+    _cov_rows: dict = {}
+    if _nc().COVERED_SKIN_TARGET:
+        _nb = _nc()._body_normals_or_compute(body_shape)
+        if _nb is not None and len(_nb) == body_n:
+            _zb, _xb = body_verts[:, 2], body_verts[:, 0]
+            _cband = ((_zb >= _nc()._COVER_Z_LO) & (_zb <= _nc()._COVER_Z_HI)
+                      & (np.abs(_xb) < _nc()._COVER_X))
+            _cover, _clr = _covered_skin_map(armor_verts, body_verts, _nb, _cband,
+                                             _nc()._COVER_REACH)
+            for _gi, _bis in _cover.items():
+                if len(_bis) < _nc()._COVER_MIN_VERTS:
+                    continue
+                _w = 1.0 / (np.maximum(_clr[_bis], 0.0) + _nc()._COVER_EPS)
+                _cov_rows[_gi] = (np.asarray(_bis, dtype=np.int64), _w / _w.sum())
+
     # Dense body bone-weights for fast K-NN lookup.
     body_weights_dense: dict[str, np.ndarray] = {}
     for bn, pairs in (body_shape.bone_weights or {}).items():
@@ -4512,7 +4973,10 @@ def compute_body_blend_skinning(
         if _nc().RESKIN_EXCLUDE_SCALE_BONES and _is_scale_bone(bn):
             continue
         # K-NN propagation
-        propagated = (body_arr[knn_idx] * inv_d).sum(axis=1) * blend
+        propagated = (body_arr[knn_idx] * inv_d).sum(axis=1)
+        for _gi, (_bis, _w) in _cov_rows.items():
+            propagated[_gi] = float((body_arr[_bis] * _w).sum())
+        propagated *= blend
         if not np.any(propagated > 1e-7):
             continue
         if bn in final_dense:

@@ -121,6 +121,19 @@ def _wv(s):
     return V, pv
 
 
+def _frame(s, world, tree):
+    """`world` or the raw verts -- whichever actually lands on the body.
+
+    78 of the 84 double-transformed shapes in the shipped pack survive this
+    script's collider and not-rendered filters, so the filters do NOT stand in
+    for placing the shape: they catch 6. The body itself is safe to leave on
+    the plain call -- of those 84, zero are BaseShape.
+    """
+    from scripts.analysis import standoff_audit as _sa
+    V, _which = _sa.pick_frame(_np.asarray(s.verts, _np.float64), world, tree)
+    return V
+
+
 def _breast(dv):
     return sum(w for b, w in dv.items() if BREAST_RE.search(b))
 
@@ -197,6 +210,7 @@ def check_one(rel_and_root):
                     if not _nc._shape_is_rigid_torso_armor(s):
                         continue
                     gV, gW = _wv(s)
+                    gV = _frame(s, gV, tree)
                 except Exception:
                     continue
                 z = gV[:, 2]
@@ -229,7 +243,7 @@ def check_one(rel_and_root):
                 if not any(v for v in (s.textures or {}).values()):
                     continue                       # not rendered
                 try:
-                    parts.append((_wv(s)[0],
+                    parts.append((_frame(s, _wv(s)[0], tree),
                                   _np.asarray(s.tris, _np.int64).reshape(-1, 3)))
                 except Exception:
                     continue

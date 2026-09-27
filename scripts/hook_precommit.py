@@ -14,13 +14,22 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""pre-commit body: block a staged change that would leak.
+"""pre-commit body: block a staged change that would leak, and a commit made
+where no commit belongs.
 
 Reads the STAGED content (`git show :path`), not the working tree, so a partial
 `git add -p` is judged on what is actually about to be committed.
+
+Two refusals sit beside the content rules (#worktree-per-branch): a commit on
+an integration branch, and a commit in the primary checkout on any branch --
+work is committed on a lane in a linked worktree, and main and testing change
+only by a merged pull request. And a checkout without the asset denylist is
+refused rather than passed on nothing (#hook-fail-closed); a linked worktree,
+which starts without a copy of an untracked file, reads the primary checkout's.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -64,6 +73,56 @@ def git_failed_report(what: str, verb: str, exc: GitFailed) -> str:
             f"was checked\n\n  {exc}\n\nA check that could not read the repository "
             "is not a pass. Fix the cause above,\n"
             f"or `git {verb} --no-verify` if you are certain.\n\n")
+
+
+def primary_checkout_root():
+    """The primary checkout's root: this directory for the primary checkout
+    itself, the main worktree's for a linked one, None outside a repository."""
+    try:
+        common = _run("git", "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+    except GitFailed:
+        return None
+    return Path(common).parent
+
+
+def find_denylist(root):
+    """(pattern, count, where): this checkout's denylist, else the primary
+    checkout's, else (None, 0, None). A linked worktree starts without a copy
+    of an untracked file, and every lane is one. #worktree-per-branch"""
+    pattern, n = H.load_denylist(root)
+    if pattern is not None:
+        return pattern, n, Path(root)
+    primary = primary_checkout_root()
+    if primary is not None and primary.resolve() != Path(root).resolve():
+        pattern, n = H.load_denylist(primary)
+        if pattern is not None:
+            return pattern, n, primary
+    return None, 0, None
+
+
+def denylist_for_hook(root, problems):
+    """The denylist a hook scans with. Absent everywhere, the hook refuses
+    (#hook-fail-closed) unless the gap is acknowledged for this one command, in
+    which case it warns and the other rules still run."""
+    pattern, _n, _where = find_denylist(root)
+    if pattern is None:
+        absent = H.no_denylist_problem(os.environ.get(H.NO_DENYLIST_ENV) == "1")
+        if absent:
+            problems.append(absent)
+        else:
+            sys.stderr.write(H.no_denylist_warning())
+    return pattern
+
+
+def checkout_facts():
+    """(the branch HEAD is on, or None when detached; whether this is the
+    primary checkout rather than a linked worktree)."""
+    r = subprocess.run(["git", "symbolic-ref", "--short", "-q", "HEAD"],
+                       capture_output=True, text=True, errors="replace")
+    branch = r.stdout.strip() if r.returncode == 0 else None
+    git_dir = _run("git", "rev-parse", "--path-format=absolute", "--git-dir").strip()
+    common = _run("git", "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+    return branch, Path(git_dir).resolve() == Path(common).resolve()
 
 
 def path_problems(paths, read_bytes, denylist) -> "list[str]":
@@ -138,9 +197,18 @@ def _check_staged() -> int:
     staged = [p for p in _run("git", "diff", "--cached", "--name-only",
                               "--diff-filter=ACMR").splitlines() if p]
     root = Path(__file__).resolve().parent.parent
-    denylist, _deny_n = H.load_denylist(root)
-    problems = path_problems(staged, lambda p: _run_bytes("git", "show", f":{p}"),
-                             denylist)
+    problems: list[str] = []
+
+    # Where the commit is being made, before what it carries. #worktree-per-branch
+    branch, in_primary = checkout_facts()
+    misplaced = H.commit_location_problem(
+        branch, in_primary, os.environ.get(H.COMMIT_HERE_ENV) == "1")
+    if misplaced:
+        problems.append(misplaced)
+
+    denylist = denylist_for_hook(root, problems)
+    problems += path_problems(staged, lambda p: _run_bytes("git", "show", f":{p}"),
+                              denylist)
 
     # exit 1 means unset, which check_identity reports itself
     ident = H.check_identity(_run("git", "config", "user.email", ok=(0, 1)).strip())
@@ -149,11 +217,6 @@ def _check_staged() -> int:
 
     if problems:
         sys.stderr.write("\nCOMMIT BLOCKED -- public-repo hygiene\n\n")
-        if denylist is None:
-            sys.stderr.write(
-                f"  (no {H.DENYLIST_FILE} on this machine, so NO "
-                "asset-name check ran -- zero coverage, not a pass)"
-                + chr(10) * 2)
         for p in problems:
             sys.stderr.write(f"  {p}\n")
         sys.stderr.write(

@@ -142,6 +142,56 @@ def reads_source(text) -> bool:
                                    "splitlines"))
 
 
+# A tool that ENUMERATES the shipped pack by globbing weight 1 only. Not a
+# defect on its own -- `morph_sweep` scores a RATE per garment, and `_0`/`_1`
+# are one garment at two weights, so scanning both would double-count it. It is
+# a defect when the tool never SAYS so, because weight 0 is a separately
+# authored mesh, not a scaled copy: measured on one cuirass, bust-front clipping
+# read 4.52% at weight 1 and 9.48% at weight 0. A silent `*_1.nif` glob is
+# therefore a claim about "the output" made over half of it, and the worse half
+# is the missing one. `standoff_audit.output_nifs` exists for exactly this and
+# says so in its own docstring -- where it counted FIFTEEN such scripts. It is
+# 23 now, which is the point: the population shrank without anyone deciding to.
+ENUMERATES_W1 = re.compile(r'(?:glob\.glob|\.rglob|glob)\s*\(\s*[^)]*\*_1\.nif')
+DECLARES_WEIGHTS = re.compile(r'_1`? only|weight 1 only|both weights|WEIGHTS:',
+                              re.I)
+
+
+def surveys_half_the_pack(path: Path) -> bool:
+    """True when this tool globs weight 1 only and never declares that it does.
+
+    Using `output_nifs` counts as declaring it: that helper takes both weights
+    by default and documents the trade.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    if not ENUMERATES_W1.search(text):
+        return False
+    if "output_nifs" in text:
+        return False
+    try:
+        doc = ast.get_docstring(ast.parse(text)) or ""
+    except SyntaxError:
+        doc = ""
+    return not DECLARES_WEIGHTS.search(doc)
+
+
+def half_pack_tools(dirs=None):
+    """Every tracked tool that surveys weight 1 only without saying so."""
+    out = []
+    for d in (dirs if dirs is not None else TOOL_DIRS):
+        if "scratchpad" in Path(d).as_posix():
+            continue
+        for p in sorted(Path(d).rglob("*.py")):
+            if "__pycache__" in p.as_posix():
+                continue
+            if surveys_half_the_pack(p):
+                out.append(p)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--full", action="store_true",
@@ -204,6 +254,20 @@ def main() -> int:
         if len(undoc) > 10:
             print(f"  ... and {len(undoc) - 10} more (--full)")
     if not undoc:
+        print("  none")
+
+    half = half_pack_tools()
+    print(f"\n=== 4. SURVEYS HALF THE PACK WITHOUT SAYING SO ({len(half)}) ===")
+    print("    weight 0 is a separately authored mesh, not a scaled copy, and")
+    print("    on one measured cuirass it clipped 9.48% against weight 1's")
+    print("    4.52%. Scoping to `_1` can be right -- scoring a per-garment")
+    print("    RATE over both halves double-counts it -- but it has to be")
+    print("    SAID, or the tool reports on half the pack as if it were all.")
+    for p in (half if args.full else half[:10]):
+        print(f"  {rel(p)}")
+    if not args.full and len(half) > 10:
+        print(f"  ... and {len(half) - 10} more (--full)")
+    if not half:
         print("  none")
 
     print(f"\nsource-parsing tools that DO assert a floor: {ok}")

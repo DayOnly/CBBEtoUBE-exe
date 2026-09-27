@@ -88,7 +88,7 @@ def _run_precreate(tmp_path, xml_text):
 def test_zeroweight_xml_constraint_bones_are_recreated(tmp_path, monkeypatch):
     # With the physics XML naming them, the zero-weight chain must be rebuilt.
     _cs.patch(monkeypatch, "_read_source_hdt_xml_text",
-                        lambda p, nif=None: _XML)
+                        lambda p, nif=None, stem_scan=True: _XML)
     names = _run_precreate(tmp_path, _XML)
     assert "CustomSkirtBone01" in names, "SMP constraint bone dropped (skirt falls)"
     assert "CustomSkirtBone02" in names, "SMP constraint chain incomplete"
@@ -97,7 +97,7 @@ def test_zeroweight_xml_constraint_bones_are_recreated(tmp_path, monkeypatch):
 def test_constraint_chain_parent_link_survives_save(tmp_path, monkeypatch):
     # SMP walks the NIF hierarchy: the chain must reload parented, not flat.
     _cs.patch(monkeypatch, "_read_source_hdt_xml_text",
-                        lambda p, nif=None: _XML)
+                        lambda p, nif=None, stem_scan=True: _XML)
     pyn = nc._pynifly()
     _run_precreate(tmp_path, _XML)
     rl = pyn.NifFile(filepath=str(tmp_path / "dst.nif"))
@@ -111,7 +111,7 @@ def test_no_xml_leaves_zeroweight_bones_dropped(tmp_path, monkeypatch):
     # zero-weight bones are (correctly) absent -- proving the XML seed is the
     # thing that saves the chain, not some incidental copy.
     _cs.patch(monkeypatch, "_read_source_hdt_xml_text",
-                        lambda p, nif=None: None)
+                        lambda p, nif=None, stem_scan=True: None)
     names = _run_precreate(tmp_path, None)
     assert "CustomSkirtBone01" not in names
     assert "CustomSkirtBone02" not in names

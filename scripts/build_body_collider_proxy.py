@@ -148,15 +148,35 @@ def repoint_xml(xml_path: Path) -> str:
 
 
 def process(nif_path: Path, target: int):
+    """Inject + repoint. Returns (nif_msg, xml_msg) so the caller can tell a
+    CHANGED armor from a visited one, and can catch a half-applied pair."""
     print(f"\n{nif_path.name}")
-    print("  ", inject_proxy(nif_path, target))
+    nif_msg = inject_proxy(nif_path, target)
+    print("  ", nif_msg)
     # repoint the shared (weightless) xml referenced by this nif
     stem = nif_path.stem
     for suf in ("_0", "_1"):
         if stem.endswith(suf):
             stem = stem[:-2]
             break
-    print("  ", repoint_xml(nif_path.parent / (stem + ".xml")))
+    xml_msg = repoint_xml(nif_path.parent / (stem + ".xml"))
+    print("  ", xml_msg)
+    return nif_msg, xml_msg
+
+
+def pair_is_broken(nif_msg: str, xml_msg: str) -> bool:
+    """A HALF-APPLIED armor, which is the state this tool exists to avoid.
+
+    Both halves must land together. A NIF that gained a VirtualBody while its
+    XML still names BaseShape collides against the 29k shape and OOB-crashes
+    FSMP exactly as before -- the tool "succeeded" and fixed nothing. The
+    mirror (XML repointed, no proxy in the NIF) leaves the XML pointing at a
+    shape that does not exist. "already has VirtualBody" + "not-baseshape" is
+    the normal re-run case and is NOT broken.
+    """
+    injected = nif_msg.startswith("ok:")
+    repointed = xml_msg == "xml-repointed"
+    return injected != repointed
 
 
 def main():
@@ -167,19 +187,46 @@ def main():
     a = ap.parse_args()
     if a.batch:
         root = Path(a.batch)
+        if not root.is_dir():
+            print(f"no such directory: {root}")
+            raise SystemExit(2)
         xmls = [p for p in root.rglob("*.xml")
                 if '<per-triangle-shape name="BaseShape">' in p.read_text("utf-8", "ignore")]
         print(f"batch: {len(xmls)} armors use the full-body collider")
-        n = 0
+        # "batch: 0 armors ... processed 0 NIFs" at exit 0 was the whole bug:
+        # a wrong meshes root reported the same thing as a pack with no
+        # oversized colliders left to fix.
+        if not xmls:
+            print(f"found NO xml naming BaseShape as a per-triangle collider "
+                  f"under {root} -- nothing to do, or the wrong root. Not a "
+                  "verdict about that pack.")
+            raise SystemExit(3)
+        n = changed = broken = 0
         for x in xmls:
             for c in (x.with_name(x.stem + "_1.nif"), x.with_name(x.stem + ".nif"),
                       x.with_name(x.stem + "_0.nif")):
                 if c.is_file():
-                    process(c, a.target)
+                    nif_msg, xml_msg = process(c, a.target)
                     n += 1
-        print(f"\nprocessed {n} NIFs")
+                    changed += nif_msg.startswith("ok:")
+                    broken += pair_is_broken(nif_msg, xml_msg)
+        # `n` counted NIFs VISITED and was printed as "processed". Say both.
+        print(f"\nvisited {n} NIF(s); injected a proxy into {changed}; "
+              f"half-applied pairs: {broken}")
+        if broken:
+            print("HALF-APPLIED: a NIF and its XML disagree -- those armors "
+                  "still collide against the full-size shape. Re-run after "
+                  "fixing the cause; do not ship them.")
+            raise SystemExit(1)
+        if not changed:
+            print("nothing was injected -- every candidate was skipped. "
+                  "Check the report above before treating this as done.")
+            raise SystemExit(3)
     elif a.nif:
-        process(Path(a.nif), a.target)
+        nif_msg, xml_msg = process(Path(a.nif), a.target)
+        if pair_is_broken(nif_msg, xml_msg):
+            print("HALF-APPLIED: NIF and XML disagree.")
+            raise SystemExit(1)
     else:
         ap.error("give a NIF or --batch")
 

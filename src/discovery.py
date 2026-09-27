@@ -32,11 +32,14 @@ Mode of operation:
 from __future__ import annotations
 
 import logging
+import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import nif_io
 from .envflags import flag as _flag
+from .user_warnings import plain_error
 
 
 log = logging.getLogger("discovery")
@@ -166,17 +169,559 @@ def _has_3ba_body(nif_path: Path) -> bool:
     return False
 
 
+# #zeroed-output-source. The tiers in build_mesh_index rank every BodySlide
+# output below a mod's own meshes, on the premise that an output is the mesh
+# morphed to a body preset and the mod's meshes are what BodySlide builds from.
+# Neither holds in general: BodySlide builds from the ShapeData project, and a
+# mod's loose meshes may be made for ANOTHER body. Measured 2026-09-22 on an
+# armour whose loose meshes were made for the vanilla body: the fit, which
+# starts from the zeroed CBBE body, kept their 2.6u-looser bust and 1.0u-tighter
+# inner thigh as the author's gap -- inflated breasts, inner-thigh and butt
+# clipping in game -- while the BodySlide output of the same armour was its
+# zeroed 3BA build to 0.000u (bust +3.58u -> +1.41u, author +0.82u).
+#
+# So a piece is taken from the BodySlide output that provides the zeroed CBBE
+# body the fit uses, and ONLY when every one of these holds; anything else
+# keeps today's source:
+#   1. the fit's CBBE reference at both weights IS that zeroed body;
+#   2. both weights of the output ARE the zeroed build of one slider set, every
+#      shape checked vertex for vertex (zeroed_body.zeroed_garment);
+#   3. today's source is a mod's own meshes (tier 0) and is NOT already that build;
+#   4. today's source and the output agree on whether the piece declares HDT
+#      physics -- a physics change is not this fix's to make -- except, when
+#      opted in, the physics GAIN below (#zeroed-smp-gain);
+#   5. the build has the same shapes, with the same vertex counts, as today's
+#      source at both weights -- only the geometry changes, never the pass chain
+#      (a build that bundles the 3BA body would switch the piece to body-swap).
+#      A physics gain waives this one: its build is another design by nature.
+# CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE=1 (settings window: "Take armour from the
+# zeroed BodySlide build") leaves the tiers alone -- the off-switch control.
+#
+# #zeroed-smp-gain (2026-09-25, user decision; OPT-IN since 2026-09-26). Rules
+# 4 and 5 held back every vanilla-armour piece whose SMP loose mesh the
+# within-tier body match had swapped for a static prebuilt one (its loose mesh
+# bundles a bespoke body): the user's zeroed BodySlide build of the SMP design
+# was verified, carries the zeroed body, and was refused only for its physics.
+# CBBE wearers load that build; UBE wearers got a static skirt.
+# OFF BY DEFAULT (2026-09-26, user decision after seeing it in game): the SMP
+# builds are authored looser than the static pieces -- measured on the 17 bases
+# the gain took, one cuirass's rear-hip gap p50 1.19 -> 2.50u and p90 3.64 ->
+# 6.31u, an outfit's rear p90 1.67 -> 6.26u, another's torso p90 3.75 -> 6.34u
+# -- and the user saw a large gap between the body's rear and the armour.
+# CBBE2UBE_ZEROED_SMP_GAIN=1 turns it on. With it set, a piece whose SOURCE
+# declares no physics and whose verified build declares it at both weights
+# takes the build, physics and all, when every one of these holds (else rule 4
+# stands):
+#   a. today's source and the build both carry a body the converter swaps out
+#      (nif_convert._looks_like_inline_body), at both weights -- so the pass
+#      chain is body-swap on both sides, the path the rule-5 regression was not;
+#   b. every sizeable body-skin shape of the build is such a body -- else a body
+#      would ship as cloth;
+#   c. the build's own physics XML pointer resolves, parses, and holds a
+#      generic, stiffspring or conetwist constraint ANYWHERE in the tree (they
+#      often sit inside a <constraint-group>);
+#   d. no shape the XML names, and none that carries a non-skeleton bone it
+#      drives, is a body the converter strips that its collision-proxy re-import
+#      would bring back (nif_convert._is_inline_body_name lets it through): that
+#      re-import is a hidden second body, the equip CTD its own comment names;
+#   e. every SIMULATED collision shape the XML keeps still has a partner to
+#      collide with (#smp-gain-collision-partner). The conversion prunes every
+#      XML shape block whose name, case for case, is not in the converted NIF
+#      (nif_convert_physics._harden_hdt_xml_for_fsmp) -- the stripped bodies
+#      among them, since after d every stripped shape the XML names is one the
+#      re-import skips. A build that names its body 'body' while the XML's only
+#      body collider is 'Body' passes d (the re-import cannot find it), the
+#      prune then removes that collider, and a skirt 'Proxy' that collides only
+#      with the tag 'Body' carried collides with NOTHING -- worse than the
+#      static source it replaced. The survivors are replayed as FSMP reads them:
+#      a shape simulates when any of its skin bones has mass (bone-default and
+#      bone templates in document order; a bone first met undeclared, in a shape
+#      or a constraint, takes the unnamed default as it stands then and keeps
+#      it), and two shapes collide only when each allows the
+#      other's tags (its can-collide-with-tag list, or, when that is empty, no
+#      tag of its no-collide-with-tag list), tags compared without case. The
+#      converter's own later colliders do not count and need not: the butt
+#      collider clones a surviving kinematic block's tags, so it partners no
+#      shape that block does not, and the chest collider is off by default.
+#      The prune replayed is the conversion's own (nif_convert_physics.
+#      _hdt_shape_prune): LINE-based, so a partner block, a bone or a
+#      constraint that shares a line with a dropped block goes with it; a pruned
+#      text that no longer parses is refused. And when the prune takes EVERY
+#      simulated shape while the XML still makes a drawn shape's skin bone
+#      simulate, the chain swings that cloth with no collision shape at all --
+#      refused too. (An XML the author wrote with no simulated shape is not
+#      this rule's to judge.)
+#      CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1 drops this rule.
+# Unset, rule 4 stands as it was. The old off-switch CBBE2UBE_NO_ZEROED_SMP_GAIN
+# is no longer read: all it ever asked for, rule 4 as it was, is now the
+# default, so a recipe that still sets it gets exactly that; read as a veto it
+# would be a second switch that could silently defeat the opt-in.
+_HDT_MARKER = b"HDT Skinned Mesh Physics Object"
+_ZOS_SAID: "set[str]" = set()
+_SMP_CONSTRAINT_TAGS = frozenset({"generic-constraint", "stiffspring-constraint",
+                                  "conetwist-constraint"})
+_SMP_SHAPE_NAME_RE = re.compile(r'<per-(?:triangle|vertex)-shape\s+name="([^"]+)"')
+_SMP_BONE_RE = re.compile(r'<bone\s+name="([^"]+)"|\bbody[AB]="([^"]+)"')
+
+
+def _zos_say(msg: str) -> None:
+    """Once per message per process, on stderr -- no parsed report gains a line."""
+    import sys
+    if msg not in _ZOS_SAID:
+        _ZOS_SAID.add(msg)
+        print(msg, file=sys.stderr, flush=True)
+
+
+def _declares_physics(path: Path) -> "bool | None":
+    """Whether the NIF names an HDT physics XML, or None when it cannot be read.
+    A byte search, not pynifly's extra-data walk: that walk stops at the first
+    block it cannot build and would report a declared XML as absent."""
+    try:
+        return _HDT_MARKER in Path(path).read_bytes()
+    except OSError:
+        return None
+
+
+def _zeroed_smp_gain() -> bool:
+    """#zeroed-smp-gain: may a verified zeroed build bring SMP physics to a piece
+    whose source has none? Only when asked: CBBE2UBE_ZEROED_SMP_GAIN=1. Off by
+    default since 2026-09-26 -- those builds sit looser on the body."""
+    return _flag("CBBE2UBE_ZEROED_SMP_GAIN", False)
+
+
+def _smp_gain_collision_partner() -> bool:
+    """#smp-gain-collision-partner: must a gained XML's simulated shapes keep a
+    partner once the conversion prunes the shapes it drops? Yes, by default.
+    CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1: no (rules a-d only)."""
+    return not _flag("CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER", False)
+
+
+def _smp_shows(s) -> bool:
+    """Whether the game draws shape `s`: it has triangles and its Hidden flag
+    (0x1, the bit the converter sets) is clear; an unreadable flag counts as
+    drawn."""
+    try:
+        hidden = int(getattr(s._backing, "flags", 0) or 0) & 0x1
+    except (TypeError, ValueError, AttributeError):
+        hidden = 0
+    return bool(len(s.verts) and len(s.tris)) and not hidden
+
+
+def _smp_replay(root, kept: list) -> "tuple[str | None, bool, set]":
+    """#zeroed-smp-gain rule e: replay the XML `root` on a NIF whose shapes are
+    `kept`, as FSMP reads it. Returns (the name of a simulated collision shape no
+    other shape can collide with, else None; whether any collision shape
+    simulates; the bones, case-folded, that simulate). A block whose name is not
+    in `kept`, case for case, builds nothing. See rule e above. Element names are
+    read as rule c reads them (an XML with a default xmlns fails c first)."""
+    def key(name) -> str:
+        return (name or "").lower()               # engine strings fold case
+
+    present = {s.name for s in kept}              # the prune's own test: exact
+    skin: "dict[str, list[str]]" = {}
+    for s in kept:
+        bones = [key(b) for b in (s.bone_names or ())]
+        if bones and len(s.verts):                # FSMP builds a body for it
+            skin.setdefault(key(s.name), bones)
+
+    def mass(el, base: float) -> float:
+        for m in el:
+            if m.tag == "mass":
+                try:
+                    return float((m.text or "").strip())
+                except ValueError:
+                    return base
+        return base
+
+    def tags(el, kind: str) -> set:
+        return {(t.text or "").strip().lower() for t in el if t.tag == kind}
+
+    templates = {"": 0.0}                         # bone-default name -> mass
+    bones: "dict[str, float]" = {}                # bone -> mass; first one wins
+
+    def made(name: str) -> None:
+        if name not in bones:                     # the unnamed default, as it stands
+            bones[name] = templates[""]
+
+    def joined(el) -> None:
+        a, b = key(el.get("bodyA")), key(el.get("bodyB"))
+        if a and b and a != b:                    # FSMP makes its bodies' bones
+            made(a)
+            made(b)
+
+    shapes = []
+    for el in root:
+        tag = el.tag
+        if tag == "bone":
+            name = key(el.get("name"))
+            if name and name not in bones:
+                bones[name] = mass(el, templates.get(key(el.get("template")),
+                                                     templates[""]))
+        elif tag == "bone-default":
+            templates[key(el.get("name"))] = mass(
+                el, templates.get(key(el.get("extends")), templates[""]))
+        elif tag in ("per-vertex-shape", "per-triangle-shape"):
+            name = el.get("name")
+            if name not in present or key(name) not in skin:
+                continue                          # pruned, or no body in FSMP
+            dynamic = False
+            for b in skin[key(name)]:
+                made(b)
+                dynamic = dynamic or bones[b] > 0
+            shapes.append({"name": name, "dynamic": dynamic,
+                           "tags": tags(el, "tag"),
+                           "can": tags(el, "can-collide-with-tag"),
+                           "no": tags(el, "no-collide-with-tag")})
+        elif tag in _SMP_CONSTRAINT_TAGS:
+            joined(el)
+        elif tag == "constraint-group":
+            for sub in el:
+                if sub.tag in _SMP_CONSTRAINT_TAGS:
+                    joined(sub)
+
+    def allows(a, b) -> bool:
+        return bool(b["tags"] & a["can"]) if a["can"] else not (b["tags"] & a["no"])
+
+    lone = None
+    for a in shapes:
+        if a["dynamic"] and not any(
+                key(b["name"]) != key(a["name"]) and allows(a, b) and allows(b, a)
+                for b in shapes):
+            lone = a["name"]
+            break
+    return (lone, any(a["dynamic"] for a in shapes),
+            {b for b, m in bones.items() if m > 0})
+
+
+def _gain_nif(path: Path):
+    """The NIF as the converter reads it (nif_io.Nif); release its `_backing`
+    with nif_io.release_nif once its shapes are no longer read."""
+    return nif_io.load_nif(path)
+
+
+def _gain_xml(path: Path) -> "bytes | None":
+    """The bytes of the physics XML the NIF's own pointer names, resolved as the
+    converter resolves it; None when it does not resolve or cannot be read."""
+    from . import nif_convert as _nc
+    from . import nif_convert_physics as _ncp
+    disk = _ncp._read_source_hdt_xml_disk(Path(path))
+    if disk is None:
+        return None
+    try:
+        raw = Path(disk).read_bytes()
+    except OSError:
+        return None
+    if _nc.HDT_XML_SANITISE:
+        raw, _note = _ncp._hdt_sanitise(raw)
+    return raw
+
+
+def _smp_gain_verdict(today: list, build: list, xml: "bytes | None") -> "str | None":
+    """#zeroed-smp-gain rules a-e for ONE weight: None when the build's physics
+    may come with it, else why not. `today`/`build` are the shapes of today's
+    source and of the build, `xml` the build's resolved physics XML."""
+    import xml.etree.ElementTree as ET
+    from . import nif_convert as _nc
+    if not any(_nc._looks_like_inline_body(s) for s in today):
+        return "today's source has no body the converter swaps"
+    bodies = {id(s) for s in build if _nc._looks_like_inline_body(s)}
+    if not bodies:
+        return "the build has no body the converter swaps"
+    for s in build:
+        if id(s) in bodies or not _nc._shape_diffuse_is_body_skin(s):
+            continue
+        z = [float(v[2]) for v in s.verts]
+        if (len(z) >= _BESPOKE_BODY_MIN_VERTS
+                and max(z) - min(z) >= _BESPOKE_BODY_MIN_Z_RANGE):
+            return f"the build's body {s.name!r} would ship as cloth"
+    if xml is None:
+        return "its physics XML does not resolve"
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return "its physics XML does not parse"
+    if not any(el.tag in _SMP_CONSTRAINT_TAGS for el in root.iter()):
+        return "its physics XML has no constraint"
+    text = xml.decode("utf-8", errors="ignore")
+    named = set(_SMP_SHAPE_NAME_RE.findall(text))
+    driven = {b for pair in _SMP_BONE_RE.findall(text) for b in pair
+              if b and not b.lower().startswith("npc ")}
+    # What the body swap strips: the detected bodies, and -- as it may also swap
+    # an exposed body-skin slice -- any other body-skin shape of that size.
+    stripped = [s for s in build
+                if id(s) in bodies or (_nc._shape_diffuse_is_body_skin(s) and
+                                       len(s.verts) >= _nc._EXPOSED_BODY_SKIN_MIN_VERTS)]
+    for s in stripped:
+        if _nc._is_inline_body_name(s.name):
+            continue                      # the re-import never brings it back
+        if s.name in named or driven & set(s.bone_names or ()):
+            return f"its physics XML would bring back the stripped body {s.name!r}"
+    if _smp_gain_collision_partner():             # e. #smp-gain-collision-partner
+        from . import nif_convert_physics as _ncp
+        gone = {id(s) for s in stripped}
+        kept = [s for s in build if id(s) not in gone]
+        # The conversion's own prune, line for line, on the bytes it is handed.
+        try:
+            pruned = ET.fromstring(
+                _ncp._hdt_xml_shape_pruned(xml, {s.name for s in kept}))
+        except ET.ParseError:
+            return ("its physics XML would not parse once the shapes the "
+                    "conversion drops are pruned")
+        lone, simulated, swinging = _smp_replay(pruned, kept)
+        if lone is not None:
+            return (f"its simulated shape {lone!r} would collide with nothing "
+                    f"once the shapes the conversion drops are pruned")
+        # Vacuous: the prune took EVERY simulated shape, but the chain still
+        # swings a drawn mesh -- a cloth with no collision shape at all.
+        if not simulated and swinging and _smp_replay(root, build)[1]:
+            if any(_smp_shows(s) and swinging & {b.lower() for b in s.bone_names or ()}
+                   for s in kept):
+                return ("its cloth would swing with no collision shape once the "
+                        "shapes the conversion drops are pruned")
+    return None
+
+
+def _smp_gain_refusal(cur: "dict[str, Path]", built: "dict[str, Path]") -> "str | None":
+    """None when the verified build may bring its SMP physics to this piece
+    (#zeroed-smp-gain), else the reason it keeps today's source."""
+    if not _zeroed_smp_gain():
+        return "its physics would change"
+    if ({_declares_physics(p) for p in cur.values()} != {False}
+            or {_declares_physics(p) for p in built.values()} != {True}):
+        return "its physics would change"
+    for w in sorted(built):
+        nifs = []
+        try:
+            nifs = [_gain_nif(cur[w])]
+            nifs.append(_gain_nif(built[w]))
+            why = _smp_gain_verdict(nifs[0].shapes, nifs[1].shapes, _gain_xml(built[w]))
+        except Exception:
+            why = "a mesh cannot be read"
+        finally:
+            for n in nifs:
+                nif_io.release_nif(getattr(n, "_backing", None))
+        if why is not None:
+            return f"it would gain physics, but {why}"
+    return None
+
+
+def _overwrite_mesh_index_on() -> bool:
+    r"""#overwrite-mesh-index (2026-09-25): does the mesh index read MO2's
+    overwrite folder? Yes, by default.
+
+    `build_mesh_index` walked only the enabled mods, while every other lookup
+    of what the game loads (`zeroed_body._layout_dirs`, the coverage step's
+    `_mesh_exists_anywhere`) puts overwrite first -- and BodySlide run through
+    MO2 without an output mod writes its builds there. A mod that ships only
+    BodySlide projects then had no loose mesh to convert, and a verified zeroed
+    build in overwrite could not be taken (`#zeroed-output-source` said "not in
+    a mod folder"). Overwrite is indexed as a BodySlide output of an unnamed
+    body (tier 2, first among outputs) and may provide the zeroed build. The
+    game Data folder's loose meshes stay out: launched from MO2 that folder is
+    the merged view of every mod, whose files are indexed with their own tier
+    (and of this tool's own output, which the index skips on purpose).
+    CBBE2UBE_NO_OVERWRITE_MESH_INDEX=1 leaves overwrite out again."""
+    return not _flag("CBBE2UBE_NO_OVERWRITE_MESH_INDEX", False)
+
+
+# The provider name of MO2's overwrite folder in the mesh index (no mod folder
+# can be called this: '<' and '>' are not allowed in Windows names).
+OVERWRITE_LABEL = "<MO2 overwrite>"
+
+
+def _zeroed_output_provider(mods_root: Path, enabled_mods: "list[str]",
+                            skip: "set[str]", overwrite: "Path | None" = None
+                            ) -> "tuple[str | None, str]":
+    """(the enabled mod that provides the zeroed CBBE body the fit uses, "")
+    or (None, why not). Found by CONTENT -- the folder the zeroed-body resolver
+    verified the game's CBBE body in -- never by the mod's name, so another
+    body's BodySlide output (a male or UBE build) is never a candidate. With
+    `overwrite`, a body built into MO2's overwrite folder is provided by
+    `OVERWRITE_LABEL`. #overwrite-mesh-index"""
+    import os
+    from . import nif_convert_bodyrefs as _br
+    from . import zeroed_body as _zb
+    if not _br.ZEROED_BODY_REFS:
+        return None, "zeroed body references are off"
+    root = Path(os.path.realpath(mods_root))
+    ow_root = (Path(os.path.realpath(overwrite)) if overwrite is not None
+               else None)
+    provider = None
+    for w in ("_0", "_1"):
+        try:
+            zb = _zb.zeroed_body("cbbe", w)
+        except _zb.ZeroedBodyError as e:
+            return None, f"no zeroed CBBE body at weight {w[-1]} ({e})"
+        ref = _br._find_cbbe_base_body(w)
+        if ref is None or os.path.realpath(ref) != os.path.realpath(zb.path):
+            return None, (f"the fit's CBBE body at weight {w[-1]} is {ref}, "
+                          f"not the zeroed build {zb.path}")
+        real = Path(os.path.realpath(zb.path))
+        if ow_root is not None and real.is_relative_to(ow_root):
+            mod = OVERWRITE_LABEL
+        else:
+            try:
+                mod = real.relative_to(root).parts[0]
+            except (ValueError, IndexError):
+                return None, f"the zeroed CBBE body is not in a mod folder ({zb.path})"
+        if provider is not None and mod.lower() != provider.lower():
+            return None, "the zeroed CBBE body's weights come from two mods"
+        provider = mod
+    if provider == OVERWRITE_LABEL:
+        return provider, ""
+    names = {m.lower(): m for m in enabled_mods}
+    if provider.lower() not in names or provider.lower() in skip:
+        return None, f"{provider!r} is not an enabled mod this index reads"
+    return names[provider.lower()], ""
+
+
+def _prefer_zeroed_outputs(index: "dict[str, Path]", win_tier: "dict[str, int]",
+                           mods_root: Path, enabled_mods: "list[str]",
+                           skip: "set[str]", overwrite: "Path | None" = None
+                           ) -> None:
+    """Re-point pieces at the verified zeroed BodySlide build, in place.
+    See the #zeroed-output-source block above for the rules. The loose-file
+    answers it needs are remembered for this call only (#zeroed-probe-memo).
+    `overwrite`: MO2's overwrite folder, which may hold that build
+    (#overwrite-mesh-index)."""
+    from . import zeroed_body as _zb
+    with _zb.probe_memo():
+        _prefer_zeroed_outputs_in(index, win_tier, mods_root, enabled_mods, skip,
+                                  overwrite)
+
+
+def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int]",
+                              mods_root: Path, enabled_mods: "list[str]",
+                              skip: "set[str]", overwrite: "Path | None" = None
+                              ) -> None:
+    if _flag("CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE", False):
+        return
+    stems = sorted({k[:-len("_0.nif")] for k, t in win_tier.items()
+                    if t == 0 and k.endswith(("_0.nif", "_1.nif"))})
+    if not stems:
+        return
+    provider, why = _zeroed_output_provider(mods_root, enabled_mods, skip,
+                                            overwrite)
+    if provider is None:
+        _zos_say(f"[zeroed-output-source] off -- {why}")
+        return
+    from . import zeroed_body as _zb
+    try:
+        dirs = _zb._layout_dirs()     # the instance the provider was verified in
+    except _zb.ZeroedBodyError as e:
+        _zos_say(f"[zeroed-output-source] off -- {e}")
+        return
+    out_root = (Path(overwrite) if provider == OVERWRITE_LABEL
+                else Path(mods_root) / provider)
+    moved: "list[str]" = []
+    gained: "list[str]" = []
+    kept: "dict[str, int]" = {}
+
+    def keep(reason: str) -> None:
+        kept[reason] = kept.get(reason, 0) + 1
+
+    for stem in stems:
+        keys = {w: f"{stem}{w}.nif" for w in ("_0", "_1")}
+        built = {w: _zb._ci_join(out_root, ["meshes", *k.split("/")])
+                 for w, k in keys.items()}
+        if any(b is None for b in built.values()):
+            continue                          # the output does not build this piece
+        cur = {w: index.get(k) for w, k in keys.items()}
+        if any(c is None for c in cur.values()):
+            keep("today's source lacks a weight")
+            continue
+        try:
+            zg = _zb.zeroed_garment(stem, built, dirs=dirs)
+        except _zb.ZeroedBodyError:
+            keep("the output is not a verified zeroed build")
+            continue
+        physics = {_declares_physics(p) for p in (*cur.values(), *built.values())}
+        gain = False
+        if physics != {True} and physics != {False}:
+            why = _smp_gain_refusal(cur, built)       # #zeroed-smp-gain
+            if why is not None:
+                keep(why)
+                continue
+            gain = True
+        try:
+            today = {w: _zb._nif_shapes(cur[w]) for w in keys}
+        except Exception:
+            keep("today's source is unreadable")
+            continue
+        # Same shapes, same vertex counts, at both weights: only the geometry may
+        # change. A build that bundles the 3BA body (or other shapes) sends the
+        # piece down the body-swap path instead of the copy path -- a different
+        # pass chain, measured 2026-09-22 on four pieces of one armour overhaul:
+        # up to 4.2u moved at a weight whose source geometry barely differed, and
+        # 2-10% more of the body exposed in poses. Not this fix's to make. A
+        # physics gain is another design by nature, body-swap on both sides.
+        if not gain and any({n: len(v) for n, v in today[w].items()}
+                            != {n: len(v) for n, v in zg.build[w].items()} for w in keys):
+            keep("the build's shapes differ from today's source")
+            continue
+        if all(_zb.matches_build(today[w], zg.build[w]) is not None for w in keys):
+            keep("today's source already is that build")
+            continue
+        for w, k in keys.items():
+            index[k] = built[w]
+        moved.append(stem)
+        if gain:
+            gained.append(stem)
+    held = ", ".join(f"{r}: {n}" for r, n in sorted(kept.items()))
+    smp = f" ({len(gained)} with its SMP physics)" if gained else ""
+    _zos_say(f"[zeroed-output-source] {provider}: {len(moved)} piece(s) now "
+             f"converted from its verified zeroed BodySlide build{smp}; "
+             f"{sum(kept.values())} kept today's source" + (f" ({held})" if held else ""))
+
+
+def _walk_nifs(meshes_dir: Path, mod_name: str,
+               unreadable: "list[tuple[str, str]] | None",
+               unreadable_dirs: "list[str] | None" = None):
+    """Every ``.nif`` FILE under `meshes_dir` (any case), in the order
+    ``Path.rglob`` gave: a folder's files, then each subfolder in turn.
+
+    ``rglob`` let any error but a permission error escape from the MIDDLE of
+    its walk, and one over-long path, dead junction or folder vanishing in one
+    mod then aborted the index for every mod. Here an unreadable folder is
+    skipped ALONE: the rest of this mod and every other mod are still indexed,
+    and the error goes to `unreadable` as (mod folder, error text), the folder
+    that could not be read to `unreadable_dirs`. #vfs-index-fail-loud
+
+    Files only, where ``rglob('*.nif')`` also yielded a FOLDER named like a
+    mesh (``armor\\x_1.nif\\``): that folder then won its key over a real file
+    in a lower-priority mod, and the piece failed to load. A mesh inside such a
+    folder is still indexed, as before."""
+    errors: "list[OSError]" = []
+    for root, _dirs, files in os.walk(meshes_dir, onerror=errors.append):
+        base = Path(root)
+        for f in files:
+            if f.lower().endswith(".nif"):
+                yield base / f
+    if errors and unreadable is not None:
+        e = errors[0]
+        more = f" (and {len(errors) - 1} more)" if len(errors) > 1 else ""
+        unreadable.append((mod_name, plain_error(e) + more))
+    if unreadable_dirs is not None:
+        unreadable_dirs.extend(str(e.filename or meshes_dir) for e in errors)
+
+
 def build_mesh_index(
     mods_root: Path,
     enabled_mods: list[str],
     *,
     target_keys: "set[str] | None" = None,
     skip_mods: "tuple[str, ...] | set[str]" = (),
+    unreadable: "list[tuple[str, str]] | None" = None,
+    overwrite: "Path | None" = None,
+    unreadable_dirs: "list[str] | None" = None,
 ) -> dict[str, Path]:
     """Map each ``meshes\\``-relative NIF path (lowercase, forward-slash, e.g.
     ``'armor/foo/bar_1.nif'``) to the winning provider's absolute file across
     all enabled mods in MO2 priority order. Resolves through the full VFS so
     meshes that live in a replacer or BodySlide output mod are found correctly.
+    With `overwrite` (MO2's overwrite folder) its ``meshes`` are indexed as a
+    BodySlide output of an unnamed body, ahead of every other such output
+    (#overwrite-mesh-index); the game Data folder's loose meshes are not.
 
     Args:
       mods_root: ``<modlist>/mods``.
@@ -187,6 +732,12 @@ def build_mesh_index(
         Keys are lowercase forward-slash ``meshes\\``-relative paths WITH the
         ``.nif`` and any ``_0``/``_1`` weight suffix.
       skip_mods: mod folder names to skip (e.g. the converter's own output mod).
+      unreadable: if given, receives (mod folder name, error text) for each mod
+        whose ``meshes`` folder could not be fully read. Only the unreadable
+        folders are skipped; the index is correct for everything else.
+        #vfs-index-fail-loud
+      unreadable_dirs: if given, receives the path of each folder that could
+        not be read, so a caller can tell when it becomes readable.
     """
     skip = {m.lower() for m in skip_mods}  # case-insensitive: mod folder names
     index: dict[str, Path] = {}            # and skip entries can differ in case
@@ -263,9 +814,16 @@ def build_mesh_index(
         return result
 
     found_max_tier = -1
-    ordered_mods = sorted(enabled_mods, key=_tier)  # stable: keeps priority in-tier
-    for mod_name in ordered_mods:
-        mtier = _tier(mod_name)
+    # (label, folder, tier). MO2's overwrite is the top of the game's VFS and
+    # where BodySlide run through MO2 writes, so it is indexed like a BodySlide
+    # output of an unnamed body: tier 2, ahead of every other output -- it wins
+    # a mesh no mod ships loose, and #zeroed-output-source may take its verified
+    # zeroed build over a mod's own. #overwrite-mesh-index
+    providers = [(m, mods_root / m, _tier(m)) for m in enabled_mods]
+    if overwrite is not None and _overwrite_mesh_index_on():
+        providers.insert(0, (OVERWRITE_LABEL, Path(overwrite), 2))
+    providers.sort(key=lambda p: p[2])      # stable: keeps priority in-tier
+    for mod_name, mod_folder, mtier in providers:
         # Early-stop only once every referenced mesh is found AND no still-unwalked
         # mod could out-rank a current winner. With body-match on, a later SAME-tier
         # mod can still replace a winner, so we must finish every tier <= the deepest
@@ -274,14 +832,17 @@ def build_mesh_index(
             break
         if mod_name.lower() in skip:
             continue
-        meshes_dir = mods_root / mod_name / "meshes"
-        if not meshes_dir.is_dir():
-            continue
+        meshes_dir = mod_folder / "meshes"
         try:
-            nifs = meshes_dir.rglob("*.nif")
-        except OSError:
+            if not meshes_dir.is_dir():
+                continue
+        except OSError as e:
+            if unreadable is not None:
+                unreadable.append((mod_name, plain_error(e)))
+            if unreadable_dirs is not None:
+                unreadable_dirs.append(str(meshes_dir))
             continue
-        for nif in nifs:
+        for nif in _walk_nifs(meshes_dir, mod_name, unreadable, unreadable_dirs):
             try:
                 rel = nif.relative_to(meshes_dir).as_posix().lower()
             except (ValueError, OSError):
@@ -307,4 +868,6 @@ def build_mesh_index(
                         and inc == (False, True)     # incumbent: bespoke body, no canonical
                         and chal[0]):                # challenger: has canonical body
                     index[rel] = nif       # tier unchanged; priority already lost, body wins
+    _prefer_zeroed_outputs(index, win_tier, mods_root, enabled_mods, skip,
+                           overwrite if _overwrite_mesh_index_on() else None)
     return index

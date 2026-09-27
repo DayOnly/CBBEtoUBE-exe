@@ -621,7 +621,8 @@ def _layered_cloth_shape_names(shapes) -> "set[str]":
     stem and differ only by a short layer suffix (Cuirass_A/_B/_C, Robe_01/_02). Such
     authored cloth keeps its SOURCE skin -- every body-follow graft pass skips it, so the
     body's HDT-SMP jiggle bones aren't grafted on and the shape doesn't CTD on equip.
-    #layered-cloth-skin"""
+    One carve-out: the jiggle graft still gives it BUTT weight on a piece with no
+    physics XML (#layered-cloth-butt-follow).  #layered-cloth-skin"""
     if not _nc()._LAYERED_CLOTH_SKIN:
         return set()
     groups: "dict[str, list[str]]" = {}
@@ -717,11 +718,12 @@ def _canonical_stack_name_groups(src_nif_path, exclude) -> "list | None":
         if not cand.is_file():
             return None
         st = cand.stat()
-        key = (str(cand).lower(), st.st_mtime_ns, st.st_size, tuple(sorted(exclude)))
+        key = (str(cand).lower(), st.st_mtime_ns, st.st_size, tuple(sorted(exclude)),
+               _nc()._dup_shape_names_on())   # the names depend on it
         hit = _nc()._STACK_NAME_GROUP_CACHE.get(key)
         if hit is not None:
             return [set(g) for g in hit]
-        snif = _nc()._pynifly().NifFile(filepath=str(cand))
+        snif = _nc()._open_source_nif(cand)          # #dup-shape-names
         groups = _stacked_layer_groups(snif.shapes, exclude=exclude)
         names = [{m[0] for m in g} for g in groups]
         _nc()._STACK_NAME_GROUP_CACHE[key] = [set(g) for g in names]

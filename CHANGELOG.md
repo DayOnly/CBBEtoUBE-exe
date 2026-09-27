@@ -1,6 +1,2069 @@
 # Changelog
 
-## Unreleased
+## 1.5 — 2026-09-27
+
+### Fixed — plates that stand off the body move as their author made them again
+
+The fix that made BodySlide-built trousers follow the leg (below: "the pass
+that makes leg cloth follow the thigh never reached these shapes") also reached
+plates that hang in front of the body. On a one-piece plated cuirass the plate
+between the legs then clipped into itself when the legs moved, instead of
+bending: each plate followed the skin nearest to it rather than the plate it
+overlaps. Now, where such a piece has a plate standing over another layer of
+the same armour, below the hips, that plate takes the leg follow fully only
+within 2 units of the body and not at all beyond 3 units, so it moves with the
+layer under it as its author made it. A panel that is the only layer over the
+skin keeps the leg follow, so skirts and lower panels still move with the
+thigh. On the reported cuirass the earlier fix switched off cured this in game;
+with this change its plates cross each other as they did then, and it shows
+the same exposed skin as before. The trousers the earlier fix was made for show
+the same exposed skin in every pose as before. Of 18 skirts, outfits and
+armours this reaches most (these two included), 15 show the same exposed skin
+as before, one a little less, and two a little more in a few poses (at most
+two of 400 measured points). Only weights change, never the shape of the armour.
+`CBBE2UBE_NO_MORPHTRI_HUG_FEATHER=1` (set to 1) gives those plates the full
+leg follow again.
+
+### Fixed — colour variants of an armour built into Mod Organizer's overwrite folder read the right copy
+
+When the tool converts an armour from a BodySlide build in the overwrite folder
+(see "armour you built with BodySlide into Mod Organizer's overwrite folder is
+found" below), the step that fixes its colour variants looked for the original
+mesh without looking in the overwrite folder when it converted one mod at a
+time, so it could read another mod's copy of the mesh and leave a colour on the
+wrong layer, or drop it. It now looks where the conversion looked. The reported
+modlist has no meshes in its overwrite folder, so its result does not change.
+`CBBE2UBE_NO_OVERWRITE_MESH_INDEX=1` (set to 1) leaves the folder out of both.
+
+### Fixed — a vertex-colour clean-up that stops now fails the run
+
+At the end of a run the tool clears a colour setting from any mesh piece that
+has no colours to go with it; left on, that piece crashes the game when it is
+equipped. If this clean-up stopped with an error, the run only warned and
+still ended as a success, although the pieces it had not reached were never
+checked. It now counts as a failure ("can crash the game when equipped"), so
+the run ends as failed and the window says so. Converting again runs the
+clean-up over every mesh, `--plugins-only` included. On full runs the
+clean-up has found nothing to fix, so this should be rare. To get the old
+behaviour, set `CBBE2UBE_NO_VC_SWEEP_FAILURE=1`.
+
+### Changed — `merge` exits 1 when its plugin could not be checked
+
+The command-line `merge` checks the plugin it wrote for problems that stop the
+game loading it. When that check could not run, `merge` still exited 0, the
+same as for a plugin that passed. It now exits 1 ("written, not checked"),
+with a hint to run `validate`; 2 still means "checked, and not safe to load".
+A failed repair of the plugin's master list alone does not change the exit
+code: the check that follows looks at the master order and exits 2 if it is
+wrong. To get the old behaviour, set `CBBE2UBE_NO_MERGE_UNVERIFIED_EXIT=1`.
+
+### Fixed — the last few uncounted warnings
+
+- The missing-morph check of the UBE body's hands and feet was counted after
+  the end-of-run line was printed, so the log's warning count was one lower
+  than the list the window showed. It is now checked before that line.
+- Three problems of the mesh writer were printed only by the background
+  worker, whose output the log does not show: a failed partition pass, a
+  piece over the vertex limit that could not be split (it may crash the game
+  when equipped), and a mesh repair that was abandoned because it would have
+  lost a part. Each is now printed in the log for its mod and counted as a
+  warning.
+- With `--plugins-only`, a warning that some plugins could not be read for
+  which armour is playable was printed but not counted. It is counted now.
+- That warning's entry said the plugins were "read"; it now says "not read".
+
+Nothing that is converted changes. The test that finds uncounted warnings now
+accepts only a count made right after the warning, and names each warning on
+its own, so two warnings with the same words cannot hide each other.
+
+### Fixed — more warnings reach the end-of-run count and list
+
+39 warnings were printed in the log but left out of the warning count at the
+end of the run and out of the list the window shows after it, so a run that
+hit only these could still end "all clear". Among them: the colour-variant
+fix, the hands-slot fix, the duplicate-armature clean-up or the master-list
+repair of the Combined plugin failing; the final check of the Combined
+plugin, or of the `_0`/`_1` weight pairs, not running; the coverage step's
+own warnings (armour of an excluded mod
+left without a UBE armature, female meshes not converted, the UBE hands and
+feet not found, the coverage check's findings); a modlist whose plugins or
+NPC outfits could not be read; the missing-morph check of the UBE body's
+hands and feet. Each is now counted and listed once, as a warning, so the exit
+code of a run does not change. Nothing that is converted changes. A test now
+fails on any new warning that is printed but not counted.
+
+### Fixed — running from source with an outdated `PYNIFLY_PATH` no longer loses the reference bodies
+
+This affects running the tool from its source code only; the exe carries its
+own copy of the mesh library and was never affected. When the `PYNIFLY_PATH`
+variable pointed at a folder that no longer held the library, the conversion
+still found the library in the tool's own folder, but the check of the
+reference bodies did not: it called both bodies "unreadable" and fell back to
+finding them by folder name, so a run could convert with no CBBE body at all
+(the body-to-body reshaping is then skipped and armour is only pushed outside
+the body). Both now use the same library. When the library is missing
+altogether, the message now says that instead of calling the body file
+unreadable. `CBBE2UBE_NO_NIF_LIBRARY_RETRY=1` (set to 1) turns the retry off;
+the clearer message stays.
+
+### Development only — the crotch-swing census compares the two bodies on skin both can show
+
+The census that measures how far crotch cloth sinks into the body when one leg
+swings compared our conversion with the original armour by subtracting their
+clearances over the crotch. The two bodies are not the same surface there: UBE
+models a narrow slit that CBBE does not, and the original body leaves an opening
+that it fills with separate pieces. Measured by nearest point, a garment
+converted perfectly reads about 0.5 units "deeper" on UBE at its tightest 5%
+(across the reported pack the gap was 0.86 units), and that difference was being
+reported as armour we bury deeper than its author did.
+
+The census now also compares the two only on skin that can be seen from outside
+on BOTH bodies, beside the old numbers under a label that says not to compare
+them across bodies. Each run first pushes a perfect test garment through the
+converter's own warp, standing still and with one leg swung, and refuses to
+report if that garment does not read close to zero or if a garment planted to
+drag with one leg does not read clearly worse. On the reported pack the
+conversion sits slightly looser than the original there (0.28 units at the
+tightest 5%), not deeper.
+
+In the leg swing the census now compares each leg with the SAME leg of the
+original. Comparing each piece's worst leg with the original's worst leg hid
+pieces whose worst leg changed sides: 7 pieces got more than 0.3 units worse on
+one leg while that comparison did not count them as worse (5 read as unchanged,
+2 even as better). Of 201 pieces with an
+original to compare, 19 have a leg more than 0.3 units worse after conversion
+and 68 have a leg more than 0.3 units better (by the worst-leg comparison: 12
+worse, 62 better; by any margin at all, 89 worse and 112 better). Most of the 19
+have no cause the census can show yet; that is being investigated, not fixed.
+The census also names the original file it compared against, since for 14 of
+the 201 that is not the file the converter read. Guarded by
+`tests/test_single_swing_census_visibility.py` and mutation pairs
+`SSV-a`..`SSV-aa`. No converter behaviour changes.
+
+### Fixed — Check setup sees a UBE body you pick while the window is open
+
+The window looked up the reference bodies once and kept that answer until it
+was closed. A UBE body picked on the Paths tab (or brought in with Import
+settings) after the window opened was not seen by Check setup, which went on
+naming the body it found at launch, or saying none was found; the already-UBE
+mesh scan and the Select list also kept measuring against the launch body.
+Closing and reopening the window was the only way round it. They now look
+again when the pick changes, and only then. Conversions were never affected:
+each one starts fresh and always used the body you picked.
+`CBBE2UBE_NO_BODY_CACHE_BY_INPUTS=1` (set to 1) turns it off.
+
+### Fixed — `check-setup` and a run without the window use what you saved, like the window
+
+`CBBEtoUBE.exe check-setup` (the setup check for when the window will not
+start) ignored your saved settings, so a UBE body you picked on the Paths tab
+showed as OK in the window but as a failure there. It now checks with your
+saved settings, as the window does, and says where they came from before its
+checks. One difference remains: a `CBBE2UBE_` setting you set yourself in the
+environment (or in an MO2 executable entry) wins over the saved file here, as
+it does for a run without the window, while the window uses the saved file.
+
+Running `CBBEtoUBE.exe auto` without the window now also skips the mods on your
+Exclusions list, as the Convert button does. Before, only the settings reached
+such a run, so a mod you had marked as already built for UBE could be converted
+again, which breaks it. Mods you name on the command line are still skipped as
+well; with `--only-mods`, a mod you name there is converted even if it is on the
+list, again as in the window. `CBBE2UBE_NO_HEADLESS_SETTINGS=1` (set to 1) turns
+off both, together with the saved settings.
+
+### Fixed — colour variants of a mesh put back after the merge recolour the right layer
+
+A full run moves old meshes into `_superseded\` before the plugin merge, and
+puts them back if the new combined plugin still uses them. The step that lines
+up colour variants with a mesh's layers ran before that put-back, so it looked
+for a mesh that was not there, and the variant could recolour the wrong layer of
+the mesh that then came back. The moves are now kept or put back straight after
+the merge, before that step and the checks that follow it read the meshes.
+Nothing changes on the reported modlist, where no run has moved anything yet.
+`CBBE2UBE_NO_SWEEP_SETTLE_BEFORE_POSTMERGE=1` (set to 1) turns it off.
+
+### Fixed — the end-of-run list says so when moved meshes could not be put back
+
+When old meshes that a run moved into `_superseded\` have to go back and one
+cannot (its place is taken, or the file is in use), the end-of-run window said
+the item "did NOT convert" and that its armour "keeps its previous state". In
+fact the run did convert, and a plugin may still use a mesh that is now missing,
+which can crash the game. The window and the status line now say that moved
+meshes were not all put back, and tell you to move the listed files back from
+`_superseded\` by hand before you play. Only the wording changes.
+
+### Fixed — a backup copy of the combined plugin no longer stops old meshes from being moved aside
+
+After the merge, a full run checks that the new combined plugin does not use
+any of the old meshes it moved into `_superseded\`; if it does, they all go
+back. That check also read any other plugin whose name starts the same way,
+such as `CBBE_to_UBE_Combined - Copy.esp` or `CBBE_to_UBE_Combined_backup.esp`.
+A backup of an older combined plugin uses the old meshes, so every run put
+everything back and warned about it. The check now reads only the combined
+plugin and its numbered parts (`CBBE_to_UBE_Combined2.esp`, ...), like the rest
+of the tool. Nothing changes on the reported modlist, which has no such copy.
+`CBBE2UBE_NO_SWEEP_PIECE_FAMILY=1` (set to 1) turns it off.
+
+### Fixed — moving an old mesh no longer takes a current mesh's physics and morph files with it
+
+Some armour folders hold two pieces whose names differ only by an extra `_1`
+(`robe_0.nif`/`robe_1.nif` and `robe_1_0.nif`/`robe_1_1.nif`). Each piece has its
+own physics file (`.xml`) and body-morph file (`.tri`). When a full run moved the
+first piece aside as an old conversion, it wrongly took the second piece's
+physics and morph files too, so the piece still in use lost its cloth physics
+and body morphs in game. Each piece's files now move only with that piece.
+Nothing changes on the reported modlist, where no such pair is converted.
+`CBBE2UBE_NO_SWEEP_SIDECAR_BASE=1` (set to 1) turns it off.
+
+### Fixed — meshes moved aside by a cancelled run come back on the next run of any kind
+
+When a full run moves old converted meshes into `_superseded\`, it keeps them
+there only once the plugin merge that follows has finished. Cancel stops the
+run at once, so a run cancelled between the move and the merge left those
+meshes in `_superseded\` while the previous combined plugin still pointed at
+them. Only the next full run of all mods put them back. A run of selected mods
+or a plugins-only refresh in between left them missing, and it also dropped them
+from the tool's record of what it converted, so the tool could never move them
+again. Every run now puts such files back first and says so in the log and in
+the end-of-run list, and the record keeps any file that is still in
+`_superseded\` for this reason. Nothing changed on the reported modlist, where
+no run has moved anything yet. `CBBE2UBE_NO_SWEEP_RECOVER_EVERY_RUN=1` (set to
+1) turns it off.
+
+### Fixed — per-race versions that share one mesh are drawn once, and never lost
+
+The fix below that draws each per-race version of an item only for its own
+races had a gap when two versions use the same mesh (an author's copy for
+humans and a copy for Orcs, say). The races neither copy lists got both
+copies, so on those races the same mesh was drawn twice. And when both copies
+happened to start with the same race, the final merge step took them for
+duplicates and kept only one, so the races only the other one listed would
+have drawn nothing for that item. Now copies that draw the same mesh are
+treated as one version, drawn once for all of their races, and the merge never
+drops a copy that lists a UBE race the kept one does not (the run log counts any
+it keeps). Copies that differ only in the other races they list (an author's
+Khajiit and Argonian copies of one glove, say) are still merged into one, as
+before: UBE characters draw only the UBE races, so keeping both would draw the
+glove twice on every UBE race. Measured on the reported modlist, in the merge a
+normal run builds (the coverage patches): 2 items (a transformation effect and
+an effect on one set of NPCs' skin) drew their effect twice on the six UBE elf
+races; they now draw it once, as before that fix. No item loses a draw and no
+other item changes. In the fallback merge (used only when the coverage step
+cannot run) the output is the same as before this fix.
+`CBBE2UBE_NO_RACE_SUBSET_DEDUP_AGREE=1` (set to 1) turns
+the whole fix off; `CBBE2UBE_NO_GUARD_UBE_RACES=1` (set to 1) makes the merge
+keep copies that differ only in non-UBE races again.
+
+### Development only — a test can no longer leave a stand-in behind for the tests after it
+
+Some tests swap a part of the converter for a simple stand-in while they run.
+One test helper put its stand-ins into every one of the converter's source
+files but the tests using it put back only one of them, so the rest stayed in
+place for every test that ran afterwards in the same test process. Whether a
+later test passed could then depend on the order the tests ran in, and one
+check guarding against invisible legs failed only in a shuffled order. The
+helper is gone, and every test is now checked when it finishes: if it left any
+of the tool's modules changed, that test fails and names what it left, and the
+module is put back first so the next test starts clean. Six more tests that
+left a setting switched off for the tests after them were fixed. The check
+also puts back what the converter itself remembers between pieces -- a
+skeleton it read, or the physics file of the last piece it converted --
+without blaming the test that converted, so that too can no longer reach the
+next test. And a stand-in that only looks like the original (one that wraps
+it, or an emptied table) is now caught unless the test really reloaded that
+part of the tool. The check adds about a second per test process. Nothing
+that is converted changes.
+
+### Development only — the checks before a release no longer pass without looking
+
+- The golden-output check empties its work folder before every run, so files
+  an interrupted run left there can no longer stand in for a piece that now
+  converts to nothing or drops its physics file. A check that compared
+  nothing exits 3 ("0/0 is not a pass"), a partial one says how many pieces
+  it looked at, a shape the output gained is a change, and a piece whose
+  baseline holds no shapes is not counted as compared.
+- The mutation gate compiles each seeded mutation first: one that is not
+  valid Python reads INVALID and fails the gate like MISSED and NOT_APPLIED,
+  instead of counting as caught because every import broke.
+- The pre-push hook also reads the files a merge commit writes itself (a
+  conflict resolution, a file added in the merge), which it skipped before.
+
+### Fixed — colour variants follow your own UBE build also when our older copy is still there
+
+The colour-variant fix (see "colour variants of a piece left to your own UBE
+build recolour the right layer" below) read the game's copy of a mesh only when
+our own converted copy was gone. Our copy can stay behind -- for example when
+a file was in use and could not be moved, or when your build ships only part of
+an outfit -- and if your BodySlide output sits above this tool's output in MO2,
+the game still draws your build. The fix now asks MO2's order which copy the
+game loads and matches the colour variants to that one. Measured on the
+reported modlist: 2 meshes of one travel outfit are in this situation today;
+their layers happen to be in the same order in both copies, so the result is
+unchanged, and the run takes about 4 seconds longer to look the order up.
+If that other copy cannot be read, the colour variants are matched to our own
+copy, as before, and the run warns that another mod's copy outranks ours but
+could not be read.
+`CBBE2UBE_NO_RECONCILE_LOADED_WINNER=1` (set to 1) turns it off.
+
+### Fixed — colour variants of a piece whose mesh two mods' archives both ship
+
+When two mods ship the same armour mesh inside their `.bsa` archives, the tool
+converts the copy the game loads (the archive of the plugin that loads later).
+The colour-variant fix then checked that mesh against the other archive, found
+it different, and dropped the colour variants of any layers that share a name
+(those layers kept their base colour). It now checks against the same archive
+the conversion used. Measured on the reported modlist: none of the 1,088 meshes
+the tool took from archives is shipped differently by two archives, so nothing
+changes there today. `CBBE2UBE_NO_ALTTEX_SOURCE_WINNER=1` (set to 1) turns it
+off.
+
+### Fixed — a mesh whose file name has an accented letter, a curly apostrophe or a dash is converted
+
+Accented letters (such as é or ó), a curly apostrophe, an en or em dash and a
+trademark sign are each stored as one byte, and the tool read that byte in
+different ways in different places. The step that picks which meshes to
+convert, and most of the steps that give armour its UBE version, dropped it,
+so such an armour was planned under a file name that exists nowhere: its mesh
+was never converted, and the armour could be given a stand-in or left without
+its UBE version. The file names inside a mod's `.bsa` archive were read yet
+another way, so a mesh shipped only in an archive was missed even under the
+right name. Two later checks read the paths this tool wrote the old way too,
+so the colour-variant fix could not find our own converted mesh and the final
+check could report it as missing. Every place that reads an armour's mesh path
+or an archive's file names now reads it the way the game does. Because the
+final check now reads these paths correctly, it can also stop a run with
+"unconverted-mesh-linked" when an armour named this way still points at its
+original mesh although our converted mesh exists -- in game that armour would
+wear the unconverted mesh. With `CBBE2UBE_NO_ARMA_PATH_BYTES=1` set, an armour
+whose female mesh is missing and whose male mesh path holds one of the five
+bytes the game's codepage has no character for could stop the coverage step
+with an encoding error; it now keeps the male path exactly as the armour had
+it. Measured on the reported modlist: of 31,108 armour
+mesh paths in the load order one holds such a byte (a creature's, not converted
+either way); no archive file name and no path in the output changes, so nothing
+changes there today. `CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1` (set to 1) turns it
+off.
+
+### Fixed — six more warnings now reach the end-of-run count and list
+
+Six warnings were printed in the log but left out of the warning count at the
+end of the run and out of the list the window shows after it, so a run could
+still say "all clear":
+
+- the base game and DLC pass could not run on your game folder, so vanilla
+  armour no mod changes stays invisible on UBE characters;
+- a piece from an earlier run could not be moved out of the way of a
+  hand-made UBE version because a file was in use, or was only partly moved;
+- the colour-variant step could not read one of our converted meshes, could
+  not match a layer to the mesh it came from (so that layer keeps its base
+  colour), or could not read the copy of a mesh another mod supplies.
+
+All six are now counted and listed as warnings, and the last three are now
+written in the same shape as every other warning and listed in
+`docs/WARNINGS.md`. Nothing that is converted changes.
+
+### Fixed — colour variants of a piece left to your own UBE build recolour the right layer
+
+Since this tool leaves a piece alone when your own UBE BodySlide build (or
+another mod) already ships it built for UBE (see "hand-made UBE versions are
+recognised" below), the game loads that build instead of our conversion. The
+step that fixes each colour variant's layer positions looked only at our own
+converted meshes, found none for such a piece, and kept the positions the
+armour mod wrote for its CBBE mesh -- so a colour could land on the wrong layer
+of the build the game loads. It now reads the copy of the mesh the game loads
+(the same way the tool already finds it elsewhere, without changing anything
+there) and matches each colour to its layer by name. A layer name that mesh
+has twice, or that a colour variant lists twice, has no single right layer: its
+colour is left off rather than guessed. Pieces the tool converted itself are
+fixed exactly as before, and a piece whose mesh is found nowhere keeps its
+variants as written (the run log counts them). Measured on the reported
+modlist: 11 colour variants sit on such pieces; 3 of them (the three colours
+of one travel outfit's top) now recolour the skirt instead of the build's
+physics collision shape; the other 8 were already right and do not change.
+`CBBE2UBE_NO_RECONCILE_LOADED_MESH=1` (set to 1) turns it off.
+
+### Changed — the reports list armour pieces in the same order every run
+
+`conversion_report.json` and each mod's report list armour pieces, for
+example the pieces each fix changed. They used to list them in the order the
+pieces happened to finish converting, which changed from run to run and
+between converting one mod at a time and all mods together. They now list
+the pieces in the order the tool planned them, so two runs of the same
+conversion give the same reports. Each mod's notes are also in the same
+order both ways. Nothing that is converted changes.
+`CBBE2UBE_NO_PLAN_ORDER_RESULTS=1` (set to 1) turns it off.
+
+### Changed — folder names in a new output no longer depend on which piece was written first
+
+Sometimes two armour pieces spell the same folder with different capital
+letters, such as `Armor` and `armor`. In a new, empty output folder, that
+folder used to be named after whichever piece the tool happened to write
+first, so two runs could name it differently. Converting one mod at a time
+gave `Armor` on the reported modlist, and converting all mods together gave
+`armor`. Windows, Mod Organizer and the game treat both names the same, and
+every file inside was the same. Now the tool names each folder before it
+converts anything: the first mod the tool converts that uses the folder
+(mods convert highest Mod Organizer priority first) names it, and within a
+mod its first piece does. You get the same name every run,
+whichever way the tool converts. An output folder you already have keeps its
+names. A folder that was made for a piece that turned out to have nothing to
+convert is removed at the end of the run.
+`CBBE2UBE_NO_PLANNED_FOLDERS=1` (set to 1) turns it off.
+
+### Fixed — a run stopped while converting the armour pieces now shows how far it got
+
+The tool now converts the armour pieces of all your mods together, and a mod
+counts as finished (its patch written) only near the end of that step. If you
+cancelled a run, or it stopped, during that step, the Results tab said
+something like "the report covers 2 of 9 planned mods", even when most pieces
+were already converted. It now also says how many pieces were converted, and
+how many mods had all of theirs converted. A run stopped after every piece
+was converted, while the patches were being built, now says that instead.
+
+### Fixed — two warnings in the log now also reach the end-of-run count and list
+
+Two warnings were printed in the log but left out of the warning count at the
+end of the run and out of the list the window shows after it. The first is
+when the base game and DLC pass fails once and then succeeds when the tool
+converts it again without the worker processes. The second is when the tool
+cannot save the in-progress `conversion_report.json` it writes after each mod.
+Both are now counted and listed as warnings. The second is listed once,
+however many times it happened. Nothing that is converted changes.
+
+### Fixed — the measurement log no longer loses or garbles lines
+
+During a conversion every worker process writes its measurements to one file,
+`standoff_audit.jsonl` in the output folder. Two workers writing at the same
+moment could land one line inside another, so a run lost a few dozen records and
+left garbled lines behind (the log on the reported modlist has 51 of them, and
+two runs of the same conversion lost different records). Each line is now
+written whole, one worker at a time, so none is lost or garbled. The same
+applies to the glow diagnostic log. The converted meshes and plugins do not
+change; only this log does. The analysis scripts that read the log now say how
+many garbled lines an older log holds instead of skipping them silently.
+`CBBE2UBE_NO_ATOMIC_AUDIT_APPEND=1` (set to 1) turns it off.
+
+### Fixed — a copy of the combined plugin in the output folder is left alone
+
+If you kept a copy of `CBBE_to_UBE_Combined.esp` in the output folder (for
+example `CBBE_to_UBE_Combined - Copy.esp` or `..._backup.esp`), every run
+opened it, rewrote it and listed it as checked, as if it were part of the
+output. Only the combined plugin and its numbered parts (`...Combined2.esp`,
+and so on) are touched now. The reported modlist has no such copy, so nothing
+changes there. `CBBE2UBE_NO_PIECE_FAMILY_MATCH=1` (set to 1) turns it off.
+
+### Changed — when two archives hold the same mesh, the tool takes the copy the game uses
+
+When two mods' archives contain the same mesh, the game uses the one belonging
+to the plugin lower in your load order. This tool used the one from the mod
+higher in MO2's left pane instead, so it could convert a different version of a
+mesh than the one you see in game. It now follows the load order, as the game
+does. On the reported modlist this picks a different copy for 436 meshes, none
+of them armour this tool converts, so the output does not change there.
+`CBBE2UBE_NO_BSA_LOAD_ORDER_WINNER=1` (set to 1) turns it off.
+
+### Fixed — a plugin whose file name has a comma is now reported instead of silently not working
+
+SkyPatcher reads a comma or semicolon as a separator. When armour came from a
+plugin with one of those in its file name, the line this tool wrote for it
+matched nothing, so that armour was invisible on UBE actors with nothing in the
+log to say why. Such a line is no longer written; the run now warns, names the
+plugin, and says to rename it. If it is the merged plugin's own name
+(`--merged-name`) that has one, the run names that file instead. An equals sign
+in a name is fine and keeps its line. The reported modlist has one plugin
+with a comma in its name, and none of its records are armour this tool links,
+so nothing changes there. `CBBE2UBE_NO_SKYPATCHER_NAME_GUARD=1` (set to 1) turns
+it off.
+
+### Fixed — armour whose mesh folder or file name has an accented letter keeps its path
+
+When a mod's mesh path had an accented letter (an é, for example), the armour
+record this tool writes dropped that letter, so it named a mesh that does not
+exist and the armour was invisible on UBE actors. Paths are now kept exactly as
+the mod wrote them. The reported modlist has no such armour path, so nothing
+changes there. `CBBE2UBE_NO_ARMA_PATH_BYTES=1` (set to 1) turns it off.
+
+### Fixed — a mesh stored uncompressed in an archive no longer picks up bytes of the next file
+
+Some archives store each file's path in front of its data. For a file stored
+uncompressed in such an archive, this tool read a little too far and handed the
+converter the mesh with the start of the next file stuck on its end. The
+reported modlist has no such file (26 archives store paths, and every file in
+them is compressed), so nothing changes there.
+
+### Removed — the old single-file `refit` command-line tool
+
+A source checkout carried a second, older command-line tool (`src/cli.py`, with
+`refit`, `refit-pair` and `refit-batch`) that refit one mesh file at a time. It
+could not save a Skyrim SE mesh at all: every run stopped with an error before
+writing anything. It was never part of the program you download or of the
+window, which convert through a different path, so nothing a user runs changes.
+It has been removed, with the code only it used.
+
+### Changed — the patch no longer carries the same armour piece twice
+
+The patch this tool writes for mod armour is cut into parts small enough to load
+as light plugins. When two items used the same armour piece and the cut fell
+between them, that piece was written into both parts. Items that share a piece
+are now kept in the same part, so each piece is written once. What every item
+shows in game is unchanged. Measured on the reported modlist: 36 duplicate
+records removed from the armour patch (2,129 down to 2,093). The combined
+plugin saves 34 records (3,912 down to 3,878), not 36: the merge had already
+folded 2 of the duplicates into an identical record. That leaves more room
+before the combined plugin needs another part to enable. The armour patch never gets an extra part
+from this, nor more records: if keeping items together would need more parts,
+or as many parts but more records, the patch is cut the old way instead. (The
+combined plugin packs those parts together with the other patches in its own
+step, which can still need a part more or less than before on a load order
+close to the limit.)
+Those 2 are why two items now point at a different, identical-looking record
+in the combined plugin; both look the same in game. A circlet points at its own
+copy of its armour piece instead of this patch's copy of another circlet's
+piece (same mesh, races and slots; they differ only in a texture checksum), and
+a shield points at this patch's copy of its piece instead of the body patch's
+copy (they differ only in the record's editor name).
+`CBBE2UBE_NO_ESL_CHUNK_DEDUP=1` (set to 1) turns it off.
+
+### Fixed — a hair-slot helmet is recognised by its helmet keyword
+
+A helmet that takes only the hair slots counts as real headgear (and gets a
+UBE armature) when it has a gold value or the game's helmet keyword. The tool
+looked for the wrong keyword -- the one that marks elven armour -- so a helmet
+worth nothing with the helmet keyword was treated like a hairstyle. It now
+looks for the right one. Measured on the reported modlist: 7 items are judged
+differently, and none of them draws differently. Six are creature helmets that
+no human-race character can wear, and the seventh (an invisible helmet you can
+equip) was already drawn through the wig rule. `CBBE2UBE_NO_ARMORHELMET_KW_FIX=1`
+(set to 1) looks for the old keyword again.
+
+### Fixed — an excluded mod's wig is kept like its other non-body pieces
+
+When you exclude a mod, only its body pieces lose their UBE coverage: its
+helmets, glasses and wigs that no other mod patches are still drawn. A wig
+whose item also claims a leg slot (see the next entry) was the exception: it
+was always left undrawn, and named in the "no UBE armature from any mod"
+warning. It is now judged like the mod's other non-body pieces -- still drawn
+with its own mesh unless another mod patches it, and listed in the note about
+kept pieces instead of the warning. Measured on the reported modlist with the
+follower mod that owns the one such wig excluded: the wig keeps its armature;
+nothing else changes, and without an exclusion nothing changes at all.
+`CBBE2UBE_NO_WIG_EXCLUDE_KEEP=1` (set to 1) leaves such a wig undrawn again.
+
+### Fixed — a wig that also claims a leg slot is drawn on UBE actors
+
+Wigs you can equip are drawn on UBE-race actors (see "wigs are drawn on UBE
+actors" below), but only when the wig item claimed nothing but hair slots. A wig whose item also claims a
+leg slot (the calves) -- while the wig itself draws only hair -- was still
+drawn on nothing, so a UBE follower wearing it went bald. Such a wig is now
+drawn with its own mesh like any other wig, for the same races it was made for.
+A wig made only for Khajiit or Argonian characters, a wig someone already made
+a UBE version of, and a wig whose mesh is missing are still left alone, and the
+wig does not bring any other part of the item along. Measured on the reported
+modlist: one wig, worn by a follower, gains its armature; nothing else changes.
+`CBBE2UBE_NO_WIG_BODY_PASS=1` (set to 1) leaves such a wig undrawn again;
+`CBBE2UBE_NO_COVERAGE_WIGS=1` turns off wigs as a whole, this case included.
+
+### Development only — the mutation gate can run its pairs in parallel
+
+`python scripts/mutation_gate.py run --jobs N` splits the seeded pairs into N
+shards and judges them at once, each in a fresh worktree of its own with its
+own before-and-after test controls, then reports every pair once, in the usual
+order, with one verdict. A shard that crashes, a pair no shard judged and a
+failed control each fail the gate by name, and every worktree is removed when
+the run ends, fails or is interrupted. Each shard costs about 1.5 GB of commit
+charge. Without `--jobs` the gate runs exactly as before.
+
+### Fixed — a converted piece loads the physics file the tool fixed up
+
+The tool copies each armour's physics file next to the converted mesh and then
+adjusts that copy: it removes references to parts the converted mesh no longer
+has, and adds or renames the colliders that keep cloth off the body. Some meshes
+already pointed at the ORIGINAL physics file in the armour mod before that step,
+and the tool left the link alone, so the game loaded the original and none of the
+adjustments. Now the mesh is pointed at the adjusted copy. On the reported
+modlist this affects both weights of one skirt, whose copy happens to be identical
+to the original today, so nothing changes in game for it yet. Gloves and boots
+also no longer get a physics link on the body-replacement path, matching the
+other path. Before changing the link, the tool checks that no other part of the
+mesh uses the same text; if one does, the mesh is left exactly as it was and the
+conversion report says why (no mesh on the reported modlist is like that).
+`CBBE2UBE_NO_FINALIZE_REPOINT=1` (set to 1) restores the old behaviour.
+
+### Fixed — the optional chest collider never builds the equip-crash pattern
+
+The optional chest collider (`CBBE2UBE_BODY_COLLIDER=1`, off by default) now
+refuses a physics file that has no constraints, because a body collider on cloth
+that nothing holds together is the pattern that crashes the game on equip. It says
+so in the log and in the conversion report. Default conversions are unchanged.
+
+### Changed — physics files with stray text after the end are checked too
+
+A few armour mods ship a physics file with stray text after the end of the
+document, or with an extra namespace on it. The game reads both fine, but the
+tool's own checks skipped those files entirely. They are now checked like every
+other file, so the conversion report can show new warnings for them (on the
+reported modlist: 34 meshes, mostly bones the physics file drives that the mesh
+does not have). The report also notes the stray text. Only the report changes.
+The "Repair broken physics files" setting is still off by default; its
+description no longer claims it fixes armour that does not move -- it only tidies
+the file. When it does trim a file, the report lists that as a change, not as a
+failure.
+
+### Fixed — a garment without its own physics file converts the same way every run
+
+A converted garment that has no physics file of its own could borrow one from a
+different garment whose physics file had the same name in the output folder. If
+that other file named one of this garment's parts, the tool treated that part as
+physics-driven and handled its body-following differently. Whether that
+happened depended on the order the run wrote its files in and on what an
+earlier run had left in the output folder, so the same garment could come out
+differently from one run to the next. Now only a garment's own physics link
+counts. Measured on the reported modlist: 58 of 3,342 converted meshes could
+borrow such a file; re-converting 44 of them (the rest have no loose source),
+only 2 come out different -- both weights of one skirt whose panties part had
+borrowed another skirt's physics. Their shapes are unchanged; the panties now follow the butt about half
+as much as in the last release, and the skirt layers' weights shift slightly
+where they meet the panties -- the same result a run into an empty output folder
+already gave. `CBBE2UBE_NO_DST_XML_NO_STEM_SCAN=1` (set to 1) restores the old
+behaviour.
+
+### Fixed — another mod's partial or disabled UBE patch no longer hides armour from this tool
+
+When another mod's SkyPatcher file adds a UBE armature to an item, this tool
+leaves that item alone. It did so even when the added piece covered only part of
+the item (a UBE cape added to a cuirass left the cuirass with no body on UBE
+actors), and even when the plugin holding that piece was unchecked in the load
+order, so nothing was added at all. Now this tool also covers such an item in
+exactly two cases: the plugin holding the other mod's UBE piece is not loaded,
+or that mod's UBE pieces leave one of the item's slots uncovered. The item's
+slots are read from the version of it the game uses (the last loaded plugin that
+changes it, the game's own files included, so base-game armour is checked the
+same way). When that version cannot be read, the item is left alone as before,
+and the run says how many items that was. Measured on the reported modlist: no
+item changes. `CBBE2UBE_NO_THIRD_PARTY_INI_SLOT_CHECK=1` (set to 1) turns the
+whole check off; `CBBE2UBE_NO_THIRD_PARTY_INI_WINNER_SLOTS=1` reads the slots
+from mods' own plugins only and covers an item whose slots are unknown. That
+version is always looked up in the plugin files the game loads, also with
+`CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN=1` set: with that setting it could be
+looked up in an unused copy of the plugin in a mod's subfolder, so a UBE cape
+could hide a cuirass. `CBBE2UBE_NO_WINNER_WALK_ROOT_INDEX=1` turns that off.
+
+### Fixed — the warning for missing vanilla armour now checks what the game loads
+
+The run warns when vanilla armour ended up with no UBE armature, but it counted
+links in a file the game does not load, so a run that lost every vanilla armour
+could still finish without that warning. It now counts the links that are
+actually delivered. The converted files are unchanged.
+
+### Fixed — an item with a separate version per race no longer draws every version at once on UBE actors
+
+Some items carry one version for humans, another for Orcs and another for elves
+(a circlet reshaped around elf ears), or an extra version made only for a mod's
+own race. Each character in the base game wears only the version for their race,
+but this tool gave every version to every UBE actor, so they drew two identical
+circlets plus the elf one, the same helmet twice, or a second robe. Now each
+version is drawn only on the UBE versions of the races it was made for, and a
+version made only for a mod's own race is left off. Pieces the base game draws
+together (two robe layers listed for the same races) are unchanged, and every
+UBE race still draws the item. Measured on the reported modlist: 8 items change.
+On 7 of them, 9 per-race versions are now drawn only for their own races (17
+item-to-version links, as several items share a version); on the eighth, one
+extra robe version is left off. The run's report counts only what actually
+changed: an item is listed as drawn per race only when one of its versions now
+skips some races, and a version is listed as left off only when no item draws
+it any more. `CBBE2UBE_NO_COVERAGE_RACE_SUBSET=1` (set to 1) turns it off.
+
+### Fixed — a run from the window no longer says your settings were "NOT applied"
+
+Every conversion started from the window logged "effective settings: settings
+file NOT applied (already applied by the settings window)", although your
+settings had reached the run. It now says "effective settings: from the
+settings window". "NOT applied" still appears when the settings file really was
+not used (switched off, missing or damaged).
+
+### Fixed — the list after a run says what is wrong with a file that was written
+
+The list that opens after a run called every failed item "did NOT convert —
+keeps its previous state". For a combined plugin that was built but is not safe
+to load, or a mesh that was written but can crash the game, that was wrong. Such
+items now say what was written and what is wrong with it, and the title counts
+them as problems in what was written. When the combined plugin could not be
+built at all, the title and the status line say "no Combined ESP was built"
+instead of counting it as a problem in something written.
+
+### Fixed — "Dry run" with "Add UBE copy" lists the overlays that would get a copy
+
+With overlays only and "Add UBE copy" chosen, the Dry run listed every overlay,
+including ones copy mode never touches (only overlays a RaceMenu script
+registers get a copy). It now lists those, says which mode the list is for, and
+says when a missing tool (texconv, the Papyrus compiler, its Scripts.zip, or the
+flags file inside that zip) would make the real run skip every overlay. In
+either mode it also says when the real run would skip a body, hands or feet
+region because the CBBE or UBE reference mesh for it is missing or cannot be
+read, and the real "Add UBE copy" run now says so in the log too (it used to
+skip that region without a word).
+
+### Fixed — a mistyped "Worker processes" no longer freezes the window
+
+Clearing the Worker processes box (or typing letters) and pressing Convert left
+the window stuck on "Converting..." until you restarted it. Convert now says the
+value must be a whole number and changes nothing.
+
+### Fixed — a dry run no longer pushes the last run's log away
+
+After a run failed, two Dry runs in a row moved its log out of
+`CBBEtoUBE_previous_run.log`, the file a bug report asks for. A dry run now
+writes `CBBEtoUBE_cli.log` and leaves the run log and its list of problems alone.
+
+### Fixed — the Select list no longer offers mods a run skips as already UBE
+
+A mod whose armour already fits UBE is skipped by every run, but the Select list
+still offered it, and ticking it ended the run with "NOT FOUND". The list now
+leaves such mods out and names them in the log below it; if you ask for one
+with `--only-mods`, the log says why it was skipped. The list judges with the
+bodies the Reference bodies dialog starts on; if you pick other bodies there,
+the run judges again with those, and the button's tooltip says so.
+
+### Fixed — "Refresh mod list" sees mods you changed while the window was open
+
+Refresh and the exclusions list showed the first scan of the session, so a mod
+updated in MO2 meanwhile kept its old contents in the list until a restart.
+
+### Fixed — a tool folder that cannot be written is no longer silent
+
+Installed in a protected folder (such as Program Files), the tool could keep no
+log, so the window showed no progress at all, and your settings and exclusions
+looked saved but were gone the next time. The window now says at start that the
+folder cannot be written, says when a run left no log, and says when settings or
+exclusions could not be saved (they still apply until you close the window).
+
+### Fixed — window errors are kept in the window's own log
+
+After the first conversion the window stopped writing `CBBEtoUBE_gui_session.log`,
+so a later error in the window left no trace. It keeps writing it now, and an
+error in the window is shown in the log panel too.
+
+### Fixed — `--incremental` no longer reconverts everything over how it was launched
+
+Re-running with `--incremental` from a script instead of a console (or with the
+log pinned elsewhere, or with fewer workers after a memory error) reconverted
+every mesh, because launch details counted as settings. They no longer do; a
+real setting change still reconverts. The switch that only silences the
+surface anti-poke trace lines no longer counts either, and a new variable the
+tool reads can no longer join the settings list without being checked.
+`CBBE2UBE_NO_FINGERPRINT_SKIPS_PLUMBING=1` (set to 1) counts them again.
+
+### Fixed — a mod whose folder name has a comma can be excluded or picked
+
+A mod folder named with a comma (for example "Armor, Clothing Pack") was read as
+two names, so excluding it did nothing and picking it found nothing. A name that
+matches a mod folder is now kept whole; on the command line `--exclude-mods "a,b"`
+still means two mods. `CBBE2UBE_NO_WHOLE_MOD_NAMES=1` (set to 1) splits every name
+on commas again.
+
+### Fixed — the end-of-run list shows every problem the log counts
+
+Some problems were counted in the log's last line but never reached the list the
+window opens after a run: a problem that stops the combined plugin loading, a
+mesh missing its other body-weight version, a VirtualBody that could not be
+hidden again, patch-checker notes, and a failed tattoo/overlay transfer. A run
+could end "exit code 2 - check the log" with no list at all. The log's count is
+now made from the same list the window reads, so the two always agree; a group
+of similar notes is one line in the list, with its count.
+
+### Fixed — "Dry run" with only overlays ticked no longer converts overlays
+
+"Dry run (list mods, convert nothing)" with Convert overlays on and Convert armor
+off still converted every overlay into the output mod. It now lists the overlays
+it would convert and writes nothing.
+
+### Fixed — importing a wrong or damaged settings file no longer resets your settings
+
+Picking a damaged preset, or another JSON file by mistake, reset every setting to
+its default, saved that, and said "Settings imported". Such a file is now refused
+with a message and nothing changes. Export now says so when the file could not be
+written. A setting typed by hand as "false" or "0" now reads as off.
+
+### Changed — your saved settings apply everywhere, not only to the Convert button
+
+Check setup, the mod lists and the already-UBE mesh scan in the window now use the
+settings you saved (a UBE body picked on the Paths tab no longer shows as
+missing). Running `CBBEtoUBE.exe auto` or `convert` without the window now uses
+`CBBEtoUBE_settings.json` beside the exe too, as the Convert button does; a
+variable you set yourself still wins, and the log's top says which settings came
+from the file. `CBBE2UBE_NO_HEADLESS_SETTINGS=1` (set to 1) makes a run without
+the window ignore the file, as before.
+
+### Fixed — armour you built with BodySlide into Mod Organizer's overwrite folder is found
+
+When BodySlide runs through Mod Organizer without an output mod, it saves its
+builds in the overwrite folder, and the game loads them from there. The tool's
+search for armour meshes never looked in that folder, so an armour that exists
+only as BodySlide builds there was not converted, and a clean (zeroed) build there
+could not be used as the conversion source the way one in a BodySlide output mod
+is. The overwrite folder is now searched and treated like a BodySlide output mod:
+a mesh that only it has is converted from it, an armour mod's own mesh still comes
+first, and a verified zeroed build there is taken as for an output mod. The reported
+modlist has no meshes in its overwrite folder, so its result does not change.
+`CBBE2UBE_NO_OVERWRITE_MESH_INDEX=1` (set to 1) leaves the folder out.
+
+### Fixed — plugins this tool's patches build on are read from the copy the game loads
+
+To build its patches, the tool reads the plugins they depend on. It looked for
+them in the base game folder first and then in every mod folder in alphabetical
+order -- disabled mods included, and the first mod it converts left out. So it
+could read an old or disabled copy of a plugin instead of the one the game loads,
+miss a plugin only that first mod ships, and (had one been present) add a
+disabled mod's UBE race plugin to the merged plugin as a requirement the game
+cannot meet. It now looks in the order the game does: Mod Organizer's overwrite
+folder, the enabled mods from highest priority down, then the game folder.
+Measured on the reported modlist: 32 of the 637 plugins involved now come from
+the copy the game loads (31 were read from another copy, 1 was not found); the
+merged plugin comes out byte for byte the same. `CBBE2UBE_NO_MASTER_SEARCH_LOAD_ORDER=1`
+(set to 1) restores the old search.
+
+### Fixed — a missing female mesh for the third-person view keeps the male one, even when the first-person one exists
+
+The tool converts only the female version of a piece, unless the female mesh
+is missing: then it converts the male version, so the piece has something to
+show on a UBE body. It checked the third-person and first-person female meshes
+together, so a piece whose third-person female mesh is missing but whose
+first-person one exists never converted the male third-person mesh. Each view
+is now checked on its own; nothing converted before is dropped. Measured on the
+reported modlist: 6 more pieces (12 mesh files) of one clothing replacer.
+`CBBE2UBE_NO_FEMALE_SLOT_PAIRS=1` (set to 1) turns it off.
+Not changed (left for you to decide): a piece with no first-person female
+mesh at all still skips the male first-person mesh the game shows in its place;
+`CBBE2UBE_FEMALE_SLOT_ABSENT_KEEPS_MALE=1` converts it too (7 more pieces on the
+reported modlist, mostly first-person arms and torsos, one of them a base-game
+gauntlet).
+
+### Fixed — only the copy of a plugin the game loads is converted
+
+Mod Organizer loads a plugin only from the top of a mod's folder, and when two
+mods ship a plugin with the same name, only the one higher in the mod list. The
+tool still read every copy: one packed a folder too deep inside its own mod, and
+the base-mod copy a hotfix or tweak replaces. The copy that ran last -- the one
+the game does NOT load -- also wrote the tool's per-plugin patch and its notes.
+Now only the loaded copy is read, the log names every copy it leaves out and why,
+and within one run a later mod never overwrites a patch an earlier one wrote.
+Measured on the reported modlist: 4 unloaded copies (2 with armour) are no longer
+read, and 2 mods whose only armour plugin was such a copy are no longer sources;
+their armour is still converted, from the copy the game loads, so the converted
+armour and the merged plugin are unchanged. `CBBE2UBE_NO_LOADED_SOURCE_PLUGINS=1`
+(set to 1) reads every copy again.
+
+Each plugin belongs to one mod, and every part of a run uses that same answer:
+the highest mod in the mod list that has the plugin at the top of its folder.
+That is the mod the game loads the plugin from -- or, when Mod Organizer's
+overwrite folder holds a copy (a plugin cleaned or edited and saved there), the
+mod whose copy it replaces. Only that mod's copy is converted, never another
+mod's, even if this run does not convert that mod (you did not pick it in Select
+mods, or its armour is already built for UBE): a patch made from another copy
+would override the plugin the game loads. Excluding a mod leaves alone the armour
+of the plugins that belong to it, and only those: a plugin that belongs to a mod
+you did not exclude is converted and covered as usual, even when the excluded mod
+ships a losing copy of it. This is the same in All mods and Select mods runs and
+for `convert --exclude-mods`. When a plugin belongs to a mod the tool does not
+convert -- a body mod, or a mod it skips by its name, such as child clothing or
+BodySlide output -- its armour is not converted from another mod's copy either,
+since the game loads that mod's version; the log lists each such plugin when the
+conversion starts. When the game loads an overwrite copy whose armour differs
+from the copy converted, the log says so. Measured on the reported modlist: its
+overwrite folder holds no plugins, nothing is excluded, and in each of the 85
+cases where a mod's plugin loses to another mod's copy the plugin belongs to a
+mod the tool reads plugins from, so nothing changes.
+`CBBE2UBE_NO_ONE_PLUGIN_OWNER=1` (set to 1) goes back to deciding the two apart:
+a lower mod's copy is then read when the loaded copy is in overwrite, a body mod
+or a mod skipped by its name, and an exclusion also holds back the armour of a
+plugin whose copy in the excluded mod is not the one that counts.
+`CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE=1` (set to 1) turns that off too and goes
+back to reading the mod's own copy when an All mods run excludes the mod the game
+loads the plugin from; `CBBE2UBE_NO_LOADED_COPY_READER=1` (set to 1) turns it off
+too and leaves the mod's copy out in every case.
+
+### Fixed — the run log and the per-mod reports name the right plugin for each patch
+
+A mod with several plugins, some of them without armour, was listed with each
+patch next to the wrong plugin ("a quest plugin -> an armour set's patch"), and the
+per-mod report printed one plugin's numbers under another plugin's name. Each patch
+is now listed with the plugin it was made from, and the report says how many of the
+plugins found were patched. Only the log and report text change; the converted
+armour and plugins are the same.
+
+### Fixed — a failed search for armour meshes is reported instead of hidden
+
+Before converting, the tool searches every enabled mod for the armour meshes the
+game actually loads (a BodySlide build, a replacer, a patch). If that search hit
+an error -- one folder with an over-long path or a broken link was enough -- the
+tool acted as if no mod had those meshes, said nothing, and converted each armour
+from its own copy instead of the one the game loads; armour whose meshes live in
+another mod was left out and listed as "found nowhere". Now an unreadable folder
+costs only its own meshes, the run names it in a warning, and a search that fails
+outright is a named warning in the end-of-run count and the failures list; the
+convert step then searches again rather than reusing the empty result. A failure
+to read which vanilla armour meshes to search for is a warning too. On a modlist
+where the search works, the output is unchanged, with one exception: a folder
+whose name ends in `.nif` is no longer taken for a mesh (it used to hide a real
+mesh of that name in a lower-priority mod, and the piece then failed to load). A
+folder that stays unreadable no longer makes every Refresh repeat the whole
+search (1.5-3 minutes): the result is kept, the warning is given again each time,
+and the search runs afresh as soon as the folder can be read, or once you have
+deleted or renamed it (then no warning names a folder that is gone). A search
+that also could not read which vanilla armour meshes to look for is not kept.
+
+### Fixed — a garment whose layers share one name keeps every layer
+
+Some garments are built from several layers the author gave the same name, for
+example a fur coat made of six fur shells all called "fur". The tool did part of
+its work per layer name, so the last layer's data landed on the others. Converted
+on its own, such a coat came out broken: its smaller fur shells took a bigger
+shell's shape, with scrambled texture coordinates that differed from run to run.
+In other runs several fitting steps were skipped for every shell instead, and the
+body-morph file carried a single set of morphs meant for one shell. Now each layer
+of a shared name gets its own name before conversion ("fur", "fur:1", "fur:2" and
+so on) in the author's order, so every layer follows body sliders with its own
+morphs, and colour variants in the armour mod's own plugin still reach the right
+layer (they pick layers by position), as do those this tool's merged plugin
+carries (next entry). A name the garment's physics
+file uses is left as it is, because the physics finds that layer by its name, and
+so is a body layer's name; the run reports either case. The tool also no longer
+writes one layer's shape onto a layer of a different size (it read memory it
+should not). None of the meshes the reported modlist converts today has layers
+that share a name, so current output does not change.
+`CBBE2UBE_NO_DUP_SHAPE_NAMES=1` (set to 1) keeps the authored names;
+`CBBE2UBE_NO_OVERRIDE_CONTRACT=1` turns off the size check.
+
+### Changed — the last step of a conversion is quicker
+
+At the end of a run the tool goes over every armour that has a thin and a
+heavy version. First it makes sure both versions jiggle on the same bones,
+then it checks that the two versions still match. Each of those steps opened
+every file on its own. Both are now done while each file is open once. The
+files written and the warnings shown are the same. Measured on a copy of the
+reported modlist's output (2700 files): this step took 257 seconds and now
+takes 182 (293 and 252 in a second, busier run).
+`CBBE2UBE_NO_TAIL_FOLD=1` (set to 1) does the two steps separately again.
+
+### Added — old converted meshes that nothing makes any more are moved aside
+
+The output folder was never cleaned. When the tool stops converting a piece --
+its mod was removed, disabled or excluded, another mod's hand-made UBE version
+now covers it, a later plugin made it an item no one can wear, or it is the male
+mesh of a piece that has a female one -- the old converted mesh stayed behind.
+Because the tool's output sits high in MO2, it still replaced the original in
+game, and the tool kept counting it as converted.
+
+A full run of all mods now moves such meshes, with their morph and physics
+files, into `_superseded\<date-time>\` inside the output folder. Nothing is
+deleted: to undo, move the files back. It moves only what it is sure about. The
+tool now keeps a record of which mod each converted mesh came from
+(`_conversion_manifest.json` in the output folder), and a mesh moves only when
+that mod is gone, or when the tool knows exactly why it no longer converts it.
+A mod that was read but produced nothing keeps its meshes, and so does a mod
+whose old plugin patch stays in the output: a mesh stays whenever a plugin patch
+left in place still points at it. A run in which something could not be read or
+went wrong, or that would move an unusually large share of the output, only
+lists what it would move; the list is printed in the log and written to
+`_superseded\stale_output_report.json`. A run of selected mods does not look for
+old meshes at all -- it only updates the record -- so run all mods to see the
+list. If the plugin merge after it does not complete, or has to fall back to the
+per-mod patches, every moved file is put back first, because those plugins
+still point at them; the same happens if the step itself fails, and the rest of
+the run goes on as if it had not run. A file you placed in `meshes\!UBE`
+yourself is treated like the tool's own: it moves only if it sits exactly where
+a mod the tool reads puts a piece it no longer converts, and then only from the
+second full run on.
+
+**The first run after this update only lists.** There is no record yet of which
+mod made which mesh, so it writes that record and moves nothing; a later full
+run moves what is still unused. Measured on the reported modlist: 37 old meshes
+(103 files, 128 MB) are no longer made. The first run records 24 of them and the
+next full run moves 23; the last one stays because an old plugin patch of a mod
+the tool no longer selects still points at it. The other 13 come from mods the
+tool no longer selects at all, so no run can record them and they stay listed
+until you move them by hand. With a full record, all 37 would move. No piece a woman can wear changes for her: what is drawn changes
+only on items no one can equip and no woman wears, and on the male mesh of two
+pieces (a man of a UBE race wearing them).
+`CBBE2UBE_NO_STALE_OUTPUT_SWEEP=1` (set to 1) turns all of it off, the record
+included; `CBBE2UBE_STALE_OUTPUT_SWEEP_REPORT_ONLY=1` lists without moving.
+
+### Added (off by default) — skirts and capes of the vanilla armours can keep their physics on UBE actors
+
+Some vanilla armours (bandit, draugr, hide, iron, studded, Forsworn, Falmer,
+General Tullius's outfit, the Sons of Talos outfit and two farm clothes) have
+physics skirts, tassets or capes in your BodySlide build, and
+CBBE characters wear them that way. The tool takes a static version of those
+pieces instead, so on UBE characters the same skirts hang stiff.
+
+**This is off by default.** It first shipped on, and in game most of these
+armours turned out to sit looser on the body in their physics versions than in
+their static ones, as their authors built them: on the leather armour a large
+gap opened between the back of the hips and the armour (typically 1.2 units
+with the static version against 2.5 with the physics one; the widest tenth 3.6
+against 6.3), and on two of the outfits the widest tenth of the gap reached
+about 6.3 units too. Most of the others are looser on the skirt or the thighs;
+the draugr, Forsworn and one farm-clothes version are not looser anywhere.
+So the tool keeps the static pieces, as it always did. To take the physics
+versions anyway, set `CBBE2UBE_ZEROED_SMP_GAIN=1` (set to 1).
+
+With it on, the tool takes your zeroed BodySlide build with its physics, but
+only when it has checked that build against its BodySlide project, both
+versions carry the body the tool replaces, the physics file is found and holds
+constraints, nothing in that file would bring a second, hidden body back, and
+every part that swings still has something to collide with once the conversion
+has removed what it drops. Measured on the reported modlist: 17 armour pieces
+change (68 files: 34 meshes, 17 morph files and 17 physics files that only the
+physics versions have); everything else is converted exactly as before. One record
+in the combined plugin changes with them: a retexture of the Forsworn armour
+gives it an alternate texture set naming four layers (armour, bottom, feather
+cape, underwear). The static version has none of those layer names, so the set
+is emptied and UBE women see the mesh's own textures; the zeroed build has all
+four, so with the option on its 4 entries are kept and UBE women see the
+retexture's textures, as CBBE characters do.
+
+With the option on, these stay as they were: the Imperial heavy cuirass; the
+Imperial light and medium cuirasses, whose physics file names the body `Body` while their build
+calls it `body`, so the conversion drops that collider and their skirt would
+have swung through the legs with nothing to stop it; a piece whose build has no
+body the tool can replace; and a piece whose own mesh has no body. The check
+reads the physics file the way the conversion actually cleans it up, line by
+line, so a collider written on the same line as a removed part counts as removed
+too. A piece is also kept as it was when that cleanup would leave its skirt
+swinging with no collision shape at all, or would leave a physics file the game
+cannot read. On the reported modlist this last refinement changes nothing.
+
+On 6 of the 34 meshes the conversion summary still reports a physics shape it
+dropped (`hdt_xml_shape_dropped`), and that is expected: the iron light
+cuirass shares its physics file with the heavy one, which names a pauldron belt
+and its collider that the light cuirass does not have; both farm clothes name
+the body the tool replaces. Each of these pieces keeps a collider for
+everything that swings. With the option on,
+`CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1` also lets the Imperial light and
+medium cuirasses take their physics versions. The earlier off-switch `CBBE2UBE_NO_ZEROED_SMP_GAIN` is no longer
+read: what it asked for, the static pieces, is now what you get without it.
+
+### Changed — converting all your mods is much faster
+
+The conversion went through your mods one at a time and waited at each mod for
+its slowest armour piece before starting the next, so most of the worker
+processes sat idle: on the reported modlist they were busy only a quarter of
+the time. The tool now reads every mod first, then converts the armour pieces
+of all of them together, biggest first, and finishes each mod, in the usual
+order, once its own pieces are done. A very large piece starts only when
+there is enough free memory for it, and a piece that runs out of memory is
+converted again on its own. The converted files are the same, byte for byte.
+The progress bar now shows one bar for converting the pieces of all your mods,
+and the text beside it shows the time left for all of them.
+Measured on the reported modlist, all mods: 92.5 minutes one mod at a time,
+37.7 minutes now (converting the armour pieces: 83 minutes down to 29), and
+all 7,125 output files but one diagnostics log the same byte for byte. The
+tool uses about 3.4 GB more memory at its peak (20.3 GB against 16.9 GB).
+
+One thing works differently. When an earlier mod converts an armour piece and
+a later mod leaves its own copy of that piece to a third mod that already
+ships it built for UBE, the earlier mod's conversion from this run now stays
+in `meshes\` instead of being moved to `_superseded\`. This did not happen on
+the reported modlist. With `--workers 1` it is still moved, as before.
+
+If you cancel a run, or it stops, while the armour pieces are converting, each
+mod's patch is written only once that mod's pieces are done, so no patch points
+at a piece that was never converted, and a following plugins-only refresh uses
+the patches from your last complete run. The run's report says how far it
+got. With `--copy-textures`, when two mods ship the same texture, the later
+mod's file wins, as it always did.
+`CBBE2UBE_NO_GLOBAL_SCHEDULE=1` (set to 1) converts one mod at a time again.
+
+### Changed — checking your zeroed BodySlide build is about four times faster
+
+Before converting, the tool checks which armour your zeroed BodySlide build
+already provides. For every file it needed it looked through each of your
+thousands of mod folders, and it asked about the same files again and again.
+It now remembers each answer while that check runs, and only looks in folders
+that have the right top folder. The result is the same, piece for piece, also
+when Windows will not let the tool look inside one of your mod folders.
+Measured on the reported modlist: about 265 s down to 70 s.
+`CBBE2UBE_NO_ZEROED_PROBE_MEMO=1` (set to 1) checks the old way.
+
+### Fixed — a robe's cape shows on UBE actors
+
+A robe that comes with a separate cape drew the robe on a UBE-race actor but
+not the cape. The cape was not converted, because none of it is weighted to a
+thigh, calf, buttock, breast or belly bone (the bones that shape clothing to
+the body), and the step that draws a body armour's hood or helmet on UBE left
+out anything named like a cloak. Such a cape is now drawn with the robe on its
+own mesh, as the same kind of cloak already is when worn on its own, but only
+when the tool can read its mesh, the mesh is weighted, and none of it is
+weighted to a thigh, calf, buttock, breast or belly bone. It may be weighted
+to any other bone -- the pelvis, spine, neck, head, shoulders, arms or feet,
+or bones of its own; the cape on the reported modlist hangs from the pelvis,
+spine, shoulders and upper arms. A cape with any thigh, calf, buttock, breast
+or belly weights, one with no weights at all, and Khajiit or Argonian versions
+stay out. Measured on the reported modlist: one robe gains its cape; nothing
+else changes.
+`CBBE2UBE_NO_COVERAGE_BODY_CLOAK=1` (set to 1) leaves the cape off again.
+
+### Fixed — the report no longer says a rigged physics cloth has "NO constraints"
+
+When a physics cloth cannot collide with the body, the conversion report says
+whether the piece can be fixed, and that depends on whether its cloth is
+rigged (held together by constraints). Most physics files keep those
+constraints in groups, and the tool looked only outside the groups, so it
+told you a rigged skirt or cape had none and needed a rig first. It now looks
+everywhere. Measured on the reported modlist: all 26 such lines were wrong and
+are gone; the converted meshes themselves do not change. The optional
+`disable_unconstrained_smp.py` script also recognises all three kinds of
+constraint now, so it can no longer switch off a rigged cloth that uses the
+less common kinds (none in the reported modlist).
+`CBBE2UBE_NO_CONSTRAINT_GROUP_SCAN=1` (set to 1) turns it off.
+
+### Fixed — physics that some armours and cloaks point to with a "Data\" path now carries over
+
+An armour with HDT-SMP physics names its physics file inside the mesh. A few
+authors write that name starting with "Data\" (the game folder) instead of
+starting at "meshes\". The tool could not find the file then, so the converted
+piece shipped with no physics at all: the cloth hung stiff. The tool now also
+looks for the file without that leading "Data\", after first trying the name as
+written. Measured on the reported modlist: 18 converted meshes of two armour
+sets and two cloaks get their physics back (body, skirt, first-person and
+shield-cloth pieces). Physics files that exist nowhere in the load order stay
+missing, as before, and nothing is taken from another mod's archive.
+`CBBE2UBE_NO_PHYSICS_DATA_PREFIX=1` (set to 1) turns it off.
+
+### Development only — the physics census models what the physics engine loads
+
+`scripts/analysis/physics_cloth_health.py` counts which converted pieces have
+HDT-SMP physics and why simulated cloth can clip. It counted a different set
+than the one that plays in game. It gave a piece with no physics link of its
+own the physics file of another garment with the same file name. It read
+physics files as text in the system's code page and more strictly than the
+engine does, so a file that starts with a UTF-8 byte-order mark, declares an
+XML namespace, or has stray text after its end counted as unreadable. It
+treated one side naming the other as enough for cloth to collide, where the
+engine needs both sides to allow it and reads an empty list as "collide with
+everything". It counted only one of the four kinds of constraint. And it took
+every shape of one kind for cloth and every shape of the other kind for a
+collider, where the engine simulates a shape only when one of its bones has
+mass: so body helpers counted as cloth, real cloth of the other kind was
+missed, and two helpers could "collide". A physics file it could not open
+stopped the whole run.
+
+It now follows the piece's own link (a leading "Data\" handled as the converter
+handles it), reads the file's bytes, and works out which shapes move from the
+bone masses the file declares, read in order as the engine reads them. A file
+it cannot open is counted as unreadable and the run goes on. These counts come
+from a model of the engine's rules, not from the engine: it does not see
+colliders that another worn piece brings, physics the engine adds by shape
+name, physics files that exist only inside an archive, or per-bone collision
+filters, and it recognises a body collider by its tag name. On the reported
+pack: pieces with physics 364 -> 306, unreadable physics files 94 -> 0, pieces
+with simulated cloth 97 -> 247 (124 garments), the crash-prone "unconstrained
+collision" class 56 -> 0, and 4 pieces (2 garments) have cloth that reaches
+nothing in its own file. Older numbers from this tool, including the first
+version of this change (117 / 59 simulated, 14 / 7 reaching nothing), are not
+comparable. Guarded by `tests/test_physics_cloth_health.py` and mutation pairs
+`PCH-a`..`PCH-zd`. No converter behaviour changes.
+
+### Development only — the physics census counts cloth that swings with nothing to hit
+
+The physics engine keeps a piece's physics running as long as its physics file
+declares bones, even when it declares no collision shape, or only still ones:
+the bones with weight swing, and the visible cloth hung on them swings too.
+That cloth has nothing to collide with at all, the worst case for sinking into
+the body, but the census left those pieces out of every count and printed the
+reason as if nothing moved. It also printed "no shape loads: 0" beside 41
+pieces that load no shape. And it knew a body collider only by a short list of
+tag names, so skirts colliding with a body helper named, say, "VirtualLegs"
+counted as having no body to hit.
+
+The census now measures these pieces and lists them in their own row, counts
+apart the ones whose moving bones carry no visible mesh, and says separately
+which pieces load no physics at all and which load it but move nothing visible.
+It recognises a body helper by a body-part name on a shape that rides the
+body's bones, and it knows that a shape marked "external" collides with
+nothing in its own file. On the reported pack: 38 pieces (19 outfits) of cloth
+move with no collision shape, all of it held by constraints; cloth reaching
+nothing to collide with goes from 4 to 42 pieces; cloth with no body to collide
+with goes from 190 pieces (95 outfits) to 134 (67), of which 38 are the new
+pieces, 60 reach an unnamed collider on the body's bones, 10 reach only a
+ground plane and 26 have a shape that reaches no still shape at all. The
+rest-depth tool reads the same population and now measures 281 pieces instead
+of 243 (275 ranked once it lists apart the pieces the converter refuses, see
+below); two of the new outfits rest partly inside the body. Guarded by
+`tests/test_physics_cloth_health.py` and mutation pairs `PCH-ze`..`PCH-zo`
+(`PCH-p` and `PCH-za` re-anchored). No converter behaviour changes.
+
+### Development only — where physics cloth rests against the body, as the game draws it
+
+Cloth that starts out inside the body is not reliably pushed back out by the
+physics engine, so how deep simulated cloth rests matters. The first numbers
+for that read each vertex where the file stores it. The game draws it where its
+bones put it, and the tool's fix for skirts sinking into the body works by
+moving a skirt chain's top bone, not the vertices: so those numbers could not
+see the fix at all, and some pieces the fix had already cleared read as still
+inside.
+
+`scripts/analysis/physics_rest_depth.py` measures where each piece of physics
+cloth rests: through the piece's bones as the game attaches them to the
+character's skeleton, against the body you built in BodySlide at the matching
+weight. It says, per piece, how deep the visible cloth sits inside the body
+(and, apart, the hidden collision helpers), which skirt chains the fix moved
+and by how much, and it refuses to report if its checks on the body fail. On
+the reported pack: 243 pieces with physics cloth, of which 77 (39 outfits) have
+visible cloth more than 0.5 units inside the body at rest and 33 (18 outfits)
+more than 1.5 units; the fix moved chains on 187 pieces (first published as
+193, see the next entry). Of the 7 outfits first reported more than 1.5 units
+inside, 4 now read below that line, but two of those still rest 1.3 and 1.4
+units inside. The census's own depth row now says it reads stored positions.
+Guarded by `tests/test_physics_rest_depth.py` and mutation pairs
+`PRD-a`..`PRD-r`. No converter behaviour changes.
+
+### Development only — the rest-depth tool reports only real skirt lifts, and on every chain
+
+The rest-depth tool also says which skirt chains the converter's lift fix
+moved. It took any bone resting off where its skin was bound for a moved
+chain, so on pieces whose bone layout simply disagrees with their skin it
+reported lifts the fix never made (and the converter had refused to touch
+those very pieces), some of them larger than the fix is allowed to move
+anything. It also missed lifts on chains the physics file does not animate.
+A lift is now only what the fix does: the whole chain below its top bone moved
+together, by no more than the fix's limit; anything else is reported as the
+bones disagreeing with the skin. A piece the converter's own check would
+refuse is listed apart instead of ranked, the pieces moved by bones alone are
+marked in the ranking, a body or skeleton file it cannot use stops it with a
+one-line message, and its JSON output says whether the body checks passed and
+carries no depths when they did not.
+
+On the reported pack: 285 pieces with physics cloth, 275 ranked (38 of them
+moved by bones alone) and 10 listed apart, all refused by the converter too
+(first published as 277 and 8, see the next entry). The
+fix moved 989 chains on 205 pieces (103 outfits), half of them by more than
+0.94 units and 130 by the full 2 units; the first version reported 1077 chains
+on 193 pieces. The run log agrees chain for chain on all 205. Visible cloth
+more than 0.5 units inside the body at rest: 81 pieces (41 outfits); more than
+1.5 units: 37 (20). Guarded by `tests/test_physics_rest_depth.py` and mutation
+pairs `PRD-s`..`PRD-ze` (`PRD-i` re-anchored). No converter behaviour changes.
+
+### Development only — the two physics tools count only what moves, and never leave a stale result
+
+The census's "cloth resting inside the body" row counted every point of a
+simulated piece, including the rigid parts of it that the physics never moves
+(a skirt's belt, a robe's bodice). It now counts only the points the physics
+moves. On the reported pack that row goes from 76 of 96 measurable pieces to
+47 (26 outfits); it had been published as 66 of 86 and then 76 of 96.
+
+The rest-depth tool dropped some groups of skirt bones when two groups hung
+under the same bone, so a disagreement between the bones and the skin could
+vanish: it now keeps every group (140 such disagreements on 6 pieces, where it
+printed 136). It now checks every shape of a file the way the converter does,
+so a cloak the converter refused because of its own body helper is listed apart
+too, as the run log says (10 pieces listed apart, 275 ranked; no depth or lift
+number moves). A skeleton file named on the command line or in
+`CBBE2UBE_SKELETON_NIF` that does not exist, or a body with no triangles, now
+stops it with a one-line message instead of quietly using another skeleton or
+crashing. Its JSON output is written on every run: a run that stops early says
+why and carries no depths, and one that crashes says it did not finish, so an
+older result is never left looking like this run's.
+
+The census reads the physics file's shape settings exactly as the physics
+engine does, without trimming spaces (no file on the reported pack has any).
+Guarded by `tests/test_physics_cloth_health.py`,
+`tests/test_physics_rest_depth.py` and mutation pairs `PCH-zp`..`PCH-zv`,
+`PRD-zf`..`PRD-zm` (`PCH-j` re-anchored). No converter behaviour changes.
+
+### Fixed — a colour variant recolours every same-named layer
+
+A colour variant lists the layers it recolours, each by name and position. On a
+garment whose layers share a name (the fur coat above), the variant copied into
+this tool's merged plugin kept only one entry for that name, so only the first
+fur shell took the new colour and the others stayed in the original one. Now
+each entry goes to the layer it names. To know which one that is, the tool
+reads the armour's original mesh again -- the same file it converted, found
+the same way, without changing anything -- and repeats the renaming on it, so
+it knows exactly which original layer became "fur", "fur:1", "fur:2" and so on.
+It does this when the converted mesh shows renamed layers, when a colour
+variant lists one layer name more than once, which proves the garment had
+several layers of that name even if every renamed one was lost, when the
+converted mesh has two layers whose names differ only in capitals ("Fur" and
+"fur"), which the tool otherwise matches as one name, and when the converted
+mesh has two layers with exactly the same name. Having no name counts as a
+name here: two layers with no name at all, or a variant with two entries that
+give no name, make the tool read the original mesh too. When the merged plugin is
+split into several files (CBBE_to_UBE_Combined.esp, CBBE_to_UBE_Combined2.esp,
+...), the tool looks at all of them together: a variant in one file that
+lists a name twice counts for the same garment's variants in the other files
+too, and each original mesh is read once. Layers the previous fix
+leaves with their shared name (named in the physics file, or a body), layers
+named alike up to capitals, layers with no name, and any name a variant lists
+twice or the converted mesh carries twice are told apart by their vertex count, triangle
+count and texture coordinates, and each entry goes to the layer that matches
+its original one.
+
+A layer can miss its colour in these cases, and keeps its original colour:
+- the layer was lost in conversion (the entry for it is dropped; the other
+  layers keep theirs);
+- the entry's position in the original mesh is not a layer of the name the
+  entry gives;
+- the original mesh cannot be found or read, or it is not the mesh that was
+  converted (its layer names, vertex and triangle counts or texture
+  coordinates differ, for example after the armour mod was updated): then
+  every entry for that garment's same-named layers is dropped, and the run
+  says how many garments this happened to;
+- two layers with one name (spelled the same, or both with no name) are
+  identical in vertex count, triangle count and texture coordinates, or one
+  of them matches no original layer: every entry for that name is dropped.
+
+Dropping is on purpose: keeping one entry "for the name" would put whichever
+colour the mod lists first on one layer of that name, and that can be another
+layer's colour. A layer can still get the colour of another layer of the same
+name (having no name counts as a name) in two cases:
+- two layers identical in vertex count, triangle count and texture
+  coordinates that only their names tell apart (two renamed layers, or
+  "Fur" and "fur"), whose order the armour mod swapped after the conversion;
+- every other layer of the name was lost in conversion, so the converted mesh
+  has the name once, no variant of the garment in any of the merged plugin's
+  files lists it twice, and the tool did not read the original mesh (nothing
+  else about the garment made it) or could not use it. The one entry goes to
+  the layer that is left, as before, and that is another layer's colour when
+  the entry was written for a lost layer.
+A variant's entry with no name, on a garment with two or more layers with no
+name, now goes to the nameless layer whose shape matches its original one, or
+is dropped; before, it went to the last layer with no name, even when the tool
+had read the original mesh. No mesh a colour variant of the reported modlist
+uses has two layers with no name.
+This holds when the colour variants are fixed once, right after the merge,
+which is what a run does. When a converted mesh will not load, its colour
+variants keep their original entries, and the run says so.
+None of the meshes the reported modlist converts has renamed layers, so
+current output does not change. One converted mesh has two layer names that
+differ only in capitals (a small collision layer and the feet), but no colour
+variant uses it. One mesh left in the output by an older
+version, a fur coat converted before its layers were renamed, no longer
+matches its original: if its colour variants are merged again against that
+old mesh, the one entry each kept (on one of its six fur layers) is dropped.
+Converting the coat again gives each of its layers its own colour.
+`CBBE2UBE_NO_ALTTEX_DUP_OCCURRENCE=1` (set to 1) turns it off and keeps one
+entry per name as before; it is also off when `CBBE2UBE_NO_DUP_SHAPE_NAMES=1`
+is set. `CBBE2UBE_NO_ALTTEX_EXACT_PROVENANCE=1` stops reading the original mesh
+and guesses from the converted mesh's layout instead, as the previous test
+build did; that guess can put a colour on the wrong layer when a layer at the
+end was lost. `CBBE2UBE_NO_ALTTEX_FAMILY_STRICT=1` matters only together with
+it, and drops the guess's layout and count checks.
+`CBBE2UBE_NO_ALTTEX_SET_PROVENANCE=1` reads the original mesh only when the
+converted mesh shows renamed layers and keeps one entry per name for layers
+left with their shared name, as the previous test build did; that can put a
+lost layer's colour on the layer that survived when every renamed layer of a
+name was lost. `CBBE2UBE_NO_ALTTEX_CASE_PROVENANCE=1` (read only when the
+switch above is not set) treats "Fur" and "fur" as different names when it
+reads the original mesh, as the previous test build did: a variant's entry
+for one of them can then go to the other.
+`CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY=1` (read only when none of the
+`..._DUP_OCCURRENCE`, `..._DUP_SHAPE_NAMES`, `..._EXACT_PROVENANCE`,
+`..._SET_PROVENANCE` and `..._CASE_PROVENANCE` switches is set) fixes each file of a split merged plugin on its own, does not
+read the original mesh just because two layers share a name exactly, and
+matches an entry with no name by name, as the previous test build did: a
+variant naming a layer once can then put a lost layer's colour on the one
+left, when only another file's variant lists the name twice, or put its
+colour on the last of two same-named layers or of two layers with no name.
+
+### Changed — whether you can wear an item is read from the plugin the game uses
+
+The tool does not convert an item the player cannot equip (the game's
+"non-playable" flag), unless a female NPC wears it: those are mostly effects
+and gore that the game applies, not outfits. It read that flag from each mod's
+own plugin. When a later plugin in your load order changes it, such as a
+balance or overhaul patch that takes a set out of the game or a patch that
+makes a hidden item wearable, the game follows the later plugin and the tool
+did not. It now reads the flag from the last plugin in your load order that
+changes the item, the one the game uses. On the reported modlist that stops
+converting 27 meshes (43 files) of items a later patch made unwearable and no
+female NPC wears: the pieces of one fur armour set, one follower's outfits, a
+clothing set, first-person models of a few cuirasses and a robe, and the boots another
+follower's outfit borrowed. Three mods had nothing
+else to convert and are no longer converted at all. One more mesh is
+converted, an effect outfit a later plugin made wearable. Items a female NPC
+wears are still converted either way. Meshes an earlier run already converted
+stay in the output folder and are still used. If the tool cannot read your
+load order, each mod's own plugin decides, as before, and the run warns.
+`CBBE2UBE_NO_SELECTION_WINNER_PLAYABLE=1` (set to 1) turns it off.
+
+### Changed — items whose meshes are not installed get no UBE link
+
+Some items name meshes that exist nowhere in the modlist (a mod whose mesh
+files are not installed, or an item that points at files its mod never
+shipped). Such an item draws nothing on any character, UBE or not, but this
+tool still gave it a UBE armature, a link that drew nothing. It now leaves
+those out and says so in a NOTE, counted by plugin. An item that has at least
+one of its meshes (the world one or the first-person one, male or female) is
+linked as before, and so is one this tool already draws on UBE women with a
+stand-in: the matching vanilla female mesh, or its own male mesh where that
+exists. A hand or foot drawn with the UBE body's own hands or feet is linked
+too, and a hood left out this way is no longer also listed as drawn with its
+robe. On the reported modlist this left out 41 armatures (city
+guard boots, gauntlets, helmets and shields of one overhaul, some pouches and
+satchels, amulets and a few single items), 48 links on 47 items that drew
+nothing anyway. Install the missing meshes and run again, and they are linked.
+If the tool cannot read the modlist to check, it links everything as before
+and warns. `CBBE2UBE_NO_COVERAGE_DEAD_ARMATURE=1` (set to 1) turns it off.
+
+### Fixed — characters of a UBE race count when the tool looks at what NPCs wear
+
+To decide which outfits only NPCs wear are worth converting, the tool looks at
+what female characters of the races a UBE body covers are dressed in. It
+recognised UBE's own races by a name they do not actually have, so characters
+already set to a UBE race were left out of that look. They are now recognised
+by the UBE plugin that adds those races. On the reported modlist this added 11
+items to that list, all of them ordinary wearable gear the tool already
+handled, so nothing it converts or links changed there. On a modlist where a
+UBE-race character wears an outfit the player cannot equip, that outfit is now
+converted too. `CBBE2UBE_NO_UBE_RACE_BY_PLUGIN=1` (set to 1) turns it off.
+
+### Changed — this tool's per-mod working patches have a name of their own
+
+For each converted plugin this tool writes a working patch into
+`_unmerged_patches`, which the game never loads. It used to be called
+`<plugin> UBE patch.esp`, the same name hand-made UBE patches use, so on the
+reported modlist 22 of them shared a name with another mod's plugin. They are
+now called `<plugin> (CBBEtoUBE src).esp`, a name no other mod there uses. The
+next run renames the old ones by itself (a log line counts them) and removes
+an old copy that already has a renamed twin. **You do not need to change
+anything in MO2**: these files are not in your plugin list, and the plugins you
+enable, `CBBE_to_UBE_Combined.esp` and its numbered pieces, keep their names.
+Only if you keep the working patches at the mod root
+(`--unmerged-patch-subdir .`) are they plugins, and then you have to enable the
+renamed ones; the run says so. At the mod root the tool renames only in a
+folder it wrote before (one with its conversion report), and only the patches
+it wrote itself (the ones with its `.espgen.json` file beside them). Any other
+`<name> UBE patch.esp` there, such as a hand-made patch you keep in the same
+folder, keeps its name, and the run lists it in a NOTE.
+
+`CBBE2UBE_NO_SOURCE_PATCH_RENAME=1` (set to 1) makes new runs use the old
+names. It does not rename files back. On a folder a run has already renamed,
+that setting (or going back to an older version of the tool) finds no working
+patches under the old names: `--plugins-only` skips every mod, and if coverage
+fails there is nothing to fall back on for the Combined plugin. A full run
+writes the old names again. If you later run this version without the setting,
+it removes the old copies that already have a renamed twin.
+
+### Fixed — an item another mod already makes for UBE is no longer drawn twice, and one it only claims to cover is drawn
+
+When another mod ships its own UBE version of an item, this tool used to go by
+a rough sign: any UBE version on the item meant "leave it alone", except for
+body armour, which got this tool's version as well. So a dress whose UBE patch
+draws the very mesh this tool converts was drawn twice, and an item whose UBE
+patch names a mesh that is not installed drew nothing. The tool also read its
+own unused copies of some patches in place of the other mod's plugin of the
+same name. Now it reads only the plugins the game loads and looks at what the
+other mod's version actually draws: the same mesh, or exactly the same body
+slots, with a mesh the game can find. When it cannot tell which of this tool's
+pieces the other version replaces (say, a cuirass that also claims the gloves
+slot), it adds this tool's pieces anyway: at worst a piece is drawn twice,
+never left out. Only what it leaves out is added, and only for the
+UBE races it does not cover. Where the other mod's version has no converted
+first-person mesh and this tool's has, this tool's version is kept as well, so
+your own arms still look right. Measured on the reported modlist: one dress is
+no longer drawn twice, and two pouches whose meshes exist nowhere get this
+tool's version (nothing changes in game for them); nothing else changes, with
+or without a mod excluded. A new log line counts the items another mod already
+draws. `CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN=1` (set to 1) turns it off,
+and `CBBE2UBE_NO_COVERAGE_KEEP_BETTER_FIRST_PERSON=1` drops only the
+first-person rule.
+
+### Changed — clearer log notes about excluded mods, missing female models and mannequins
+
+Three notes in the run log said the wrong thing in some cases; the files the
+tool writes are unchanged.
+
+- An excluded mod's piece that another mod patches is now named on its own
+  line, as left to that mod's patch -- body pieces too, when another mod's
+  SkyPatcher patch names them. It used to be listed with the pieces that have
+  no UBE version from any mod, with advice to take the mod off the exclusion
+  list. The tool does not check that the other mod's patch draws on UBE actors.
+- The note about an excluded mod's pieces that are still drawn no longer says
+  they use the mod's own mesh. None of the excluded mod's meshes is converted
+  for them, but a piece that shares a base-game mesh another mod's conversion
+  covers draws that converted mesh.
+- The note about female models that exist nowhere now sorts each piece by why
+  its male mesh could not stand in: no male mesh at all, a body piece, a cape
+  or cloak, or a male mesh that could not be read. It used to call every piece
+  with a male mesh a body piece, and its "and N more" count could come out
+  short.
+- The line about the mannequin race no longer says no actor has it.
+  Mannequins wear armour; what no playable or UBE-race character has is their
+  race.
+
+### Changed — the coverage step checks which meshes exist much faster
+
+To decide what a UBE actor's armour draws, the coverage step asks whether a mesh
+exists anywhere the game can read it. It used to look for each mesh in every
+enabled mod folder one by one, thousands of checks per mesh, which made the step
+about four times slower once it had to ask about more meshes. It now lists the
+mods' mesh folders once and looks each mesh up in that list. The result is the
+same, file for file. Measured on the reported modlist: 128 s down to 33 s.
+`CBBE2UBE_NO_LOOSE_MESH_INDEX=1` (set to 1) checks one by one again.
+
+### Fixed — an excluded mod's helmets, glasses and other non-body pieces are drawn on UBE actors again
+
+Excluding a mod keeps this tool's converted meshes off that mod's armour. It
+also left every one of the mod's items without a UBE version, so a helmet or a
+pair of glasses that no other mod patches drew nothing on UBE actors. Now only
+the mod's body pieces are left out. A piece that does not fit the body (a
+helmet, glasses, jewellery) is drawn on UBE actors, with none of the mod's
+meshes converted for it, unless another mod already patches it for UBE, it sits on a body slot, it is a
+cape or cloak, its mesh fits the body, or it would draw a converted copy of the
+excluded mod's own mesh. Another mod's patch is found by reading its SkyPatcher
+files and plugins directly, so a hand-made UBE refit this tool does not
+otherwise recognise still keeps its pieces to itself. A new note in the log
+names the pieces drawn this way. Measured on the reported modlist with one
+follower excluded: her eyeglasses and her helmet are drawn again, with their
+own meshes; her body pieces, her refit's pieces and her cloak stay left out.
+Nothing changes when no mod is excluded.
+`CBBE2UBE_NO_EXCLUDE_BODY_ONLY=1` (set to 1) turns it off.
+
+### Fixed — a piece whose female model is missing draws the base game's female version, else the male one
+
+Some mods name a female model that does not exist anywhere in the load order.
+Such a piece drew the male version of its mesh on UBE actors, drew nothing at
+all, or was left off UBE actors entirely. Now, when the piece's male mesh is a
+base-game mesh whose female version is clear (exactly one) and was converted,
+UBE actors draw that female version. Otherwise they draw the male mesh, as
+before; a helmet, hood or other piece that does not fit the body now draws its
+own male mesh too, where it drew nothing. A body piece with no usable female
+mesh still draws nothing, and a new note in the log counts those pieces.
+Measured on the reported modlist: 5 pieces of follower armour that drew a male
+mesh (8 models) now draw the base game's female version, one cuirass that was
+not drawn on UBE actors now is, its gloves now draw, and two hoods and a helmet
+now draw their male mesh. 43 female models that exist nowhere remain: 42 have
+no male mesh either, and one belongs to a piece that fits the body. Nothing
+else changes.
+`CBBE2UBE_NO_COVERAGE_FEMALE_STANDIN=1` (set to 1) turns it off.
+
+### Fixed — a Khajiit-only item that a mannequin can also display is no longer drawn on UBE actors
+
+A Khajiit or Argonian version of an item is left off UBE actors, because no
+human-race character draws it. Some mods also let the mannequins in player
+homes display that version, and this tool took that as a sign that a human
+could wear it, so UBE actors drew it. No playable or UBE-race character is a
+mannequin, so the mannequins are now ignored when the tool decides whether a
+version is Khajiit or Argonian only; they still display the item. An item version
+that only a mannequin can display is still drawn on UBE actors, as before.
+Measured on the reported modlist: 30 wigs and earrings made for Khajiit
+characters are no longer drawn on UBE actors. None of them has a version a
+human-race character draws, so they are invisible on UBE actors, as on every
+human race in the base game. Nothing else changes.
+`CBBE2UBE_NO_BEAST_VARIANT_NON_ACTOR=1` (set to 1) turns it off.
+
+### Fixed — the warning about body pieces not drawn on UBE names every piece it means, adults first
+
+When a body piece is not drawn on UBE actors because its mesh was not
+converted, a warning counts and names the armour. It missed an armour that
+also has gloves or boots: the gloves were still drawn, so the armour was not
+counted, although its body was missing just the same. It is now counted
+("drawn without the body piece") and named ("no body piece:"). The names also
+listed children's clothing first, so the five shown were all children's
+clothes and the adults' pieces were hidden in "... and 75 more"; adults' pieces
+now come first. Measured on the reported modlist: one armour newly named, and
+the five names shown are now adults' pieces. Nothing else changes: the
+converted meshes and patches are the same, so this has no switch.
+
+### Fixed — the switch for armour only NPCs wear no longer changes which items are drawn on UBE actors
+
+`CBBE2UBE_NO_NPC_WORN_NONPLAYABLE` is meant to stop only the conversion of
+armour that only NPCs wear. It also stopped the rule for items whose own
+armature names another race first from drawing such armour on UBE actors, and
+that rule has its own switch, `CBBE2UBE_NO_COVERAGE_HUMAN_RACE_LIST`. Now each
+switch turns off only its own change, so an A/B test with one of them points
+at the right one. Nothing changes at default settings or with both switches
+set. Measured on the reported modlist with only the NPC switch set: one more
+item is drawn (a neck piece an NPC wears), the same as at default settings.
+This only separates two switches, so it has no switch of its own. If the tool
+cannot read which armour NPCs wear, its warning now says that both rules miss
+that armour for the run.
+
+### Fixed — a hooded robe no longer gives UBE actors a second hood
+
+A robe's hood is drawn on UBE actors along with the robe. That rule also took
+two kinds of hood it should have left alone. The first is a Khajiit or Argonian
+version of the hood: UBE actors drew it on top of the human hood.
+`CBBE2UBE_NO_COVERAGE_BEAST_VARIANT` did not turn this off, although it does for
+every other item. The second is a hood whose own armature already lists the
+UBE races: the tool added its own UBE copy over it. Both are now left out of the
+hood rule, and `CBBE2UBE_NO_COVERAGE_BEAST_VARIANT` works for hoods too. (A UBE
+hood that a mod ships as a separate armature next to the human one is not
+recognised by this rule yet.) Measured on the reported modlist: none of the 26
+hoods and hats this rule adds there is either kind, so nothing changes there
+today.
+`CBBE2UBE_NO_ACCESSORY_RACE_GUARD=1` (set to 1) turns it off.
+
+### Fixed — a hand-made UBE mesh is linked at the path where the game finds it
+
+Some mods write an armour's model path with the `meshes\` folder at the front.
+When this tool pointed such a piece at a UBE version that another mod ships, it
+kept that folder in the path. The game then looked in `meshes\!UBE\meshes\...`,
+where no file exists. A missing `!UBE` mesh can crash the game when an actor
+wearing the piece loads, and neither of this tool's checks reported it. The
+folder is now taken off first, and the checks test the exact path that was
+written. The same applies when such a piece's mesh was converted by this tool:
+it is now found and linked, where before it was not drawn on UBE actors at all.
+Measured on the reported modlist: nothing changes at default settings.
+The one case there only appears when `CBBE2UBE_NO_CLAIM_MESHES_PREFIX=1` is set
+(one nude suit, whose two links now point at the UBE version the user built).
+`CBBE2UBE_NO_TWIN_PATH_STRIP_MESHES=1` (set to 1) turns it off.
+
+### Fixed — an old copy set aside for a hand-made UBE version no longer comes back
+
+When another mod ships an armour piece already built for UBE, this tool leaves
+it to that mod and moves its own copy from an earlier run to `_superseded\`. It
+moved only the weight version it was about to convert. For a piece whose source
+ships only one weight, the other weight -- a copy this tool had made to complete
+the pair -- stayed behind, and at the end of the run it was copied back over the
+moved one. So our old copy replaced the hand-made version again, on every run.
+The whole piece now moves together, and the pair completion leaves it alone. If
+a file cannot be moved because another program has it open, the run now names
+the piece in a warning and leaves all of its files in place, instead of moving
+half of them. Measured on the reported modlist: none of the 27 pieces set aside
+today had a copy left behind, so nothing changes there yet.
+`CBBE2UBE_NO_SUPERSEDE_WHOLE_BASE=1` (set to 1) turns it off.
+
+### Added — wigs are drawn on UBE actors
+
+A wig -- hair you equip as an item -- was invisible on UBE-race actors: only
+hair items with a gold value or the helmet keyword counted as headgear, and
+wigs have neither. A wig the player can equip and that has a name now counts,
+and is drawn with its own mesh, like a helmet. SMP wigs carry a hidden body
+collider built for the 3BA body; it comes along unchanged (measured within
+about 1 unit of the UBE body surface; the converter cannot rebuild it). Measured
+on the reported modlist: 101 wigs from two HDT-SMP hair packs, none doubled.
+`CBBE2UBE_NO_COVERAGE_WIGS=1` (set to 1) leaves them uncovered.
+
+### Fixed — Khajiit and Argonian versions of an item are no longer drawn on UBE actors too
+
+Some items carry a separate version for Khajiit or Argonian characters (a wig
+reshaped around the ears, a helmet with room for horns). No human-race character
+draws that version, but this tool gave it to UBE actors as well, so they drew
+both at once. Such a beast-only version is now left out. Measured on the
+reported modlist: 37 of them, removing 58 doubled links. Three items that exist
+only in a beast version (from an Argonian armour set and an Argonian follower's
+gear) are now invisible on UBE actors, as they are on every human race in the
+base game. `CBBE2UBE_NO_COVERAGE_BEAST_VARIANT=1` (set to 1) turns it off.
+
+### Fixed — rings, amulets and other pieces made for every race show on UBE actors
+
+A piece whose armature was re-made to list every race -- the human and elf
+races added to an Argonian or a custom race -- drew on a vanilla human woman but
+on nothing of a UBE race: the coverage step only extended armatures made for
+the human default race. Such a piece is now drawn on UBE, with its own mesh (or
+a hand-made UBE version another mod ships), for the UBE version of each race its
+armature names; a piece made only for Wood
+Elves stays Wood-Elf-only on UBE. It is not done for armour that is not playable
+unless an NPC wears it, for a race's or an NPC's skin, or for a glow or other
+effect. Measured on the reported modlist: 281 armours gain a UBE armature --
+275 rings, amulets, circlets, shields, cloaks and other accessories, and 6 boots
+and gauntlets -- and no other armour's coverage changes. Body pieces made this way still are
+not drawn on UBE actors: their meshes are not converted, and an unconverted
+body would clip. `CBBE2UBE_NO_COVERAGE_HUMAN_RACE_LIST=1` (set to 1) turns it
+off.
+
+### Fixed — hooded robes show their hood on UBE actors
+
+A robe with a hood drew the robe on a UBE-race actor but not the hood (the
+Thalmor, Arch-Mage, necromancer, warlock and monk robes, among others). The
+hood's armature covers only head slots, so neither coverage step took it. It is
+now drawn with the robe, using its own mesh, as the same hood already is when
+worn on its own. The same goes for a helmet, cape or mask built into a body
+armour, unless it is a cape or other cloth that was due for conversion.
+Measured on the reported modlist: 109 armours gain their hood or other
+accessory, from 26 armatures; nothing else changes. An armour that gets no UBE
+body piece (for example because its mesh was not converted) gets no hood
+either. `CBBE2UBE_NO_COVERAGE_BODY_ACCESSORY=1` (set to 1) leaves them off.
+
+### Fixed — hand-made UBE versions are recognised however their paths are written
+
+- A mesh another mod already ships built for UBE, at the very path this tool
+  would write, is no longer converted. Armour that already has a UBE version was
+  meant to be left alone, but the check looked only at armour records in the
+  same plugin, so a refit plugin that changes only the armatures slipped through.
+  Measured on the reported modlist: 54 meshes. At 14 of them our conversion sat
+  above the hand-made UBE version in MO2 and replaced it in game (one mage armour
+  set, a witch's hat). The other 40 duplicated your own UBE BodySlide build. A
+  copy from an earlier run is moved to `_superseded\` in the output mod, where
+  the game does not read it. Armour the builder's own patch does not reach still
+  gets a UBE armature that draws the built mesh -- one more armour covered (an
+  enchanted outfit that was invisible on UBE). A weight pair is left alone only
+  when both halves are built. Leaving a piece to its build also affected its
+  colour variants: the step that fixes their layer positions looked only at
+  our converted meshes, so it kept the positions written for the CBBE mesh --
+  on the reported modlist 3 of the 11 variants on such pieces (one travel
+  outfit's top) recoloured the build's physics collision shape instead of the
+  skirt. "Colour variants of a piece left to your own UBE build recolour the
+  right layer" (above) fixes this. `CBBE2UBE_NO_SKIP_BUILT_UBE_PATH=1` (set to
+  1) converts them again.
+- A UBE patch whose armatures write the model path with the `meshes\` folder in
+  front (a softbody pack's own UBE nude suits) was not recognised as a UBE patch,
+  although the game reads the path either way. It is now: 10 armours on the
+  reported modlist, none of which this tool was covering yet, and the pack's
+  nude suit (2 meshes) is no longer converted -- the game already loads a UBE
+  build of it.
+  `CBBE2UBE_NO_CLAIM_MESHES_PREFIX=1` (set to 1) turns it off.
+
+### Fixed — no unconverted CBBE bodies, hands or feet drawn on a UBE actor by the coverage step
+
+The coverage step, which gives every armour in your load order a UBE armature,
+could still hand a UBE actor a CBBE mesh:
+
+- A body piece was covered as soon as ANY of its meshes had been converted —
+  even just the first-person one you see from your own eyes — so in third person
+  it wore its unconverted CBBE body. A body piece is now covered only when the
+  mesh drawn in the world was converted (or, where it has no female mesh of its
+  own, its converted male one). On the reported modlist that leaves 88 pieces
+  uncovered — 62 of them children's clothing, the rest NPC outfits — and they
+  are named in a warning: they are not drawn on UBE-race actors until their
+  female mesh is converted, instead of drawing a CBBE body that clips.
+- An NPC costume's "boots" and "gloves" that are really bare feet and hands drew
+  the CBBE feet and hands. They now draw the UBE body's own, when your UBE
+  BodySlide build has them (a warning says so when it does not); a custom race's
+  skin that lists them is left alone. The final check no longer calls those UBE
+  hands and feet a missing mesh.
+- A piece whose mesh the converter left alone because another mod ships a
+  hand-made UBE version now points at that version, as does a piece whose UBE
+  version your own UBE BodySlide build made. On the reported modlist that is 8
+  pieces.
+
+For troubleshooting, `CBBE2UBE_NO_COVERAGE_WORLD_MESH`,
+`CBBE2UBE_NO_COVERAGE_NUDE_SKIN` and `CBBE2UBE_NO_COVERAGE_UBE_TWIN` (set to 1)
+turn the three off. `CBBE2UBE_NO_COVERAGE_UBE_TWIN` also converts again the
+meshes left alone because another mod already ships them built for UBE (54 on
+the reported modlist, see "hand-made UBE versions are recognised" above), so it
+changes the converted meshes too, not only where pieces point.
+
+### Fixed — excluded mods and hand-made UBE patches are left alone, and female slots no longer get male meshes
+
+A follower wore converted male Ebony boots on her UBE body. Three causes:
+
+- `--exclude-mods` (the window's exclusion list) only stopped a mod being
+  converted; the coverage step still gave its armour UBE armatures. Armour an
+  excluded mod defines now gets none, on a Select-mods run too (unless you
+  picked that mod). Pieces of an excluded mod that no mod
+  covers for UBE are named in a warning, because they are not drawn on UBE-race
+  actors.
+- A hand-made UBE refit delivered by SkyPatcher from a subfolder of
+  `SKSE\Plugins\SkyPatcher\armor\` was not seen, so its armour was covered twice.
+  Subfolders are read now, and an added armature on the UBE races counts even
+  when it reuses the original mesh (a helmet, a wig), provided the patch covers
+  every slot of the armour. Measured on the reported modlist: all 11 pieces of
+  that refit recognised, no other armour affected.
+- When a female mesh had not been converted, the coverage step put the converted
+  MALE mesh in its place. A female slot now keeps its own mesh, or a body piece
+  is left out; the male mesh is used only where the armour has no female mesh or
+  names one that exists nowhere. Kept, left-out and dead-path slots are counted
+  and named in the log.
+
+For troubleshooting, `CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE`,
+`CBBE2UBE_NO_SKYPATCHER_PATCH_RECOGNITION` and
+`CBBE2UBE_NO_COVERAGE_FEMALE_GUARD` (set to 1) turn the three off.
+
+### Fixed — armour that was never converted: packed in archives, named like the body, or worn only by NPCs
+
+Some armour never reached the converter, while the step that dresses UBE actors
+still gave it a UBE slot, so those actors wore the unconverted CBBE mesh --
+clipping, or floating off the body. Four causes, each fixed:
+
+- **Armour kept only in an archive.** A mod whose armour meshes are packed in a
+  .bsa was never picked, although the converter reads meshes from archives. On
+  one modlist that was 9 mods (a fur armour set, a clothing set, a quest
+  overhaul's gear, a scarf, cloaks and robes) and 49 meshes. The run log now also
+  names every mod whose armour meshes could not be found anywhere; those used to
+  vanish without a word.
+- **Archives named "Textures" or "Retexture".** These were never searched for
+  meshes, but a large content mod keeps all of its meshes in its "- Textures"
+  archive, and some armour retextures ship theirs in one. 21 more meshes on that
+  modlist (among them boots the game draws), 2 male meshes no longer needed as a
+  stand-in, and 21 pieces of one armour set now come from the retexture archive
+  the game actually loads.
+- **Armour named like the body.** A piece whose file is named like the nude body
+  (a pair of pants called femalebody_1.nif) was taken for the body and skipped. It
+  now counts as armour when it sits outside the body's own folder and a named item
+  you can pick up uses it; follower and race bodies stay out.
+- **Outfits only NPCs wear.** Clothing the game marks as not for the player
+  (follower and quest outfits) was skipped along with gore and effect pieces. It
+  is converted now when a female NPC of a race UBE covers actually wears or carries
+  it -- her outfit or her inventory. An NPC that takes her looks from a template
+  counts only when that template is a known female; a random pick from a list of
+  NPCs does not. Gore and effects that scripts apply stay out, and so does anything
+  an NPC or a race uses as its skin (a skeleton's, for one). Known edge: wound
+  meshes that sit in a victim's inventory are converted too. Reading who wears what
+  adds about 10 seconds to a run on a 3,000-plugin modlist.
+
+Together on that modlist: 15 more mods converted, 139 more meshes, and 100 of the
+279 armour slots that drew an unconverted mesh now draw a converted one. Children's
+clothing is still never converted. For troubleshooting,
+`CBBE2UBE_NO_BSA_ONLY_SOURCES`, `CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES`,
+`CBBE2UBE_NO_NUDE_BASENAME_PATH` and `CBBE2UBE_NO_NPC_WORN_NONPLAYABLE` (set to 1)
+turn the four off; with all four set the converter picks exactly the mods and
+meshes it picked before.
+
+### Fixed — leg cloth on BodySlide-built armour follows the legs, and a layered skirt follows the butt
+
+Armour converted from a BodySlide build ships a morph file for every shape, and
+the converter keeps such shapes on their author's weights. On one armour that
+left skin showing through the pants at the butt and the back of the thigh while
+running, on every preset. Four causes, each fixed:
+
+- The pass that makes leg cloth follow the thigh never reached these shapes, so
+  a pair of trousers kept a band of CBBE pelvis weight at the back of the thigh
+  and the trailing thigh opened mid-stride. It reaches them now (robes and
+  dresses still excepted).
+- The front and rear thigh jiggle bones were withheld from these shapes along
+  with the rear-calf bone they were withheld for. Only the rear-calf bone is
+  withheld now.
+- A pass that lines up touching parts moved a whole two-legged pair of trousers
+  toward a buckle on one leg, putting right-thigh weight on the left leg. A part
+  that spans both legs is no longer moved as a whole.
+- A quilted skirt made of layered cloth carried no butt jiggle at all, so the
+  butt bounced through it on the swinging leg. Layered cloth now takes butt
+  jiggle -- never breast or belly, whose weight on such cloth once ballooned a
+  chest -- on armour with no physics file.
+
+Measured on that armour, skin exposed in a sprint with the butt and thigh bones
+bouncing: 136 points before, 5 after; on the swinging leg's cheek, over the
+zeroed body and six UBE presets, 744 before and 0 after. Confirmed in game.
+Only weights change, never the shape of the armour; across a full pack the
+skirt change touches the two colour variants of that one armour. For
+troubleshooting, `CBBE2UBE_NO_LEG_MOTION_MORPHTRI`,
+`CBBE2UBE_NO_MORPHTRI_THIGH_GRAFT`, `CBBE2UBE_NO_PART_PAIR_BILATERAL_GUARD` and
+`CBBE2UBE_NO_LAYERED_CLOTH_BUTT_JIGGLE` (set to 1) turn the four off.
+
+### Fixed — armour is converted from your zeroed BodySlide build, not from meshes made for another body
+
+When an armour mod ships its own meshes and your BodySlide output holds that
+armour built at zeroed sliders, the converter now converts the BodySlide build.
+It used to prefer a mod's own meshes over every BodySlide output, on the
+assumption that an output carries a body preset. But a mod's own meshes can be
+made for a different body altogether. One armour's were made for the vanilla
+body, and because the fit starts from the zeroed CBBE body, the converted piece
+kept that body's shape: the bust stood 2.8u further out than the author put it
+(inflated breasts in game) and the inner thigh sat 0.55u closer at weight 0
+(inner-thigh and butt clipping). Its BodySlide build -- the zeroed 3BA build to
+0.000u -- converts with the bust 0.6u off the author's gap and the inner thigh
+0.1u off it.
+
+The switch is made only where it can be proven. The BodySlide output must be
+the folder that provides the zeroed CBBE body the fit uses; both weights of the
+piece must match the zeroed build of its BodySlide project, every shape,
+vertex for vertex; the mod's own meshes must not already be that build; the two
+must agree on whether the piece has HDT physics; and the build must have the
+same shapes as the mod's own meshes, so only the geometry changes (a build that
+bundles the body would convert down a different path). Anything else keeps the
+mod's own meshes, as before. The run log says how many pieces moved and why the
+others did not (`[zeroed-output-source] ...`). "Take armour from the zeroed
+BodySlide build" (Settings, Paths > Bodies, advanced) turns it off.
+On one modlist 118 pieces move and 171 more were looked at and kept (106 have
+other shapes, 25 already were the build, 21 would change physics, 19 are not a
+verified zeroed build). A piece whose own meshes were oversized now fits as its
+author built it, which can mean less room in some poses. Checking takes about
+four minutes of a full run.
+
+### Added — Convert shows the reference bodies it will use, and lets you pick others
+
+Pressing Convert now opens a "Reference bodies" window before anything runs.
+It shows the two bodies the fit uses -- the CBBE 3BA body garments are moved
+from and the UBE body they are moved onto -- each in a list that starts on the
+zeroed BodySlide build the game loads, checked vertex for vertex (or on a body
+that Settings or an environment override already names, when that body is
+usable), and offers every other copy of that body the modlist has, each marked
+with what it is: "[zeroed]", "[NOT zeroed, off by up to 1.97u]" for a build at
+some preset, or "[not checked]" when no slider set can check it. Bodies of
+another family, half-installed pairs, unreadable files and overrides that name
+a missing file are listed with the reason instead of offered. Converting with
+anything but the verified body the game loads asks once more, naming the
+difference, and so does a choice that leaves a body set in Settings or by an
+override variable unused for this run. Just before the run starts, the chosen
+files are checked to still exist. The choice applies to that conversion only,
+and it also sets the UBE body injected under body-swap armour -- which until
+now ignored every body override, including the "UBE body reference NIF"
+setting, so a chosen UBE body moved the fit's target but not the body swapped
+in. A Settings body named without a weight is offered as one file for both
+weights, which is how the converter uses it. Your BodySlide preset is still
+baked in from the UBE body your build installed; the window picks the fit's
+reference bodies, not your preset. The window is skipped for a dry run and when
+"Fit against the zeroed BodySlide bodies" is off. Checking takes a few
+seconds; the window stays responsive meanwhile, and if the check itself fails
+it says so and offers to convert with the bodies the converter finds itself.
+The log shown in the window names the bodies the run uses.
+
+Every body override a run uses is now named in the run log
+(`[body-ref] <variable> = <path> (explicit override)`). One that names a
+missing file is reported (`!! <variable> names a body that does not exist
+(...) -- ignoring it`) instead of being silently replaced by another body, and
+when the "UBE body reference NIF" names one weight and the other weight's file
+is missing, the log says that weight uses the converter's own lookup.
+
+An "All mods" conversion now recognises body mods by the body files they ship
+-- any mod folder carrying the CBBE 3BA or UBE body file at the path BodySlide
+builds it to is skipped, and the mod list shows the same set -- instead of by
+which body the fit uses, which would have let the choice in this window change
+which mods convert. On the modlist this was measured on, the set is the same as
+before: the two BodySlide outputs and the 3BA body mod.
+
+### Fixed — cloaks, capes and belt pieces no longer sit closer to the body at weight 1 than at weight 0
+
+The converter moves a garment from the CBBE body it was built on to the UBE
+body it will be worn over, and it found that CBBE body by name: the first
+femalebody in a mod whose name reads like CBBE or 3BA, skipping any mod named
+like a BodySlide output on the assumption that such a mod holds a UBE body. On
+a real modlist that picked the 3BA mod's own femalebody -- a build at some
+preset that the game never loads (a 3BA BodySlide output wins that file) --
+instead of the zeroed body the garments were built on. It sat up to 1.97u off
+the zeroed body over 16,061 torso vertices, and its weight morph grows the bust
+about 1u, so the move pulled weight-1 garments about 0.6u further in than
+weight-0 ones. Most fit passes re-fit that away afterwards; pieces that skip
+them (about 30, among them capes, cloaks and scarves) kept it whole. Six
+measured -- a cloak, a cape, belt bags, a book, a front pouch and a skirt front
+-- shipped their weight-1 version closer than their weight-0 version by 0.25u
+to 0.47u at the median (the cape by 0.03u) and by 0.3u to 0.95u at the closest
+5%, a difference that exists only because of the wrong body.
+
+The CBBE body the move starts from, the UBE body it aims at and the UBE body
+injected under a body-swap garment are now BodySlide's zeroed builds, as the
+game loads them: found by what each body's slider set builds, then checked
+vertex for vertex against the base mesh plus the slider set's defaults. If the
+game's body is not a zeroed build, a GUI run's Reference bodies window starts
+on that body, flagged, and asks before using it; outside the GUI, discovery by
+name runs as before and the log says so (`!! no zeroed CBBE body at weight 1:
+... -- falling back to discovery by name`). The same bodies feed every pass
+that reads a reference body (weight transfer, the collision-proxy warp, the
+UBE-native scan, the body overlay rebake); the preset bake still reads your
+installed UBE build. An explicit body override still wins.
+`CBBE2UBE_NO_ZEROED_BODY_REFS=1` (settings window, under *Show advanced*: "Fit
+against the zeroed BodySlide bodies") restores discovery by name.
+
+On the six pieces, the weight-1 minus weight-0 difference is now 0.000u
+(median) on every one, and with the switch off each reproduces the shipped
+pack exactly. Over the 15-piece golden set, all at weight 1, garment vertices
+near the body move by a median of 0.000u (5% move in by more than 0.19u, 5% out
+by more than 0.51u; the bust median is +0.014u), and with the switch off the
+output is identical to the previous build on all 15. Verdict in game owed.
+
+### Development only — the analysis tools read the author on the zeroed bodies
+
+The analysis harness read every "where did the author put this garment" number
+against a CBBE body found by name: `scripts/analysis/canonical_body.py` took "3BA
+in the path, then the shortest path", which on a real modlist is the 3BA body
+mod's own preset `femalebody`, not the BodySlide build the game loads. It sits up
+to 1.97u off that body, and at weight 1 its bust grows through garments built on
+it. `canonical_body`, `snugness_census`, `seat_error_vs_author` and
+`inflate_census` now read `src/zeroed_body.py`, which resolves BodySlide's zeroed
+build as the game loads it and checks it vertex for vertex; `inflate_census` also
+takes a `_0` file's bodies at weight 0. Only the author side moves. On the shipped
+pack, before -> after:
+
+    bust gap to author p50   w1 +0.624u -> +0.297u; w0 +0.325u -> +0.392u (677 shapes)
+    snugness median ratio    body-swap 1.202 -> 1.058 ("LOOSER than authored" -> "fit
+                             preserved"); copy 1.150 -> 1.141, just under the 1.15 line
+    seat error, 4053 shapes  mean 0.4269u -> 0.4124u, median 0.3505u -> 0.3625u
+    crotch single swing      source loss-p90 median 0.70u -> 0.56u, source pieces over
+                             1u 66 -> 39 (200 paired); the converted side is unchanged
+    source coverage, w1      breast +125%, breast side +65%, belly +49%, butt +16%:
+                             the weight-1 "coverage collapse" was the wrong body
+
+Numbers read through the old lookup before 2026-09-15 used a file whose contents
+were never recorded, so they are not comparable either way. Open: the snugness
+census's loosest list is now topped by body stand-in and collision shapes that sit
+on the zeroed body. `inflate_census` was not re-run. Guarded by
+`tests/test_zeroed_body.py`, `tests/test_inflate_census_weights.py` and mutation
+pairs `ZBW-a`..`ZBW-l`, `PWO-a`, `CBZ-a` and `ICW-a`. No converter behaviour
+changes.
+
+### Development only — the seat-error scorer chooses its frame by evidence and stops scoring proxies as garment
+
+`scripts/analysis/seat_error_vs_author.py` reported a **mean seat error of
+9.1811u** against a median of 0.3466u. Over its own 4499 paired shapes the top
+44 carried **95.7%** of that total, at up to 2473u — and the meshes were fine.
+
+The cause was an assumed coordinate frame. A source NIF stores verts in the
+shape's skin frame and needs `_verts_skin_to_world`; a converted output already
+stores world verts, so applying one rule to both transformed the output twice.
+Most shapes have an identity transform and were unaffected, which is why only
+collider and helper shapes blew up: one with raw vertices at z 90.6–118.6,
+exactly where a neck scarf belongs, was spread over z −319.9…144.3. Neither arm
+is uniformly one frame — over a 220-file sample our own output wanted `raw` on
+14 shapes and `world` on 26, with 281 ties — so `_pick_frame` now measures both
+per shape per arm and keeps whichever lands nearer that arm's body, as
+`snugness_census` already does. A shape neither frame can place is excluded and
+reported; none now are.
+
+A shape is treated as a proxy only when it **both** renders nothing **and**
+says so in its name. "Renders nothing" alone, the idiom `bust_gap_score` and
+`morph_clip_test` use, is not enough: of 666 non-rendering shapes, 72 carried
+no proxy token and were plainly garment — a cuirass, greaves, pants, a sash,
+four shawl parts (a garment textured from the plugin's alternate-texture list
+has empty embedded paths). Both signals keep those 72 and still skip 594, and
+the 54 skipped names were checked the other way too: every one is a collider,
+proxy or virtual helper, with no `Color`/`Refined`-style false match. `collar`
+is kept off the token list on purpose — `col` is a real token and a collar is a
+real garment part. The run prints what it skipped, what it kept and which
+frames it chose, so neither population can shrink unnoticed.
+
+    mean     9.1811u -> 0.4269u
+    median   0.3466u -> 0.3505u   (the median was always the robust read)
+    scored   4499    -> 4053
+
+The shipped meshes are not implicated and nothing in the converter changes.
+Guarded by `tests/test_seat_error_transform_guard.py` (19 tests) and mutation
+pairs `SEG-a`..`SEG-h`.
+
+### Fixed — a leg plate's crotch panel no longer swings into the buttock on every stride
+
+Every pass that decides a garment vertex's thigh/pelvis split aimed it at the
+body vertices nearest to that vertex: the body-swap reskin first, then the
+fitted-cloth conform, the leg-plate butt rebalance and the limb-motion push-up.
+On a coarse crotch panel the nearest skin is the inner thigh, less than a unit
+away, while the same panel passes over the buttock cleft a few units further
+on, skin that never moves with a leg. One leather greave's rear gusset, 75% on
+the right thigh as the author weighted it, was reskinned to 42% right thigh
+over skin that is 100% pelvis, and a 50-degree swing of that leg carried the
+panel 2.5u into the lower buttock and the top of the inner thigh (869 body
+vertices lost more than 0.5u of clearance; the left leg moved nothing). Of the
+224 body-swap pieces whose crotch band a garment covers, 55 lose more than 1u
+under a single 45-degree swing, and 50 of those came from a source whose author
+shipped only a partial body under the garment, so the author never saw it.
+
+Each of those passes now aims at the skin the vertex actually covers, the body
+vertices whose nearest garment vertex it is, weighted by how close that skin
+is, inside the crotch and hip band. `CBBE2UBE_NO_COVERED_SKIN_TARGET=1`
+(settings window: "Leg plates follow the skin they cover") restores the
+nearest-vertex targets. Measured through the
+built exe on the reported set, at the shipped recipe and again at the defaults
+(identical numbers): under a single 45-degree swing of the right thigh, the
+clearance lost over the covered crotch band falls from 1.00u to 0.36u (90th
+percentile), covered skin newly inside the garment from 7.5% to 2.8%, and
+vertices losing more than 0.5u from 18.9% to 7.6%. No vertex moves, no bone is
+newly emptied, the acceptance gate passes on every scored row, and with the
+switch off the new build reproduces the previous one byte for byte on all 24
+game files. Over four more mods (13 body-swap pieces with a covered crotch
+band) one piece improves from 2.36u to 0.64u, three improve slightly and none
+worsens; the seven robes among them do not change, because a shape on the
+draping-name list keeps its authored skin by the standing physics rule. The
+census behind the class sizes is the new `scripts/analysis/single_swing_census.py`.
+
+### Development only — commits are made on lanes, the hooks refuse to run without the denylist, and a clone sets itself up with one command
+
+`main` and `testing` now change only by a merged pull request: a ruleset on
+GitHub refuses direct pushes, force-pushes and deletions, requires the three
+`pytest` lanes and allows merge commits only, because a squash or rebase merge
+re-hashes the commit the exe's stamp names. On the client side the pre-commit
+hook refuses a commit on either branch and a commit in the primary checkout on
+any branch: work is committed on a lane, one branch in its own linked worktree,
+which `scripts/lane.py new <name>` creates beside the checkout with the asset
+denylist copied in and the build environment joined, so a rebuild there
+reproduces. A checkout without the denylist used to run the other three rules
+and skip the asset-name rule in silence (measured: a file and a message naming
+a real asset were committed and pushed with exit 0); all three hooks now refuse
+and say why, and a linked worktree reads the primary checkout's copy. One
+environment variable each allows a deliberate exception without switching every
+rule off. `scripts/onboard.py` configures a fresh clone (the hooks path,
+fast-forward-only pulls, an LF-only checkout, the blame ignore file) and reports
+what only the person can supply. CONTRIBUTING.md and docs/RELEASING.md describe
+the flow; pull requests target `testing`. Nothing in the converter changes.
 
 ### Development only — the suite passes on a runner's one-commit checkout and on every interpreter lane
 
@@ -72,7 +2135,7 @@ One synthetic conversion per path (copy, and body-swap with an inline body)
 goes through the batch worker's door and reads the written NIF back; a pass
 that dies must show up in the result by name. The golden check on real meshes
 is written into docs/RELEASING.md as a release step. Nothing in the converter
-changed; the exe is rebuilt only because one source comment was corrected.
+changed.
 
 ### Changed — each worker holds the body's slider data in a tenth of the memory
 
@@ -218,11 +2281,12 @@ reported but not judged. The rebuilt exe must also answer `--version`. Not
 measured yet: the job on GitHub itself, which runs only on a tag push.
 
 `release-markers.json` lists, for each fix a release claims, one module or one
-name that exists only with that fix, and what must never ship (`psutil`, the
-test framework, the release tooling). `python scripts/release_gate.py
-bundle-scan <tag, exe or folder>` reads the exe's bundled modules and its entry
-script and checks both lists, so a release cannot ship without the fixes it
-claims; the workflow runs it on the tagged exe and on the rebuilt one.
+name that exists only with that fix, and what must never ship (`psutil`,
+`ssl`, the test framework, the release and hygiene tooling). `python
+scripts/release_gate.py bundle-scan <tag, exe or folder>` reads the exe's
+bundled modules and its entry script and checks both lists, so a release cannot
+ship without the fixes it claims; the workflow runs it on the tagged exe and on
+the rebuilt one.
 
 ### Fixed — every armour conversion kept a copy of the body in memory until the run ended
 
@@ -267,10 +2331,10 @@ For people building the exe: the build stamp is now written by
 `scripts/build_exe.ps1` wrote it, and a direct PyInstaller run reused whatever
 stamp an earlier build had left. The stamp's dirty flag now covers everything
 the build reads (`src`, the entry script, the spec, `.pynifly`, `assets`, the
-licence files and `scripts/build_identity.py`); it used to look at `src`, the
-spec and the entry script only. The release gate also checks the tagged bundle
-against its own `SHA256SUMS` and `VERSION.txt`, and the release workflow runs
-`sha256sum -c` over the published zip.
+licence files, `USING.md`, `REPORTING.md` and `scripts/build_identity.py`); it
+used to look at `src`, the spec and the entry script only. The release gate
+also checks the tagged bundle against its own `SHA256SUMS` and `VERSION.txt`,
+and the release workflow runs `sha256sum -c` over the published zip.
 
 ### Changed (development only) — tracked text is LF everywhere outside the build and vendor folders
 
@@ -284,8 +2348,8 @@ change to `src/nif_convert.py` touched 28,745 lines, of which 41 were real, and
 converted in a commit of line endings only, in which every Python file compiles
 to identical bytecode. The pre-commit hook and the test suite now refuse a CRLF
 in tracked text outside `dist/` and `.pynifly/`, and `.git-blame-ignore-revs`
-names the conversion so GitHub's blame skips it (for local blame, run
-`git config blame.ignoreRevsFile .git-blame-ignore-revs`). `scripts/split_move.py` and
+names the conversion so GitHub's blame skips it (`scripts/onboard.py` points
+local blame at the same file). `scripts/split_move.py` and
 `scripts/extract_loop.py` asserted that `src/nif_convert.py` was CRLF and so
 stopped before doing anything; they now keep the file's own line endings.
 
@@ -525,9 +2589,13 @@ production-runtime lane installs the same lock.
 A 2026-08-01 note measured the garment moving 1.25 to 3.7 times further than the
 body per slider and proposed rescaling every converted morph file; a later
 reading on another piece, pairing each garment vertex with the body vertex it
-covers, came back at 1.00. A new development tool prints both readings side by
-side over a whole arm, so the class is settled on data before anything is
-designed on top of it.
+covers, came back at 1.00. A new development tool
+(`scripts/analysis/paired_follow_ratio.py`) prints both readings side by side
+over a whole arm. Run over a fresh arm of the acceptance population (481 NIFs,
+121 pieces), the paired reading's per-piece median runs 0.961 to 1.194, with
+118 pieces inside 0.9-1.1, while the unpaired reading on the same rows spans
+0.067 to 1.112: the proposal rested on the unpaired form, and the converted
+morph files are not rescaled.
 
 ### Changed (development only) — CI runs read-only, on pinned actions
 
@@ -585,10 +2653,11 @@ Older readers of the report see one extra field and ignore it.
 Every guard in the repository was proven by hand with a throwaway driver, and
 those hand-runs are what found the guards that could not fail. The driver is
 now tracked: `python scripts/mutation_gate.py run` applies each of the
-40 seeded mutations (`scripts/mutation_pairs.py`, the pairs measured when
-each guard landed) in a detached git worktree it creates and removes
-itself, and each must turn its named tests red. An anchor that no longer
-matches reads NOT_APPLIED rather than "still green"; a pair whose named
+seeded mutations (`scripts/mutation_pairs.py`, the pairs measured when
+each guard landed: 40 when the gate landed, about 200 by 2026-09-21) in a
+detached git worktree it creates and removes itself, and each must turn
+its named tests red. An anchor that no longer matches reads NOT_APPLIED
+rather than "still green"; a pair whose named
 tests stay green reads MISSED; either fails the gate. It never touches the
 checkout, and refuses to. Measured on the release machine: 40 pairs in
 879 s — and its first full run found one seeded pair gone stale the same

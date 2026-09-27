@@ -60,7 +60,10 @@ def score(path):
     for sh in nf.shapes:
         if not any(v for v in (sh.textures or {}).values()):
             continue
-        gV = world(sh)
+        # "renders" does NOT stand in for placing the shape: 78 of the 84
+        # double-transformed shapes in the shipped pack render.
+        gV, _fr = sa.pick_frame(np.asarray(sh.verts, np.float64),
+                                world(sh), tree)
         gT = np.asarray(sh.tris, np.int64).reshape(-1, 3)
         _d, idx = tree.query(gV, k=1)
         signed = np.einsum('ij,ij->i', gV - bV[idx], bN[idx])

@@ -47,7 +47,9 @@ def _ns(sources, output, *, auto_merge=True):
 
 
 def _convert(base, monkeypatch, capsys, *, settings_text="{}", skypatcher=True,
-             make_patch=False):
+             make_patch=False, shape=None):
+    """`shape(result)` fills the converted source's result (a class of problem
+    the batch loop reads)."""
     base.mkdir(parents=True, exist_ok=True)
     mods = base / "mods"
     mods.mkdir(exist_ok=True)
@@ -63,6 +65,11 @@ def _convert(base, monkeypatch, capsys, *, settings_text="{}", skypatcher=True,
     monkeypatch.setenv("CBBE2UBE_RUN_LOG", str(base / "run.log"))
     monkeypatch.setattr(ac.paths, "enabled_mods", lambda lay: set())
     monkeypatch.setattr(ac, "_third_party_ube_covered_armos", lambda *a, **k: set())
+    # The temporary modlist has no plugin load order, so the playability read
+    # would fail open with a problem warning -- one the tally did not count
+    # until #one-tally's audit, which is how this fixture's "every check clean"
+    # went untrue unseen. Clean here: a load order with nothing non-playable.
+    monkeypatch.setattr(ac, "_batch_armo_winner_nonplayable", lambda: {})
     monkeypatch.setattr(pf, "_locate_in_mods_or_data",
                         lambda *a, **k: (base / "SkyPatcher.dll") if skypatcher else None)
     monkeypatch.setattr(pf, "_skypatcher_armor_patching", lambda p: True)
@@ -72,7 +79,10 @@ def _convert(base, monkeypatch, capsys, *, settings_text="{}", skypatcher=True,
             patches = out / "_unmerged_patches"
             patches.mkdir(parents=True, exist_ok=True)
             (patches / "SomeMod UBE patch.esp").write_bytes(b"")
-        return ac.AutoConvertResult(source_dir=Path(source_dir), output_dir=out)
+        res = ac.AutoConvertResult(source_dir=Path(source_dir), output_dir=out)
+        if shape is not None:
+            shape(res)
+        return res
 
     monkeypatch.setattr(ac, "auto_convert_mod", _converted)
     rc = ac._cmd_convert(_ns([mod], out))
@@ -151,6 +161,143 @@ def test_a_missing_skypatcher_is_a_counted_warning(tmp_path, monkeypatch, capsys
     assert rc == 0
     hit = [e for e in fails if e["source"] == "SkyPatcher"]
     assert len(hit) == 1 and hit[0]["severity"] == "warning", fails
+
+
+# --- #one-tally: the tally IS the record ------------------------------------------
+# Measured 2026-09-25 on 94340ee: a load-breaking issue on the final Combined
+# ESP ended "1 failure(s), 1 warning(s)", exit 2, with an EMPTY failures file --
+# so the GUI opened no list. Five classes were counted without being recorded.
+# Each is broken here on its own; the tally must equal what the file says, and
+# the class must be in the file.
+
+def _break_combined(monkeypatch):
+    monkeypatch.setattr(ac.ube_patcher, "restore_female_models", lambda *a, **k: {})
+    monkeypatch.setattr(ac, "_emit_unified_coverage_patches",
+                        lambda *a, **k: (False, 0, False))
+    monkeypatch.setattr(ac.ube_patcher, "merge_patches_split", lambda *a, **k: {})
+    monkeypatch.setattr(ac.ube_patcher, "postflight_validate_combined",
+                        lambda *a, **k: {"ctd": [("Combined.esp", "masters out of order")],
+                                         "soft": [("Combined.esp", "missing-nif a.nif"),
+                                                  ("Combined.esp", "missing-nif b.nif")],
+                                         "pieces": ["Combined.esp"]})
+
+
+_CLASSES = {
+    # class: (setup(monkeypatch) -> _convert kwargs, kind, severity, count)
+    "VirtualBody re-hide": (
+        lambda mp: {"shape": lambda r: setattr(
+            r, "virtualbody_rehide_failures", ["a_1.nif", "b_1.nif"])},
+        "VirtualBody re-hide failed", "warning", 2),
+    "patch validator": (
+        lambda mp: {"shape": lambda r: setattr(
+            r, "esp_stats_list", [{"validation_warnings": ["w1", "w2", "w3", "w4"]}])},
+        "patch validator", "warning", 4),
+    "missing partner": (
+        lambda mp: (mp.setattr(ac, "_postflight_missing_weight_partners",
+                               lambda out: ["x_0.nif has no x_1.nif",
+                                            "y_1.nif has no y_0.nif",
+                                            "z_0.nif has no z_1.nif"]) or {}),
+        "missing _0/_1 partner", "warning", 3),
+    "parity": (
+        lambda mp: (mp.setattr(ac, "_postflight_weight_partner_fold",
+                               lambda out, check: (0, ["d1", "d2"])) or {}),
+        "_0/_1 parity", "warning", 2),
+    "unreadable output": (
+        lambda mp: {"shape": lambda r: setattr(
+            r, "nif_load_failures", ["a_0.nif", "a_1.nif"])},
+        "output mesh unreadable", "failure", 2),
+    "Combined load-breaking": (
+        lambda mp: (_break_combined(mp) or {"make_patch": True}),
+        "load-breaking plugin issue", "failure", 1),
+    "Combined other": (
+        lambda mp: (_break_combined(mp) or {"make_patch": True}),
+        "plugin postflight", "warning", 2),
+    # Recorded and never counted: the popup listed it, the log's tally did not.
+    "merge skipped": (
+        lambda mp: {"shape": _source_fails},
+        "merge skipped", "failure", 1),
+}
+
+
+def _source_fails(result):
+    raise RuntimeError("this source did not convert")
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("cls", sorted(_CLASSES))
+def test_the_tally_is_counted_from_the_record(cls, tmp_path, monkeypatch, capsys):
+    from src import failure_summary as fs
+    setup, kind, severity, count = _CLASSES[cls]
+    rc, log, fails = _convert(tmp_path, monkeypatch, capsys, **setup(monkeypatch))
+    assert _tally(log) == fs.counts(fails), (cls, _tally(log), fails)
+    hit = [e for e in fails if e["kind"] == kind]
+    # One entry per class -- except an unreadable mesh, which names each file
+    # (the log said "1 failure" for any number of them before #one-tally).
+    assert len(hit) == (count if kind == "output mesh unreadable" else 1), (cls, fails)
+    assert {fs.severity_of(e) for e in hit} == {severity}, hit
+    assert sum(fs.count_of(e) for e in hit) == count, hit
+    assert rc == (2 if fs.counts(fails)[0] else 0), (cls, rc)
+
+
+def test_a_class_is_one_popup_line_with_its_count():
+    """N validator hits: one entry that counts N, not N entries."""
+    from src import failure_summary as fs
+    ac._RUN_FAILURES.clear()
+    try:
+        ac._record_failure("patch validator", "per-source patches", "40 warning(s)",
+                           severity="warning", count=40)
+        ac._record_failure("mesh failed", "ModA", "a.nif", "boom")
+        assert ac._run_tally() == (1, 40)
+        assert fs.counts(ac._RUN_FAILURES) == (1, 40)
+        assert fs.popup_title(ac._RUN_FAILURES) == (
+            "1 item(s) failed to convert, 40 warning(s)")
+        assert "count" not in ac._RUN_FAILURES[1], (
+            "a single entry keeps the file format it always had")
+    finally:
+        ac._RUN_FAILURES.clear()
+
+
+def test_a_class_detail_names_the_first_few_and_says_how_many_more():
+    d = ac._first_few([f"w{i}" for i in range(7)])
+    assert d.startswith("w0; w1; w2;") and "4 more" in d, d
+    assert "w3" not in d, "the popup line holds the first few, the log holds all"
+    assert ac._first_few(["only"]) == "only"
+
+
+def test_a_failed_overlay_transfer_reaches_the_file(tmp_path, monkeypatch, capsys):
+    """`auto --convert-overlays`: the transfer raising was counted into the exit
+    code and never recorded, so the GUI's list did not name it."""
+    from src import overlay_transfer
+    mods = tmp_path / "mods"
+    (mods / "SomeMod").mkdir(parents=True)
+    for var in ("CBBE2UBE_MO2_INI", "CBBE2UBE_GAME_DATA"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CBBE2UBE_MODS_ROOT", str(mods))
+    monkeypatch.setenv("CBBE2UBE_RUN_LOG", str(tmp_path / "run.log"))
+    monkeypatch.setenv("CBBE2UBE_NO_VANILLA_SWEEP", "1")
+    monkeypatch.setattr(ac.paths, "enabled_mods", lambda lay: None)
+    monkeypatch.setattr(ac, "_find_armor_mod_dirs", lambda *a, **k: [
+        {"name": "SomeMod", "path": mods / "SomeMod", "armor_nifs": 1}])
+    monkeypatch.setattr(ac, "_drop_ube_native_candidates", lambda c: c)
+
+    def _convert_clean(conv):
+        ac._RUN_FAILURES.clear()
+        return 0
+    monkeypatch.setattr(ac, "_cmd_convert", _convert_clean)
+
+    def _boom(*a, **k):
+        raise RuntimeError("texconv crashed")
+    monkeypatch.setattr(overlay_transfer, "convert_overlays", _boom)
+    monkeypatch.setattr(ac.nif_convert, "check_ube_nude_morph_files", lambda: [])
+    rc = ac.main(["auto", "--convert-overlays", "-o", str(tmp_path / "out")])
+    capsys.readouterr()
+    fails = json.loads((tmp_path / "CBBEtoUBE_last_failures.json")
+                       .read_text(encoding="utf-8"))["failures"]
+    assert rc == 2
+    assert [(e["kind"], e["severity"]) for e in fails] == [
+        ("overlay transfer failed", "failure")], fails
 
 
 # --- the words a person reads -------------------------------------------------------

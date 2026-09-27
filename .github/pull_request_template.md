@@ -1,4 +1,5 @@
-<!-- Keep this short. Delete any section that does not apply. -->
+<!-- Keep this short. Delete any section that does not apply.
+     Base branch: testing. main receives testing through release PRs only. -->
 
 ## What this changes
 

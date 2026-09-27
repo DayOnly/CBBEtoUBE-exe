@@ -184,6 +184,113 @@ def atomic_copy(src, dst) -> None:
     _swap_into_place(tmp, dst)
 
 
+# ---------------------------------------------------------------------------
+# Whole-record appends to a file several processes write at once.
+# #atomic-audit-append
+#
+# Every pool worker appends to the same `standoff_audit.jsonl` (and, with the
+# glow diagnostic on, the same glow log). `open(p, "a")` does NOT make that
+# safe on Windows: the C runtime emulates append as "seek to the end, then
+# write", two steps another process can get between, so two workers write at
+# the same offset and one record lands inside the other. MEASURED: a full run
+# tore 14-16 lines and lost ~30 records, differently each run; the live sink
+# had 58 splice artefacts (51 unparseable lines + 7 blank ones); 8 processes x
+# 500 records of up to 30 KB tore ~800 lines
+# per trial with no lock (the same test with this lock: 0).
+#
+# The fix is a cross-process lock around ONE write of the whole encoded record.
+# The lock is a byte-range lock far past the end of the file itself, so it
+# needs no second file, never overlaps the bytes being written, and the OS
+# drops it when a worker dies holding it. A per-worker-file-and-merge scheme
+# was rejected: the sink is also written outside any batch with a parent to
+# merge it (single converts, and several converter processes sharing one
+# CBBE2UBE_STANDOFF_LOG), and it appends across runs by design.
+#
+# The bytes are exactly what the old text-mode append wrote -- the same UTF-8,
+# "\n" written as os.linesep -- so a reader sees no difference but the tears.
+# Record ORDER is still arrival order across workers (as before); the multiset
+# of records is what is deterministic. CBBE2UBE_NO_ATOMIC_AUDIT_APPEND=1
+# restores the old unlocked writer.
+_APPEND_LOCK_OFFSET_HIGH = 0x7FFFFFFF      # lock byte at 0x7FFFFFFF_00000000
+
+
+def _atomic_append_enabled() -> bool:
+    return not _flag("CBBE2UBE_NO_ATOMIC_AUDIT_APPEND", False)
+
+
+if os.name == "nt":
+    import ctypes as _ct
+    from ctypes import wintypes as _wt
+
+    class _OVERLAPPED(_ct.Structure):
+        _fields_ = [("Internal", _ct.c_void_p), ("InternalHigh", _ct.c_void_p),
+                    ("Offset", _wt.DWORD), ("OffsetHigh", _wt.DWORD),
+                    ("hEvent", _wt.HANDLE)]
+
+    # A private kernel32 handle: argtypes set here cannot leak into other
+    # modules' `ctypes.windll.kernel32`.
+    _K32 = _ct.WinDLL("kernel32", use_last_error=True)
+    _K32.LockFileEx.argtypes = (_wt.HANDLE, _wt.DWORD, _wt.DWORD, _wt.DWORD,
+                                _wt.DWORD, _ct.POINTER(_OVERLAPPED))
+    _K32.LockFileEx.restype = _wt.BOOL
+    _K32.UnlockFileEx.argtypes = (_wt.HANDLE, _wt.DWORD, _wt.DWORD,
+                                  _wt.DWORD, _ct.POINTER(_OVERLAPPED))
+    _K32.UnlockFileEx.restype = _wt.BOOL
+    _LOCKFILE_EXCLUSIVE_LOCK = 0x2
+
+    def _append_lock(fd: int, lock: bool) -> None:
+        import msvcrt
+        ov = _OVERLAPPED(0, 0, 0, _APPEND_LOCK_OFFSET_HIGH, None)
+        h = msvcrt.get_osfhandle(fd)
+        if lock:      # no FAIL_IMMEDIATELY flag: blocks until it is ours
+            ok = _K32.LockFileEx(h, _LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0,
+                                 _ct.byref(ov))
+        else:
+            ok = _K32.UnlockFileEx(h, 0, 1, 0, _ct.byref(ov))
+        if not ok:
+            raise _ct.WinError(_ct.get_last_error())
+else:
+    def _append_lock(fd: int, lock: bool) -> None:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX if lock else fcntl.LOCK_UN)
+
+
+def append_whole(path, text: str, errors: str = "strict") -> None:
+    """Append `text` to `path` so no other process's append can land inside it.
+
+    Byte-for-byte what `open(path, "a", encoding="utf-8", errors=errors)
+    .write(text)` wrote, but as ONE os.write under an exclusive cross-process
+    lock. A lock that cannot be taken (a filesystem without byte-range locks)
+    does not cost the record: it is written unlocked, as before -- a record
+    that might tear beats one that is never written. Raises what opening or
+    writing the file raises; the callers are telemetry and swallow it."""
+    if not _atomic_append_enabled():
+        with open(path, "a", encoding="utf-8", errors=errors) as f:
+            f.write(text)
+        return
+    data = text.replace("\n", os.linesep).encode("utf-8", errors)
+    fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT
+                 | getattr(os, "O_BINARY", 0), 0o666)
+    try:
+        try:
+            _append_lock(fd, True)
+            locked = True
+        except OSError:
+            locked = False
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+        finally:
+            if locked:
+                try:
+                    _append_lock(fd, False)
+                except OSError:
+                    pass          # closing the file below releases it anyway
+    finally:
+        os.close(fd)
+
+
 def atomic_nif_save(nif, dst_path) -> None:
     """Save a pynifly NifFile to `dst_path` atomically: point its filepath at a
     temp file in the same directory, let pynifly write that, then os.replace it
@@ -230,19 +337,63 @@ def _debug_glow_controller_check(nif, dst_path) -> None:
         import traceback
         # Trimmed caller chain (skip this fn + atomic_nif_save), name the pass.
         frames = traceback.format_stack()[:-2][-10:]
-        # The tool's own folder, not %TEMP% (under AppData). #tool-folder-only
-        from .paths import tool_dir as _tool_dir
-        log = Path(os.environ.get(
-            "CBBE2UBE_GLOW_LOG",
-            str(_tool_dir() / "CBBEtoUBE_glowdebug.log")))
-        with open(log, "a", encoding="utf-8", errors="replace") as f:
-            f.write(f"\n=== CORRUPT glow controller after save: {dst_path}\n")
-            f.write(f"    shapes: {hits}\n")
-            f.write("    call stack (most recent last):\n")
-            for fr in frames:
-                f.write("      " + fr.rstrip().replace("\n", "\n      ") + "\n")
+        body = [f"\n=== CORRUPT glow controller after save: {dst_path}\n",
+                f"    shapes: {hits}\n",
+                "    call stack (most recent last):\n"]
+        body += ["      " + fr.rstrip().replace("\n", "\n      ") + "\n"
+                 for fr in frames]
+        _glow_log_write("".join(body))
     except Exception:
         pass
+
+
+# Said ONCE per process: this runs after every save, and a warning per save
+# would bury the run log it is trying to help someone read.
+_GLOW_LOG_WARNED = False
+
+
+def _glow_log_write(text: str) -> None:
+    """Append to the glow log, CREATING its directory, and SAY SO on failure.
+
+    This silently wrote nothing for an unknown length of time. The whole body
+    of the caller sits under `except Exception: pass`, and `CBBE2UBE_GLOW_LOG`
+    was pointed at `...\\tools\\CBBEtoUBE\\`, a directory that does not exist --
+    the tool's real folder is `CBBE to UBE`, with spaces. Every append raised
+    FileNotFoundError and was swallowed, so the diagnostic looked switched on
+    and caught nothing. A diagnostic that cannot report its own failure is
+    worse than one that is off, because it is read as evidence of absence.
+
+    So: create the parent, fall back to the tool's own folder when the
+    configured path cannot be opened, and if even that fails say it on stderr
+    rather than returning quietly.
+    """
+    global _GLOW_LOG_WARNED
+    import sys as _sys
+    # The tool's own folder, not %TEMP% (under AppData). #tool-folder-only
+    from .paths import tool_dir as _tool_dir
+    fallback = Path(_tool_dir()) / "CBBEtoUBE_glowdebug.log"
+    configured = os.environ.get("CBBE2UBE_GLOW_LOG", "").strip()
+    candidates = [Path(configured), fallback] if configured else [fallback]
+    failures = []
+    for path in candidates:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Every pool worker appends here too: one whole block per save,
+            # never spliced into another's. #atomic-audit-append
+            append_whole(path, text, errors="replace")
+            return
+        except Exception as e:
+            failures.append((path, e))
+    # Only here has NOTHING been written -- a fallback that succeeded is not
+    # worth a warning, and warning on it would train the reader to ignore this.
+    if not _GLOW_LOG_WARNED:
+        _GLOW_LOG_WARNED = True
+        for path, e in failures:
+            print(f"  WARN: glow diagnostic could not write {path}: {e!r}",
+                  file=_sys.stderr)
+        print("  WARN: the glow diagnostic is switched on and recording "
+              "NOTHING -- do not read its silence as a clean result",
+              file=_sys.stderr)
 
 
 def atomic_tri_save(tri, dst_path) -> None:

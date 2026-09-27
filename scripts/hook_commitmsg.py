@@ -5,6 +5,10 @@ The fourth of those was added after the commit INTRODUCING the asset-name
 rule leaked a name in its own message: the rule had been wired into content
 scanning and not into this one. A message cannot be edited afterwards
 without rewriting history, so this is the more expensive of the two.
+
+The denylist is looked up the way pre-commit looks it up (this checkout, then
+the primary checkout), and its absence refuses the commit unless acknowledged
+for this one command (#hook-fail-closed).
 """
 from __future__ import annotations
 
@@ -12,6 +16,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scripts import hook_precommit as P  # noqa: E402
 from scripts import repo_hygiene as H  # noqa: E402
 
 
@@ -19,10 +24,12 @@ def main(argv: list[str]) -> int:
     if len(argv) < 2:
         return 0
     msg = Path(argv[1]).read_text(encoding="utf-8", errors="replace")
-    denylist, _n = H.load_denylist(Path(__file__).resolve().parent.parent)
-    problems = H.scan_message(msg, denylist)
+    root = Path(__file__).resolve().parent.parent
+    problems: list[str] = []
+    denylist = P.denylist_for_hook(root, problems)
+    problems += H.scan_message(msg, denylist)
     if problems:
-        sys.stderr.write("\nCOMMIT BLOCKED -- message would leak\n\n")
+        sys.stderr.write("\nCOMMIT BLOCKED -- the commit message\n\n")
         for p in problems:
             sys.stderr.write(f"  {p}\n")
         sys.stderr.write(

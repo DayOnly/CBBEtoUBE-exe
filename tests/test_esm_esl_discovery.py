@@ -219,7 +219,9 @@ def test_bsa_mesh_index_extract(monkeypatch, tmp_path):
     mod = tmp_path / "BespokeArmorSE"
     mod.mkdir()
     (mod / "BespokeArmor.bsa").write_bytes(b"BSA")          # mesh BSA -> scanned
-    (mod / "BespokeArmor - Textures.bsa").write_bytes(b"BSA")  # texture BSA -> SKIPPED
+    # A texture BSA is READ now (#texture-archive-meshes); this fake lists the
+    # same mesh in both, so the extraction below holds either way.
+    (mod / "BespokeArmor - Textures.bsa").write_bytes(b"BSA")
     idx = ac._BsaMeshIndex([mod], tmp_path / "_stg")
     res = idx.extract("armor/v/robe_1.nif")             # strip meshes/ + lower
     assert res is not None

@@ -28,7 +28,9 @@ that parts in a crouch does so on both sides and reads ~0. Only what WE changed
 survives, so every positive row is actionable by construction.
 
 Measured on the first five: three authored (delta +0.7 / +1.2 / +4.5), one where the
-converter IMPROVED the garment (-18.4), one real regression (+12.1).
+converter IMPROVED the garment (-18.4), one real regression (+12.1) -- by the first
+version (2026-07-27), which posed each source on the body its own NIF bundled, so
+not comparable with a run on today's canonical bodies.
 
 SOURCE SELECTION IS PART OF THE METRIC. Not "the last mod providing this mesh path" --
 two mods can ship the same path with different geometry, and picking the wrong one
@@ -36,10 +38,35 @@ inverted one armour from +0.7 to +83.3, i.e. from "authored" to "our fault". The
 is chosen by GARMENT SHAPE-NAME OVERLAP with the output, which ties both sides to the
 same garment.
 
+WEIGHTS: both weights, each on its OWN bodies. The delta is per file and a `_0`
+mesh is separately authored, so the converter can regress a garment at one
+weight and not the other. Every file is posed on the bodies matching its own
+suffix -- `canonical_cbbe(weight=w)` for the SOURCE side and
+`canonical_ube(weight=w)` for the CONVERTED side, whose weight 0 is the sibling
+of the weight-1 body, never the weight-1 body itself. The pose pivots, the
+arm-weight mask and the region vertices are read off that body, so they follow
+the weight with it. A file whose weight-0 body is missing is counted and
+skipped, never posed on weight 1. Every row carries `weight`, and the summary
+reports each weight on its own line; `--limit` counts FILES, so it now covers
+about half as many garments, each at both weights.
+
+The region constants were measured on the UBE body without a stated weight;
+weight moves the radius more than the height, so the z-bands carry over, but
+the lateral arm cut is worth a look on `_0`.
+
+COMPARING TWO RUNS: region for region, never by the counts. The MIN_COV floor is
+JOINT -- a region is scored only when BOTH sides cover it -- so a change to either
+side's body changes WHICH regions are scored, not just their deltas. Moving the
+source side onto the body the game loads (2026-09-21) left the converted side
+identical on all 2431 shared regions but brought 37 regions in and dropped 11
+(weight-1 source breast coverage +125%: the old body grew through the garments),
+so regressions >5pt went 114 -> 121 over a different population.
+
 Read-only. Resolves the output via the live MO2 instance (CBBE2UBE_MO2_INI).
 """
 from __future__ import annotations
 
+import collections
 import json
 import os
 import sys
@@ -51,8 +78,9 @@ sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / ".pynifly"))
 
 from pyn import pynifly                                          # noqa: E402
-from src.nif_convert import UBE_BODY_INJECT_NAMES                # noqa: E402
+from src.nif_convert import UBE_BODY_INJECT_NAMES, weight_suffix_of  # noqa: E402
 from src import paths                                            # noqa: E402
+from scripts.analysis import standoff_audit as sa                # noqa: E402
 from scripts.analysis.multipose_clip_test import analyse_with_body        # noqa: E402
 from scripts.analysis.canonical_body import (canonical_cbbe, canonical_ube,  # noqa: E402
                                     converted_garment_names, find_source)
@@ -86,7 +114,9 @@ def main():
         raise SystemExit(f"output not found: {root}")
 
     files = []
-    for p in sorted(root.rglob("*_1.nif")):
+    # BOTH weights. First-person is NOT dropped by `output_nifs` here: this
+    # file's own stem rule just below is broader and stays the authority.
+    for p in sa.output_nifs(root, exclude_first_person=False):
         stem = p.stem.lower()
         for suf in ("_0", "_1"):
             if stem.endswith(suf):
@@ -111,17 +141,47 @@ def main():
         files.append(p)
     if limit:
         files = files[:limit]
-    cbbe_path, cbbe_shape = canonical_cbbe(str(mods_root))
-    ube_path, ube_shape = canonical_ube()
-    print(f"{len(files)} armors, sample={sample}, gate={gate}%")
-    print(f"  source body : {cbbe_shape}  {Path(cbbe_path).parent.parent.parent.parent.name}")
-    print(f"  target body : {ube_shape}  {Path(ube_path).name}")
+
+    bodies = {}
+
+    def bodies_for(w):
+        """(cbbe_path, cbbe_shape, ube_path, ube_shape) for weight `w`, or None
+        when its weight-0 sibling is missing -- then its files are counted and
+        skipped, never posed on the weight-1 bodies."""
+        if w not in bodies:
+            try:
+                cp, cs = canonical_cbbe(str(mods_root), weight=w)
+                up, us = canonical_ube(weight=w)
+                bodies[w] = (cp, cs, up, us)
+            except FileNotFoundError as e:
+                print(f"  weight {w[1]}: NO reference body, its files are "
+                      f"skipped -- {e}")
+                bodies[w] = None
+        return bodies[w]
+
+    print(f"{len(files)} armors (both weights), sample={sample}, gate={gate}%")
+    for w in ("_1", "_0"):
+        b = bodies_for(w)
+        if b:
+            # <mod>/meshes/actors/character/character assets/<body>.nif: the
+            # mod folder is FIVE levels up (four printed "meshes").
+            print(f"  weight {w[1]} source body : {b[1]}  "
+                  f"{Path(b[0]).parent.parent.parent.parent.parent.name}  "
+                  f"({Path(b[0]).name})")
+            print(f"  weight {w[1]} target body : {b[3]}  {Path(b[2]).name}")
 
     t0, n, reg, gated, nosrc = time.time(), 0, 0, 0, 0
-    nogar = failed = selfint = 0
+    nogar = failed = selfint = nobody = 0
+    per_w = collections.defaultdict(collections.Counter)
     with out.open("w", encoding="utf-8") as fh:
         for i, p in enumerate(files, 1):
             rel = str(p.relative_to(root)).replace("\\", "/")
+            w = weight_suffix_of(p)
+            b = bodies_for(w)
+            if b is None:
+                nobody += 1
+                continue
+            cbbe_path, cbbe_shape, ube_path, ube_shape = b
             try:
                 gnames = converted_garment_names(p)
                 if not gnames:
@@ -145,7 +205,7 @@ def main():
                 selfint += 1
                 continue
             worst = max((r["worst_pct"] for r in conv.values()), default=0.0)
-            row = {"armor": rel, "conv_worst": round(worst, 3)}
+            row = {"armor": rel, "weight": w, "conv_worst": round(worst, 3)}
             if worst < gate:
                 row["gated"] = True
                 gated += 1
@@ -190,6 +250,14 @@ def main():
             fh.write(json.dumps(row) + "\n")
             fh.flush()
             n += 1
+            pw = per_w[w]
+            pw["scored"] += 1
+            if row.get("gated"):
+                pw["gated"] += 1
+            elif row.get("source") is None:
+                pw["nosrc"] += 1
+            elif row.get("worst_delta", 0.0) > 5.0:
+                pw["reg"] += 1
             if i % 20 == 0:
                 el = time.time() - t0
                 print(f"  {i}/{len(files)}  {reg} regressions, {gated} gated, "
@@ -204,6 +272,14 @@ def main():
     print(f"    {nogar:5d} no converted garment shapes")
     print(f"    {failed:5d} dropped on an error while analysing")
     print(f"    {selfint:5d} skipped: reference body self-intersects")
+    print(f"    {nobody:5d} skipped: no reference body for that weight")
+    # PER WEIGHT. A pooled count mixes two separately authored halves; these
+    # are the numbers to compare.
+    for w in ("_1", "_0"):
+        pw = per_w[w]
+        print(f"  weight {w[1]}: {pw['scored']} scored, {pw['reg']} regressions "
+              f">5pt, {pw['gated']} gated clean, {pw['nosrc']} without a "
+              f"matched source")
     if n == 0:
         print("  NOTHING WAS SCORED -- 0/0 is not a clean result")
 

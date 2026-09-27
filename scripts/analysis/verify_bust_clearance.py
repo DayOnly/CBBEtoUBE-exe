@@ -40,13 +40,25 @@ z 99-112 -- that is the upper chest, and measuring it there hides the defect
 entirely. Verified against both the body's front-most vertex and the z-distribution
 of the breast morphs.
 
+WEIGHTS: both weights, via `standoff_audit.output_nifs`. This is the tool the
+half-pack rule was WRITTEN ABOUT. `output_nifs`' own docstring cites bust-front
+clipping at 4.52% on weight 1 against 9.48% on weight 0 -- and "body poking
+through at the breast", check 1 below, IS that measurement. Reading `_1` only
+meant the one check most known to be worse at weight 0 was the one never run
+there.
+
+It is safe to read both here because the reference is per-file: the body is the
+BaseShape injected into THAT SAME NIF (see the note on `_SKIP` below), so a
+`_0` file measures its own separately authored garment against its own weight-0
+body. No preset is parsed and no weight-pinned reference body is loaded, so the
+population is the only thing that changes.
+
     python scripts/analysis/verify_bust_clearance.py
 
 Read-only; resolves the body via the live MO2 instance (CBBE2UBE_MO2_INI).
 """
 import os
 import sys
-import glob
 import numpy as np
 from pathlib import Path
 from collections import defaultdict
@@ -59,6 +71,7 @@ from pyn import pynifly                                       # noqa: E402
 from src import paths                                         # noqa: E402
 from src.nif_convert import shape_body_offset, _body_normals_or_compute   # noqa: E402
 from src.body_zones import breast_mask, back_mask                        # noqa: E402
+from scripts.analysis import standoff_audit as sa                        # noqa: E402
 
 OUT_MOD = os.environ.get("CBBE2UBE_OUT_MOD", "CBBEtoUBE Auto")
 # The armor's own injected body is the reference: it is what the pass cleared against.
@@ -184,8 +197,10 @@ def main():
     if root is None or not root.is_dir():
         print("output not found (set CBBE2UBE_MO2_INI + reconvert first).")
         return 1
-    files = [f for f in glob.glob(str(root / "**" / "*_1.nif"), recursive=True)
-             if "1stperson" not in f.lower()]
+    # BOTH weights -- see WEIGHTS: above. `output_nifs` also owns the
+    # first-person filter, which the hand-rolled `"1stperson" not in f` here
+    # spelled too narrowly: it let 7 short-prefix `1stp*` meshes through.
+    files = [str(p) for p in sa.output_nifs(root)]
     print(f"scanning {len(files)} meshes (breast = z90-102 front)...", flush=True)
 
     poking, loose, n_body = [], [], 0
