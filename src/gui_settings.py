@@ -1550,8 +1550,8 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "another body. One armour's own meshes, made for the vanilla body, "
                     "shipped with the bust 2.2u too far out and the inner thigh 0.6u too "
                     "close. Pieces whose physics would change keep their own meshes, "
-                    "except a static piece whose build adds SMP physics that passes "
-                    "the tool's checks: that build comes with its physics."),
+                    "also a static piece whose build adds SMP physics: those builds "
+                    "sit looser on the body."),
     Setting("texconv", "texconv.exe",
             "Paths", "Tools", kind="path", default="", env="CBBE2UBE_TEXCONV",
             tooltip="DirectXTex texconv for texture conversion. Auto-located when blank."),

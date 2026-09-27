@@ -25,7 +25,12 @@ physics alone: CBBE wearers got a skirt with physics, UBE wearers a static one.
 Now a physics GAIN is taken when both sides go body-swap, the build's XML
 resolves, parses and holds a constraint anywhere in its tree, and nothing the
 XML names is a stripped body its collision-proxy re-import would bring back.
-`CBBE2UBE_NO_ZEROED_SMP_GAIN=1` keeps such pieces on today's source.
+
+OPT-IN since 2026-09-26 (user decision after seeing it in game): the SMP builds
+sit looser on the body than the static pieces, so by default such pieces keep
+today's source; `CBBE2UBE_ZEROED_SMP_GAIN=1` takes the build. The old
+off-switch `CBBE2UBE_NO_ZEROED_SMP_GAIN` is no longer read. The tests below run
+opted in unless they say otherwise.
 
 #smp-gain-collision-partner (same day): the conversion prunes the XML blocks of
 shapes it drops, and one build's only body collider went that way, leaving its
@@ -48,7 +53,8 @@ from src import nif_io  # noqa: E402
 from tests.test_zeroed_output_source import (  # noqa: E402
     BASE_MOD, OUT_MOD, STEM, Selection, _touch)
 
-OFF = "CBBE2UBE_NO_ZEROED_SMP_GAIN"
+ON = "CBBE2UBE_ZEROED_SMP_GAIN"
+OLD_OFF = "CBBE2UBE_NO_ZEROED_SMP_GAIN"
 BODY_TEX = "textures\\actors\\character\\female\\femalebody_1.dds"
 CLOTH_TEX = "textures\\armor\\test\\skirt.dds"
 
@@ -58,7 +64,8 @@ PARTNER_OFF = "CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER"
 
 @pytest.fixture(autouse=True)
 def _on(monkeypatch):
-    monkeypatch.delenv(OFF, raising=False)
+    monkeypatch.setenv(ON, "1")
+    monkeypatch.delenv(OLD_OFF, raising=False)
     monkeypatch.delenv(PARTNER_OFF, raising=False)
 
 
@@ -505,15 +512,43 @@ def _gain_world(tmp_path, monkeypatch, *, xml=None, build_marker=(True, True),
     return sel
 
 
-def test_the_build_with_physics_is_taken_by_default(tmp_path, monkeypatch, capsys):
+def test_opted_in_the_build_with_physics_is_taken(tmp_path, monkeypatch, capsys):
     sel = _gain_world(tmp_path, monkeypatch)
     assert set(Selection.owners(sel.index()).values()) == {OUT_MOD}
     assert "(1 with its SMP physics)" in capsys.readouterr().err
 
 
-def test_switched_off_the_piece_keeps_todays_source(tmp_path, monkeypatch, capsys):
+def test_by_default_the_piece_keeps_todays_source(tmp_path, monkeypatch, capsys):
+    """The SMP builds sit looser on the body: the gain is opt-in."""
     sel = _gain_world(tmp_path, monkeypatch)
-    monkeypatch.setenv(OFF, "1")
+    monkeypatch.delenv(ON, raising=False)
+    assert set(Selection.owners(sel.index()).values()) == {BASE_MOD}
+    assert "its physics would change: 1" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value", ["0", "no", "off"])
+def test_the_opt_in_set_to_no_keeps_todays_source(tmp_path, monkeypatch, capsys,
+                                                   value):
+    sel = _gain_world(tmp_path, monkeypatch)
+    monkeypatch.setenv(ON, value)
+    assert set(Selection.owners(sel.index()).values()) == {BASE_MOD}
+    assert "its physics would change: 1" in capsys.readouterr().err
+
+
+def test_the_old_off_switch_does_not_veto_the_opt_in(tmp_path, monkeypatch, capsys):
+    """CBBE2UBE_NO_ZEROED_SMP_GAIN asked for today's default and is no longer
+    read: left in a recipe, it cannot silently defeat the opt-in."""
+    sel = _gain_world(tmp_path, monkeypatch)
+    monkeypatch.setenv(OLD_OFF, "1")
+    assert set(Selection.owners(sel.index()).values()) == {OUT_MOD}
+    assert "(1 with its SMP physics)" in capsys.readouterr().err
+
+
+def test_the_old_off_switch_alone_keeps_todays_source(tmp_path, monkeypatch, capsys):
+    """What a recipe that still sets the old switch asked for, it gets."""
+    sel = _gain_world(tmp_path, monkeypatch)
+    monkeypatch.delenv(ON, raising=False)
+    monkeypatch.setenv(OLD_OFF, "1")
     assert set(Selection.owners(sel.index()).values()) == {BASE_MOD}
     assert "its physics would change: 1" in capsys.readouterr().err
 
