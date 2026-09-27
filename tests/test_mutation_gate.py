@@ -631,3 +631,18 @@ def test_seeded_ids_are_unique_and_named():
     ids = [p.id for p in PAIRS]
     assert len(set(ids)) == len(ids)
     assert all(p.why for p in PAIRS)
+
+
+def test_a_red_run_keeps_its_output_and_a_green_one_does_not(tmp_path):
+    """A red control is only diagnosable while its output exists: the shard's
+    worktree is dropped when the gate ends, and a name alone does not say why
+    (2026-09-27: two controls went red with nothing but a test name)."""
+    (tmp_path / "test_red.py").write_text(
+        "def test_red():\n    assert 1 == 2, 'PLANTED-REASON'\n", encoding="utf-8")
+    (tmp_path / "test_green.py").write_text(
+        "def test_green():\n    assert True\n", encoding="utf-8")
+    red = mg.run_tests(tmp_path, ["test_red.py"], timeout=300)
+    assert red["rc"] != 0 and red["failing"] == ["test_red"]
+    assert "PLANTED-REASON" in red["tail"]
+    green = mg.run_tests(tmp_path, ["test_green.py"], timeout=300)
+    assert green["rc"] == 0 and "tail" not in green
