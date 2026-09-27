@@ -75,7 +75,7 @@ Use **Help ▸ Copy problem report** in the GUI and paste. It looks like this:
 ```
 CBBEtoUBE problem report
 ========================
-Version:  1.4
+Version:  1.5
 Type:     Conversion problem - output looks wrong in game
 Symptom:  Armor is invisible / does not render
 
@@ -112,7 +112,7 @@ DIAGNOSTICS
       look it over before posting it publicly.
 
 WHERE TO SEND THIS
-  want it fixed  -> .../issues/new?template=conversion_problem.yml&version=1.4
+  want it fixed  -> .../issues/new?template=conversion_problem.yml&version=1.5
   want an answer -> https://github.com/DayOnly/CBBEtoUBE-exe/discussions
 ```
 
@@ -166,7 +166,8 @@ A normal run also leaves these behind, useful if the GUI won't start:
   converted, but something needs your attention first, such as SkyPatcher
   missing, an unreadable settings file or no race coverage).
 - `CBBEtoUBE_cli.log` — the output of anything that is not a run: `--help`, a
-  mistyped command, `validate`, `scan`. It never touches the run files above,
+  mistyped command, `validate`, `scan`, and a dry run (the window's Dry run,
+  `--list-only`). It never touches the run files above,
   so checking something after a failure cannot erase the evidence.
 - `conversion_report.json`, `conversion_summary.txt`,
   `conversion_report_<mod>.txt` — at the output mod root.

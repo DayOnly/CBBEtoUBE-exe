@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.5 — 2026-09-27
 
 ### Fixed — plates that stand off the body move as their author made them again
 
