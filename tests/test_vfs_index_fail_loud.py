@@ -30,6 +30,7 @@ every mod. The vanilla sweep's mesh-path read was `except Exception: pass`.
 import errno
 import os
 import pathlib
+import sys
 from pathlib import Path
 
 import pytest
@@ -88,7 +89,13 @@ def test_the_walk_finds_what_rglob_found_in_the_same_order(tmp_path):
     idx = discovery.build_mesh_index(mods, ["M"])
     md = mods / "M" / "meshes"
     want = {n.relative_to(md).as_posix().lower(): n for n in md.rglob("*.nif")}
-    assert list(idx.items()) == list(want.items())
+    assert idx == want                                   # same meshes, same paths
+    # The walk's own order: depth-first, as rglob gave it on the interpreter the
+    # exe is frozen with. rglob went breadth-first in 3.12, so its ORDER is only
+    # the reference before that; the walk's order does not change.
+    assert list(idx) == ["a_1.nif", "sub/b_1.nif", "sub/deeper/c_0.nif", "z/d.nif"]
+    if sys.version_info < (3, 12):
+        assert list(idx.items()) == list(want.items())
     assert "sub/b_1.nif" in idx
 
 
