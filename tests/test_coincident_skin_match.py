@@ -159,9 +159,9 @@ def _install(monkeypatch, dst_shapes, src_shapes, saved):
     monkeypatch.setattr(nc, "_pynifly", lambda: _Pyn)
     monkeypatch.setattr(nc, "_nif_has_fx_shape", lambda nf: False)
     _cs.patch(monkeypatch, "_hdt_collider_shape_names",
-                        lambda p, nif=None: set())
+                        lambda p, nif=None, stem_scan=True: set())
     _cs.patch(monkeypatch, "_hdt_softbody_shape_names",
-                        lambda p, nif=None: set())
+                        lambda p, nif=None, stem_scan=True: set())
     monkeypatch.setattr(nc, "_hide_virtual_body", lambda nf: False)
     _cs.patch(monkeypatch, "atomic_nif_save",
                         lambda nf, p: saved.append(p))
@@ -477,7 +477,7 @@ def test_authored_physics_geometry_is_skipped(monkeypatch):
     saved = []
     _install(monkeypatch, dst, src, saved)
     _cs.patch(monkeypatch, "_hdt_softbody_shape_names",
-                        lambda p, nif=None: {"Cloth"})
+                        lambda p, nif=None, stem_scan=True: {"Cloth"})
     assert nc._match_coincident_cross_shape_skin(
         "dst.nif", src_nif_path="src.nif") == 0
     assert dst[1].row(0) == {PELV: 0.9, SPINE: 0.1}

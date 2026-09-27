@@ -32,7 +32,7 @@ Input layout (a normal CBBE armor mod):
 Output layout (drop into MO2):
 
     OutputMod/
-      MyArmor UBE patch.esp        # new ESP via ube_patcher
+      MyArmor (CBBEtoUBE src).esp  # new ESP via ube_patcher
       meshes/
         !UBE/
           path/to/Armor_0.nif      # M3 phase 1 copy (if no inline body)
@@ -51,6 +51,7 @@ import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import update_wrapper as _update_wrapper
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -64,8 +65,10 @@ cap_blas_threads()
 
 from . import ube_patcher, nif_convert, paths, discovery, nif_io  # noqa: E402
 from . import child_lifetime  # noqa: E402
-from .user_warnings import NOTE, plain_error, warn  # noqa: E402
+from .user_warnings import NOTE, plain_error, problem_count, warn  # noqa: E402
+from . import stale_sweep  # noqa: E402
 from .envflags import flag as _flag, knob as _knob  # noqa: E402
+from .bsa_strings import model_path_text as _model_path_text  # noqa: E402
 
 
 # ---------- Multiprocessing worker -------------------------------------
@@ -204,6 +207,11 @@ def _prewarm_pool(
                 warn(f"warm-up task failed: {plain_error(e)}",
                      consequence="the first real piece on that worker pays the cold start",
                      indent="    ")
+                # Printed as a problem, so counted (the stale-output sweep
+                # counts it too): one entry however many workers. #one-tally
+                _record_class_once("worker warm-up failed", "worker pool", "warm-up",
+                                   f"{plain_error(e)}; the first piece on that "
+                                   "worker paid the cold start")
     finally:
         manager.shutdown()
     total = time.perf_counter() - t0
@@ -474,6 +482,533 @@ def _memory_hint() -> str:
         return ""
 
 
+# --- #global-schedule: one NIF schedule for the whole batch ------------------
+#
+# One source at a time, every source's units went to the shared pool and the run
+# WAITED for that source's slowest unit before planning the next. Measured on the
+# 09-24 All-mods run (154 sources, 3312 NIFs, 15 workers): the NIF phase was 71.3
+# of 87 minutes and the workers were busy 24.7% of it -- 89 sources of under 15
+# NIFs took 38 minutes, and each 7-14 MB piece (125-222 s) held 12-14 workers
+# idle behind it. Nothing a source plans depends on another source's NIFs (the
+# claims and the patch ESP are decided before them), so every source is planned
+# first, all their units run on one largest-first schedule, and each source's
+# post-conversion steps run once its own units are in, in source order.
+
+def _global_schedule() -> bool:
+    """#global-schedule (2026-09-25): convert every source's NIFs on one
+    batch-wide schedule instead of one source at a time? Yes, by default.
+    CBBE2UBE_NO_GLOBAL_SCHEDULE=1 waits for each source's slowest piece again,
+    and superseding moves a base an earlier source converted this run again."""
+    return not _flag("CBBE2UBE_NO_GLOBAL_SCHEDULE", False)
+
+
+# --- #planned-folders: a folder is spelled by the plan, not by a race -------
+#
+# Windows keeps the spelling a folder was created with, and a worker creates
+# its piece's folder when it starts writing. Two sources that spell one folder
+# differently (`Armor\` in a mod, `armor\` in the vanilla sweep) therefore got
+# the spelling of whichever piece reached it first: an earlier source's, one
+# source at a time, and the largest piece's on the batch-wide schedule
+# (measured on a fresh output: 485 files under `meshes\!UBE\armor` against
+# `\Armor`, every byte the same). Each source now creates its pieces' folders
+# at the end of its planning, in plan order, so the first source to plan a
+# folder spells it on both schedules, whatever converts first. A folder this
+# made that is still empty once the batch is done (only a skipped piece asked
+# for it) is removed again.
+
+def _planned_folders() -> bool:
+    """#planned-folders (2026-09-26): create each source's destination folders
+    in plan order before its NIFs convert? Yes, by default.
+    CBBE2UBE_NO_PLANNED_FOLDERS=1 leaves them to the workers again."""
+    return not _flag("CBBE2UBE_NO_PLANNED_FOLDERS", False)
+
+
+def _make_planned_folders(work_items, made: list) -> None:
+    """Create the folder of every work item's destination, in list order, and
+    append to `made` each folder this call created (ancestors first). A folder
+    that already exists keeps its spelling; one that cannot be created is left
+    to the worker, which reports its own error. #planned-folders"""
+    for it in work_items:
+        d = Path(it[1]).parent
+        if d.is_dir():
+            continue
+        missing = []
+        p = d
+        while not p.exists() and p.parent != p:
+            missing.append(p)
+            p = p.parent
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        made.extend(reversed(missing))
+
+
+def _remove_empty_planned_folders(made: list) -> int:
+    """Remove every folder in `made` that is empty, deepest first (one that
+    only a skipped piece asked for), and forget them all. Only when no NIF
+    is being written: a worker creates its folder at the start and writes at
+    the end. Returns how many were removed. #planned-folders"""
+    removed = 0
+    for d in sorted(set(made), key=lambda p: len(p.parts), reverse=True):
+        try:
+            d.rmdir()             # refuses a folder that is not empty
+            removed += 1
+        except OSError:
+            pass
+    made.clear()
+    return removed
+
+
+# --- #plan-order-results: a report lists pieces in plan order --------------
+
+def _plan_order_results() -> bool:
+    """#plan-order-results (2026-09-26): list a source's NIF results in the
+    order its pieces were planned, and its patch notes where one source at a
+    time writes them? Yes, by default. CBBE2UBE_NO_PLAN_ORDER_RESULTS=1 keeps
+    the order the answers arrived in."""
+    return not _flag("CBBE2UBE_NO_PLAN_ORDER_RESULTS", False)
+
+
+def _in_plan_order(nif_results: list, work_items) -> None:
+    """Sort `nif_results` in place into the order of `work_items`.
+
+    The answers arrive in completion order: a race among the workers one
+    source at a time, and the largest-first schedule's order on the
+    batch-wide one. Every report list built from them (`pass_effects`,
+    `pass_failure_pieces`, the per-source summary) inherited that order.
+    A result is placed by its destination, else its source file (an error or
+    a skipped piece names no destination); results that tie on both are
+    ordered by status and reason, so the order never depends on arrival.
+    #plan-order-results"""
+    by_dst: dict = {}
+    by_src: dict = {}
+    for i, it in enumerate(work_items):
+        by_dst.setdefault(Path(it[1]), i)
+        by_src.setdefault(Path(it[0]), i)
+    last = len(work_items)
+
+    def _key(r):
+        at = None
+        dst = getattr(r, "dst_path", None)
+        if dst:
+            at = by_dst.get(Path(dst))
+        if at is None and getattr(r, "src_path", None):
+            at = by_src.get(Path(r.src_path))
+        return (last if at is None else at, str(getattr(r, "status", "")),
+                str(getattr(r, "reason", "")))
+    nif_results.sort(key=_key)
+
+
+# A worker's peak commit tracks the size of the mesh it converts: about 0.36 GB
+# of floor plus about 236 MB per source MB (measured 2026-09-11 against the full
+# pack: the largest source, 14 MB, peaked at 3.79 GB). The pool is sized so each
+# worker has WORKER_MEM_BUDGET_GB; a unit whose predicted peak fits that budget
+# is admitted whenever a worker is free. A HEAVIER unit is admitted only when no
+# other heavy unit is running, or when the live free RAM and free commit, less a
+# reserve, cover its peak plus the peaks of the heavy units already running. That
+# double-counts what those have already taken -- it errs toward waiting, and
+# lighter units fill the free workers meanwhile.
+SCHED_WORKER_FLOOR_GB = 0.36
+SCHED_PEAK_GB_PER_SOURCE_MB = 0.236
+SCHED_RESERVE_GB = 2.0
+
+
+def _source_mb(path) -> float:
+    """Size of a work item's source NIF in MB; 0 when it cannot be read (the
+    unit is then treated as light and ordered last)."""
+    try:
+        return os.stat(path).st_size / 2.0 ** 20
+    except (OSError, TypeError, ValueError):
+        return 0.0
+
+
+class _SchedUnit:
+    """One unit of the batch-wide schedule: the weight variants of one base
+    that ONE source planned, in list order (`_global_units`)."""
+    __slots__ = ("items", "source", "after", "seq", "mb", "peak_gb")
+
+    def __init__(self, items, source, after, seq, size_of):
+        self.items = list(items)
+        self.source = source      # index of the source whose items these are
+        self.after = after        # index of a source that must FINISH first
+        self.seq = seq
+        sizes = [size_of(it[0]) for it in self.items]
+        self.mb = sum(sizes)
+        self.peak_gb = (SCHED_WORKER_FLOOR_GB
+                        + SCHED_PEAK_GB_PER_SOURCE_MB * max(sizes, default=0.0))
+
+
+def _global_units(per_source, size_of=None) -> "list[_SchedUnit]":
+    """The units of the batch-wide schedule. `per_source` is [(source index,
+    work items)] in source order. #global-schedule
+
+    Keyed like `_pair_units` -- the weight base of the DESTINATION -- but over
+    the WHOLE batch, not one call. A base one source plans is one unit. A base
+    two sources plan (one ships the `_1`, a later one the `_0`) shares one
+    physics XML and one `.tri` at the destination, so it must never be on two
+    workers at once (#pair-unit-dispatch): it becomes one unit per source, and
+    the later one is not started until the earlier SOURCE has finished, its
+    post-conversion steps included -- the order one source at a time gives
+    those files."""
+    size_of = size_of or _source_mb
+    groups: "dict[str, dict[int, list]]" = {}
+    order: "list[str]" = []
+    for si, items in per_source:
+        for it in items:
+            key = _weight_base_key(str(it[1]))
+            if key not in groups:
+                groups[key] = {}
+                order.append(key)
+            groups[key].setdefault(si, []).append(it)
+    units: "list[_SchedUnit]" = []
+    for key in order:
+        prev = None
+        for si in sorted(groups[key]):
+            units.append(_SchedUnit(groups[key][si], si, prev, len(units), size_of))
+            prev = si
+    return units
+
+
+def _ran_out_of_memory(result) -> bool:
+    """Did this piece meet a MemoryError -- raised out of the conversion (an
+    error result) or caught inside a fit pass (the piece shipped without that
+    fit)? Both ride home in `reason`. #global-schedule"""
+    return "MemoryError" in (getattr(result, "reason", "") or "")
+
+
+def _worker_budget_gb() -> float:
+    """The per-worker RAM budget the pool was sized with (`default_worker_count`)."""
+    try:
+        return float(_knob("CBBE2UBE_WORKER_MEM_GB", float(WORKER_MEM_BUDGET_GB)))
+    except ValueError:
+        return float(WORKER_MEM_BUDGET_GB)
+
+
+class _GlobalNifSchedule:
+    """Run every unit of the batch on the shared `_NifPool`, largest first, and
+    finish each source once all of its units are in -- in source order.
+    #global-schedule
+
+    `deliver(source, ConvertResult)` receives every result exactly once.
+    `finish(source)` is called exactly once per source index, in index order,
+    only after every unit of that source (and of every source before it) has
+    delivered. Survives worker death like `_NifPool.run_batch`: the units in
+    flight when the pool broke are re-run in isolation, one item at a time, once
+    nothing else is in flight. A unit whose result shows a MemoryError is not
+    delivered but re-run the same way -- memory other units were holding is the
+    likeliest cause, and a piece shipped without its fit (or an error result
+    whose patch ESP already points at the missing NIF) is not an answer.
+    `memory()` is `_memory_status` (injectable for tests)."""
+
+    def __init__(self, nif_pool, units, n_sources, deliver, finish, *,
+                 fn=None, memory=None, budget_gb=None):
+        self.nif_pool = nif_pool
+        self.units = list(units)
+        self.n_sources = int(n_sources)
+        self.deliver = deliver
+        self.finish = finish
+        self.fn = fn or _nif_convert_worker
+        self.memory = memory or _memory_status
+        self.budget_gb = _worker_budget_gb() if budget_gb is None else budget_gb
+        self.left = [0] * self.n_sources
+        for u in self.units:
+            self.left[u.source] += 1
+        self.next_finish = 0
+        self.memory_retries = 0
+        self.crash_retries = 0
+        self.peak_heavy = 0          # most heavy units ever in flight at once
+
+    def _heavy(self, u) -> bool:
+        return u.peak_gb > self.budget_gb
+
+    def _headroom_gb(self):
+        st = self.memory()
+        if not st:
+            return None
+        vals = [v for v in (st.get("avail_gb"), st.get("commit_free_gb"))
+                if v is not None]
+        return (min(vals) - SCHED_RESERVE_GB) if vals else None
+
+    def _pick(self, pending, in_flight):
+        """The first unit of `pending` (largest first) that may start now."""
+        heavy_now = [v for v in in_flight if self._heavy(v)]
+        headroom = None
+        looked = False
+        for u in pending:
+            if u.after is not None and u.after >= self.next_finish:
+                continue                  # waits on an earlier source's finish
+            if not self._heavy(u) or not heavy_now:
+                return u
+            if not looked:
+                headroom = self._headroom_gb()
+                looked = True
+            if (headroom is not None
+                    and u.peak_gb + sum(v.peak_gb for v in heavy_now) <= headroom):
+                return u
+        return None
+
+    def _advance(self):
+        while (self.next_finish < self.n_sources
+               and self.left[self.next_finish] == 0):
+            k = self.next_finish
+            self.finish(k)
+            self.next_finish = k + 1
+
+    def _run_isolated(self, units):
+        """Re-run `units` one item at a time on a healthy pool, in their
+        original order; `_NifPool._run_isolated` answers exactly once per item,
+        in item order, which is how each answer finds its source."""
+        units = sorted(units, key=lambda u: u.seq)
+        owners = iter([u.source for u in units for _it in u.items])
+        items = [it for u in units for it in u.items]
+        self.nif_pool._run_isolated(
+            items, lambda r: self.deliver(next(owners), r), self.fn)
+        for u in units:
+            self.left[u.source] -= 1
+
+    def run(self):
+        from concurrent.futures import FIRST_COMPLETED, wait
+        pending = sorted(self.units, key=lambda u: (-u.mb, u.seq))
+        in_flight: dict = {}
+        retry: list = []
+        broken = False
+        self._advance()                   # sources with nothing to convert
+        while pending or in_flight or retry:
+            while not broken and len(in_flight) < self.nif_pool.max_workers:
+                u = self._pick(pending, in_flight.values())
+                if u is None:
+                    break
+                pending.remove(u)
+                try:
+                    self.nif_pool._ensure()
+                    fut = self.nif_pool.pool.submit(_run_unit, self.fn, u.items)
+                except Exception:
+                    retry.append(u)       # pool already broken: nothing ran
+                    self.crash_retries += 1
+                    broken = True
+                    break
+                in_flight[fut] = u
+                self.peak_heavy = max(self.peak_heavy, sum(
+                    1 for v in in_flight.values() if self._heavy(v)))
+            if not in_flight:
+                if broken:
+                    self.nif_pool._rebuild()
+                    broken = False
+                elif retry:
+                    self._run_isolated(retry)
+                    retry = []
+                    self._advance()
+                elif pending:
+                    # Cannot happen (a unit only waits on an EARLIER source,
+                    # and the earliest unfinished source's units never wait);
+                    # run them rather than hang if it ever does.
+                    for u in pending:
+                        u.after = None
+                else:
+                    break
+                continue
+            done, _ = wait(list(in_flight), return_when=FIRST_COMPLETED)
+            for fut in sorted(done, key=lambda f: in_flight[f].seq):
+                u = in_flight.pop(fut)
+                try:
+                    results = fut.result()
+                except Exception:
+                    retry.append(u)       # worker death: nothing here is certain
+                    self.crash_retries += 1
+                    broken = True
+                    continue
+                _echo_worker_output(getattr(results, "output", ""))
+                if any(_ran_out_of_memory(r) for r in results):
+                    self.memory_retries += 1
+                    print(f"  out of memory converting "
+                          f"{', '.join(Path(str(it[1])).name for it in u.items)}"
+                          " -- converting it again on its own once the pool "
+                          "is idle")
+                    retry.append(u)
+                    continue
+                for r in results:
+                    self.deliver(u.source, r)
+                self.left[u.source] -= 1
+            self._advance()
+
+
+def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
+                            make_steps, convert_serial, checkpoint,
+                            claimed_patch_paths=None):
+    """#global-schedule: plan every source, convert all their NIFs on one
+    schedule, then finish each source in source order. Appends
+    (source, result, error) to `results` in source order.
+
+    `make_steps(src)` -> that source's `_auto_convert_mod_steps` generator
+    (driven with `batch_schedule=True`: its patch and snapshot are written at
+    its finish); `convert_serial(src)` -> the whole source converted in this
+    process with no pool (the vanilla sweep's self-heal, run at the sweep's
+    turn, where one source at a time ran it). `checkpoint(view, progress)`
+    writes the report of the run so far: `view` is `results` plus every source
+    whose planning failed and whose turn has not come, `progress` the NIF
+    phase so far ({files_done, files_total, sources_nifs_done}) or None. It is
+    called when a planning failure happens, when a source's last NIF is in,
+    and after each finish -- a run that dies in the NIF phase leaves a report
+    that says how far it got.
+
+    `claimed_patch_paths`: the batch's per-source patch names; a source claims
+    its names at its finish, so a sweep whose finish fails gives back the names
+    it claimed there before its serial retry writes them. #loaded-source-plugins"""
+    n = len(sources)
+    slots: list = []
+    phase_rec: dict = {}          # the NIF phase so far, once it has begun
+
+    def _view():
+        return list(results) + [
+            (s["src"], None, s["error"]) for s in slots[len(results):]
+            if s["error"] is not None]
+
+    def _checkpoint():
+        checkpoint(_view(), dict(phase_rec) if phase_rec else None)
+
+    def _failed(err):
+        warn(f"conversion failed: {plain_error(err)}",
+             consequence="the run stopped; the log above says where",
+             fix="fix the cause and run again", indent="")
+
+    def _sweep_serial_retry(src, why, own_claims, own_patch_claims=()):
+        warn(f"vanilla sweep failed ({plain_error(why)})",
+             consequence="retrying SERIALLY (no worker pool; slower, but "
+                         "immune to pool-environment failures)...",
+             indent="")
+        claimed_dst_paths.difference_update(own_claims)
+        if claimed_patch_paths is not None:     # #loaded-source-plugins
+            claimed_patch_paths.difference_update(own_patch_claims)
+        r = convert_serial(src)
+        print("  vanilla sweep serial retry SUCCEEDED")
+        _record_sweep_retried(why)
+        return r
+
+    for i, src in enumerate(sources, 1):
+        is_sweep = bool(_vanilla_sweep_esps(src))
+        disp = "Vanilla sweep (base game + DLC)" if is_sweep else src.name
+        if is_sweep:
+            print("\n=== VANILLA SWEEP pass: base game + DLC as the "
+                  "lowest-priority source ===")
+        print(f"\n--- [{i}/{n}] planning '{disp}' ---")
+        slot = {"src": src, "disp": disp, "sweep": is_sweep, "steps": None,
+                "phase": None, "result": None, "error": None, "claims": set(),
+                "retry": None}
+        before = set(claimed_dst_paths) if is_sweep else None
+        try:
+            steps = make_steps(src)
+            try:
+                slot["phase"] = next(steps)
+                slot["steps"] = steps
+            except StopIteration as done:
+                slot["result"] = done.value
+        except Exception as e1:
+            if is_sweep:
+                # Its serial self-heal runs at its turn, after every source
+                # before it -- where one source at a time ran it -- not ahead
+                # of their NIFs and outside the chain their shared bases keep.
+                slot["retry"] = e1
+                print(f"  vanilla sweep planning failed ({plain_error(e1)}) -- "
+                      "retried serially at its turn")
+            else:
+                slot["error"] = e1
+                _failed(e1)
+        if is_sweep:
+            slot["claims"] = set(claimed_dst_paths) - before
+        slots.append(slot)
+        if slot["error"] is not None:
+            _checkpoint()             # a failure is on disk when it happens
+
+    per_source = [(k, s["phase"].work_items) for k, s in enumerate(slots)
+                  if s["phase"] is not None]
+    units = _global_units(per_source)
+    total = sum(len(items) for _k, items in per_source)
+    workers = nif_pool.max_workers
+    t0 = time.perf_counter()
+    state = {"done": 0, "last": t0}
+    last_done = {}
+    phase_rec.update(files_done=0, files_total=total, sources_nifs_done=[])
+    if total:
+        print(f"\n=== NIF conversion: {total} file(s) from {len(per_source)} "
+              f"source(s) on one schedule, {workers} worker(s), largest first ===")
+        # ONE bar for the whole phase: every source's files fill it together.
+        # "[progress] 1 1 <label>" then "[progress-nif] <done> <total>"; with a
+        # single bar the window takes its per-file estimate as the run's.
+        # #per-file-progress
+        print("[progress] 1 1 NIF conversion (all sources)", flush=True)
+
+    def _deliver(k, r):
+        phase = slots[k]["phase"]
+        phase.result.nif_results.append(r)
+        state["done"] += 1
+        phase_rec["files_done"] = state["done"]
+        if len(phase.result.nif_results) == len(phase.work_items):
+            # Every NIF of this source is in; its patch and post-conversion
+            # steps wait for its turn. Say so on disk. #report-checkpoint
+            phase_rec["sources_nifs_done"].append(slots[k]["src"].name)
+            _checkpoint()
+        now = time.perf_counter()
+        last_done[k] = now - t0
+        if now - state["last"] >= 5.0 or state["done"] == total:
+            rate = state["done"] / max(now - t0, 1e-9)
+            eta = (total - state["done"]) / max(rate, 1e-9)
+            print(f"    [{state['done']}/{total}] {rate:.1f} NIF/s  ETA {eta:.0f}s")
+            print(f"[progress-nif] {state['done']} {total}", flush=True)
+            state["last"] = now
+
+    def _finish(k):
+        slot = slots[k]
+        r, err = slot["result"], slot["error"]
+        if slot["retry"] is not None:
+            try:
+                r = _sweep_serial_retry(slot["src"], slot["retry"], slot["claims"])
+            except Exception as e2:
+                err = e2
+                _failed(err)
+        elif slot["steps"] is not None:
+            phase = slot["phase"]
+            m = len(phase.work_items)
+            if m:
+                phase.result.notes.append(
+                    f"NIF conversion: {m} files on the batch-wide schedule "
+                    f"(the last done {last_done.get(k, 0.0):.1f}s into it) with "
+                    f"{workers} worker(s)")
+                print(f"  [{k + 1}/{n}] '{slot['disp']}': {m} NIF(s) converted "
+                      f"({last_done.get(k, 0.0):.0f}s into the schedule)")
+            # The patch names this finish claims. #loaded-source-plugins
+            p_before = (set(claimed_patch_paths)
+                        if claimed_patch_paths is not None else set())
+            try:
+                r = _resume_source_steps(slot["steps"], run_nifs=False)
+            except Exception as e1:
+                r = None
+                if slot["sweep"]:
+                    try:
+                        r = _sweep_serial_retry(
+                            slot["src"], e1, slot["claims"],
+                            (set(claimed_patch_paths) - p_before
+                             if claimed_patch_paths is not None else ()))
+                    except Exception as e2:
+                        err = e2
+                else:
+                    err = e1
+                if err is not None:
+                    _failed(err)
+        results.append((slot["src"], r if err is None else None, err))
+        _checkpoint()
+
+    sched = _GlobalNifSchedule(nif_pool, units, n, _deliver, _finish)
+    sched.run()
+    if total:
+        el = time.perf_counter() - t0
+        print(f"\n=== NIF conversion done: {total} file(s) in {el:.1f}s "
+              f"({total / max(el, 1e-9):.2f}/s) on one schedule; heavy units at "
+              f"once: up to {sched.peak_heavy}; re-run alone: "
+              f"{sched.memory_retries} after running out of memory, "
+              f"{sched.crash_retries} after a worker died ===")
+
+
 def _incremental_code_mtime() -> float:
     """Newest mtime of the converter's own code -- the `--incremental` reuse
     floor (a code change must invalidate every cached output).
@@ -525,6 +1060,137 @@ _NIF_RELEVANT_ARGS = (
     "no_ube_native_scan",  # changes which meshes are treated as already-UBE
 )
 
+# `CBBE2UBE_*` variables that say HOW the tool is launched, never what a mesh
+# becomes, so the fingerprint leaves them out. #fingerprint-skips-plumbing
+# A scripted re-run (NO_PAUSE=1) or a pinned log used to reconvert every NIF.
+#
+# THE SURVEY (2026-09-25, every `CBBE2UBE_*` name read under src/ and the entry
+# point, ~500): each one is PLUMBING -- a launch or UI detail, a log or sink
+# path, a worker count or memory budget, a thread count, a switch that only
+# silences printed lines -- or it is treated as OUTPUT. Only the plumbing below
+# is left out; the reason for each is beside it. Everything else stays hashed,
+# in one of `_FINGERPRINT_HASHED_GROUPS` below, and hashing too much is the
+# safe direction (a needless reconvert, never a stale reuse).
+# THE SURVEY IS MACHINE-CHECKED. Reviewed on 0081b20, the hand survey had missed
+# CBBE2UBE_ANTIPOKE_SURFACE_QUIET, which only silences two trace lines.
+# tests/test_fingerprint_survey.py parses every name under src/ and the entry
+# point and fails on one that is in neither this table nor a group, so the
+# survey cannot go stale unseen. A name joins a group by HOW it is read
+# (`_flag`, `_knob`) or by being listed there -- but a name holding a word from
+# `_FINGERPRINT_LISTED_ONLY` (a log, a trace, a worker count, a memo...) never
+# joins by how it is read: it is listed, here or in a group, with its reason.
+# WORKER COUNTS: `--workers` was already left out (see above). Output does not
+# depend on the pool size since #pair-unit-dispatch put a weight pair on ONE
+# worker as a unit (the race that made 16 workers differ from 1 on 5 collider
+# shapes); tests/test_pair_unit_dispatch.py pins that contract, and a 16-worker
+# run matched a --workers 1 run byte for byte (296 files, 0 differ; measured
+# 2026-09-06, #pair-unit-dispatch in the testing worklog). WORKER_MEM_GB only
+# changes that count. OVERLAY_WORKERS is the overlay transfer's thread count;
+# each thread writes its own texture and never a NIF.
+_FINGERPRINT_PLUMBING_WHY = {
+    "CBBE2UBE_NO_PAUSE": "the keypress at exit",
+    "CBBE2UBE_RUN_LOG": "where the run log goes",
+    "CBBE2UBE_GLOW_LOG": "where the glow diagnostic appends its lines",
+    "CBBE2UBE_STANDOFF_LOG": "where the standoff audit's JSONL goes",
+    "CBBE2UBE_CONFIG": "where the settings file lives; its values arrive as "
+                       "their own variables, which are hashed",
+    "CBBE2UBE_EXCLUSIONS": "where the exclusions file lives; exclusions choose "
+                           "mods, which this fingerprint leaves out",
+    "CBBE2UBE_SETTINGS_APPLIED": "who applied the settings file",
+    "CBBE2UBE_NO_HEADLESS_SETTINGS": "whether a headless run reads the settings "
+                                     "file; the values it sets are hashed",
+    "CBBE2UBE_WORKER_MEM_GB": "the memory budget that picks the worker count",
+    "CBBE2UBE_OVERLAY_WORKERS": "the overlay transfer's thread count",
+    "CBBE2UBE_ANTIPOKE_SURFACE_QUIET": "only silences the #antipoke-surface-req "
+                                       "trace lines; the push they report is "
+                                       "applied either way",
+    "CBBE2UBE_NO_ATOMIC_AUDIT_APPEND": "how the standoff audit's JSONL lines are "
+                                       "appended (#atomic-audit-append); no mesh "
+                                       "reads that file",
+    "CBBE2UBE_NO_ESL_CHUNK_DEDUP": "how the coverage plugin is cut into ESL "
+                                   "pieces (#esl-chunk-dedup); the plugins are "
+                                   "rebuilt every run and no NIF depends on it",
+    "CBBE2UBE_NO_PLANNED_FOLDERS": "who creates a piece's folder, the plan or "
+                                   "the worker (#planned-folders): only how a "
+                                   "NEW folder's name is capitalised; no NIF's "
+                                   "bytes depend on it",
+    "CBBE2UBE_NO_PLAN_ORDER_RESULTS": "the order a source's pieces and patch "
+                                      "notes are listed in the reports "
+                                      "(#plan-order-results); no NIF's bytes "
+                                      "depend on it",
+    "CBBE2UBE_NO_BODY_CACHE_BY_INPUTS": "whether a body lookup is cached per "
+                                        "input or once per process "
+                                        "(#body-cache-by-inputs); a run's "
+                                        "bodies are fixed, so no NIF's bytes "
+                                        "depend on it",
+}
+_FINGERPRINT_PLUMBING = frozenset(_FINGERPRINT_PLUMBING_WHY)
+
+# Words that keep a name out of the read-based groups below: plumbing-shaped
+# names must be judged one by one. Matched against the start of each word of
+# the name ("WORKER" catches OVERLAY_WORKERS).
+_FINGERPRINT_LISTED_ONLY = (
+    "QUIET", "VERBOSE", "SILENT", "LOG", "PRINT", "PAUSE", "PROGRESS",
+    "WORKER", "THREAD", "DEBUG", "TRACE", "AUDIT", "DUMP", "PROBE", "STATS",
+    "MEMO", "CACHE", "CHUNK", "TIMING", "PROFILE", "SETTINGS", "CONFIG",
+)
+
+# Every hashed `CBBE2UBE_*` name is in one of these, and why it is hashed.
+# `read`: every name read through that helper joins; `names`: listed ones.
+# A `{}` in a name is an f-string read (one per body weight).
+_FINGERPRINT_HASHED_GROUPS = {
+    "switch": {
+        "read": "_flag",
+        "why": "turns a pass, a variant or a guard on or off: the mesh maths"},
+    "knob": {
+        "read": "_knob",
+        "why": "a number the mesh maths uses"},
+    "layout and paths": {
+        "names": (
+            "CBBE2UBE_MO2_INI", "CBBE2UBE_MODS_ROOT", "CBBE2UBE_GAME_DATA",
+            "CBBE2UBE_OVERLAY_SLOTS", "CBBE2UBE_UBE_BODY",
+            "CBBE2UBE_UBE_BODY_0", "CBBE2UBE_UBE_BODY_1",
+            "CBBE2UBE_UBE_BODY{}", "CBBE2UBE_CBBE_BODY_0",
+            "CBBE2UBE_CBBE_BODY_1", "CBBE2UBE_CBBE_BODY{}",
+            "CBBE2UBE_UBE_TEMPLATE", "CBBE2UBE_UBE_OSD", "CBBE2UBE_TEXCONV",
+            "CBBE2UBE_PAPYRUS_COMPILER"),
+        "why": "a different game Data, mods folder, body, overlay slot file "
+               "or tool changes what a mesh or texture becomes"},
+    "diagnostic": {
+        "names": (
+            "CBBE2UBE_CLEARANCE_TERM_AUDIT", "CBBE2UBE_COINCIDENT_SKIN_DEBUG",
+            "CBBE2UBE_DEBUG_FINALIZE", "CBBE2UBE_DEBUG_GLOW_CTRL",
+            "CBBE2UBE_FIELD_STATS", "CBBE2UBE_GLOW_RIDE_DEBUG",
+            "CBBE2UBE_LAYER_DEBUG", "CBBE2UBE_NIPPLE_PROBE",
+            "CBBE2UBE_PASS_TRACE", "CBBE2UBE_SEAM_DEBUG",
+            "CBBE2UBE_STANDOFF_BAND_AUDIT", "CBBE2UBE_STANDOFF_TRACE",
+            "CBBE2UBE_SURVIVAL_TRACE", "CBBE2UBE_NO_STANDOFF_AUDIT",
+            "CBBE2UBE_STAGE_DUMP", "CBBE2UBE_BACK_DUMP_DISP"),
+        "why": "turned on to watch a conversion, so the conversion must RUN: "
+               "left out, an --incremental run would reuse every NIF and "
+               "print or write nothing; several also run extra code inside the "
+               "fit that no test proves byte-neutral"},
+    "not proven neutral": {
+        "names": ("CBBE2UBE_RAY_CHUNK", "CBBE2UBE_NO_ZEROED_PROBE_MEMO"),
+        "why": "how the ray casts are batched and whether a body probe is "
+               "remembered: no test proves the NIF bytes the same"},
+    # Read through `_flag`, but the mesh maths is the same either way: proven
+    # byte-identical NIF for NIF (#global-schedule parity runs).
+    "which files stay": {
+        "names": ("CBBE2UBE_NO_GLOBAL_SCHEDULE",),
+        "why": "one schedule for the batch or one source at a time: every NIF "
+               "comes out the same, but a base an earlier source converted this "
+               "run is held in meshes\\ on one and moved to _superseded\\ on the "
+               "other when a later source leaves it to its builder"},
+}
+
+
+def _fingerprint_skips_plumbing() -> bool:
+    """#fingerprint-skips-plumbing (2026-09-25): does the --incremental
+    fingerprint leave out the launch-plumbing variables? Yes, by default.
+    CBBE2UBE_NO_FINGERPRINT_SKIPS_PLUMBING=1 hashes every `CBBE2UBE_*` again."""
+    return not _flag("CBBE2UBE_NO_FINGERPRINT_SKIPS_PLUMBING", False)
+
 
 def _nif_config_fingerprint(args) -> str:
     """Stable hash of every setting that can change a converted NIF's bytes.
@@ -550,8 +1216,9 @@ def _nif_config_fingerprint(args) -> str:
     import hashlib
 
     parts = []
+    _skip = _FINGERPRINT_PLUMBING if _fingerprint_skips_plumbing() else frozenset()
     for k in sorted(os.environ):
-        if k.startswith("CBBE2UBE_"):
+        if k.startswith("CBBE2UBE_") and k.upper() not in _skip:
             parts.append(f"env:{k}={os.environ[k]}")
     for name in _NIF_RELEVANT_ARGS:
         if hasattr(args, name):
@@ -618,19 +1285,11 @@ def _body_mod_names(mods_root: Path) -> "set[str]":
     itself fell out of the exclusion and its collision-body NIFs entered
     All-mods runs; and a Reference bodies pick changed which mods converted,
     while the GUI's mod list (built without the pick) could not show it."""
-    from . import zeroed_body as _zb
-    out = set()
     try:
         dirs = [d for d in mods_root.iterdir() if d.is_dir()]
     except OSError:
-        return out
-    for kind, (out_path, out_file, _verts, _label) in _zb.KINDS.items():
-        for w in ("_0", "_1"):
-            parts = [p for p in f"{out_path}/{out_file}{w}.nif".split("/") if p]
-            for d in dirs:
-                if _zb._ci_join(d, parts) is not None:
-                    out.add(d.name)
-    return out
+        return set()
+    return {d.name for d in dirs if _ships_a_body(d)}
 
 
 def _find_ube_body_ref(search_roots: list[Path] | None = None) -> Path | None:
@@ -740,6 +1399,11 @@ def _find_ube_body_ref(search_roots: list[Path] | None = None) -> Path | None:
                              "in a deeply-nested non-'ube' path could be missed",
                  fix="set the UBE body reference explicitly if the wrong body is picked",
                  file=sys.stderr)
+            # Each source repeats this search: one entry for the run. #one-tally
+            _record_once("body reference search cut short", "UBE body reference",
+                         str(root), f"{len(candidates)} candidate NIFs; only the "
+                         "first 1500 were checked, so a UBE body in a deeply-nested "
+                         "non-'ube' path could be missed")
         for p in candidates[:1500]:
             r = _check(p)
             if r is None:
@@ -908,10 +1572,16 @@ class AutoConvertResult:
     source_esp: Path | None = None
     output_esp: Path | None = None
     esp_stats: dict = field(default_factory=dict)
-    # All source ESPs + corresponding output patches (same length, same order).
+    # Every source plugin FOUND, and the patches actually written with their
+    # stats. NOT the same length: a plugin with no armour or a failed one gets
+    # no patch, so zipping source_esps with output_esps pairs a plugin with a
+    # later plugin's patch. `esp_patched` holds (source plugin, patch, stats),
+    # one per patch written -- read that to say which plugin made which patch.
+    # #esp-report-pairing
     source_esps: list[Path] = field(default_factory=list)
     output_esps: list[Path] = field(default_factory=list)
     esp_stats_list: list[dict] = field(default_factory=list)
+    esp_patched: "list[tuple[Path, Path, dict]]" = field(default_factory=list)
     nif_results: list[nif_convert.ConvertResult] = field(default_factory=list)
     textures_copied: int = 0
     notes: list[str] = field(default_factory=list)
@@ -931,6 +1601,14 @@ class AutoConvertResult:
     # from one the converter genuinely produced. Empty = no knowledge, which
     # that function treats as "never refresh". #stale-weight-partner
     source_weight_variants: dict = field(default_factory=dict)
+    # Weight bases (same keys) this run left to a mod that ships them built for
+    # UBE. The partner fill must never write into one. #supersede-whole-base
+    superseded_weight_bases: set = field(default_factory=set)
+    # Weight bases (same keys) whose output path this source claimed, and
+    # {weight base -> the planner's POSITIVE reason for not planning it}: what
+    # the stale-output sweep and its manifest read. #stale-output-sweep
+    claimed_weight_bases: set = field(default_factory=set)
+    dropped_base_reasons: dict = field(default_factory=dict)
     # Postflight per-NIF invariant violations on the FINAL output (zero-vertex
     # shapes; over-cap single-partition shapes). Surfaced + counted as warnings.
     nif_invariant_warnings: list = field(default_factory=list)
@@ -1002,10 +1680,14 @@ class AutoConvertResult:
             f"source : {self.source_dir}",
             f"output : {self.output_dir}",
             "",
-            f"ESP ({len(self.source_esps)} patched)",
+            (f"ESP ({len(self.esp_patched)} patched of "
+             f"{len(self.source_esps)} plugin(s) found)"
+             if self.source_esps else
+             f"ESP ({1 if self.source_esp is not None else 0} patched)"),
         ]
+        # Each patch with the plugin that made it. #esp-report-pairing
         esps_to_report = (
-            list(zip(self.source_esps, self.output_esps, self.esp_stats_list))
+            list(self.esp_patched)
             if self.source_esps else (
                 [(self.source_esp, self.output_esp, self.esp_stats)]
                 if self.source_esp is not None else []
@@ -1109,6 +1791,19 @@ class AutoConvertResult:
         path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _esp_patch_log_lines(r: "AutoConvertResult") -> "list[str]":
+    """The run log's per-source plugin lines: how many plugins were found, and
+    each patch written with the plugin that made it. A plugin with no armour
+    (238 in one bundle mod) or a failed one writes no patch, so the old zip of
+    every plugin found with every patch written shifted each later pair onto
+    the wrong plugin. #esp-report-pairing"""
+    lines = [f"    source ESPs: {len(r.source_esps)} "
+             f"({len(r.esp_patched)} patched)"]
+    for i, (src_e, out_e, _stats) in enumerate(r.esp_patched):
+        lines.append(f"      [{i}] {Path(src_e).name} -> {Path(out_e).name}")
+    return lines
+
+
 def _find_meshes_root(source_dir: Path) -> Path | None:
     """Locate the `meshes/` directory inside a source mod folder.
 
@@ -1149,7 +1844,10 @@ def _echo_active_experiment_flags() -> None:
     environment is what the conversion actually reads, and the whole failure mode was
     the two disagreeing."""
     try:
-        skip = ("MO2_INI", "MODS_ROOT", "GAME_DATA", "CONFIG", "OUT_MOD", "NO_PAUSE")
+        # SETTINGS_APPLIED says who applied the settings; the echo below
+        # prints it in words. #settings-everywhere
+        skip = ("MO2_INI", "MODS_ROOT", "GAME_DATA", "CONFIG", "OUT_MOD", "NO_PAUSE",
+                "SETTINGS_APPLIED")
         act = {k: v for k, v in os.environ.items()
                if k.startswith("CBBE2UBE_") and str(v).strip()
                and not any(s in k for s in skip)}
@@ -1205,6 +1903,63 @@ def _warn_unseen_settings() -> None:
         pass          # never let a diagnostic line break a run
 
 
+def _master_search_load_order_on() -> bool:
+    r"""#master-search-load-order (2026-09-25): are masters and UBE race plugins
+    looked up in the game's order -- overwrite, ENABLED mods highest priority
+    first, then the game Data folder? Yes, by default.
+
+    `_discover_master_data_dirs` returned the game Data folder, then every
+    folder in the mods root in directory order: alphabetical, disabled mods
+    included, and the source folder it was asked about left out. The master
+    lookup is first-folder-wins, so a master resolved to the base game's copy
+    or an alphabetically first, possibly losing or disabled copy -- the copy
+    whose records and ESM/ESL flag the patches then read -- and one that only
+    the first source ships was not found. The UBE race scan read every plugin
+    there, so a disabled mod's UBE race plugin would have become a master of
+    the patches (a merged plugin with a master the game never loads fails to
+    load). CBBE2UBE_NO_MASTER_SEARCH_LOAD_ORDER=1 restores the old list."""
+    return not _flag("CBBE2UBE_NO_MASTER_SEARCH_LOAD_ORDER", False)
+
+
+def _load_order_master_dirs(source_dir: Path,
+                            data_dirs: "list[Path]") -> "list[Path] | None":
+    """The master search folders in the game's order for `source_dir` -- a mod
+    folder (or a made-up name) in the discovered modlist's mods root, or its
+    game Data folder: overwrite, the enabled mods highest priority first (the
+    source's own folder included), then the game Data folder(s) -- the
+    layout's, then `data_dirs` found by walking up. Existing folders only.
+    None when `source_dir` is not in that modlist or its mod order cannot be
+    read (the caller keeps the old list). #master-search-load-order"""
+    lay = paths.discover_layout()
+    if lay.mods_root is None:
+        return None
+    order = paths.enabled_mods_ordered(lay)
+    if order is None:
+        return None
+    mods_root = Path(lay.mods_root)
+    game = [Path(d) for d in (lay.game_data_dirs or [])]
+    sd = Path(source_dir)
+    if not (_same_path(sd.parent, mods_root)
+            or any(_same_path(sd, d) for d in game)):
+        return None
+    ow = paths.overwrite_dir(lay)
+    out: "list[Path]" = []
+    seen: "set[str]" = set()
+    for d in (([Path(ow)] if ow is not None else [])
+              + [mods_root / n for n in order] + game + list(data_dirs)):
+        k = os.path.normcase(os.path.abspath(str(d)))
+        if k in seen:
+            continue
+        try:
+            if not d.is_dir():
+                continue
+        except OSError:
+            continue
+        seen.add(k)
+        out.append(d)
+    return out
+
+
 def _discover_master_data_dirs(source_dir: Path) -> list[Path]:
     """Auto-discover directories that may contain master ESMs and UBE race plugins.
 
@@ -1213,6 +1968,8 @@ def _discover_master_data_dirs(source_dir: Path) -> list[Path]:
     UBE race plugins (KhajiitUBE.esp, etc.) are found.
 
     Returns existing directories in priority order; empty list if none found.
+    For a folder of the discovered modlist (or its game Data folder) that order
+    is the game's: `_load_order_master_dirs`. #master-search-load-order
     """
     candidates: list[Path] = []
     for parent_depth in range(1, 4):
@@ -1227,6 +1984,10 @@ def _discover_master_data_dirs(source_dir: Path) -> list[Path]:
             if d.is_dir() and (d / "Skyrim.esm").is_file():
                 if d not in candidates:
                     candidates.append(d)
+    if _master_search_load_order_on():
+        _lo = _load_order_master_dirs(source_dir, candidates)
+        if _lo is not None:
+            return _lo
     # Sibling mod folders so UBE race discovery sees KhajiitUBE.esp etc.
     try:
         mods_root = source_dir.parent
@@ -1240,13 +2001,502 @@ def _discover_master_data_dirs(source_dir: Path) -> list[Path]:
     return candidates
 
 
-def _find_source_esps(source_dir: Path) -> list[Path]:
+def _loaded_source_plugins_on() -> bool:
+    r"""#loaded-source-plugins (2026-09-25): are a mod's source plugins only the
+    copies the game loads? Yes, by default.
+
+    `_find_source_esps` read every plugin anywhere in a mod folder. MO2 loads
+    only plugins at a mod's ROOT, and of several root copies of one name only
+    the highest-priority one (`paths._plugin_file_index_root`). A nested copy
+    (a mod packed one folder too deep inside itself) or a losing duplicate (a
+    base mod's plugin that its hotfix or a tweak replaces) was still read: its
+    armatures were planned, and its per-source patch -- named by the plugin
+    stem alone, in one shared folder -- was written by whichever copy ran LAST,
+    the lowest-priority one. Now, for a folder of the modlist's mods root, a
+    plugin in a subfolder and a root plugin whose name the game loads from
+    another folder are not sources. A folder outside the modlist (a plain
+    `convert` of a download), or no readable mod order, keeps every plugin.
+    CBBE2UBE_NO_LOADED_SOURCE_PLUGINS=1 reads every copy again."""
+    return not _flag("CBBE2UBE_NO_LOADED_SOURCE_PLUGINS", False)
+
+
+# {(mods root, mod order, overwrite, game Data): (mods root, root plugin index,
+# {plugin name lower -> every enabled mod's root copy, highest priority first})}.
+# One entry; cleared when a selection or a convert batch starts, so a GUI
+# session reads the plugin files as they are then. #loaded-source-plugins
+# #one-plugin-owner
+_LOADED_PLUGIN_INDEX: dict = {}
+
+
+def _loaded_plugin_entry() -> "tuple[Path, dict[str, Path], dict[str, list[Path]]] | None":
+    lay = paths.discover_layout()
+    if lay.mods_root is None:
+        return None
+    order = paths.enabled_mods_ordered(lay)
+    if order is None:
+        return None
+    key = (str(lay.mods_root), tuple(order), str(paths.overwrite_dir(lay)),
+           tuple(str(d) for d in (lay.game_data_dirs or ())))
+    hit = _LOADED_PLUGIN_INDEX.get(key)
+    if hit is None:
+        copies: "dict[str, list[Path]]" = {}
+        idx = paths._plugin_file_index_root(lay, copies)
+        hit = (Path(lay.mods_root), idx, copies)
+        _LOADED_PLUGIN_INDEX.clear()
+        _LOADED_PLUGIN_INDEX[key] = hit
+    return hit
+
+
+def _loaded_plugin_index() -> "tuple[Path, dict[str, Path]] | None":
+    """(mods root, {plugin name lower -> the file the game loads}) for the
+    discovered modlist, or None without a mods root or a readable mod order
+    (then nothing says which copy loads). Built once per key (~0.7 s on a
+    3,254-plugin modlist). #loaded-source-plugins"""
+    hit = _loaded_plugin_entry()
+    return None if hit is None else (hit[0], hit[1])
+
+
+def _plugin_copies(mods_root) -> "dict[str, list[Path]] | None":
+    """{plugin name lower -> every enabled mod folder's ROOT copy of it, highest
+    MO2 priority first} for the discovered modlist when `mods_root` is its mods
+    folder; None without a readable mod order or for another folder (then no
+    one is known to own a plugin). The same index, built in the same walk, as
+    `_loaded_plugin_index`. A modlist it cannot read is None too: coverage asks
+    this, and must never fail for it. #one-plugin-owner"""
+    try:
+        hit = _loaded_plugin_entry()
+    except Exception:
+        return None
+    if hit is None or not _same_path(hit[0], mods_root):
+        return None
+    return hit[2]
+
+
+def _plugin_owner(name: str, mods_root) -> "Path | None":
+    r"""#one-plugin-owner: the ONE mod folder that owns plugin `name` this run,
+    for every question the run asks about it: whose copy a source reads, and
+    whose armour an exclusion withholds.
+
+    It is the highest-priority ENABLED mod folder with a root copy of that
+    name. When that copy is the one the game loads, the owner is the mod the
+    game loads the plugin from. When MO2's overwrite folder holds a copy, the
+    game loads that one, but overwrite is no mod: it holds what tools run
+    through MO2 saved there (a plugin cleaned or edited in xEdit, a
+    patcher's output), and the copy it shadows -- the one the game would load
+    with overwrite emptied -- names the mod the plugin comes from. A copy only
+    in the game's Data folder loses to every mod copy, so a plugin some mod
+    ships is never owned by Data; one no enabled mod ships has no owner
+    (None), as without a readable mod order."""
+    copies = _plugin_copies(mods_root)
+    if not copies:
+        return None
+    c = copies.get(str(name).lower())
+    return c[0].parent if c else None
+
+
+def _same_path(a, b) -> bool:
+    return (os.path.normcase(os.path.abspath(str(a)))
+            == os.path.normcase(os.path.abspath(str(b))))
+
+
+def _loaded_copy_reader_on() -> bool:
+    r"""#loaded-copy-reader (2026-09-25): is a mod's root plugin left out only
+    when a conversion source reads the copy the game loads in its place? Yes,
+    by default.
+
+    #loaded-source-plugins left a root copy out whenever the game loads that
+    name from another folder. The index it asks ranks MO2's overwrite folder
+    first and holds every enabled mod, so the winning copy could sit where no
+    source ever reads it: overwrite (a cleaned or edited copy saved there), a
+    mod excluded from the run, or one the name gate refuses. Then no source
+    read the plugin at all: its armour was not planned, converted or patched,
+    where before it was converted from the mod's own copy. Now the mod's copy
+    is left out only when the winning copy is in a mod folder the selection's
+    gate admits (`_source_gate_ok`, the run's exclusions included), so that
+    source reads the game's copy; else the mod's own copy is read, as before
+    #loaded-source-plugins, and a note says when the two copies' armatures
+    differ. (A winning copy in a mod the user excluded counts as handled since
+    #excluded-copy-left-alone.) CBBE2UBE_NO_LOADED_COPY_READER=1 leaves it out
+    in every case."""
+    return not _flag("CBBE2UBE_NO_LOADED_COPY_READER", False)
+
+
+# {mods root key: (excluded names lowercased, enabled names or None)}: the gate
+# of the latest `require_arma` selection over that mods root. The convert step
+# that follows it in the same process judges the folder of a loaded plugin copy
+# by the same gate. No entry: the gate with no exclusions. #loaded-copy-reader
+_SOURCE_GATE: "dict[str, tuple[frozenset, frozenset | None]]" = {}
+
+
+def _path_key(p) -> str:
+    return os.path.normcase(os.path.abspath(str(p)))
+
+
+def _set_source_gate(mods_root: Path, extra_exclude_names, enabled_names) -> None:
+    """Remember a `require_arma` selection's gate for `_read_by_a_source`.
+    #loaded-copy-reader"""
+    _SOURCE_GATE[_path_key(mods_root)] = (
+        frozenset(n.lower() for n in (extra_exclude_names or set())),
+        None if enabled_names is None else frozenset(enabled_names))
+
+
+def _excluded_copy_left_alone_on() -> bool:
+    r"""#excluded-copy-left-alone (2026-09-25): does a plugin the game loads from
+    a mod the user excluded count as handled, so another mod's losing copy of it
+    is left out too? Yes, by default.
+
+    #loaded-copy-reader read a mod's losing copy whenever the winning copy's
+    folder failed the selection's gate, and that gate refuses the run's
+    exclusions. Excluding the mod the game loads a plugin from therefore made a
+    lower mod's copy a source again: its armour was converted and patched from
+    a copy the game does not load, while #exclude-owned-coverage in the same
+    run named the excluded mod the owner and withheld its coverage. An
+    exclusion means "leave this plugin's armour alone", so the exclusions the
+    coverage step withholds (`_RUN_USER_EXCLUSIONS`) now count as handled, and
+    any other winning copy is judged by the rest of the gate without an
+    exclusion list, the same in every entry point. A body mod (skipped by what
+    it ships, not by the user's choice) is still no source, so the mod's own
+    copy is read, as for overwrite, child content and a non-source name.
+    CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE=1 judges by the selection's gate with
+    its exclusions again."""
+    return not _flag("CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE", False)
+
+
+# The mods the user excluded for the run this process is doing, lowercased: the
+# ones the coverage step withholds (#exclude-owned-coverage). Set by each entry
+# point before it reads a plugin: `auto` (--exclude-mods and
+# --coverage-exclude-mods) and `convert` (--exclude-mods, which `auto` hands it
+# as that same union). #excluded-copy-left-alone
+_RUN_USER_EXCLUSIONS: "set[str]" = set()
+
+# {mods root key: body mod folder names lowercased}, read when a loaded copy is
+# first judged and dropped by each selection. #excluded-copy-left-alone
+_BODY_MODS_SEEN: "dict[str, frozenset]" = {}
+
+
+def _set_run_user_exclusions(names) -> None:
+    """Record the run's user exclusions, as `_armos_defined_by_mods` reads them
+    (the `vanilla` pseudo-name names no folder). #excluded-copy-left-alone"""
+    _RUN_USER_EXCLUSIONS.clear()
+    _RUN_USER_EXCLUSIONS.update(
+        n for n in (str(x).strip().lower() for x in (names or ())) if n)
+    _RUN_USER_EXCLUSIONS.discard("vanilla")
+
+
+def _body_mods_seen(mods_root: Path) -> frozenset:
+    k = _path_key(mods_root)
+    hit = _BODY_MODS_SEEN.get(k)
+    if hit is None:
+        hit = frozenset(n.lower() for n in _body_mod_names(Path(mods_root)))
+        _BODY_MODS_SEEN[k] = hit
+    return hit
+
+
+def _read_by_a_source(loaded: Path, mods_root: Path,
+                      source_dir: "Path | None" = None) -> bool:
+    """Is `loaded`, the copy of a plugin the game loads, handled by this run:
+    read by a conversion source, or left alone because the user excluded its
+    mod? Only a folder directly in the mods root that the selection's gate
+    admits is ever a source; MO2's overwrite folder and the game Data folder
+    never are. #loaded-copy-reader #excluded-copy-left-alone
+
+    By default (#one-plugin-owner) the one question is whether a mod other than
+    `source_dir`, the mod whose copy is asked about, owns the plugin: then that
+    copy is left out, whether or not the owner is converted."""
+    if not _loaded_copy_reader_on():
+        return True
+    if source_dir is not None and _one_plugin_owner_on():
+        owner = _plugin_owner(Path(loaded).name, mods_root)
+        return owner is not None and not _same_path(owner, source_dir)
+    folder = Path(loaded).parent
+    if not _same_path(folder.parent, mods_root):
+        return False
+    excl, enabled = _SOURCE_GATE.get(_path_key(mods_root), (frozenset(), None))
+    if _excluded_copy_left_alone_on():
+        if _mod_name_excluded(folder.name, _RUN_USER_EXCLUSIONS):
+            return True     # the user's exclusion: its armour is left alone
+        if folder.name.lower() in _body_mods_seen(mods_root):
+            return False    # the body: skipped by the run, not by the user
+        excl = frozenset()  # no exclusion list: the same in every entry point
+    return _source_gate_ok(folder, excl, enabled, True)
+
+
+def _one_plugin_owner_on() -> bool:
+    r"""#one-plugin-owner (2026-09-26): does every question about a plugin --
+    which copy a source reads, whose armour an exclusion withholds -- ask the
+    same owner (`_plugin_owner`)? Yes, by default.
+
+    The two passes decided apart. Sources read a losing copy whenever the
+    winner's folder was no source (overwrite, a body mod, a skipped name), while
+    #exclude-owned-coverage owned every root plugin of an excluded folder, read
+    from the copy the game loads. So an excluded mod whose copy sat under an
+    overwrite copy had its armour withheld by coverage and converted from a
+    lower mod's copy in the same run; an excluded mod whose copy LOST to mod A
+    had A's armour withheld while A was converted; and a body mod's plugin was
+    converted from another mod's copy (in `auto` and a standalone `convert`
+    alike -- f057ba9's standalone `convert` had dropped it). Now a mod's root
+    plugin is read only when that mod owns it, never
+    another mod's losing copy; coverage withholds a plugin's armour only when
+    its owner is excluded. When the owner is no source (a body mod, child
+    clothing, a skipped name), the plugin's armour is not converted from
+    another copy either: the game loads the owner's records, and a patch built
+    from other records would override them. The convert step names such plugins.
+    CBBE2UBE_NO_ONE_PLUGIN_OWNER=1 restores the two separate rules; the switch
+    of each earlier step of the chain (#loaded-source-plugins,
+    #loaded-copy-reader, #excluded-copy-left-alone) turns this off with it, so
+    each still restores its own parent in both passes."""
+    return (not _flag("CBBE2UBE_NO_ONE_PLUGIN_OWNER", False)
+            and _loaded_source_plugins_on() and _loaded_copy_reader_on()
+            and _excluded_copy_left_alone_on())
+
+
+_EXCLUDED_BY_YOU = "you excluded it"
+
+
+def _ships_a_body(mod_dir: Path) -> bool:
+    """Does this mod folder ship a race body (the test `_body_mod_names` puts
+    every folder through)? #body-mod-exclusion"""
+    from . import zeroed_body as _zb
+    for kind, (out_path, out_file, _verts, _label) in _zb.KINDS.items():
+        for w in ("_0", "_1"):
+            parts = [p for p in f"{out_path}/{out_file}{w}.nif".split("/") if p]
+            if _zb._ci_join(Path(mod_dir), parts) is not None:
+                return True
+    return False
+
+
+def _owner_not_source_why(owner: Path) -> "str | None":
+    """Why the mod that owns a plugin is no conversion source, or None when it
+    is one. The user's exclusion first; then what selection skips a folder for
+    without asking: a body, child clothing, a non-source name. #one-plugin-owner"""
+    if _mod_name_excluded(owner.name, _RUN_USER_EXCLUSIONS):
+        return _EXCLUDED_BY_YOU
+    if _ships_a_body(owner):
+        return "a body mod"
+    if _is_child_content_mod(owner.name):
+        return "child clothing"
+    if not _source_gate_ok(owner, frozenset(), None, True):
+        return "a mod skipped by its name"
+    return None
+
+
+def _owner_skip_reason(owner: Path, loaded: "Path | None") -> str:
+    """Why a mod's copy of a plugin another mod owns is not read. #one-plugin-owner"""
+    if loaded is None or _same_path(loaded.parent, owner):
+        line = f"the game loads the copy in '{owner.name}'"
+    else:
+        line = (f"the game loads the copy in '{loaded.parent}', over the copy in "
+                f"'{owner.name}', the mod it belongs to")
+    why = _owner_not_source_why(owner)
+    if why is None:
+        return line
+    if why == _EXCLUDED_BY_YOU:
+        return f"{line}, which you excluded, so its armour is left alone"
+    return (f"{line}, {why}, which this tool does not convert, so this plugin's "
+            "armour is not converted this run")
+
+
+def _left_out_why(loaded: Path, where: str, mods_root: Path) -> str:
+    """The reason logged for a mod's copy left out because the game loads
+    `loaded` (from `where`). #loaded-source-plugins #one-plugin-owner"""
+    if _one_plugin_owner_on():
+        owner = _plugin_owner(Path(loaded).name, mods_root)
+        if owner is not None:
+            return _owner_skip_reason(owner, loaded)
+    return f"the game loads the copy in '{where}'"
+
+
+def _plugins_no_source_owns() -> "list[str]":
+    """Plugins some mod ships a copy of that the tool could read, whose owner
+    (`_plugin_owner`) it does not convert for a reason of its own (a body mod,
+    child clothing, a skipped name): no copy of them is converted this run. The
+    user's exclusions are not listed -- coverage reports what they withhold.
+    #one-plugin-owner"""
+    if not _one_plugin_owner_on():
+        return []
+    hit = _loaded_plugin_entry()
+    if hit is None:
+        return []
+    _skip = {m.lower() for m in ube_patcher.VANILLA_DLC_MASTERS}
+    out: "list[str]" = []
+    for name in sorted(hit[2]):
+        c = hit[2][name]
+        if (len(c) < 2 or name in _skip or name.endswith("ube patch.esp")
+                or name.endswith(_SRC_PATCH_SUFFIX.lower())):
+            continue
+        why = _owner_not_source_why(c[0].parent)
+        if why is None or why == _EXCLUDED_BY_YOU:
+            continue
+        readers = [f.parent.name for f in c[1:]
+                   if _owner_not_source_why(f.parent) is None]
+        if readers:
+            out.append(f"{c[0].name}: owned by '{c[0].parent.name}' ({why}), "
+                       "which this tool does not convert; the copy in "
+                       + ", ".join(f"'{r}'" for r in readers)
+                       + " is not converted in its place")
+    return out
+
+
+def _note_plugins_no_source_owns() -> None:
+    """Say, once per batch, which plugins no copy of is converted because the
+    mod that owns them is no source. #one-plugin-owner"""
+    lines = _plugins_no_source_owns()
+    if not lines:
+        return
+    print(f"  plugins not converted from another mod's copy: {len(lines)} "
+          "plugin(s) belong to a mod this tool does not convert, and the game "
+          "loads that mod's records, so no other copy is converted in their place:")
+    for ln in lines:            # every one: this is the only place they are named
+        print(f"    - {ln}")
+
+
+def _armature_models(plugin: Path) -> "frozenset | None":
+    """{(defining plugin, low id, models)} of a plugin's armatures, `models`
+    being its sorted (MOD2..MOD5, path) pairs; None when it cannot be read.
+    #loaded-copy-reader"""
+    from . import esp as _esp
+    try:
+        e = _esp.ESP.load_cached(plugin)
+    except Exception:
+        return None
+    lcm = [m.lower() for m in e.header.masters]
+    out = set()
+    for g in e.groups:
+        if g.label != b"ARMA":
+            continue
+        for rec in g.records:
+            mi = rec.formid >> 24
+            owner = lcm[mi] if mi < len(lcm) else Path(plugin).name.lower()
+            models = sorted(
+                (s.decode("ascii"),
+                 d.split(b"\x00", 1)[0].decode("latin-1").lower().replace("/", "\\"))
+                for s, d in _esp.iter_subrecords(rec.payload)
+                if s in (b"MOD2", b"MOD3", b"MOD4", b"MOD5"))
+            out.add((owner, rec.formid & 0xFFFFFF, tuple(models)))
+    return frozenset(out)
+
+
+def _modlist_overwrite(mods_root: Path) -> "Path | None":
+    """MO2's overwrite folder of the discovered modlist when `mods_root` is its
+    mods folder, else None: the mesh index reads it (#overwrite-mesh-index).
+    An unreadable layout is None too: it must not fail the index it feeds."""
+    try:
+        lay = paths.discover_layout()
+    except Exception:
+        return None
+    if lay.mods_root is None or not _same_path(lay.mods_root, mods_root):
+        return None
+    return paths.overwrite_dir(lay)
+
+
+def _loaded_copies_only(source_dir: Path, plugins: "list[Path]",
+                        skipped: "list[tuple[Path, str]] | None" = None,
+                        differs: "list[tuple[Path, str]] | None" = None
+                        ) -> "list[Path]":
+    """`plugins` of the mod folder `source_dir` less the copies the game never
+    loads: one in a subfolder, and a root one whose name loads from another
+    folder that a conversion source reads or that the user excluded
+    (#excluded-copy-left-alone; #loaded-copy-reader: a copy loaded
+    from a folder no source reads keeps this mod's copy, and `differs` receives
+    (plugin, where) when the two copies' armatures differ). Unchanged for a
+    folder that is not directly in the modlist's mods root. `skipped` receives
+    (plugin, why). #loaded-source-plugins
+
+    #one-plugin-owner (by default): a root copy is left out exactly when another
+    mod owns the plugin (`_plugin_owner`), whether or not that mod is converted;
+    this mod's copy is read when it owns the plugin (under an overwrite copy
+    too) or no enabled mod does."""
+    loaded = _loaded_plugin_index()
+    if loaded is None:
+        return plugins
+    mods_root, idx = loaded
+    if not _same_path(Path(source_dir).parent, mods_root):
+        return plugins
+    keep: "list[Path]" = []
+    for p in plugins:
+        if not _same_path(p.parent, source_dir):
+            if skipped is not None:
+                skipped.append((p, "in a subfolder, which the game never loads"))
+            continue
+        w = idx.get(p.name.lower())
+        if w is not None and not _same_path(w, p):
+            _where = (w.parent.name if _same_path(w.parent.parent, mods_root)
+                      else str(w.parent))
+            if _read_by_a_source(w, mods_root, source_dir):
+                if skipped is not None:
+                    skipped.append((p, _left_out_why(w, _where, mods_root)))
+                continue
+            # No source reads the game's copy: this one is read, else nothing
+            # converts the plugin's armour. #loaded-copy-reader
+            if differs is not None:
+                mine, theirs = _armature_models(p), _armature_models(w)
+                if mine is not None and theirs is not None and mine != theirs:
+                    differs.append((p, _where))
+        keep.append(p)
+    return keep
+
+
+def _note_unread_loaded_copies(result: "AutoConvertResult",
+                               differs: "list[tuple[Path, str]]") -> None:
+    """Say which plugins are converted from this mod's copy although the game
+    loads a copy whose armatures differ, from a folder no source reads.
+    #loaded-copy-reader"""
+    for p, where in differs:
+        line = (f"{p.name}: the game loads the copy in '{where}', which is not "
+                "converted this run, and its armour differs from this mod's copy "
+                "(other pieces or other meshes); this mod's copy is converted")
+        print(f"  {line}")
+        result.notes.append(line)
+
+
+def _note_unloaded_plugins(result: "AutoConvertResult",
+                           skipped: "list[tuple[Path, str]]") -> None:
+    """Say which plugins of this mod were not read as sources, and why.
+    #loaded-source-plugins"""
+    if not skipped:
+        return
+    line = (f"{len(skipped)} plugin(s) in this mod are not the copy the game "
+            "loads, so they are not converted: "
+            + "; ".join(f"{p.name} ({why})" for p, why in skipped))
+    print(f"  {line}")
+    result.notes.append(line)
+
+
+def _patch_name_taken(out_esp: Path, claimed: "set[str] | None",
+                      src_esp: Path, result: "AutoConvertResult") -> bool:
+    """Has an earlier source written the per-source patch `out_esp` this run?
+    Sources run highest MO2 priority first, so the first writer of a name is
+    the plugin copy the game loads; a later one must not overwrite its patch or
+    sidecars. Claims the name otherwise. None = no batch to share (a single
+    call). #loaded-source-plugins"""
+    if claimed is None or not _loaded_source_plugins_on():
+        return False
+    key = os.path.normcase(os.path.abspath(str(out_esp)))
+    if key in claimed:
+        line = (f"{src_esp.name}: patch {Path(out_esp).name} was already written "
+                "this run from a higher-priority mod's plugin of the same name; "
+                "that one is kept")
+        print(f"  {line}")
+        result.notes.append(line)
+        return True
+    claimed.add(key)
+    return False
+
+
+def _find_source_esps(source_dir: Path,
+                      skipped: "list[tuple[Path, str]] | None" = None,
+                      differs: "list[tuple[Path, str]] | None" = None
+                      ) -> list[Path]:
     """Find ALL plausible CBBE armor ESPs in a mod folder.
 
     Returns every .esp/.esm/.esl not in a backup/UBE subfolder, sorted by
     (depth, name). Patching ALL of them is necessary: mods that ship multiple
     ESPs with disjoint ARMA/ARMO sets need every one covered, or some armor
     categories have no UBE armature and render invisible on UBE characters.
+    For a mod of the modlist only the copies the game loads count
+    (`_loaded_copies_only`; `skipped` receives the others with the reason,
+    `differs` a kept copy whose loaded twin no source reads and whose
+    armatures differ). #loaded-source-plugins #loaded-copy-reader
     """
     # Facegen dirs are named after the source plugin (facegeom\Plugin.esp\)
     # so rglob("*.esp") can match a directory — skip anything under these paths.
@@ -1285,12 +2535,19 @@ def _find_source_esps(source_dir: Path) -> list[Path]:
             # gated precisely by _is_already_ube_model on the model path instead.
             if name_lower.endswith("ube patch.esp"):
                 continue
+            # ...and by the name they carry now, '<source> (CBBEtoUBE src).esp':
+            # at a mod root in the legacy root-write mode. #source-patch-rename
+            if name_lower.endswith(_SRC_PATCH_SUFFIX.lower()):
+                continue
             if any(s in ("ube", "!ube") or "backup" in s for s in parts_lower):
                 continue
             if any(s in _NON_PLUGIN_PARTS for s in parts_lower):
                 continue  # a plugin buried under meshes\/textures\ isn't a plugin
             candidates.append(p)
     candidates.sort(key=lambda p: (len(p.parts), p.name.lower()))
+    if _loaded_source_plugins_on():
+        candidates = _loaded_copies_only(source_dir, candidates, skipped,
+                                         differs)
     return candidates
 
 
@@ -1316,6 +2573,44 @@ def _vanilla_sweep_esps(source_dir: Path) -> "list[Path]":
             if (source_dir / m).is_file()]
 
 
+def _vanilla_links_check(sp_lines, results, coverage_sole: bool):
+    """(vanilla/DLC links in the delivered INI, whether the sweep is DEAD).
+
+    The vanilla-coverage assertion. Crashes are caught by the sweep pass's own
+    isolation, but a SILENT hole (the sweep ran, nothing vanilla got linked)
+    would only show up as invisible armour in game. Dead is only ever claimed
+    when a vanilla sweep source ran this batch.
+
+    #vanilla-links-delivered (2026-09-25): which count decides depends on what
+    the game loads. With the winner-scan coverage as the SOLE generator the
+    per-source patches are left unmerged, so the sweep source's own link count
+    scores a file nothing loads: a coverage change that dropped every vanilla
+    armour still passed. There the DELIVERED count decides. In the fallback
+    merge the per-source patches are what ships, and the sweep source's own
+    contribution stays the precise form (mod-driven links to vanilla records
+    would mask a dead sweep in the delivered count)."""
+    van = {m.lower() for m in ube_patcher.VANILLA_DLC_MASTERS}
+    van_links = 0
+    for ln in sp_lines:
+        if not ln.startswith("filterByArmors="):
+            continue
+        if ln.split("=", 1)[1].split("|", 1)[0].lower() in van:
+            van_links += 1
+    sweep_links = None
+    for rsrc, r, rerr in results:
+        if not _vanilla_sweep_esps(rsrc):
+            continue
+        sweep_links = 0
+        if rerr is None and r is not None:
+            for st in (r.esp_stats_list or []):
+                sweep_links += int(st.get("skypatcher_link_targets", 0) or 0)
+    if sweep_links is None:
+        return van_links, False            # no sweep this batch: nothing to assert
+    if coverage_sole:
+        return van_links, van_links == 0
+    return van_links, sweep_links == 0
+
+
 # Structured record of everything that FAILED to convert this run, mirrored
 # from the console summary as it prints. Written to
 # CBBEtoUBE_last_failures.json next to the run log every run (empty list on a
@@ -1325,14 +2620,231 @@ _RUN_FAILURES: "list[dict]" = []
 
 
 def _record_failure(kind: str, source, item, detail: str = "",
-                    severity: str = "failure") -> None:
+                    severity: str = "failure", count: int = 1) -> None:
     """`severity` is "failure" (it did not convert) or "warning" (it converted,
     but the user must hear about it). The GUI words its end-of-run popup from
-    it (src/failure_summary.py). #run-warnings"""
-    _RUN_FAILURES.append({
-        "kind": str(kind), "source": str(source),
-        "item": str(item), "detail": str(detail)[:400],
-        "severity": str(severity)})
+    it (src/failure_summary.py). #run-warnings
+
+    THE ONLY WAY A RUN COUNTS A PROBLEM. #one-tally
+    `_cmd_convert` kept its end-of-run tally in two integers beside this list,
+    and five classes raised the integers with no entry here: a load-breaking
+    issue on the shipped Combined ESP, a mesh missing its _0/_1 partner, a
+    VirtualBody re-hide, patch-validator hits, and (in `auto`) a failed overlay
+    transfer. The log said "1 failure(s)" while the failures file -- the only
+    thing the GUI reads -- was empty, so no popup opened. The tally is now
+    counted FROM this list (`_run_tally`), so the two cannot disagree. `count`
+    lets one entry stand for a class of N, so N validator hits are one line in
+    the popup, not N; it is written only when it is not 1."""
+    entry = {"kind": str(kind), "source": str(source),
+             "item": str(item), "detail": str(detail)[:400],
+             "severity": str(severity)}
+    if int(count) != 1:
+        entry["count"] = int(count)
+    _RUN_FAILURES.append(entry)
+
+
+def _record_sweep_retried(why) -> None:
+    """The vanilla sweep's first attempt failed and its serial retry converted
+    it. The first failure printed a problem line, which the tally and the
+    failures file never carried; this is its entry, on both schedules.
+    (A retry that fails too is recorded once, as the sweep's failure.)
+    #one-tally"""
+    _record_failure("vanilla sweep retried", "Vanilla sweep (base game + DLC)",
+                    "whole source",
+                    f"the first attempt failed ({plain_error(why)}); converting it "
+                    "again without the worker pool succeeded", severity="warning")
+
+
+def _vc_sweep_failure_fails() -> bool:
+    r"""#vc-sweep-failure (2026-09-26): does an end-of-run vertex-colour sweep
+    that stopped with an error fail the run, as a CTD-class mesh issue? Yes, by
+    default.
+
+    The sweep (`sanitize_output_vertex_color_flags`) is the ONE place a
+    Vertex_Colors / Vertex_Alpha shader flag is cleared from a shape that
+    carries no colour buffer -- the rebuild paths copy the source's shader
+    flags, and the writer clears none of them -- and such a shape crashes the
+    game when the model is built (on equip; at load for worn gear). The sweep
+    reads each file and saves it itself, after every file is written, so an
+    error that stops it leaves each file it did not reach exactly as the writer
+    left it: nothing else clears the flag, and no write is skipped that would
+    have. That is an output this run cannot vouch for, in the one respect that
+    crashes the game, so it counts as a failure (exit 2), under the kind the
+    popup words as "can crash the game when equipped". It was a warning with
+    exit 0. The measured rate is low (full runs of 3,200 meshes: the sweep
+    fixed 0 shapes, since the writer carries colour buffers across), which is
+    why this is rare, not why it is safe. An error inside the sweep's pool
+    falls back to one file at a time and is not this. `CBBE2UBE_NO_VC_SWEEP_FAILURE=1`
+    records it as the warning it was, with exit 0."""
+    return not _flag("CBBE2UBE_NO_VC_SWEEP_FAILURE", False)
+
+
+def _report_writer_pass_failures(source, nif_results) -> None:
+    """Three outcomes of the mesh writer, which runs in a worker: its partition
+    pass died on a mesh (partitions left as written, over-cap checks not run),
+    it could not split a shape over the vertex cap (the parent's load check
+    counts bones, not verts, so it never sees that one), or a re-author could
+    not copy a shape and kept the previous complete file. The worker's own
+    warning goes to a stderr the parent never shows, so none reached the log's
+    count or the run's record. The piece's `reason` carries each pass-failure
+    label home; each is printed here and recorded as one warning per source
+    with its count. Message and tally only. #one-tally"""
+    from .nif_convert_writer import (WRITER_PASS_PARTITIONS,
+                                     WRITER_PASS_REAUTHOR_DROP,
+                                     WRITER_PASS_VERT_SPLIT)
+    pieces = count_pass_failure_pieces(nif_results)
+    parts = pieces.get(WRITER_PASS_PARTITIONS) or []
+    splits = pieces.get(WRITER_PASS_VERT_SPLIT) or []
+    drops = pieces.get(WRITER_PASS_REAUTHOR_DROP) or []
+    if parts:
+        warn(f"partition pass FAILED on {len(parts)} NIF(s)",
+             consequence="their skin partitions were left as written and the "
+                         "over-cap checks did not run; the load check at the end "
+                         "reports a shape over the bone cap, not one over the "
+                         "vertex cap",
+             fix="convert the mod again; if it repeats, report the NIF(s) named",
+             indent="    ")
+        _record_failure("partition pass failed", source,
+                        f"{len(parts)} mesh(es)",
+                        "their skin partitions were left as written; "
+                        + _first_few(parts), severity="warning", count=len(parts))
+    if splits:
+        warn(f"{len(splits)} NIF(s) keep a shape over the vertex cap in one "
+             "partition",
+             consequence="the split failed; such a shape may crash the game "
+                         "when equipped",
+             fix="convert the mod again; if it repeats, report the NIF(s) named "
+                 "and do not equip them",
+             indent="    ")
+        _record_failure("over-cap shape not split", source,
+                        f"{len(splits)} mesh(es)",
+                        "a shape over the vertex cap stays in one partition and "
+                        "may crash the game when equipped; " + _first_few(splits),
+                        severity="warning", count=len(splits))
+    if drops:
+        warn(f"re-author dropped a shape on {len(drops)} NIF(s)",
+             consequence="the fix that re-authors the mesh was not applied; each "
+                         "keeps the complete file written before it",
+             fix="convert the mod again; if it repeats, report the NIF(s) named",
+             indent="    ")
+        _record_failure("re-author dropped a shape", source,
+                        f"{len(drops)} mesh(es)",
+                        "the re-author was not applied and the complete file "
+                        "before it was kept; " + _first_few(drops),
+                        severity="warning", count=len(drops))
+
+
+def _record_vc_sweep_failed(why) -> None:
+    """The run's entry for a vertex-colour sweep that stopped with an error:
+    a CTD-class mesh issue (a failure), or with the switch set the warning it
+    was. #vc-sweep-failure #one-tally"""
+    if _vc_sweep_failure_fails():
+        _record_failure("CTD-class mesh issue", "output mod",
+                        "vertex-colour sweep did not finish",
+                        f"{plain_error(why)}; a mesh whose shader asks for vertex "
+                        "colours it does not carry may be left that way -- "
+                        "convert again, the sweep checks every output mesh")
+        return
+    _record_failure("vertex-colour sweep failed", "output mod",
+                    "end-of-run sweep", f"{plain_error(why)}; vertex-colour "
+                    "flags were left as the source had them",
+                    severity="warning")
+
+
+def _record_class_once(kind: str, source, item, detail: str = "",
+                       severity: str = "warning") -> None:
+    """One entry for a class that can repeat within a run: the first time
+    it is recorded, every later time its `count` goes up by one, so the tally
+    still counts each printed line and the popup names the class once.
+    #one-tally"""
+    for e in _RUN_FAILURES:
+        if e.get("kind") == kind:
+            e["count"] = int(e.get("count", 1)) + 1
+            return
+    _record_failure(kind, source, item, detail, severity=severity)
+
+
+def _record_once(kind: str, source, item, detail: str = "",
+                 severity: str = "warning") -> None:
+    """One entry for one fact a run can print more than once: a read that fails
+    again on every call (the NPC-outfit read is not cached on failure), a
+    lookup each source repeats (the UBE body search), a cached read whose
+    warning is recorded again after `_cmd_convert` clears the record. Recorded
+    the first time; not again while the same entry is in the record.
+    #one-tally"""
+    probe = {"kind": str(kind), "source": str(source), "item": str(item),
+             "detail": str(detail)[:400], "severity": str(severity)}
+    if any(all(e.get(k) == v for k, v in probe.items()) for e in _RUN_FAILURES):
+        return
+    _record_failure(kind, source, item, detail, severity=severity)
+
+
+def _run_tally() -> "tuple[int, int]":
+    """(failures, warnings) of this run, counted from the record. #one-tally"""
+    from . import failure_summary
+    return failure_summary.counts(_RUN_FAILURES)
+
+
+def _first_few(lines, n: int = 3) -> str:
+    """The first `n` of a class's messages for its one failures-file entry;
+    the log lists them all."""
+    lines = [str(x) for x in (lines or [])]
+    head = "; ".join(lines[:n])
+    return head + (f"; ... and {len(lines) - n} more (see the log)"
+                   if len(lines) > n else "")
+
+
+def _warn_alttex_problems(problems, source) -> None:
+    """The alt-texture reconcile's problem classes (`(class, models)` pairs
+    from `ube_patcher.reconcile_alt_texture_indices_all(problems=...)`), each
+    warned and recorded once. The reconcile used to print them itself as bare
+    `!!` lines, which the tally, the failures file and docs/WARNINGS.md never
+    saw. #one-tally"""
+    for cls, models in problems or ():
+        models = [str(m) for m in models]
+        n = len(models)
+        names = ", ".join(models[:5]) + (f" and {n - 5} more" if n > 5 else "")
+        if cls == ube_patcher.ALTTEX_ENTRIES_DROPPED:
+            warn(f"alt-texture reconcile: {n} converted NIF(s) with same-named "
+                 f"layers could not be matched to their source mesh: {names}",
+                 consequence="the colour-variant entries of those layers were "
+                             "dropped, so the layers keep their base colour in "
+                             "every colour variant",
+                 fix="check that the mod each mesh came from is installed and "
+                     "enabled, then run again")
+            kind = "alt-texture entries dropped"
+        elif cls == ube_patcher.ALTTEX_GAME_COPY_UNREADABLE:
+            warn(f"alt-texture reconcile: {n} model(s) not in this output could "
+                 f"not be read from the mod the game loads them from: {names}",
+                 consequence="their colour-variant entries are kept as the author "
+                             "wrote them, so variant textures may land on the "
+                             "wrong part",
+                 fix="check that the named mesh opens (NifSkope, Outfit Studio) "
+                     "or reinstall the mod that ships it, then run again")
+            kind = "alt-texture game copy unreadable"
+        elif cls == ube_patcher.ALTTEX_OUTRANKING_COPY_UNREADABLE:
+            # #reconcile-loaded-winner: ours is on disk, another mod's is drawn.
+            warn(f"alt-texture reconcile: {n} model(s) where another mod's copy "
+                 f"outranks ours but could not be read; indexed against ours: "
+                 f"{names}",
+                 consequence="the game draws that other copy; if its layers are "
+                             "in a different order than ours, variant textures "
+                             "may land on the wrong part",
+                 fix="check that the named mesh in the mod above this tool's "
+                     "output in MO2 opens (NifSkope, Outfit Studio) or rebuild "
+                     "it, then run again")
+            kind = "alt-texture outranking copy unreadable"
+        else:
+            warn(f"alt-texture reconcile: {n} converted NIF(s) failed to load: "
+                 f"{names}",
+                 consequence="their colour-variant entries keep the source mesh's "
+                             "indices, so variant textures may land on the "
+                             "wrong part",
+                 fix="close any program holding the files and run again; if it "
+                     "repeats, report the named meshes")
+            kind = "alt-texture mesh unreadable"
+        _record_failure(kind, source, f"{n} model(s)", _first_few(models),
+                        severity="warning")
 
 
 def _failures_file_path() -> Path:
@@ -1466,6 +2978,214 @@ def _preflight_vanilla_sweep(data_dir: Path) -> "tuple[bool, str]":
         return False, f"preflight error: {e!r}"
 
 
+# --- per-source patch names -------------------------------------------------------
+# #source-patch-rename (2026-09-25): our per-source patch was '<stem> UBE patch.esp',
+# the name hand-made UBE patches use too. Measured on a live modlist, 22 of our
+# un-loaded copies shared a name with another mod's active plugin, and a plugin
+# index that walked subfolders read ours in place of theirs. '<stem> (CBBEtoUBE
+# src).esp' collides with none of 3292 root plugins. The coverage pieces keep
+# 'UBE_Mod*Coverage* UBE patch.esp': they are ours and never collided.
+_SRC_PATCH_SUFFIX = " (CBBEtoUBE src).esp"
+_LEGACY_SRC_PATCH_SUFFIX = " UBE patch.esp"
+# Everything written beside a per-source patch ESP. None of them embeds the
+# patch's file name, so the set renames without loss.
+_SRC_PATCH_SIDECARS = (".skypatcher.json", ".espgen.json", ".male_fallbacks.json")
+
+
+def _source_patch_rename_on() -> bool:
+    """#source-patch-rename: name our per-source patches '<stem> (CBBEtoUBE
+    src).esp' and migrate the old names? CBBE2UBE_NO_SOURCE_PATCH_RENAME=1 keeps
+    '<stem> UBE patch.esp' and migrates nothing."""
+    return not _flag("CBBE2UBE_NO_SOURCE_PATCH_RENAME", False)
+
+
+def _source_patch_name(stem: str) -> str:
+    """The file name of the per-source patch made from the plugin `stem`."""
+    if _source_patch_rename_on():
+        return f"{stem}{_SRC_PATCH_SUFFIX}"
+    return f"{stem}{_LEGACY_SRC_PATCH_SUFFIX}"
+
+
+def _legacy_source_patch_stem(name: str) -> "str | None":
+    """The source stem of an OLD-named per-source patch ('<stem> UBE patch.esp'),
+    or None for anything else -- a coverage piece ('UBE_Mod*') included."""
+    if name.lower().startswith("ube_mod"):
+        return None
+    if not name.lower().endswith(_LEGACY_SRC_PATCH_SUFFIX.lower()):
+        return None
+    return name[:-len(_LEGACY_SRC_PATCH_SUFFIX)] or None
+
+
+def _new_source_patch_stem(name: str) -> "str | None":
+    """The source stem of a NEW-named per-source patch, or None."""
+    if not name.lower().endswith(_SRC_PATCH_SUFFIX.lower()):
+        return None
+    return name[:-len(_SRC_PATCH_SUFFIX)] or None
+
+
+def _patches_dir_of(output, unmerged_patch_subdir) -> Path:
+    """Where the per-source patches live: the subfolder, or the output root in
+    the legacy root-write mode ('' or '.')."""
+    if unmerged_patch_subdir and unmerged_patch_subdir not in (".", "/"):
+        return Path(output) / unmerged_patch_subdir
+    return Path(output)
+
+
+def _per_source_patch_paths(patches_dir: Path) -> "list[Path]":
+    """The per-source patches the FALLBACK merge takes (coverage failed or
+    empty). Never an old-named and a new-named file for the same source: a
+    leftover '<stem> UBE patch.esp' (a rename that failed) is taken only when no
+    '<stem> (CBBEtoUBE src).esp' exists, or that source's armatures would be
+    merged twice. Kept in the order the old names sorted in, so the merge
+    numbers the records as it did before the rename."""
+    legacy = [q for q in sorted(patches_dir.glob("*UBE patch.esp"))
+              if not q.name.startswith("UBE_Mod")]
+    if not _source_patch_rename_on():
+        return legacy
+    new = sorted(patches_dir.glob("*" + _SRC_PATCH_SUFFIX))
+    have = {(_new_source_patch_stem(q.name) or "").lower() for q in new}
+    keep = [q for q in legacy
+            if (_legacy_source_patch_stem(q.name) or q.name).lower() not in have]
+
+    def _as_legacy(q: Path) -> Path:
+        stem = _new_source_patch_stem(q.name)
+        return q if stem is None else q.with_name(f"{stem}{_LEGACY_SRC_PATCH_SUFFIX}")
+    return sorted(new + keep, key=_as_legacy)
+
+
+def _merge_gate_patch_paths(patches_dir: Path) -> "list[Path]":
+    """What the post-conversion block (female-model restore, coverage, merge)
+    needs on disk to run at all. It used to be '*UBE patch.esp', which every
+    per-source patch matched; the renamed ones do not, so on a fresh output that
+    glob found nothing and the whole block -- coverage and the Combined -- was
+    skipped. A per-source patch of either name, or a coverage piece, counts."""
+    old = sorted(patches_dir.glob("*UBE patch.esp"))
+    if not _source_patch_rename_on():
+        return old
+    return sorted(set(old) | set(patches_dir.glob("*" + _SRC_PATCH_SUFFIX)))
+
+
+def _migrate_source_patch_names(patches_dir: Path, *,
+                                require_sidecar: bool = False) -> dict:
+    """Rename every old-named per-source patch ('<stem> UBE patch.esp', not a
+    'UBE_Mod*' coverage piece) and its sidecars to '<stem> (CBBEtoUBE src).esp'.
+    When the new name already exists the old set is stale and is deleted (the
+    output folder is ours). Idempotent: a second call finds nothing. A file that
+    cannot be moved or deleted is returned in `failed` as (name, error); the
+    ESP moves LAST and a sidecar that fails puts back the ones already moved, so
+    a source's set is never split across two names.
+
+    `require_sidecar` (the root-write mode, where the folder can hold other
+    plugins): only an ESP with our '.espgen.json' snapshot beside it is ours to
+    rename or delete; any other is left under its own name and listed in `left`.
+    #rename-guards
+
+    Returns {'renamed': n, 'removed': n, 'failed': [(name, error), ...],
+    'left': [name, ...]}."""
+    out = {"renamed": 0, "removed": 0, "failed": [], "left": []}
+    if not _source_patch_rename_on():
+        return out
+    try:
+        if not Path(patches_dir).is_dir():
+            return out
+        olds = sorted(Path(patches_dir).glob("*UBE patch.esp"))
+    except OSError as e:
+        out["failed"].append((str(patches_dir), plain_error(e)))
+        return out
+    for esp in olds:
+        stem = _legacy_source_patch_stem(esp.name)
+        if stem is None or not esp.is_file():
+            continue
+        if require_sidecar and not Path(str(esp) + ".espgen.json").is_file():
+            out["left"].append(esp.name)
+            continue
+        new = esp.with_name(f"{stem}{_SRC_PATCH_SUFFIX}")
+        if new.is_file():
+            try:
+                for f in [esp] + [Path(str(esp) + s) for s in _SRC_PATCH_SIDECARS]:
+                    if f.is_file():
+                        f.unlink()
+                out["removed"] += 1
+            except OSError as e:
+                out["failed"].append((esp.name, plain_error(e)))
+            continue
+        moved: "list[tuple[Path, Path]]" = []
+        try:
+            for s in _SRC_PATCH_SIDECARS:
+                src = Path(str(esp) + s)
+                if src.is_file():
+                    dst = Path(str(new) + s)
+                    os.replace(src, dst)
+                    moved.append((src, dst))
+            os.replace(esp, new)
+            out["renamed"] += 1
+        except OSError as e:
+            for src, dst in reversed(moved):
+                try:
+                    os.replace(dst, src)
+                except OSError:
+                    pass
+            out["failed"].append((esp.name, plain_error(e)))
+    return out
+
+
+def _migrate_source_patch_names_at_start(output, unmerged_patch_subdir) -> int:
+    """Run the per-source patch migration at the start of a run, print what it
+    did, and record each patch it could not move as a warning. Returns the
+    number of warnings. #source-patch-rename
+
+    In the root-write mode (--unmerged-patch-subdir '' or '.') the patches sit
+    beside whatever else the output folder holds, and a '<x> UBE patch.esp'
+    there may be another mod's plugin: renaming it would drop it out of MO2's
+    plugin list. So the root is migrated only when the folder is this tool's
+    output (`_is_our_own_output`), and even then only a patch with our
+    '.espgen.json' snapshot beside it; anything else is left alone with a NOTE.
+    #rename-guards"""
+    if not _source_patch_rename_on():
+        return 0
+    pdir = _patches_dir_of(output, unmerged_patch_subdir)
+    root_write = pdir == Path(output)
+    if root_write and not _is_our_own_output(output):
+        try:
+            olds = [q.name for q in sorted(pdir.glob("*UBE patch.esp"))
+                    if _legacy_source_patch_stem(q.name) is not None]
+        except OSError:
+            olds = []
+        if olds:
+            print(f"  [migrate] NOTE: {pdir} holds no conversion report of this "
+                  f"tool, so its {len(olds)} '<plugin>{_LEGACY_SRC_PATCH_SUFFIX}' "
+                  "file(s) are left under their own names")
+        return 0
+    res = _migrate_source_patch_names(pdir, require_sidecar=root_write)
+    if res["left"]:
+        shown = ", ".join(res["left"][:5]) + (", ..." if len(res["left"]) > 5 else "")
+        print(f"  [migrate] NOTE: left {len(res['left'])} "
+              f"'<plugin>{_LEGACY_SRC_PATCH_SUFFIX}' file(s) at the mod root "
+              "under their own names: no .espgen.json beside them, so this tool "
+              f"did not write them ({shown}). If an older version of this tool "
+              "did, delete them by hand.")
+    if res["renamed"] or res["removed"]:
+        print(f"  [migrate] renamed {res['renamed']} per-source patch(es) to "
+              f"'<plugin>{_SRC_PATCH_SUFFIX}'"
+              + (f"; removed {res['removed']} old copy(ies) already renamed"
+                 if res["removed"] else ""))
+        if pdir == Path(output):
+            # Root-write mode: these files ARE plugins MO2 loads, so the old
+            # names drop out of its plugin list.
+            print("  [migrate] the per-source patches sit at the mod root "
+                  "(--unmerged-patch-subdir '.'): enable the renamed plugins "
+                  "in MO2; the old names are gone")
+    for name, err in res["failed"]:
+        warn(f"could not rename the old-named per-source patch {name}: {err}",
+             where=f"in {pdir}",
+             consequence="it keeps its old name; the merge uses it only while "
+                         "no renamed copy of it exists",
+             fix="close any program holding the file and run again")
+        _record_failure("rename failed", "per-source patch", name, err,
+                        severity="warning")
+    return len(res["failed"])
+
+
 def refresh_mod_esp(
     source_dir: str | Path,
     output_dir: str | Path,
@@ -1473,6 +3193,7 @@ def refresh_mod_esp(
     output_esp_name: "str | None" = None,
     unmerged_patch_subdir: str = "_unmerged_patches",
     master_data_dirs: "list[Path] | None" = None,
+    claimed_patch_paths: "set[str] | None" = None,
 ) -> "AutoConvertResult":
     """ESP-only refresh (`--plugins-only`): regenerate this mod's patch ESP(s)
     from the `.espgen.json` snapshots the last full run wrote, skipping ALL
@@ -1494,7 +3215,13 @@ def refresh_mod_esp(
             bsa_mesh_rel_paths = _BATCH_BSA_INDEX._index
         except Exception:
             bsa_mesh_rel_paths = None
-    src_esps = _vanilla_sweep_esps(source_dir) or _find_source_esps(source_dir)
+    _unloaded: "list[tuple[Path, str]]" = []
+    _differs: "list[tuple[Path, str]]" = []
+    src_esps = (_vanilla_sweep_esps(source_dir)
+                or _find_source_esps(source_dir, skipped=_unloaded,
+                                     differs=_differs))
+    _note_unloaded_plugins(result, _unloaded)
+    _note_unread_loaded_copies(result, _differs)
     if not src_esps:
         result.notes.append("no source ESP found — skipping ESP generation")
         return result
@@ -1508,9 +3235,18 @@ def refresh_mod_esp(
     for src_esp in src_esps:
         cur_out_name = (output_esp_name
                         if output_esp_name is not None and len(src_esps) == 1
-                        else f"{src_esp.stem} UBE patch.esp")
+                        else _source_patch_name(src_esp.stem))
         out_esp = esp_out_dir / cur_out_name
         snap_p = Path(str(out_esp) + ".espgen.json")
+        if (not snap_p.is_file() and _source_patch_rename_on()
+                and (output_esp_name is None or len(src_esps) != 1)):
+            # #source-patch-rename: a snapshot still under the old name (its
+            # migration failed) is replayed in place, so the patch stays beside
+            # its own sidecars.
+            _legacy = esp_out_dir / f"{src_esp.stem}{_LEGACY_SRC_PATCH_SUFFIX}"
+            if Path(str(_legacy) + ".espgen.json").is_file():
+                out_esp = _legacy
+                snap_p = Path(str(out_esp) + ".espgen.json")
         if not snap_p.is_file():
             result.notes.append(
                 f"plugins-only: no espgen snapshot for {src_esp.name} -> "
@@ -1529,6 +3265,8 @@ def refresh_mod_esp(
                 continue
         except Exception:
             pass
+        if _patch_name_taken(out_esp, claimed_patch_paths, src_esp, result):
+            continue
         try:
             stats = ube_patcher.generate_ube_patch(
                 src_esp, out_esp,
@@ -1540,6 +3278,7 @@ def refresh_mod_esp(
             out_path = Path(stats.get("output", out_esp))
             result.output_esps.append(out_path)
             result.esp_stats_list.append(stats)
+            result.esp_patched.append((src_esp, out_path, stats))
             if result.output_esp is None:
                 result.output_esp = out_path
                 result.esp_stats = stats
@@ -1548,7 +3287,143 @@ def refresh_mod_esp(
     return result
 
 
-def auto_convert_mod(
+def _write_source_patches(result, output_dir, src_esps, *, output_esp_name,
+                          unmerged_patch_subdir, master_data_dirs,
+                          body_mesh_rel_paths, bsa_mesh_rel_paths,
+                          converted_rel_paths,
+                          claimed_patch_paths: "set[str] | None" = None) -> None:
+    """One source's patch ESP(s) and, beside each, the `.espgen.json` snapshot
+    `--plugins-only` replays; results and notes go to `result`.
+
+    Every input is decided by planning (the source ESPs, the planned
+    converted-mesh set, the source's own mesh paths), none by a NIF. One
+    source at a time writes them before its NIFs; on the batch-wide schedule
+    they are written when the source finishes, after the schedule converted
+    its NIFs -- so a run killed in the NIF phase leaves no patch or snapshot
+    naming a NIF it had not yet written, only the previous run's.
+    #global-schedule
+
+    `claimed_patch_paths`: the batch's per-source patch names written so far;
+    a name an earlier source wrote is not written again (`_patch_name_taken`).
+    Sources finish in source order on either schedule, so the first writer is
+    the highest-priority copy. #loaded-source-plugins"""
+    if not src_esps:
+        result.notes.append("no source ESP found — skipping ESP generation")
+    else:
+        result.source_esps = src_esps
+        result.source_esp = src_esps[0]  # backward compat
+        # Route unmerged patches into a subfolder so MO2's plugin scanner
+        # ignores them; only the merged Combined ESP at the mod root is active.
+        if unmerged_patch_subdir and unmerged_patch_subdir not in (".", "/"):
+            esp_out_dir = output_dir / unmerged_patch_subdir
+            esp_out_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            esp_out_dir = output_dir
+        for i, src_esp in enumerate(src_esps):
+            # Honor `output_esp_name` only for single-ESP mods. With
+            # multiple ESPs we use the auto-generated stem to keep
+            # each output distinct.
+            if output_esp_name is not None and len(src_esps) == 1:
+                cur_out_name = output_esp_name
+            else:
+                # '<stem> (CBBEtoUBE src).esp'. #source-patch-rename
+                cur_out_name = _source_patch_name(src_esp.stem)
+            out_esp = esp_out_dir / cur_out_name
+            # Skip ESPs with no armor addons (no ARMA group) entirely. Big bundle
+            # mods (merged xEdit output, overhaul patch packs) carry many
+            # landscape/navmesh/quest/patch ESPs with no armour -- attempting a
+            # patch for them only raises "no ARMA group", which would be
+            # miscounted as a failure claiming "armor absent / invisible" for
+            # armour that never existed. A benign skip, not a failure.
+            try:
+                from . import esp as _esp
+                if _esp.ESP.load_cached(src_esp).group(b"ARMA") is None:
+                    result.esp_skipped_no_armor += 1
+                    continue
+            except Exception:
+                pass  # unreadable -> let generate_ube_patch surface the real error
+            if _patch_name_taken(out_esp, claimed_patch_paths, src_esp, result):
+                continue
+            try:
+                stats = ube_patcher.generate_ube_patch(
+                    src_esp, out_esp,
+                    master_data_dirs=master_data_dirs,
+                    body_mesh_rel_paths=body_mesh_rel_paths,
+                    bsa_mesh_rel_paths=bsa_mesh_rel_paths,
+                    converted_rel_paths=converted_rel_paths,
+                )
+                out_path = Path(stats.get("output", out_esp))
+                result.output_esps.append(out_path)
+                result.esp_stats_list.append(stats)
+                result.esp_patched.append((src_esp, out_path, stats))
+                # ESP-refresh snapshot: the per-mod inputs generate_ube_patch
+                # needs besides live master dirs. `--plugins-only` replays the
+                # ESP phase from these in minutes (no NIF work) -- safe under
+                # FULL SKYPATCHER because patch content depends only on source
+                # ARMAs + the converted-mesh set (see refresh_mod_esp).
+                try:
+                    import json as _json
+                    from .atomic_io import atomic_write_bytes
+                    # Atomic so a crash/kill mid-write can't leave a torn snapshot
+                    # that a later --plugins-only refresh would silently skip
+                    # (dropping that source's armor from the re-merge).
+                    atomic_write_bytes(
+                        Path(str(out_esp) + ".espgen.json"),
+                        _json.dumps({
+                            "source_esp": str(src_esp),
+                            "converted_rel_paths": sorted(converted_rel_paths or []),
+                            "body_mesh_rel_paths": sorted(body_mesh_rel_paths or []),
+                        }).encode("utf-8"))
+                except OSError:
+                    pass
+                # Backward compat: primary fields = first successful patch
+                if result.output_esp is None:
+                    result.output_esp = out_path
+                    result.esp_stats = stats
+                for w in stats.get("validation_warnings", []) or []:
+                    result.notes.append(
+                        f"!! patch validator ({src_esp.name}): {w}")
+            except Exception as e:
+                result.notes.append(
+                    f"ESP generation failed for {src_esp.name}: {e}")
+                result.esp_gen_failures.append(src_esp.name)
+
+
+def auto_convert_mod(source_dir, output_dir, **kwargs) -> "AutoConvertResult":
+    """Run the full pipeline on one source mod: plan it, convert its NIFs, then
+    its post-conversion steps. The pipeline itself, and every argument, is
+    `_auto_convert_mod_steps`; this runs its NIF phase here, in this call.
+    #global-schedule"""
+    steps = _auto_convert_mod_steps(source_dir, output_dir, **kwargs)
+    try:
+        next(steps)
+    except StopIteration as done:        # steps that end without pausing
+        return done.value
+    return _resume_source_steps(steps, run_nifs=True)
+
+
+def _resume_source_steps(steps, *, run_nifs: bool):
+    """Resume one source's `_auto_convert_mod_steps`, paused after planning at
+    its `_NifPhase`, and return its AutoConvertResult. `run_nifs`: the steps
+    convert their NIFs themselves (True, one source at a time) or the
+    batch-wide schedule already has (False). #global-schedule"""
+    try:
+        steps.send(run_nifs)
+    except StopIteration as done:
+        return done.value
+    raise RuntimeError("a source's conversion steps paused twice")
+
+
+@dataclass
+class _NifPhase:
+    """Where a source's steps pause: its planned NIF work and the result it
+    fills. #global-schedule"""
+    result: "AutoConvertResult"
+    work_items: list
+    nif_workers: int
+
+
+def _auto_convert_mod_steps(
     source_dir: str | Path,
     output_dir: str | Path,
     *,
@@ -1569,6 +3444,10 @@ def auto_convert_mod(
     # warning. Pass a SHARED set from `_cmd_convert` so claims persist
     # across mods. None = no protection (legacy single-source behavior).
     claimed_dst_paths: "set[Path] | None" = None,
+    # The same for per-source patch files (normcased absolute paths): a later
+    # source never overwrites a patch an earlier, higher-priority one wrote this
+    # run. None = no protection. #loaded-source-plugins
+    claimed_patch_paths: "set[str] | None" = None,
     # An externally-managed ProcessPoolExecutor to reuse across multiple
     # `auto_convert_mod` calls. Pass one from `_cmd_convert` so workers
     # stay warm across mods — the pynifly DLL, UBE body ref NIF, body
@@ -1605,14 +3484,52 @@ def auto_convert_mod(
     # armor are skipped before conversion instead of being converted and then
     # suppressed at the coverage stage. None => convert everything. #skip-already-ube
     ube_covered_armos: "set[tuple[str, int]] | None" = None,
-) -> AutoConvertResult:
+    # Forms a female NPC of a UBE-capable race wears or carries, as
+    # {(defining plugin lowercase, formid low24)} from `_npc_worn_armos`. Built
+    # ONCE by the caller (it reads every active plugin). A non-playable armour in
+    # it is converted like playable armour. None => non-playable armour is never
+    # converted (the old rule). #npc-worn-nonplayable
+    npc_worn_armos: "frozenset[tuple[str, int]] | None" = None,
+    # Is an armour's WINNING record non-playable (or deleted)? Same identity,
+    # from `_batch_armo_winner_nonplayable`, built ONCE by the caller. Replaces
+    # each scanned record's own playable flag. None => the record's own flag
+    # (the old rule). #selection-winner-playable
+    armo_winner_nonplayable: "dict[tuple[str, int], bool] | None" = None,
+    # Which THIRD-PARTY mod ships a built UBE mesh at `meshes\!UBE\<path>`
+    # (`_third_party_ube_twin_lookup`, built once by the caller). A mesh another
+    # mod already built for UBE is left to it, and an earlier run's copy is moved
+    # out of meshes\. None => convert it anyway (the old rule). #skip-built-ube-path
+    built_ube_twin: "callable[[str], str | None] | None" = None,
+    # True when the batch-wide schedule drives these steps
+    # (`_convert_sources_global`): the patch ESP and its snapshot are written
+    # only once the schedule has converted this source's NIFs, and a base an
+    # earlier source claimed in this run is held, not superseded. False (one
+    # source at a time) -> the order the steps always had. #global-schedule
+    batch_schedule: bool = False,
+    # The folders this source creates for its pieces before they convert are
+    # appended here, SHARED across the batch by `_cmd_convert`, which removes
+    # the ones still empty once no NIF is being written. None -> this call
+    # removes its own after its NIFs (one source at a time only; on the
+    # batch-wide schedule another source may still be writing). #planned-folders
+    planned_folders: "list | None" = None,
+):
     """Run the full M2 + M3 phase 1 pipeline on a single CBBE armor mod.
+
+    A generator, paused ONCE: after planning (claims, the work items) it
+    yields a `_NifPhase` and is sent whether to convert those NIFs itself.
+    The batch-wide schedule plans every source to that point, runs all their
+    NIFs together, then resumes each source in order with False. Driven by
+    `_resume_source_steps`; `auto_convert_mod` is the one-call form. A source
+    with no armour meshes resolved pauses too, with no work items, so its
+    post-conversion steps (the texture copy) keep their place in source
+    order. #global-schedule
 
     Args:
       source_dir: a CBBE armor mod folder (the kind MO2 would install)
       output_dir: where to write the UBE conversion mod folder
       output_esp_name: filename for the patch ESP (default:
-        `<source_esp_stem> UBE patch.esp`)
+        `<source_esp_stem> (CBBEtoUBE src).esp`; `<stem> UBE patch.esp`
+        with CBBE2UBE_NO_SOURCE_PATCH_RENAME=1)
       ube_path_prefix: top-level folder under meshes/ for the converted NIFs
         (the UBE convention is `!UBE`; flagged as a config in case it changes)
       copy_textures: copy the source mod's textures/ tree verbatim into the
@@ -1709,10 +3626,20 @@ def auto_convert_mod(
     # slots (44/47/...). The crash guard below drops any non-body-skinned ones.
     # mesh_resolves enables the female-only policy (skip the male mesh when a female
     # mesh exists; keep male for male-only or dead-female-path pieces).
+    _worn_admitted: "set[tuple[str, int]]" = set()
     armor_bases = _player_armor_mesh_bases(
         source_dir, include_candidate_slots=True,
         mesh_resolves=_female_mesh_resolves,
-        ube_covered_armos=ube_covered_armos)
+        ube_covered_armos=ube_covered_armos,
+        armo_winner_nonplayable=armo_winner_nonplayable,
+        npc_worn_armos=npc_worn_armos, worn_admitted=_worn_admitted,
+        drop_reasons=result.dropped_base_reasons)
+    if _worn_admitted:
+        # Say so: these pieces used to be skipped in silence. #npc-worn-nonplayable
+        _worn_msg = (f"{len(_worn_admitted)} non-playable armature(s) converted "
+                     "because a female NPC wears or carries their armour")
+        print(f"  {_worn_msg}")
+        result.notes.append(_worn_msg)
     # Resolve through the full MO2 VFS so meshes in BodySlide-output / replacer /
     # patch mods are found. Falls back to source-local when no VFS index is given.
     #
@@ -1730,8 +3657,16 @@ def auto_convert_mod(
     # set and converted its ENTIRE meshes tree instead of nothing -- more orphan
     # output than before the gate existed, with the female-only policy bypassed.
     # So gate on whether a plugin was actually READ. #esp-less-fallback-only
-    _src_esps = _sweep_esps or _find_source_esps(source_dir)
-    if _skip_esp_less_fallback(armor_bases, _src_esps):
+    _unloaded: "list[tuple[Path, str]]" = []
+    _differs: "list[tuple[Path, str]]" = []
+    _src_esps = _sweep_esps or _find_source_esps(source_dir, skipped=_unloaded,
+                                                 differs=_differs)
+    _note_unloaded_plugins(result, _unloaded)
+    _note_unread_loaded_copies(result, _differs)
+    # A mod whose every plugin is a copy the game does not load HAS a plugin:
+    # it plans nothing, never the whole folder. #loaded-source-plugins
+    if _skip_esp_less_fallback(armor_bases,
+                               _src_esps + [p for p, _ in _unloaded]):
         resolved_pairs = []
         result.notes.append(
             "vanilla sweep: no DefaultRace armour ARMAs resolved — nothing planned"
@@ -1852,82 +3787,22 @@ def auto_convert_mod(
             bsa_mesh_rel_paths = None
 
     src_esps = _sweep_esps or _find_source_esps(source_dir)
-    if not src_esps:
-        result.notes.append("no source ESP found — skipping ESP generation")
-    else:
-        result.source_esps = src_esps
-        result.source_esp = src_esps[0]  # backward compat
-        # Route unmerged patches into a subfolder so MO2's plugin scanner
-        # ignores them; only the merged Combined ESP at the mod root is active.
-        if unmerged_patch_subdir and unmerged_patch_subdir not in (".", "/"):
-            esp_out_dir = output_dir / unmerged_patch_subdir
-            esp_out_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            esp_out_dir = output_dir
-        for i, src_esp in enumerate(src_esps):
-            # Honor `output_esp_name` only for single-ESP mods. With
-            # multiple ESPs we use the auto-generated stem to keep
-            # each output distinct.
-            if output_esp_name is not None and len(src_esps) == 1:
-                cur_out_name = output_esp_name
-            else:
-                cur_out_name = f"{src_esp.stem} UBE patch.esp"
-            out_esp = esp_out_dir / cur_out_name
-            # Skip ESPs with no armor addons (no ARMA group) entirely. Big bundle
-            # mods (merged xEdit output, overhaul patch packs) carry many
-            # landscape/navmesh/quest/patch ESPs with no armour -- attempting a
-            # patch for them only raises "no ARMA group", which would be
-            # miscounted as a failure claiming "armor absent / invisible" for
-            # armour that never existed. A benign skip, not a failure.
-            try:
-                from . import esp as _esp
-                if _esp.ESP.load_cached(src_esp).group(b"ARMA") is None:
-                    result.esp_skipped_no_armor += 1
-                    continue
-            except Exception:
-                pass  # unreadable -> let generate_ube_patch surface the real error
-            try:
-                stats = ube_patcher.generate_ube_patch(
-                    src_esp, out_esp,
-                    master_data_dirs=master_data_dirs,
-                    body_mesh_rel_paths=body_mesh_rel_paths,
-                    bsa_mesh_rel_paths=bsa_mesh_rel_paths,
-                    converted_rel_paths=converted_rel_paths,
-                )
-                out_path = Path(stats.get("output", out_esp))
-                result.output_esps.append(out_path)
-                result.esp_stats_list.append(stats)
-                # ESP-refresh snapshot: the per-mod inputs generate_ube_patch
-                # needs besides live master dirs. `--plugins-only` replays the
-                # ESP phase from these in minutes (no NIF work) -- safe under
-                # FULL SKYPATCHER because patch content depends only on source
-                # ARMAs + the converted-mesh set (see refresh_mod_esp).
-                try:
-                    import json as _json
-                    from .atomic_io import atomic_write_bytes
-                    # Atomic so a crash/kill mid-write can't leave a torn snapshot
-                    # that a later --plugins-only refresh would silently skip
-                    # (dropping that source's armor from the re-merge).
-                    atomic_write_bytes(
-                        Path(str(out_esp) + ".espgen.json"),
-                        _json.dumps({
-                            "source_esp": str(src_esp),
-                            "converted_rel_paths": sorted(converted_rel_paths or []),
-                            "body_mesh_rel_paths": sorted(body_mesh_rel_paths or []),
-                        }).encode("utf-8"))
-                except OSError:
-                    pass
-                # Backward compat: primary fields = first successful patch
-                if result.output_esp is None:
-                    result.output_esp = out_path
-                    result.esp_stats = stats
-                for w in stats.get("validation_warnings", []) or []:
-                    result.notes.append(
-                        f"!! patch validator ({src_esp.name}): {w}")
-            except Exception as e:
-                result.notes.append(
-                    f"ESP generation failed for {src_esp.name}: {e}")
-                result.esp_gen_failures.append(src_esp.name)
+    _patch_args = dict(
+        output_esp_name=output_esp_name,
+        unmerged_patch_subdir=unmerged_patch_subdir,
+        master_data_dirs=master_data_dirs,
+        body_mesh_rel_paths=body_mesh_rel_paths,
+        bsa_mesh_rel_paths=bsa_mesh_rel_paths,
+        converted_rel_paths=converted_rel_paths,
+        # A patch name an earlier, higher-priority source wrote this run is
+        # kept: claimed at the write, on either schedule (sources finish in
+        # source order on the batch-wide one too). #loaded-source-plugins
+        claimed_patch_paths=claimed_patch_paths)
+    # Where this source's patch notes go in its notes: here, where one source
+    # at a time writes the patch. #plan-order-results
+    _patch_notes_at = len(result.notes)
+    if not batch_schedule:
+        _write_source_patches(result, output_dir, src_esps, **_patch_args)
 
     # --- NIFs ---
     # Output paths planned for this call; scoped to THIS mod so the post-conversion
@@ -1935,6 +3810,9 @@ def auto_convert_mod(
     planned_output_nifs: "set[Path]" = set()
     if not resolved_pairs:
         result.notes.append("no convertible armour meshes resolved")
+        # Nothing to convert, but the steps below (the texture copy) still
+        # wait for this source's turn in source order. #global-schedule
+        yield _NifPhase(result, [], 1)
     else:
         # Scan source ESPs' ARMA records for slot-49 meshes (skirts / hip cloth)
         # so the converter can bump inflation for them. Use source ESPs (pre-rewrite)
@@ -1983,6 +3861,13 @@ def auto_convert_mod(
         work_items: list[tuple] = []
         skipped_collisions: list[tuple[Path, Path]] = []
         skipped_incremental = 0
+        # #skip-built-ube-path: a mesh another mod already ships BUILT for UBE at
+        # the very path we would write is left to that mod -- every weight
+        # variant of it or none, since their `_1` beside our `_0` would be a
+        # mismatched pair. {rel: the mod that ships it}.
+        built_elsewhere = (_built_ube_twins(resolved_pairs, built_ube_twin)
+                           if ube_path_prefix == "!UBE" else {})
+        skipped_built: list[tuple[str, str]] = []
         for src, rel in resolved_pairs:
             slot_bits = slot_bits_for(rel)
             # Last line of defence against double-conversion. The real gate is in
@@ -1993,6 +3878,9 @@ def auto_convert_mod(
             # body a second time. Cheap to assert, so assert it.
             if _is_already_ube_model(rel):
                 continue
+            if rel in built_elsewhere:
+                skipped_built.append((rel, built_elsewhere[rel]))
+                continue
             dst = nif_dst_root / Path(rel)
             # SECURITY: `rel` can derive from a mod-controlled ARMA model path /
             # BSA name; refuse `..`/absolute traversal outside the output meshes.
@@ -2001,6 +3889,10 @@ def auto_convert_mod(
                      consequence="the source names a path outside the output mod; "
                                  "the file was skipped",
                      file=sys.stderr)
+                # In the parent, so recorded here. #one-tally
+                _record_failure("unsafe path skipped", source_dir.name, rel,
+                                "the source names a path outside the output mod; "
+                                "the file was skipped", severity="warning")
                 continue
             # First-writer wins: skip paths already claimed by an earlier source mod.
             if claimed_dst_paths is not None:
@@ -2009,6 +3901,7 @@ def auto_convert_mod(
                     skipped_collisions.append((src, dst))
                     continue
                 claimed_dst_paths.add(key)
+            result.claimed_weight_bases.add(_weight_base_key(rel))  # #stale-output-sweep
             # Incremental: reuse an up-to-date NIF. The floor includes converter-code
             # + body-ref mtime, so any logic/body change forces a full re-convert.
             if incremental_floor is not None:
@@ -2043,6 +3936,76 @@ def auto_convert_mod(
             result.notes.append(
                 f"NIF collisions skipped: {len(skipped_collisions)} "
                 "(earlier source mod won the output path)")
+        if skipped_built:
+            _stuck: list = []
+            # On the batch-wide schedule a base an EARLIER source claimed this
+            # run is that source's conversion, still to be written, not an
+            # earlier run's copy: it stays. One source at a time, the earlier
+            # source's copy is already written and moves with the rest, as it
+            # always did. #global-schedule
+            _to_move, _held = _split_claimed_supersedes(
+                [r for r, _m in skipped_built], nif_dst_root,
+                claimed_dst_paths if batch_schedule else None)
+            _moved = _supersede_built_ube_outputs(
+                output_dir, nif_dst_root, _to_move,
+                failed=_stuck)
+            if _supersede_whole_base():
+                # The fill after the batch must not put our copy back at the
+                # builder's path, moved or (a move failed) left whole.
+                result.superseded_weight_bases.update(
+                    _weight_base_key(r) for r in _to_move)
+            # Held bases too: an earlier source claims each, so the sweep never
+            # reads the reason for one. #stale-output-sweep
+            for r, _m in skipped_built:
+                result.dropped_base_reasons.setdefault(_weight_base_key(r), "built twin")
+            if _held:
+                _held_msg = (f"built UBE version elsewhere: {len(_held)} mesh(es) "
+                             "not moved out of meshes\\ -- an earlier source "
+                             "converted them in this run")
+                print(f"  {_held_msg}")
+                result.notes.append(_held_msg)
+            from collections import Counter as _Counter
+            _by_mod = _Counter(m for _r, m in skipped_built)
+            print(f"  built UBE version elsewhere: {len(skipped_built)} mesh(es) "
+                  "left to the mod that already ships them built for UBE"
+                  + (f"; {_moved} copy(ies) from an earlier run moved out of meshes\\"
+                     if _moved else ""))
+            for _m, _k in _by_mod.most_common(5):
+                print(f"    {_k:4d}  {_m}")
+            result.notes.append(
+                f"built UBE version elsewhere: {len(skipped_built)} NIF(s) not "
+                f"converted, {_moved} earlier copy(ies) superseded")
+            _left = [s for s in _stuck if not s[2]]
+            _torn = [s for s in _stuck if s[2]]
+            if _left:
+                _names = (", ".join(f"{s[0]} ({s[1]})" for s in _left[:5])
+                          + (f" and {len(_left) - 5} more" if len(_left) > 5 else ""))
+                warn(f"{len(_left)} piece(s) from an earlier run could not be moved "
+                     f"out of meshes\\ (a file is in use): {_names}",
+                     consequence="each was left whole, with its .tri and physics, "
+                                 "so our old conversion still replaces the hand-made "
+                                 "UBE version in game",
+                     fix="close the program holding the file (the game, NifSkope, "
+                         "Outfit Studio) and run again")
+                # Recorded here, in the parent, as the stale sweep's own
+                # move-failed line is. #one-tally
+                _record_failure("built UBE supersede move failed", source_dir.name,
+                                f"{len(_left)} piece(s)", _names, severity="warning")
+            if _torn:
+                _names = (", ".join(f"{s[0]} ({', '.join(s[2])})" for s in _torn[:5])
+                          + (f" and {len(_torn) - 5} more" if len(_torn) > 5 else ""))
+                warn(f"{len(_torn)} piece(s) from an earlier run were only partly "
+                     f"moved out of meshes\\ and could not be put back: {_names}",
+                     consequence="the named files are in _superseded\\ while the rest "
+                                 "of the piece is still in meshes\\, so the piece can "
+                                 "draw with the wrong morphs",
+                     fix="close the program holding the files and run again, or "
+                         "move the named files back from _superseded\\")
+                _record_failure("built UBE supersede move torn", source_dir.name,
+                                f"{len(_torn)} piece(s)", _names, severity="warning")
+            for s in _stuck:
+                result.notes.append(f"built UBE version elsewhere: {s[0]} not moved "
+                                    f"out of meshes\\ ({s[1]})")
 
         planned_output_nifs = {it[1] for it in work_items}
 
@@ -2050,13 +4013,27 @@ def auto_convert_mod(
             nif_workers = default_worker_count()
         nif_workers = max(1, min(nif_workers, len(work_items)))
 
+        # This source's folders, spelled by its plan, before any of its pieces
+        # (or a later source's) converts. #planned-folders
+        _own_folders = [] if planned_folders is None else planned_folders
+        if _planned_folders():
+            _make_planned_folders(work_items, _own_folders)
+
+        # THE PAUSE. Everything above decided what this source converts and
+        # where (claims, the patch ESP); everything below the batch only reads
+        # this source's own outputs. The batch-wide schedule converts the work
+        # items itself and resumes with False. #global-schedule
+        run_here = yield _NifPhase(result, work_items, nif_workers)
+
         t_start = time.perf_counter()
         # Serial ONLY when there's no shared pool to isolate crashes: a single-mesh
         # mod (or forced 1 worker) run in-process gives a native pynifly crash the
         # power to abort the WHOLE batch. When a warm shared `nif_pool` exists, route
         # even a single NIF through it so the pool's BrokenProcessPool self-heal
         # contains the crasher to one worker. #single-mesh-isolation
-        if nif_pool is None and (nif_workers == 1 or len(work_items) <= 1):
+        if not run_here:
+            pass    # converted on the batch-wide schedule. #global-schedule
+        elif nif_pool is None and (nif_workers == 1 or len(work_items) <= 1):
             # No shared pool + tiny job -> serial in-process (avoids pool spin-up).
             for item in work_items:
                 r = _nif_convert_worker(item)
@@ -2102,11 +4079,28 @@ def auto_convert_mod(
                 finally:
                     _local_pool.shutdown()
         elapsed = time.perf_counter() - t_start
-        if len(work_items) > 0:
+        if len(work_items) > 0 and run_here:
             rate = len(work_items) / max(elapsed, 1e-9)
             result.notes.append(
                 f"NIF conversion: {len(work_items)} files in "
                 f"{elapsed:.1f}s ({rate:.1f}/s) with {nif_workers} worker(s)")
+        if planned_folders is None and not batch_schedule:
+            _remove_empty_planned_folders(_own_folders)   # #planned-folders
+        if _plan_order_results():
+            _in_plan_order(result.nif_results, work_items)
+
+    if batch_schedule:
+        # This source's NIFs are all written now: only now may its patch and
+        # snapshot name them. #global-schedule
+        _n_before = len(result.notes)
+        _write_source_patches(result, output_dir, src_esps, **_patch_args)
+        if _plan_order_results():
+            # Its notes where one source at a time has them: before the
+            # planning notes that follow the patch and the NIF notes.
+            # #plan-order-results
+            _patch_notes = result.notes[_n_before:]
+            del result.notes[_n_before:]
+            result.notes[_patch_notes_at:_patch_notes_at] = _patch_notes
 
     # --- textures ---
     # Sweep: never texture-copy from the Data dir (same usvfs merged-view /
@@ -2202,6 +4196,10 @@ def auto_convert_mod(
                  f"({plain_error(_ie)})",
                  consequence="output was NOT re-loaded or verified",
                  file=_sys.stderr)
+            _record_failure("load check skipped", source_dir.name,
+                            "every converted mesh",
+                            f"pynifly unavailable ({plain_error(_ie)}); the output "
+                            "was not re-loaded or verified", severity="warning")
 
     # --- report ---
     report_name = f"conversion_report_{source_dir.name}.txt"
@@ -2210,6 +4208,13 @@ def auto_convert_mod(
         report_name = report_name.replace(bad, "_")
     result.write_report(output_dir / report_name)
     return result
+
+
+# `auto_convert_mod` takes exactly the steps' arguments: say so to `inspect`
+# (signature, source) -- only the link to the steps is set; its own name and
+# docstring stay.
+# #global-schedule
+_update_wrapper(auto_convert_mod, _auto_convert_mod_steps, assigned=(), updated=())
 
 
 # ---------------------------------------------------------------------------
@@ -2255,7 +4260,7 @@ def _build_parser():
              "one source is given; otherwise inferred from the last "
              "positional, mirroring the legacy `source output` form).")
     convert.add_argument("--esp-name", default=None,
-                         help="filename for the patch ESP (default: '<stem> UBE patch.esp'). "
+                         help="filename for the patch ESP (default: '<stem> (CBBEtoUBE src).esp'). "
                               "Ignored when converting multiple sources — each gets its own ESP.")
     convert.add_argument("--no-textures", action="store_true",
                          help="(Default behavior now.) Don't copy source textures.")
@@ -2294,6 +4299,15 @@ def _build_parser():
     # records at all, so there is nothing to rebase. The flag had decayed into a
     # no-op that was never read, while still advertising behaviour the tool no
     # longer has.
+    convert.add_argument("--exclude-mods", action="append", default=None,
+                         metavar="NAME",
+                         help="Mods whose armour the coverage step must leave "
+                              "alone (repeat the flag or comma-separate). `auto` "
+                              "passes its own --exclude-mods and "
+                              "--coverage-exclude-mods here; with `convert` the "
+                              "sources are named, so this affects coverage, and "
+                              "a plugin the game loads from one of these mods is "
+                              "not read from another mod's copy either.")
     convert.add_argument("--plugins-only", action="store_true",
                          dest="plugins_only",
                          help="ESP-only refresh: regenerate patch ESPs + merge "
@@ -2479,7 +4493,16 @@ def _build_parser():
                         help="Never convert these armor mods on an All-mods run "
                              "(repeat the flag or comma-separate). Use for mods "
                              "already built for UBE -- converting them would "
-                             "double-convert and break them.")
+                             "double-convert and break them. The armour they "
+                             "define gets no coverage armature either.")
+    auto_p.add_argument("--coverage-exclude-mods", action="append", default=None,
+                        metavar="NAME",
+                        help="Give the armour these mods define no coverage "
+                             "armature, without changing which mods are "
+                             "converted (repeat or comma-separate). The window "
+                             "passes its exclusion list here on a Select-mods "
+                             "run, because coverage covers the whole load order "
+                             "on every run.")
     auto_p.add_argument("--overlay-exclude-mods", action="append", default=None,
                         metavar="MOD",
                         help="Never convert overlays from these mods (repeat or "
@@ -2628,7 +4651,7 @@ def write_conversion_report_json(output_dir, results,
                                  workers=None,
                                  orphan_temps_removed=0,
                                  *, planned=None,
-                                 complete=True) -> "Path | None":
+                                 complete=True, progress=None) -> "Path | None":
     """Machine-readable sibling of conversion_summary.txt, for the GUI health
     panel. Same batch stats plus the postflight invisibility-risk signal
     (weight-partner divergence). Best-effort; never raises.
@@ -2697,6 +4720,11 @@ def write_conversion_report_json(output_dir, results,
             # start. #orphan-temps
             "orphan_temps_removed": int(orphan_temps_removed or 0),
         }
+        if progress is not None:
+            # A checkpoint inside the batch-wide NIF phase: files converted so
+            # far, and the sources whose every NIF is in but whose turn to
+            # finish (their patch included) had not come. #global-schedule
+            rep["nif_phase"] = dict(progress)
         # Attribution: which build, which settings (RESOLVED, not just the
         # env overrides), which settings file. Also written on its own as
         # conversion_settings.json so a pack carries its recipe with it.
@@ -2717,18 +4745,24 @@ def write_conversion_report_json(output_dir, results,
 
 
 def _checkpoint_report(output_dir, results, *, planned, workers,
-                       orphan_temps_removed=0) -> "Path | None":
+                       orphan_temps_removed=0, progress=None) -> "Path | None":
     """conversion_report.json for the run SO FAR, marked incomplete: one small
-    atomic write after every source. #report-checkpoint"""
+    atomic write after every source. `progress`: the batch-wide NIF phase so
+    far, written as `nif_phase` (#global-schedule). #report-checkpoint"""
     out = write_conversion_report_json(
         output_dir, results, workers=workers,
         orphan_temps_removed=orphan_temps_removed, planned=planned,
-        complete=False)
+        complete=False, progress=progress)
     if out is None:
         warn("could not write the conversion_report.json checkpoint",
              where=f"under {output_dir}",
              consequence="a run that dies now leaves no report",
              fix="check that the output folder is writable and not open elsewhere")
+        # Printed as a problem, so counted: one entry however many times it
+        # happens this run. #one-tally
+        _record_class_once("report checkpoint not written", "conversion_report.json",
+                           str(output_dir),
+                           "a run that died then would have left no report")
     return out
 
 
@@ -2750,9 +4784,15 @@ def _stamp_run_start(output_dir, *, planned, workers, orphan_temps_removed=0) ->
              where=str(output_dir),
              consequence="nothing can be written there",
              fix="check the path and its permissions")
+        _record_failure("output folder not created", str(output_dir),
+                        "the output folder", f"{plain_error(_e)}; nothing can be "
+                        "written there", severity="warning")   # #one-tally
     if build_info.write_run_config(output_dir, workers=workers) is None:
         warn("could not write conversion_settings.json", where=f"under {output_dir}",
              consequence="the output mod will not record which build and settings made it")
+        _record_failure("settings record not written", "conversion_settings.json",
+                        str(output_dir), "the output mod does not record which "
+                        "build and settings made it", severity="warning")
     _checkpoint_report(output_dir, [], planned=planned, workers=workers,
                        orphan_temps_removed=orphan_temps_removed)
 
@@ -2788,6 +4828,9 @@ _UBE_COVERED_CACHE: dict = {}
 # {same cache key -> {mod name: how many ARMOs it already covers for UBE}}.
 # Diagnostics only -- nothing in the convert path reads it.
 _UBE_COVERED_BY_MOD: dict = {}
+# {same cache key -> sorted targets excluded without a slot check, because
+# their winning record could not be read}. #third-party-ini-winner-slots
+_UBE_UNCHECKED: dict = {}
 
 # Written as a comment into every SkyPatcher INI we emit, and read back by
 # `_is_our_own_output`.
@@ -2876,8 +4919,31 @@ def _skypatcher_forms(value: str):
             continue
 
 
+def _winner_walk_plugin_index(lay) -> dict:
+    r"""#winner-walk-root-index (2026-09-25): the plugin files both callers hand
+    `_third_party_ube_covered_armos` for its #third-party-ini-winner-slots walk
+    -- always the files the game loads (`paths._plugin_file_index_root`).
+
+    `paths.plugin_file_index` is that index only while #root-plugin-index is on.
+    With CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN=1 it is the legacy recursive
+    walk, which can resolve a plugin name to an unloaded copy of the same name
+    in a higher-priority mod's subfolder (`optional\`, `_unmerged_patches\`).
+    The walk read no record there, took the armour's slots as unknown and
+    trusted a cape-only `!UBE\` addon to hide the cuirass: no body on UBE
+    actors, where the slot check before the winner walk covered it. The walk is
+    a question about the load order, so it asks the root index whatever that
+    switch says. CBBE2UBE_NO_WINNER_WALK_ROOT_INDEX=1 hands over
+    `paths.plugin_file_index` again."""
+    if paths.root_plugin_index_on() or _flag("CBBE2UBE_NO_WINNER_WALK_ROOT_INDEX",
+                                             False):
+        return paths.plugin_file_index(lay)     # the root index while it is on
+    return paths._plugin_file_index_root(lay)
+
+
 def _third_party_ube_covered_armos(mods_root, enabled_names=None,
-                                   skip_mods=()) -> set:
+                                   skip_mods=(), halves=("ini", "esp"),
+                                   active_plugins=None, plugin_index=None,
+                                   unchecked=None) -> set:
     r"""ARMOs that ANOTHER mod already gives a UBE armature.
 
     Returned as {(defining plugin lowercase, formid low24)} -- the same
@@ -2896,6 +4962,61 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
       * SkyPatcher: another mod's `armorAddonsToAdd` INI lines, which name their
         targets directly -- the same mechanism this tool uses.
 
+    #skypatcher-patch-recognition (2026-09-23). The SkyPatcher half read only
+    `armor/*.ini`, but SkyPatcher nests freely inside its type folders and
+    recommends a subfolder for a plugin-named INI. A follower's hand-made UBE
+    refit lives in `armor/<plugin>/<plugin>.esp.ini`: 11 lines, 0 read, and every
+    piece was double-covered in game (the report: male boots on her). Two of
+    its addons reuse the source mesh on the UBE races (a helmet and a wig need
+    no refit), so no `!UBE\` path could ever name them. Now the INIs are read
+    recursively, and an added addon also counts when its PRIMARY race is a
+    UBE_AllRace race and its mesh is a loose file -- but only when the UBE
+    addons a target receives cover every biped slot of that armour, because a
+    cape added to a cuirass must not stop the cuirass being covered. Measured
+    on the live modlist: 11 of 11 of that patch's targets, 0 other armours.
+    The ESP half keeps the path test (the same race test there moves 37 other
+    armours, most of one body mod's plugin, unverified).
+    CBBE2UBE_NO_SKYPATCHER_PATCH_RECOGNITION=1 restores `armor/*.ini` and the
+    path test alone.
+
+    `halves` (#coverage-third-party-drawn, 2026-09-25): which delivery
+    mechanisms add their targets -- "ini" (SkyPatcher lines) and/or "esp"
+    (plugin ARMOs). The coverage step asks for the INI half alone while that
+    rule is on: it judges the armatures on each WINNING armour record itself,
+    with the mesh they draw, which the plugin half cannot (it reads every root
+    plugin's ARMOs, winning or not, and excludes on a `!UBE\` path alone). The
+    INI half stays: an armature an INI adds is on no armour record. The
+    conversion planner keeps both. The plugin files are read either way -- the
+    INI half needs their UBE armatures.
+
+    #third-party-ini-slot-check (2026-09-25): an INI line adding a `!UBE\`
+    armature excluded its targets outright, with neither check the race test
+    makes. A cape-only UBE addon on a cuirass hid the cuirass (no torso on UBE
+    actors), and so did an addon whose plugin is unchecked in the load order
+    (SkyPatcher adds nothing then, and neither did we). Now both kinds of UBE
+    addon go through one test: only addons whose plugin is in `active_plugins`
+    (the loaded plugin names; None = unknown, no check) count, and a target is
+    excluded only when their slots cover every slot of the armour. An armour no
+    enabled mod's plugin defines (vanilla, not overridden) cannot be checked and
+    stays covered. Measured on the live modlist: 11 INI lines, all active, all
+    slot-complete -- 0 armours move. CBBE2UBE_NO_THIRD_PARTY_INI_SLOT_CHECK=1
+    excludes on any `!UBE\` addon again, loaded or not.
+
+    #third-party-ini-winner-slots (2026-09-25): the armour's slots came only
+    from plugins in enabled mod folders, so a complete UBE refit of an armour
+    no mod overrides (vanilla or DLC, in the game's Data folder) read as
+    "slots unknown" and was covered again -- two bodies on UBE actors. Now the
+    slots are the load-order WINNER's: `active_plugins` in order, each name
+    resolved to its file through `plugin_index` (`_winner_walk_plugin_index`,
+    the root-only index: overwrite > enabled mods > game Data; under
+    CBBE2UBE_NO_WINNER_WALK_ROOT_INDEX=1 the caller's index again), our own
+    output skipped. When the winning record still cannot be read (no load order or index, the record
+    in no loaded plugin, an unreadable plugin that may hold it, no BOD2), a
+    target a `!UBE\` addon names is excluded as before the slot check and
+    listed in `unchecked`; one only a UBE-race addon names stays covered, as
+    it always was. CBBE2UBE_NO_THIRD_PARTY_INI_WINNER_SLOTS=1 reads enabled
+    mods' plugins only, and covers a target whose slots are unknown.
+
     Best-effort and CACHED per (root, skip) -- an unreadable plugin is skipped,
     never fatal: failing to detect coverage costs a double-render, while a
     crash here would cost the whole run."""
@@ -2903,11 +5024,39 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
     from . import esp as _esp   # module scope has no esp import
     if mods_root is None:       # no modlist: no other mods to have patched it
         return set()            # #convert-needs-a-modlist
+    recognise = not _flag("CBBE2UBE_NO_SKYPATCHER_PATCH_RECOGNITION", False)
+    # #claim-meshes-prefix (2026-09-24): an ARMA may spell its model path with
+    # the `meshes\` folder in front -- the engine reads it either way. The
+    # SkyPatcher half stripped it; the plugin half did not, so a softbody pack's
+    # own UBE nude suit (`meshes\!UBE\SexLab\...`) never read as a UBE claim.
+    # CBBE2UBE_NO_CLAIM_MESHES_PREFIX=1 compares the path as written again.
+    strip_meshes = not _flag("CBBE2UBE_NO_CLAIM_MESHES_PREFIX", False)
     # enabled_names belongs in the key: it changes the result, and in the
-    # long-lived GUI process the modlist can change between two scans.
+    # long-lived GUI process the modlist can change between two scans. So do
+    # the two switches.
+    want_ini = "ini" in halves
+    want_esp = "esp" in halves
     key = (str(mods_root), tuple(sorted(skip_mods)),
-           None if enabled_names is None else tuple(sorted(enabled_names)))
+           None if enabled_names is None else tuple(sorted(enabled_names)),
+           recognise, strip_meshes)
+    key += (want_ini, want_esp)     # the halves change the result too
+    # #third-party-ini-slot-check: its switch and the load order it reads.
+    slot_check = not _flag("CBBE2UBE_NO_THIRD_PARTY_INI_SLOT_CHECK", False)
+    active = (None if active_plugins is None
+              else {str(n).lower() for n in active_plugins})
+    key += (slot_check,)
+    # #third-party-ini-winner-slots: its switch, the load order (in order: it
+    # holds the active set too) and the files.
+    winner_slots = (slot_check
+                    and not _flag("CBBE2UBE_NO_THIRD_PARTY_INI_WINNER_SLOTS", False))
+    key += (winner_slots,
+            None if active_plugins is None else tuple(str(n).lower()
+                                                      for n in active_plugins),
+            None if plugin_index is None else tuple(sorted(
+                (str(k).lower(), str(v)) for k, v in plugin_index.items())))
     if key in _UBE_COVERED_CACHE:
+        if unchecked is not None:
+            unchecked.extend(_UBE_UNCHECKED.get(key, ()))
         return _UBE_COVERED_CACHE[key]
     covered: set = set()
     ube_armas: set = set()      # abs identity of every UBE armature found
@@ -2963,36 +5112,85 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
             except Exception:
                 pass            # an unreadable tree must not fail the scan
             _ube_mesh_index = idx
-        return (model_rel.lower().replace("\\", "/").lstrip("/")
-                in _ube_mesh_index)
+        rel = model_rel.lower().replace("\\", "/").lstrip("/")
+        if strip_meshes and rel.startswith("meshes/"):
+            rel = rel[len("meshes/"):]          # #claim-meshes-prefix
+        return rel in _ube_mesh_index
     try:
         mod_dirs = [d for d in root.iterdir() if d.is_dir()]
     except OSError:
         _UBE_COVERED_CACHE[key] = covered
         return covered
+    mod_dirs = [md for md in mod_dirs
+                if md.name.lower() not in skip
+                and (enabled_names is None or md.name in enabled_names)
+                and not _is_our_own_output(md)]   # our own output, any folder name
+    # (a) SkyPatcher INIs -- DEFERRED. A line's targets only count if the
+    # armature it adds is itself UBE, and that armature can live in any mod, so
+    # the INIs cannot be judged until every plugin has been read. Read first so
+    # the plugin pass knows which armours' slots the race test needs.
+    _ini_glob = ("SKSE/Plugins/SkyPatcher/armor/**/*.ini" if recognise
+                 else "SKSE/Plugins/SkyPatcher/armor/*.ini")
     for md in mod_dirs:
-        if md.name.lower() in skip:
-            continue
-        if enabled_names is not None and md.name not in enabled_names:
-            continue
-        if _is_our_own_output(md):
-            continue        # our own output, under whatever folder name
-        # (a) SkyPatcher INIs -- DEFERRED. A line's targets only count if the
-        # armature it adds is itself UBE, and that armature can live in any
-        # mod, so the INIs cannot be judged until every plugin has been read.
-        for ini in md.glob("SKSE/Plugins/SkyPatcher/armor/*.ini"):
+        try:
+            inis = sorted(md.glob(_ini_glob))
+        except OSError:
+            # A recursive walk can meet an unreadable or over-long folder. That
+            # costs this mod's INIs, never the whole scan: an exception here
+            # empties EVERY exclusion and double-covers all third-party patches.
+            inis = []
+        for ini in inis:
             try:
                 pending_ini.append((md.name,
                                     ini.read_text(encoding="utf-8",
                                                   errors="replace")))
             except OSError:
                 continue
+    ini_targets: set = set()     # armours an INI line names (race test only)
+    race_armas: dict = {}        # abs -> (BOD2 slots, MOD3): UBE_AllRace-primary
+    armo_slots: dict = {}        # abs -> union of BOD2 slots over its records
+    ube_arma_slots: dict = {}    # abs -> BOD2 slots of a `!UBE\` armature
+    if recognise or slot_check:
+        for _mn, _txt in pending_ini:
+            for _ln in _txt.splitlines():
+                _f = _skypatcher_fields(_ln)
+                if _f.get("armorAddonsToAdd") and _f.get("filterByArmors"):
+                    ini_targets.update(_skypatcher_forms(_f["filterByArmors"]))
+
+    def _pkey(p) -> str:
+        return os.path.normcase(os.path.abspath(str(p)))
+
+    def _target_records(e, own) -> dict:
+        """#third-party-ini-winner-slots: {target: BOD2 slots, or None when
+        the record has none} for the INI targets plugin `e` holds a record of."""
+        _ms = [m.lower() for m in e.header.masters]
+        got: dict = {}
+        for g in e.groups:
+            if g.label != b"ARMO":
+                continue
+            for r in g.records:
+                _mi = r.formid >> 24
+                _t = ((_ms[_mi] if _mi < len(_ms) else own), r.formid & 0xFFFFFF)
+                if _t not in ini_targets:
+                    continue
+                got[_t] = None
+                for sig, dd in _esp.iter_subrecords(r.payload):
+                    if sig in (b"BOD2", b"BODT") and len(dd) >= 4:
+                        got[_t] = _struct.unpack_from("<I", dd)[0]
+                        break
+        return got
+    _plugin_recs: dict = {}      # plugin file key -> _target_records, or None
+    for md in mod_dirs:
         # (b) plugins that define a UBE ARMA and an ARMO pointing at it
         for pl in list(md.glob("*.esp")) + list(md.glob("*.esm")) + list(md.glob("*.esl")):
             try:
                 e = _esp.ESP.load(pl)
             except Exception:
+                if winner_slots:
+                    _plugin_recs[_pkey(pl)] = None      # unreadable
                 continue
+            if winner_slots and ini_targets:
+                _plugin_recs[_pkey(pl)] = _target_records(e, pl.name.lower())
             masters = [m.lower() for m in e.header.masters]
             own = pl.name.lower()
 
@@ -3034,10 +5232,47 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                         # real third-party female coverage -- which is why 226
                         # of our meshes still shadow a hand-made UBE conversion.
                         if sig == b"MOD3":
-                            s = dd.rstrip(bytes(1)).decode("cp1252", "replace")
+                            s = _model_path_text(dd, "cp1252")
                             if _is_already_ube_model(s) and _ube_mesh_resolves(s):
                                 ube_fids.add(r.formid)
                                 ube_armas.add(_abs(r.formid))
+                                break
+                    if slot_check and r.formid in ube_fids:
+                        # #third-party-ini-slot-check: the slots it draws on.
+                        # Read by two plugins, only the slots both give count.
+                        for sig, dd in _esp.iter_subrecords(r.payload):
+                            if sig in (b"BOD2", b"BODT") and len(dd) >= 4:
+                                _us = _struct.unpack_from("<I", dd)[0]
+                                _ua = _abs(r.formid)
+                                ube_arma_slots[_ua] = (
+                                    ube_arma_slots.get(_ua, _us) & _us)
+                                break
+                    if recognise:
+                        # #skypatcher-patch-recognition: an armature whose
+                        # PRIMARY race is a UBE_AllRace race, whatever its mesh
+                        # path. Judged only where an INI line adds it.
+                        _rn, _bod, _m3 = None, 0, ""
+                        for sig, dd in _esp.iter_subrecords(r.payload):
+                            if sig == b"RNAM" and len(dd) >= 4:
+                                _rn = _abs(_struct.unpack_from("<I", dd)[0])
+                            elif sig in (b"BOD2", b"BODT") and len(dd) >= 4:
+                                _bod = _struct.unpack_from("<I", dd)[0]
+                            elif sig == b"MOD3":
+                                _m3 = _model_path_text(dd, "cp1252")
+                        if _rn is not None and _rn[0] == "ube_allrace.esp":
+                            race_armas[_abs(r.formid)] = (_bod, _m3)
+            if ini_targets:
+                for g in e.groups:
+                    if g.label != b"ARMO":
+                        continue
+                    for r in g.records:
+                        _a = _abs(r.formid)
+                        if _a not in ini_targets:
+                            continue
+                        for sig, dd in _esp.iter_subrecords(r.payload):
+                            if sig in (b"BOD2", b"BODT") and len(dd) >= 4:
+                                armo_slots[_a] = (armo_slots.get(_a, 0)
+                                                  | _struct.unpack_from("<I", dd)[0])
                                 break
             if not ube_fids:
                 continue
@@ -3053,10 +5288,35 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                                 break
                     if not hit:
                         continue
-                    _add(_abs(r.formid), md.name)
+                    if want_esp:        # #coverage-third-party-drawn: halves
+                        _add(_abs(r.formid), md.name)
+
+    # The race test's mesh gate: the same loose-files-only rule as
+    # `_ube_mesh_resolves`, for a path outside `!UBE\`. Asked only for the
+    # addons an INI line names, so a per-path probe beats indexing every mesh.
+    _loose_seen: dict = {}
+
+    def _race_mesh_resolves(model: str) -> bool:
+        rel = model.replace("\\", "/").lstrip("/")
+        if rel.lower().startswith("meshes/"):
+            rel = rel[7:]
+        if not rel:
+            return False
+        if _is_already_ube_model(rel):
+            return _ube_mesh_resolves(rel)
+        if rel.lower() not in _loose_seen:
+            def _is_file(p):
+                try:
+                    return p.is_file()
+                except OSError:
+                    return False      # unreadable: not proof the mesh exists
+            _loose_seen[rel.lower()] = any(
+                _is_file(md / "meshes" / rel) for md in mod_dirs)
+        return _loose_seen[rel.lower()]
 
     # (a, second pass) Now that every UBE armature is known, judge the INIs.
-    for mod_name, txt in pending_ini:
+    race_cover: dict = {}        # target -> [slots its race addons cover, mod]
+    for mod_name, txt in (pending_ini if want_ini else ()):
         for line in txt.splitlines():
             fields = _skypatcher_fields(line)
             if not fields:
@@ -3065,14 +5325,124 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
             targets = fields.get("filterByArmors")
             if not addons or not targets:
                 continue
+            _forms = list(_skypatcher_forms(addons))
+            if slot_check and active is not None:
+                # #third-party-ini-slot-check: SkyPatcher adds nothing from a
+                # plugin that is not loaded, so neither addon kind counts.
+                _forms = [a for a in _forms if a[0] in active]
             # The armature being ADDED must itself be UBE. Without this any
             # armorAddonsToAdd line in the modlist -- a cape addon, a heels
             # addon, another body's compat patch -- would permanently remove
             # its targets from the only delivery path there is.
-            if not any(a in ube_armas for a in _skypatcher_forms(addons)):
+            _ube_hit = any(a in ube_armas for a in _forms)
+            if _ube_hit and not slot_check:
+                # Switched off: any `!UBE\` addon hides every target outright.
+                for t in _skypatcher_forms(targets):
+                    _add(t, mod_name)
                 continue
-            for t in _skypatcher_forms(targets):
+            # #skypatcher-patch-recognition: a UBE-race addon counts toward
+            # the slots it covers; the target is judged once every line
+            # has been read (a patch may add its pieces on several lines).
+            # #third-party-ini-slot-check: a `!UBE\` addon goes through the
+            # same slot test.
+            _slots, _hit = 0, False
+            for a in _forms:
+                if a in ube_armas:
+                    _slots |= ube_arma_slots.get(a, 0)
+                    _hit = True
+                elif recognise:
+                    _ra = race_armas.get(a)
+                    if _ra is not None and _race_mesh_resolves(_ra[1]):
+                        _slots |= _ra[0]
+                        _hit = True
+            if _hit:
+                for t in _skypatcher_forms(targets):
+                    _rc = race_cover.setdefault(t, [0, mod_name, False])
+                    _rc[0] |= _slots
+                    _rc[2] = _rc[2] or _ube_hit     # a `!UBE\` addon counted
+    # #third-party-ini-winner-slots: the slots of the record the game uses.
+    _root_key = _pkey(root) + os.sep
+    _order = ([str(n).lower() for n in active_plugins]
+              if winner_slots and active_plugins is not None
+              and plugin_index is not None else None)
+    _index = ({str(k).lower(): v for k, v in plugin_index.items()}
+              if _order is not None else {})
+
+    _masters_seen: dict = {}
+
+    def _masters_of(p) -> "set | None":
+        """Plugin `p`'s masters from its TES4 record alone; None if unreadable."""
+        k = _pkey(p)
+        if k not in _masters_seen:
+            try:
+                with open(p, "rb") as f:
+                    head = f.read(24)
+                    if head[:4] != b"TES4" or len(head) < 24:
+                        raise ValueError("no TES4 record")
+                    rec = _esp.Record(sig=b"TES4", payload=f.read(
+                        _struct.unpack_from("<I", head, 4)[0]))
+                _masters_seen[k] = {m.lower() for m in
+                                    _esp.TES4Header.parse_from_record(rec).masters}
+            except Exception:
+                _masters_seen[k] = None
+        return _masters_seen[k]
+
+    def _records_of(p) -> "dict | None":
+        """The INI targets' records in plugin file `p`: {} when it can hold
+        none of them (or is not third-party), None when it cannot be read."""
+        k = _pkey(p)
+        if k in _plugin_recs:
+            return _plugin_recs[k]
+        if k.startswith(_root_key):
+            got: "dict | None" = {}    # a mod folder not read above: ours,
+        else:                           # skipped or disabled -- not theirs
+            # Overwrite or the game's Data folder: read only a plugin that can
+            # hold a target (defines it, or has its plugin as a master).
+            own = Path(p).name.lower()
+            _ms = _masters_of(p)
+            got = {} if _ms is not None else None
+            if _ms is not None and any(t[0] == own or t[0] in _ms
+                                       for t in race_cover):
+                try:
+                    got = _target_records(_esp.ESP.load(p), own)
+                except Exception:
+                    got = None
+        _plugin_recs[k] = got
+        return got
+
+    def _winner_slots(t) -> "int | None":
+        """The winning record's slots, or None when they cannot be read."""
+        for name in reversed(_order):
+            p = _index.get(name)
+            if p is None:
+                continue            # not on disk: the game loads nothing
+            recs = _records_of(p)
+            if recs is None:
+                # Unreadable: unknown only if it may hold the record.
+                _ms = _masters_of(p)
+                if _ms is None or t[0] == Path(p).name.lower() or t[0] in _ms:
+                    return None
+                continue
+            if t in recs:
+                return recs[t]
+        return None                 # in no loaded plugin
+    # A target counts only when its UBE addons cover EVERY slot the armour
+    # claims. When those slots cannot be read, a `!UBE\` addon is trusted
+    # whole, as before the slot check (a UBE-race addon never was).
+    _unchecked: list = []
+    for t, (_slots, mod_name, _ube) in race_cover.items():
+        _need = (_winner_slots(t) if _order is not None
+                 else armo_slots.get(t))
+        if _need is None:
+            if winner_slots and _ube:
                 _add(t, mod_name)
+                _unchecked.append(t)
+            continue
+        if not (_need & ~_slots):
+            _add(t, mod_name)
+    _UBE_UNCHECKED[key] = sorted(_unchecked)
+    if unchecked is not None:
+        unchecked.extend(_UBE_UNCHECKED[key])
 
     # Per-mod attribution, kept for diagnostics. The exclusion set alone answers
     # "how many armors are already UBE-covered" but not "BY WHAT" -- and that is
@@ -3091,8 +5461,27 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                  consequence="if that is converter output rather than a hand-made "
                              "patch, coverage is being suppressed wrongly",
                  fix="check that mod before trusting this run")
+            _record_failure("already-UBE set from one mod", top,
+                            f"{n} of {len(covered)} 'already UBE' armours",
+                            "if that mod is converter output rather than a "
+                            "hand-made patch, coverage is suppressed wrongly; check "
+                            "it before trusting this run", severity="warning")
     _UBE_COVERED_CACHE[key] = covered
     return covered
+
+
+def _print_unchecked_ube(unchecked) -> None:
+    """#third-party-ini-winner-slots: say how many of the armours left to
+    another mod's UBE patch were left without the slot check, and name a few."""
+    if not unchecked:
+        return
+    print(f"      {len(unchecked)} of them not slot-checked: the armour's own "
+          "record could not be read, so the other mod's UBE piece is trusted to "
+          "cover all of it")
+    for pl, fid in list(unchecked)[:3]:
+        print(f"        {pl}|{fid:06X}")
+    if len(unchecked) > 3:
+        print(f"        ... and {len(unchecked) - 3} more")
 
 
 def _print_coverage_warnings(label: str, stats: dict) -> None:
@@ -3120,14 +5509,1975 @@ def _print_coverage_warnings(label: str, stats: dict) -> None:
     warn(f"{label} coverage validator: {len(ws)} warning(s)",
          consequence="the lines below name what it found in the generated race "
                      "coverage; read them before trusting this run's coverage")
+    # One entry for the class, like the per-source patch validator's. #one-tally
+    _record_failure("coverage validator", f"{label} coverage",
+                    f"{len(ws)} warning(s)", _first_few(ws), severity="warning",
+                    count=len(ws))
     for w in ws[:5]:
         print(f"       {w}")
     if len(ws) > 5:
         print(f"       ... and {len(ws) - 5} more")
 
 
+def _armos_defined_by_mods(mods_root, mod_names, ordered_plugin_paths,
+                           missing: "list | None" = None) -> "tuple[set, dict]":
+    r"""#exclude-owned-coverage: the ARMOs an `--exclude-mods` mod OWNS, i.e. those
+    whose DEFINING plugin ships in that mod's folder.
+
+    Returned as {(plugin lowercase, formid low24)} -- the identity both coverage
+    generators key armours by -- plus {mod folder: count}.
+
+    WHY. `--exclude-mods` only ever removed a mod from the SOURCES; the winner
+    scan still minted armatures for its armour. Reported in game: a follower
+    excluded because a hand-made UBE refit exists wore converted male Ebony
+    boots, minted for her boots over a mesh another mod's conversion left behind.
+
+    Ownership is the DEFINING plugin, the user's call (2026-09-23) after a census
+    of four readings over that follower's 14 minted armours: defining plugin 14;
+    the load-order WINNING override 3 (an overhaul patch wins the rest, as it wins
+    78% of all coverage links in that modlist); the mesh the game loads 2 (a 3BA
+    BodySlide output supplies her meshes); the converter's loose source index 11.
+    A game master never sits in a mod folder here, so vanilla and DLC armour are
+    never withheld, and the `vanilla` pseudo-name (the vanilla-sweep switch) is
+    ignored. Only ACTIVE plugins count, read from the copy the game loads.
+
+    #one-plugin-owner (by default): a plugin is the excluded mod's only when that
+    mod OWNS it (`_plugin_owner`, the owner the sources read by too): a copy that
+    loses to another mod's belongs to that mod, and one under an overwrite copy
+    still belongs to the mod. Without a readable mod order no owner is known and
+    every root plugin of the folder counts, as before.
+
+    A folder whose name holds a comma arrives split by `_split_mod_arg` (the
+    CLI's comma separator); it matches when every piece of its name was given.
+    Names that match no folder are appended to `missing`, for a warning."""
+    from . import esp as _esp   # module scope has no esp import
+    owned: set = set()
+    per_mod: dict = {}
+    wanted = {str(n).strip().lower() for n in (mod_names or ()) if str(n).strip()}
+    wanted.discard("vanilla")
+    if mods_root is None or not wanted:
+        return owned, per_mod
+    owners = _plugin_copies(mods_root) if _one_plugin_owner_on() else None
+
+    def _named(d: Path) -> bool:
+        n = d.name.lower()
+        if n in wanted:
+            return True
+        parts = {p.strip() for p in n.split(",") if p.strip()}
+        return len(parts) > 1 and parts <= wanted
+    loaded = {Path(p).name.lower(): Path(p) for p in ordered_plugin_paths}
+    try:
+        folders = sorted(d for d in Path(mods_root).iterdir()
+                         if d.is_dir() and _named(d))
+    except OSError:
+        return owned, per_mod
+    if missing is not None:
+        found = set()
+        for d in folders:
+            found.add(d.name.lower())
+            found.update(p.strip() for p in d.name.lower().split(","))
+        missing.extend(sorted(wanted - found))
+    for md in folders:
+        for pl in sorted(list(md.glob("*.esp")) + list(md.glob("*.esm"))
+                         + list(md.glob("*.esl"))):
+            if owners is not None:
+                own = _plugin_owner(pl.name, mods_root)
+                if own is None or not _same_path(own, md):
+                    continue      # another mod owns it, or none does
+            src = loaded.get(pl.name.lower())
+            if src is None:
+                continue          # not active: its armour is not in the game
+            try:
+                e = _esp.ESP.load(src)
+            except Exception:
+                continue
+            own_byte = len(e.header.masters)
+            name = src.name.lower()
+            for g in e.groups:
+                if g.label != b"ARMO":
+                    continue
+                for r in g.records:
+                    if (r.formid >> 24) < own_byte:
+                        continue      # an override of a master's armour
+                    ident = (name, r.formid & 0xFFFFFF)
+                    if ident not in owned:
+                        owned.add(ident)
+                        per_mod[md.name] = per_mod.get(md.name, 0) + 1
+    return owned, per_mod
+
+
+# #exclude-body-only: a SkyPatcher `Plugin.esp|FormID` form anywhere on a line --
+# the plugin name runs back to the previous `=`, `,` or `:` (a name may hold
+# spaces), the FormID may carry `0x` and leading zeros.
+_INI_FORM_TOKEN = None
+
+
+class _ExclusionKeepProbe:
+    r"""#exclude-body-only: what the non-body coverage pass asks before it gives
+    an excluded mod's non-body armour its own mesh on UBE actors. Three
+    questions, each answered from the files the game reads, never from our
+    structured patch reader:
+
+    `named(armo_abs, edids)` -- the enabled mod (not our output) with a
+    SkyPatcher armor INI line, at any depth under `SKSE\Plugins\SkyPatcher\armor`,
+    that adds armour addons and names the armour: `plugin|formid` in any
+    spelling the reader accepts (leading zeros, `0x`, a full `FE` ESL form) or
+    one of its EditorIDs. A raw text scan: when our reader misses a hand-made
+    refit, the exclusion still keeps the refit's pieces ours-free. None if none.
+
+    `excluded_source(model, plugin)` -- does `model` ship loose in, or in an
+    archive of, an enabled mod folder that holds `plugin` at its root (the
+    excluded mod that defines the armour)? A converted mesh of that path is
+    the excluded mod's own mesh, converted before it was excluded.
+
+    `body_fit(model)` -- the loose copy the game loads (MO2 overwrite, then mods
+    by priority, then the game's Data), read: True/False, or None when it is not
+    loose (archive-only) or cannot be read. The caller fails closed on None.
+
+    Built by `_exclusion_keep_probe`; every answer is cached for the run."""
+
+    def __init__(self, mods_root, enabled_order, overwrite=None, data_dirs=()):
+        root = Path(mods_root)
+        self._dirs = [root / n for n in (enabled_order or ())]
+        self._loose = (([Path(overwrite)] if overwrite is not None else [])
+                       + self._dirs + [Path(d) for d in (data_dirs or ())])
+        self._forms: "dict[tuple, str] | None" = None
+        self._words: "dict[str, str]" = {}
+        self._owners: dict = {}
+        self._bsa: dict = {}
+        self._fit: dict = {}
+
+    @staticmethod
+    def _is_file(p: Path) -> bool:
+        try:
+            return p.is_file()
+        except OSError:
+            return False
+
+    @staticmethod
+    def _rel(model: str) -> str:
+        rel = str(model or "").replace("\\", "/").lstrip("/").lower()
+        return rel[7:] if rel.startswith("meshes/") else rel
+
+    def _scan(self) -> None:
+        global _INI_FORM_TOKEN
+        import re as _re
+        if _INI_FORM_TOKEN is None:
+            _INI_FORM_TOKEN = _re.compile(
+                r"([^=,:|\r\n]+?\.(?:esp|esm|esl))\s*\|\s*(?:0x)?([0-9a-f]+)",
+                _re.IGNORECASE)
+        self._forms = {}
+        for md in self._dirs:
+            try:
+                inis = sorted(md.glob("SKSE/Plugins/SkyPatcher/armor/**/*.ini"))
+            except OSError:
+                inis = []
+            if not inis or _is_our_own_output(md):
+                continue
+            for ini in inis:
+                try:
+                    txt = ini.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                for line in txt.splitlines():
+                    low = line.lower()
+                    if "armoraddonstoadd" not in low:
+                        continue
+                    for pl, hx in _INI_FORM_TOKEN.findall(low):
+                        pl = pl.strip()
+                        v = int(hx, 16)
+                        self._forms.setdefault((pl, v & 0xFFFFFF), md.name)
+                        if len(hx) >= 8 and (v >> 24) == 0xFE:
+                            self._forms.setdefault((pl, v & 0xFFF), md.name)
+                    for w in _re.split(r"[=,:|;\s]+", low):
+                        if w:
+                            self._words.setdefault(w, md.name)
+
+    def named(self, armo_abs, edids=()) -> "str | None":
+        if self._forms is None:
+            self._scan()
+        hit = self._forms.get((armo_abs[0].lower(), armo_abs[1] & 0xFFFFFF))
+        if hit is not None:
+            return hit
+        for e in edids or ():
+            if e and e.lower() in self._words:
+                return self._words[e.lower()]
+        return None
+
+    def excluded_source(self, model: str, plugin: str) -> bool:
+        rel = self._rel(model)
+        if not rel:
+            return False
+        pl = str(plugin).lower()
+        if pl not in self._owners:
+            self._owners[pl] = [d for d in self._dirs if self._is_file(d / pl)]
+        owners = self._owners[pl]
+        if any(self._is_file(d / "meshes" / rel) for d in owners):
+            return True
+        if pl not in self._bsa:
+            self._bsa[pl] = _BsaMeshIndex(
+                owners, None,
+                skip_bsa=("voice", " sound", "sounds", "- snd", "facegen"))
+        return bool(owners) and self._bsa[pl].contains(rel)
+
+    def body_fit(self, model: str) -> "bool | None":
+        rel = self._rel(model)
+        if not rel:
+            return None
+        if rel not in self._fit:
+            data = None
+            for d in self._loose:
+                f = d / "meshes" / rel
+                if self._is_file(f):
+                    try:
+                        data = f.read_bytes()
+                    except OSError:
+                        data = None
+                    break
+            self._fit[rel] = None if data is None else _nif_bytes_body_fit(data)
+        return self._fit[rel]
+
+
+def _exclusion_keep_probe() -> "_ExclusionKeepProbe | None":
+    """#exclude-body-only: the probe over the active MO2 instance, or None when
+    the modlist cannot be read -- the non-body pass then withholds every owned
+    armour, as without the rule."""
+    try:
+        lay = paths.discover_layout()
+        mr = paths.mods_root()
+        order = paths.enabled_mods_ordered(lay)
+    except Exception:
+        return None
+    if mr is None or not order:
+        return None
+    try:
+        ow = paths.overwrite_dir(lay)
+    except Exception:
+        ow = None
+    return _ExclusionKeepProbe(mr, order, overwrite=ow,
+                               data_dirs=list(getattr(lay, "game_data_dirs", None) or ()))
+
+
+def _loose_mesh_index_on() -> bool:
+    r"""#loose-mesh-index (2026-09-25): does `_mesh_exists_anywhere` answer its
+    loose-file questions from one listing of every loose `meshes` folder? Yes,
+    by default. The per-path probe it replaces checked `<dir>\meshes\<path>` in
+    every loose folder (~3,300 on the reported modlist) before it asked the
+    archives, so each archived or dead path cost ~3,300 file checks; the dead-
+    path questions of #coverage-female-standin made the coverage step ~4x slower.
+    Same answers either way. CBBE2UBE_NO_LOOSE_MESH_INDEX=1 probes per path again."""
+    return not _flag("CBBE2UBE_NO_LOOSE_MESH_INDEX", False)
+
+
+# Windows device names: `nul.nif` may open the device, never a listed file.
+_WIN_DEVICE_NAMES = frozenset(
+    ["con", "prn", "aux", "nul"] + [f"{p}{i}" for p in ("com", "lpt") for i in range(1, 10)])
+
+
+def _listing_can_answer(rel: str) -> bool:
+    r"""#loose-mesh-index: is `rel` (lower-case, `/`-separated) a path a folder
+    listing answers exactly as a file check on disk would? Windows resolves more
+    than a listing shows -- `.`/`..`, a trailing dot or space, an 8.3 short name
+    (`~`), a device name, non-ASCII case folding -- so such a path is checked on
+    disk instead."""
+    if not rel or not rel.isascii():
+        return False
+    for part in rel.split("/"):
+        if (not part or part[-1] in ". " or "~" in part
+                or any(c in ':*?"<>|' or c < " " for c in part)
+                or part.split(".")[0].rstrip(" ") in _WIN_DEVICE_NAMES):
+            return False
+    return True
+
+
+class _LooseMeshIndex:
+    r"""#loose-mesh-index: every file under each loose folder's `meshes`, keyed
+    by its lower-case path below `meshes`, to the FIRST folder (in the order
+    given -- MO2 overwrite, then mods by priority, then the game Data) that has
+    it. Listed once, on the first question. Links and junctions are followed,
+    as a file check follows them. Whatever a listing cannot answer exactly is
+    left to a file check (`first` returns `ASK`): a folder that could not be
+    listed, or listed a non-ASCII or very long name, a link back into its own
+    ancestry, and any path `_listing_can_answer` refuses."""
+
+    ASK = object()
+
+    def __init__(self, loose_dirs):
+        self._dirs = [str(d) for d in loose_dirs]
+        self._first: "dict[str, int] | None" = None
+        self._unlisted: "set[str]" = set()
+
+    def _build(self) -> None:
+        import stat as _stat
+        first: "dict[str, int]" = {}
+        unlisted: "set[str]" = set()
+        for i, d in enumerate(self._dirs):
+            # (folder, its lower-case path below meshes + "/", linked folders above it)
+            stack = [(os.path.join(d, "meshes"), "", frozenset())]
+            top = True
+            while stack:
+                path, pre, links = stack.pop()
+                try:
+                    it = os.scandir(path)
+                except (FileNotFoundError, NotADirectoryError):
+                    if not top:
+                        unlisted.add(pre)
+                    top = False
+                    continue          # no meshes folder: nothing loose here
+                except OSError:
+                    unlisted.add(pre)  # unreadable: a file check answers
+                    top = False
+                    continue
+                top = False
+                try:
+                    with it:
+                        for e in it:
+                            if not e.name.isascii() or len(e.path) >= 250:
+                                unlisted.add(pre)
+                                continue
+                            low = e.name.lower()
+                            if e.is_dir():
+                                sub = links
+                                if e.is_symlink() or (getattr(
+                                        e.stat(follow_symlinks=False),
+                                        "st_file_attributes", 0)
+                                        & _stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                                    st = os.stat(e.path)
+                                    key = (st.st_dev, st.st_ino)
+                                    if key in links:
+                                        unlisted.add(pre + low + "/")
+                                        continue
+                                    sub = links | {key}
+                                stack.append((e.path, pre + low + "/", sub))
+                            elif e.is_file():
+                                first.setdefault(pre + low, i)
+                except OSError:
+                    unlisted.add(pre)
+        self._first, self._unlisted = first, unlisted
+
+    def first(self, rel: str):
+        """Index of the first folder holding `rel` loose, None if none does,
+        or `ASK` when only a file check can tell."""
+        if not _listing_can_answer(rel):
+            return self.ASK
+        if self._first is None:
+            self._build()
+        if self._unlisted:
+            cut = rel.rfind("/")
+            while True:
+                if rel[:cut + 1] in self._unlisted:
+                    return self.ASK
+                if cut < 0:
+                    break
+                cut = rel.rfind("/", 0, cut)
+        return self._first.get(rel)
+
+
+def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
+    r"""#coverage-female-guard: does a source mesh exist ANYWHERE the game reads
+    it -- loose in an enabled mod or the game Data, or in any archive? A mesh in a
+    texture-named BSA still loads, so only the voice/sound/facegen archives are
+    skipped. The batch index lists texture archives too by default
+    (#texture-archive-meshes); this lookup passes its own skip list, so
+    CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES does not change what it sees (one real
+    female mesh in the reported modlist lives in a texture archive).
+
+    Both lookups are lazy: one listing of the loose `meshes` folders on the
+    first question (#loose-mesh-index; a per-path probe with
+    CBBE2UBE_NO_LOOSE_MESH_INDEX=1), and one table scan of the archives on the
+    first path not found loose. None when the modlist cannot be read -- the
+    guard then treats every named path as present."""
+    try:
+        lay = paths.discover_layout()
+        mr = paths.mods_root()
+        order = paths.enabled_mods_ordered(lay)
+    except Exception:
+        return None
+    if mr is None or not order:
+        return None
+    out_name = Path(output).name.lower()
+    dirs = [Path(mr) / n for n in order if n.lower() != out_name]
+    # MO2's overwrite holds whatever BodySlide built through MO2.
+    try:
+        _ow = paths.overwrite_dir(lay)
+    except Exception:
+        _ow = None
+    loose_dirs = ([Path(_ow)] if _ow is not None else []) + dirs
+    # #reconcile-loaded-winner: the positions in `loose_dirs` of the folders
+    # whose loose files outrank our output in MO2 -- the overwrite and every
+    # enabled mod above it. None when our output is not an enabled mod.
+    _out_pos = next((i for i, n in enumerate(order) if n.lower() == out_name),
+                    None)
+    _ow_n = 1 if _ow is not None else 0
+    above = (frozenset(range(_ow_n + _out_pos)) if _out_pos is not None
+             else None)
+    dirs += [Path(d) for d in (lay.game_data_dirs or []) if Path(d) not in dirs]
+    loose_dirs += [d for d in dirs if d not in loose_dirs]
+    bsa = _BsaMeshIndex(dirs, None,
+                        skip_bsa=("voice", " sound", "sounds", "- snd", "facegen"),
+                        plugin_order=_bsa_plugin_order(lay))   # #bsa-load-order-winner
+    seen: dict = {}
+    index = _LooseMeshIndex(loose_dirs) if _loose_mesh_index_on() else None
+
+    def _is_file(p: Path) -> bool:
+        try:
+            return p.is_file()
+        except OSError:
+            return False      # an unreadable folder costs itself, not the pass
+
+    def _loose_first(rel: str) -> "int | None":
+        """Position in `loose_dirs` of the first folder holding `rel` loose."""
+        if index is not None:
+            hit = index.first(rel)
+            if hit is not index.ASK:
+                return hit
+        for i, d in enumerate(loose_dirs):
+            if _is_file(d / "meshes" / rel):
+                return i
+        return None
+
+    def exists(model: str) -> bool:
+        rel = str(model or "").replace("\\", "/").lstrip("/").lower()
+        if rel.startswith("meshes/"):
+            rel = rel[7:]
+        if not rel:
+            return False
+        if rel not in seen:
+            seen[rel] = _loose_first(rel) is not None or bsa.contains(rel)
+        return seen[rel]
+
+    fit: dict = {}
+    unfitted: dict = {}
+
+    def _read_meshes(model: str, cache: dict, judge) -> "bool | None":
+        """`judge` of the copy of `model` the game loads (the first loose file
+        in priority order, else the archive that lists it), read into memory,
+        never extracted; cached in `cache` by path. None when it cannot be
+        found or read -- the caller fails closed."""
+        rel = str(model or "").replace("\\", "/").lstrip("/").lower()
+        if rel.startswith("meshes/"):
+            rel = rel[7:]
+        if not rel:
+            return None
+        if rel not in cache:
+            data = None
+            i = _loose_first(rel)
+            if i is not None:
+                try:
+                    data = (loose_dirs[i] / "meshes" / rel).read_bytes()
+                except OSError:
+                    data = None
+            if data is None:
+                data = bsa.read_bytes(rel)
+            cache[rel] = None if data is None else judge(data)
+        return cache[rel]
+
+    def body_fit(model: str) -> "bool | None":
+        """#coverage-female-standin: is that copy of `model` skinned to a
+        body-fit bone?"""
+        return _read_meshes(model, fit, _nif_bytes_body_fit)
+
+    def unfitted_skin(model: str) -> "bool | None":
+        """#coverage-body-cloak: is that copy of `model` skinned, with no skin
+        bound to a body-fit bone (a cape draped from the spine)?"""
+        return _read_meshes(model, unfitted, _nif_bytes_unfitted_skin)
+
+    def loaded_copy(model: str) -> "tuple[Path | None, bytes | None] | None":
+        """#reconcile-loaded-mesh: the copy of `model` the game loads, found
+        the way `body_fit` finds it -- (its path, None) for the first loose
+        file in priority order, else (None, its bytes) from the archive the
+        game loads it from. None when it is nowhere. Never extracts."""
+        rel = str(model or "").replace("\\", "/").lstrip("/").lower()
+        if rel.startswith("meshes/"):
+            rel = rel[7:]
+        if not rel:
+            return None
+        i = _loose_first(rel)
+        if i is not None:
+            return loose_dirs[i] / "meshes" / rel, None
+        data = bsa.read_bytes(rel)
+        return (None, data) if data else None
+
+    def outranks_output(model: str) -> bool:
+        """#reconcile-loaded-winner: does the game load another mod's LOOSE
+        copy of `model` over our output's own? A loose file in the overwrite
+        or in a mod above our output in MO2 wins; an archive never beats a
+        loose file, so our copy wins over every archive. False when our
+        output is not an enabled mod."""
+        rel = str(model or "").replace("\\", "/").lstrip("/").lower()
+        if rel.startswith("meshes/"):
+            rel = rel[7:]
+        if not rel or above is None:
+            return False
+        return _loose_first(rel) in above
+    loaded_copy.outranks_output = outranks_output
+    exists.body_fit = body_fit
+    exists.unfitted_skin = unfitted_skin
+    exists.loaded_copy = loaded_copy
+    return exists
+
+
+def _dead_armature_lookup(output, *built) -> "callable[[str], bool] | None":
+    r"""#coverage-dead-armature: the lookup both coverage passes judge a dead
+    armature with -- `_mesh_exists_anywhere(output)`. The first of `built`
+    that is not None is that same lookup already built for another rule (the
+    female guard's, the world-mesh one's), so the modlist is listed once; one
+    is built when none is. None when the rule is off, or when the modlist
+    cannot be read: then every armature is minted, as before, and a warning
+    says so."""
+    if not ube_patcher._coverage_dead_armature():
+        return None
+    look = next((b for b in built if b is not None), None)
+    if look is None:
+        look = _mesh_exists_anywhere(output)
+    if look is None:
+        warn("[unified] could not list the meshes the modlist has, so armour "
+             "whose meshes exist nowhere could not be told apart",
+             consequence="every armature is given a UBE armature, as before, "
+                         "including ones that draw nothing")
+        _record_failure("check skipped", "unified coverage",
+                        "armatures whose meshes exist nowhere",
+                        "the modlist's meshes could not be listed, so every "
+                        "armature was given a UBE armature, including ones that "
+                        "draw nothing", severity="warning")   # #one-tally
+    return look
+
+
+# The game's own archive lists when the profile's Skyrim.ini names none: the
+# Skyrim SE defaults, read from a stock profile INI.
+_DEFAULT_RESOURCE_ARCHIVES = (
+    "Skyrim - Misc.bsa", "Skyrim - Shaders.bsa", "Skyrim - Interface.bsa",
+    "Skyrim - Animations.bsa", "Skyrim - Meshes0.bsa", "Skyrim - Meshes1.bsa",
+    "Skyrim - Sounds.bsa", "Skyrim - Voices_en0.bsa", "Skyrim - Textures0.bsa",
+    "Skyrim - Textures1.bsa", "Skyrim - Textures2.bsa", "Skyrim - Textures3.bsa",
+    "Skyrim - Textures4.bsa", "Skyrim - Textures5.bsa", "Skyrim - Textures6.bsa",
+    "Skyrim - Textures7.bsa", "Skyrim - Textures8.bsa", "Skyrim - Patch.bsa")
+
+
+def _profile_resource_archives(lay) -> "list[str]":
+    """The archives the game's INI tells it to load (`sResourceArchiveList` and
+    `...List2` under [Archive] of the MO2 profile's Skyrim.ini), else the SE
+    defaults. Lowercased names."""
+    import configparser
+    names: "list[str]" = []
+    try:
+        ini_path = (Path(lay.instance_dir) / "profiles" / lay.selected_profile
+                    / "Skyrim.ini")
+        cp = configparser.ConfigParser(strict=False, interpolation=None)
+        cp.read(ini_path, encoding="utf-8-sig")   # option names come back lower-case
+        for k in ("sresourcearchivelist", "sresourcearchivelist2"):
+            if cp.has_option("Archive", k):
+                names += [x.strip() for x in cp.get("Archive", k).split(",")
+                          if x.strip()]
+    except Exception:
+        names = []
+    return [n.lower() for n in (names or _DEFAULT_RESOURCE_ARCHIVES)]
+
+
+def _game_view_mesh_resolver(output=None) -> "callable[[str], bool] | None":
+    r"""#coverage-third-party-drawn: is a mesh LIVE in the game view -- what the
+    game loads once this run is done? A loose file in MO2's overwrite, an
+    ENABLED mod (our own output folder included: the game loads it too), the
+    game Data folder, or a file in an archive the game LOADS: one the profile's
+    Skyrim.ini lists, or `<plugin>.bsa` / `<plugin> - Textures.bsa` of an
+    ACTIVE plugin, found at the root of overwrite, an enabled mod (MO2 priority)
+    or Data. An archive no active plugin loads does not count, and nor does a
+    disabled mod. Voice, sound and facegen archives are not read: they hold no
+    armour.
+
+    Not `_mesh_exists_anywhere`: that one leaves our output out and reads every
+    archive at a mod's root, loaded or not -- the right question for a female
+    slot's source mesh, the wrong one for "does this armature draw anything".
+    Both lookups are lazy: a per-path probe of the loose folders, and one table
+    scan of the loaded archives on the first path not found loose. None when
+    the modlist cannot be read."""
+    try:
+        lay = paths.discover_layout()
+        mr = paths.mods_root()
+        order = paths.enabled_mods_ordered(lay)
+        plugins = paths.active_plugins_ordered(lay) or []
+    except Exception:
+        return None
+    if mr is None or not order:
+        return None
+    try:
+        _ow = paths.overwrite_dir(lay)
+    except Exception:
+        _ow = None
+    roots: "list[Path]" = [Path(_ow)] if _ow is not None else []
+    roots += [Path(mr) / n for n in order]
+    if output is not None and all(str(Path(output)).lower() != str(r).lower()
+                                  for r in roots):
+        roots.append(Path(output))
+    roots += [Path(d) for d in (lay.game_data_dirs or [])]
+    seen: dict = {}
+    archived: "list[set[str] | None]" = [None]
+
+    def _is_file(p: Path) -> bool:
+        try:
+            return p.is_file()
+        except OSError:
+            return False      # an unreadable folder costs itself, not the pass
+
+    def _archive_meshes() -> "set[str]":
+        from .bsa_strings import BSAArchive
+        want = dict.fromkeys(_profile_resource_archives(lay))
+        for n in plugins:
+            stem = str(n).rsplit(".", 1)[0].lower()
+            want[stem + ".bsa"] = None
+            want[stem + " - textures.bsa"] = None
+        skip = ("voice", " sound", "sounds", "- snd", "facegen")
+        found: dict = {}          # archive name -> the copy the game loads
+        for r in roots:
+            try:
+                ents = os.listdir(r)
+            except OSError:
+                continue
+            for e in ents:
+                el = e.lower()
+                if el in want and el not in found and not any(k in el for k in skip):
+                    found[el] = r / e
+        out: "set[str]" = set()
+        for f in found.values():
+            try:
+                names = BSAArchive(f, eager=False).list_files("meshes/")
+            except Exception:
+                continue          # an unreadable archive costs itself only
+            out.update(n[len("meshes/"):] for n in names if n.endswith(".nif"))
+        return out
+
+    def live(model: str) -> bool:
+        rel = str(model or "").replace("\\", "/").strip().lstrip("/").lower()
+        if rel.startswith("meshes/"):
+            rel = rel[7:]
+        if not rel:
+            return False
+        if rel not in seen:
+            hit = any(_is_file(r / "meshes" / rel) for r in roots)
+            if not hit:
+                if archived[0] is None:
+                    try:
+                        archived[0] = _archive_meshes()
+                    except Exception:
+                        archived[0] = set()
+                hit = rel in archived[0]
+            seen[rel] = hit
+        return seen[rel]
+    return live
+
+
+def _mod_name_excluded(name: str, wanted: "set[str]") -> bool:
+    """Is this mod folder one of the run's exclusions? The folder name, or --
+    for a name with a comma, which the CLI splits -- every piece of it. Same
+    matching as `_armos_defined_by_mods`."""
+    n = name.lower()
+    if n in wanted:
+        return True
+    parts = {p.strip() for p in n.split(",") if p.strip()}
+    return len(parts) > 1 and parts <= wanted
+
+
+def _third_party_ube_twin_lookup(output, exclude_mods=()) \
+        -> "callable[[str], str | None] | None":
+    r"""#coverage-ube-twin: which THIRD-PARTY mod ships a loose
+    `meshes\!UBE\<path>` -- the hand-made UBE version of a source mesh the
+    converter did not convert? Returns that mod's folder name (MO2's highest
+    priority first) or None; None as a whole when the modlist cannot be read.
+
+    Third party: an enabled mod that is neither our output (its folder name, or
+    `_is_our_own_output` for an old output under any name) nor one the run
+    excludes -- an excluded mod is one the user took out of this tool's hands.
+    Loose files only, and not MO2's overwrite: a hand-made patch ships in its
+    own folder, and a stray converter output in overwrite must never read as
+    one. Measured on the live pack: 579 such meshes in a handful of mods, so the
+    index is built once, on the first question, over those mods' `!UBE` folders
+    alone."""
+    try:
+        lay = paths.discover_layout()
+        mr = paths.mods_root()
+        order = paths.enabled_mods_ordered(lay)
+    except Exception:
+        return None
+    if mr is None or not order:
+        return None
+    out_name = Path(output).name.lower()
+    wanted = {str(n).strip().lower() for n in (exclude_mods or ()) if str(n).strip()}
+    index: "dict[str, str] | None" = None
+
+    def _build() -> "dict[str, str]":
+        idx: dict = {}
+        for name in order:              # highest priority first: first one wins
+            if name.lower() == out_name or _mod_name_excluded(name, wanted):
+                continue
+            ube = Path(mr) / name / "meshes" / "!UBE"
+            try:
+                if not ube.is_dir() or _is_our_own_output(Path(mr) / name):
+                    continue
+                files = list(ube.rglob("*.nif"))
+            except OSError:
+                continue                # an unreadable folder costs itself only
+            for f in files:
+                idx.setdefault(f.relative_to(ube).as_posix().lower(), name)
+        return idx
+
+    def twin(model: str, as_written: bool = False) -> "str | None":
+        # `model` is a SOURCE model path: `meshes\X` is read by the engine as
+        # `X`, so its twin is `meshes\!UBE\X`. `as_written` asks for the path
+        # after `!UBE\` exactly as a minted slot spells it -- the postflight
+        # judges `!UBE\meshes\X` as `meshes\!UBE\meshes\X`. #twin-path-strip-meshes
+        nonlocal index
+        rel = str(model or "").replace("\\", "/").lstrip("/").lower()
+        if rel.startswith("meshes/") and not as_written:
+            rel = rel[7:]
+        if not rel:
+            return None
+        if index is None:
+            index = _build()
+        return index.get(rel)
+    return twin
+
+
+def _built_ube_twins(resolved_pairs, built_ube_twin) -> "dict[str, str]":
+    r"""#skip-built-ube-path: {rel: mod} for the planned meshes another mod
+    already ships BUILT at `meshes\!UBE\<rel>` (`built_ube_twin` is
+    `_third_party_ube_twin_lookup`, the same lookup coverage points at them
+    with). Judged per weight base: a base is left to that mod only when EVERY
+    variant planned for it has a built twin -- their `_1` beside our `_0` would
+    pair two different meshes. No lookup (switched off, no modlist) -> {}."""
+    if built_ube_twin is None:
+        return {}
+    by_base: dict = {}
+    for _src, rel in resolved_pairs:
+        by_base.setdefault(_weight_base_key(rel), []).append(rel)
+    out: dict = {}
+    for rels in by_base.values():
+        who = [built_ube_twin(r) for r in rels]
+        if all(who):
+            out.update(zip(rels, who))
+    return out
+
+
+def _supersede_built_ube_outputs(output_dir, nif_dst_root, rels,
+                                 failed=None) -> int:
+    r"""#skip-built-ube-path: move an earlier run's copy of each mesh left to its
+    builder -- with its base's `.tri` morphs and `.xml` physics -- out of
+    `meshes\` to `_superseded\meshes\!UBE\...` in the output mod. The output
+    folder is never cleaned and our mod sits above the builder in MO2, so a
+    stale copy would still win the path in game, and a stale `.tri` beside the
+    builder's NIF would morph the wrong vertices. Moved, not deleted: the folder
+    is inert to the game and undoing it is a copy back. Returns files moved.
+
+    #supersede-whole-base: the whole base moves or none of it -- see
+    `_supersede_whole_bases`; `failed` collects the bases that stayed.
+    Switched off, only the planned variants move and a failure is silent."""
+    if _supersede_whole_base():
+        return _supersede_whole_bases(output_dir, nif_dst_root, rels, failed)
+    root = Path(output_dir)
+    dest_root = root / "_superseded"
+    moved = 0
+    seen: set = set()
+    for rel in rels:
+        dst = Path(nif_dst_root) / Path(rel)
+        stem = dst.stem
+        if stem.endswith(("_0", "_1")):
+            stem = stem[:-2]
+        for f in (dst, dst.with_name(stem + ".tri"), dst.with_name(stem + ".xml")):
+            key = str(f).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                if not f.is_file():
+                    continue
+                to = dest_root / f.relative_to(root)
+                to.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(f, to)
+                moved += 1
+            except (OSError, ValueError):
+                continue    # a file that cannot move stays, unreported
+    return moved
+
+
+def _split_claimed_supersedes(rels, nif_dst_root, claimed_dst_paths):
+    r"""#global-schedule: (rels to move out of meshes\, rels held back) for one
+    source's #skip-built-ube-path supersede. A base whose output an EARLIER
+    source of this run claimed is held back whole: those files are that
+    source's conversion from this run, not an earlier run's copy.
+
+    One source at a time, the later source's move runs after the earlier source
+    has written the base, and moves the fresh conversion out with the rest; with
+    every source planned first it runs BEFORE, would move only the old copy, and
+    the earlier source would then write its half beside the builder's. So the
+    batch-wide schedule holds the base and keeps the earlier source's
+    conversion; one source at a time (`--workers 1` too) passes no claims and
+    keeps the old behaviour. Switched off (CBBE2UBE_NO_GLOBAL_SCHEDULE) or
+    without claims, everything moves, as before."""
+    rels = list(rels)
+    if not claimed_dst_paths or not _global_schedule():
+        return rels, []
+    claimed = {_weight_base_key(str(p)) for p in claimed_dst_paths}
+    move: list = []
+    held: list = []
+    for r in rels:
+        key = _weight_base_key(str((Path(nif_dst_root) / Path(r)).resolve()))
+        (held if key in claimed else move).append(r)
+    return move, held
+
+
+def _supersede_whole_base() -> bool:
+    r"""#supersede-whole-base (2026-09-24): does superseding a base move EVERY
+    weight variant of it in our output (not only the ones this run planned),
+    all or nothing, and keep the partner fill out of it? Yes, by default.
+
+    A source that ships only `_1` plans only `x_1`, so the old move left the
+    `x_0` an earlier run's partner fill had written in `meshes\`; after the
+    batch the fill copied that stale `x_0` back to `x_1` -- the builder's path,
+    beating the hand-made mesh again on every run. A move that failed (a file in
+    use) was silent and left half a base behind, which the fill then completed.
+    CBBE2UBE_NO_SUPERSEDE_WHOLE_BASE=1 moves only the planned variants again."""
+    return not _flag("CBBE2UBE_NO_SUPERSEDE_WHOLE_BASE", False)
+
+
+def _supersede_whole_bases(output_dir, nif_dst_root, rels, failed=None) -> int:
+    r"""#supersede-whole-base: move each weight base `rels` names out of
+    `meshes\` WHOLE -- the planned files, the `_0`/`_1` partner of a weighted
+    one (a copy the partner fill made is one), and the base's `.tri` and `.xml`.
+
+    All or nothing per base: when one file cannot move, the ones already moved
+    go back, and the base is appended to `failed` as (base rel, error, [files
+    that could not be put back]). A whole stale base is our old conversion with
+    its own morphs -- still the wrong mesh, but a consistent one the next run
+    moves; half a base pairs our NIF with the builder's `.tri` (it morphs the
+    wrong vertices) and the fill completes it. Returns files moved."""
+    root = Path(output_dir)
+    dest_root = root / "_superseded"
+    groups: dict = {}       # (folder, stem) -> [files, planned first]
+    for rel in rels:
+        dst = Path(nif_dst_root) / Path(rel)
+        stem = dst.stem
+        weighted = stem.endswith(("_0", "_1"))
+        if weighted:
+            stem = stem[:-2]
+        key = (str(dst.parent).lower(), stem.lower())
+        g = groups.setdefault(key, {"rel": rel, "files": []})
+        cand = [dst]
+        if weighted:
+            cand += [dst.with_name(stem + "_0.nif"), dst.with_name(stem + "_1.nif")]
+        cand += [dst.with_name(stem + ".tri"), dst.with_name(stem + ".xml")]
+        for f in cand:
+            if all(str(f).lower() != str(h).lower() for h in g["files"]):
+                g["files"].append(f)
+    moved = 0
+    for g in groups.values():
+        done: list = []
+        try:
+            for f in g["files"]:
+                if not f.is_file():
+                    continue
+                to = dest_root / f.relative_to(root)
+                to.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(f, to)
+                done.append((f, to))
+        except (OSError, ValueError) as e:
+            torn = []
+            for f, to in reversed(done):
+                try:
+                    os.replace(to, f)
+                except OSError:
+                    torn.append(f.name)
+            if failed is not None:
+                failed.append((_weight_base_key(g["rel"]),
+                               plain_error(e), sorted(torn)))
+            continue
+        moved += len(done)
+    return moved
+
+
+# ---------- #stale-output-sweep: our old conversions no source makes any more ----------
+#
+# The decisions and the file moves live in src/stale_sweep.py; this is the part
+# that reads a run's results and speaks to the user.
+
+# {base: source} a source of this run gave a positive reason to drop although no
+# earlier run recorded it: the finish records it, so a later run can move it.
+_STALE_ADOPTED: "dict[str, str]" = {}
+
+
+def _stale_bsa_state(index) -> "tuple[bool, list]":
+    """(was the batch's archive index built, what it could not list), taken
+    before the batch: the list outlives the index. #stale-output-sweep"""
+    if index is None:
+        return False, []
+    return True, getattr(index, "skipped", [])
+
+
+def _stale_source_name(src) -> str:
+    """How the manifest names a source: its mod folder, or 'vanilla'."""
+    return (stale_sweep.VANILLA if _vanilla_sweep_esps(Path(src))
+            else Path(src).name)
+
+
+def _stale_plan_gaps(args, results, state) -> "list[str]":
+    """PLAN_COMPLETE, as the list of what made this run's plan smaller than the
+    load order's (empty = complete): each fallback that fails OPEN to fewer
+    planned pieces, and each failure the merge gate counts. After any of them a
+    base no claim owns may be one the run LOST, not one it dropped, so the sweep
+    only reports. #stale-output-sweep"""
+    gaps: "list[str]" = []
+    if state.get("mesh_index") is None:
+        gaps.append("the mesh index of the modlist was not built")
+    bsa_ok, bsa_skipped = state.get("bsa") or (False, [])
+    if not bsa_ok:
+        gaps.append("the archive index was not built")
+    elif bsa_skipped:
+        gaps.append(f"{len(bsa_skipped)} archive(s) or folder(s) could not be listed")
+    if (state.get("npc_worn") is None
+            and not _flag("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", False)):
+        gaps.append("the armour female NPCs wear could not be read")
+    if _selection_winner_playable():
+        if state.get("winner_np") is None:
+            gaps.append("which armour the load order makes playable could not be read")
+        elif _armo_winner_unreadable():
+            gaps.append(f"{len(_armo_winner_unreadable())} plugin(s) could not be "
+                        "read for playability")
+    sweep = [r for s, r, _e in results
+             if _stale_source_name(s) == stale_sweep.VANILLA]
+    if not sweep:
+        gaps.append("the vanilla sweep did not run")
+    elif not any(r is not None and r.claimed_weight_bases for r in sweep):
+        gaps.append("the vanilla sweep claimed no mesh")
+    missing = len(getattr(args, "sources", None) or ()) - len(results)
+    if missing > 0:
+        gaps.append(f"{missing} source(s) did not run")
+    ctx = getattr(args, "stale_sweep", None) or {}
+    printed = int(state.get("warns") or 0) - int(ctx.get("warn_base") or 0)
+    if printed > 0:
+        gaps.append(f"{printed} warning(s) were printed before or during the conversion")
+    # The merge gate, from each result's own fields: the tally the merge blocks
+    # on is counted only after this point.
+    failed = sum(1 for _s, _r, e in results if e is not None)
+    if failed:
+        gaps.append(f"{failed} source(s) failed")
+    ok = [r for _s, r, e in results if e is None and r is not None]
+    for n, what in (
+            (sum(r.nif_errors for r in ok), "mesh(es) failed to convert"),
+            (sum(len(r.esp_gen_failures) for r in ok), "plugin patch(es) failed"),
+            (sum(len(r.nif_load_failures) for r in ok),
+             "converted mesh(es) cannot be read back"),
+            (sum(len(r.nif_invariant_warnings) for r in ok),
+             "mesh issue(s) of the crash class")):
+        if n:
+            gaps.append(f"{n} {what}")
+    return gaps
+
+
+def _stale_source_probes(ctx, state):
+    """(status, classify) for a recorded source that did not run this time:
+    where it went, and -- present and enabled but not selected -- the planner's
+    positive reasons for the bases it no longer plans, from the same inputs the
+    batch used. #stale-output-sweep"""
+    mr = ctx.get("mods_root")
+    enabled = ctx.get("enabled")
+    en = None if enabled is None else {n.lower() for n in enabled}
+    excl = {n.lower() for n in (ctx.get("excluded") or ())}
+
+    def status(s: str) -> str:
+        if s == stale_sweep.VANILLA:
+            return "vanilla"
+        if s.lower() in excl:
+            return "excluded"
+        if not mr or not Path(mr).is_dir():
+            return "unknown"
+        if not (Path(mr) / s).is_dir():
+            return "removed"
+        if en is not None and s.lower() not in en:
+            return "disabled"
+        return "not selected"
+
+    vfs = state.get("mesh_index")
+
+    def _resolves(b: str) -> bool:
+        return any(f"{b}{suf}.nif" in vfs for suf in ("_1", "_0", ""))
+
+    def classify(s: str) -> dict:
+        why: dict = {}
+        _player_armor_mesh_bases(
+            Path(mr) / s, include_candidate_slots=True,
+            mesh_resolves=_resolves if vfs is not None else None,
+            ube_covered_armos=state.get("covered"),
+            npc_worn_armos=state.get("npc_worn"),
+            armo_winner_nonplayable=state.get("winner_np"), drop_reasons=why)
+        return why
+    return status, classify
+
+
+def _stale_patch_sets(patches_dir, written) -> "dict[str, list | None]":
+    """Per-source patches this run did not write: {ESP name: [its sidecars...,
+    the ESP last]}, None for a set with a linked file (never moved). Coverage
+    pieces and any other plugin are not ours to move. #stale-output-sweep"""
+    out: dict = {}
+    pdir = Path(patches_dir)
+    try:
+        esps = sorted(pdir.glob("*.esp")) if pdir.is_dir() else []
+    except OSError:
+        return out
+    for q in esps:
+        if q.name.lower() in written:
+            continue
+        if (_new_source_patch_stem(q.name) is None
+                and _legacy_source_patch_stem(q.name) is None):
+            continue
+        files = [Path(str(q) + s) for s in _SRC_PATCH_SIDECARS
+                 if Path(str(q) + s).is_file()] + [q]
+        out[q.name] = (None if any(os.path.islink(f) for f in files) else files)
+    return out
+
+
+def _stale_print_list(title, rows, limit=25) -> None:
+    if not rows:
+        return
+    print(f"  {title}: {len(rows)}")
+    for d in rows[:limit]:
+        src = f" ({d.source})" if d.source else ""
+        print(f"    {d.key}{src} -- {d.reason}")
+    if len(rows) > limit:
+        print(f"    ... and {len(rows) - limit} more")
+
+
+def _stale_output_sweep(args, output, patches_dir, results, claimed_dst_paths,
+                        state) -> int:
+    r"""#stale-output-sweep: find the weight bases in `meshes\!UBE` no claim of
+    this run owns, decide each on the manifest and the planner's reasons, and --
+    on a full run whose plan is complete, under the brake -- move the ones with
+    a reason to `_superseded\<run stamp>\`, leaving them PENDING until the merge
+    confirms them (`_stale_output_sweep_finish`). Always reports. Returns the
+    number of warnings printed (recorded as warnings too).
+
+    ISOLATED: any error in the decisions or the moves puts back every file this
+    run moved, warns, and returns -- the restore, coverage and merge then run
+    exactly as without the sweep."""
+    global _STALE_ADOPTED
+    _STALE_ADOPTED = {}
+    ctx = getattr(args, "stale_sweep", None)
+    if not ctx or not stale_sweep.sweep_on():
+        return 0
+    if not ctx.get("all_mods") or getattr(args, "plugins_only", False):
+        print(f"\n  stale-output sweep: {NOTE} not run -- only a run of all mods "
+              "can tell which old conversions no source makes any more")
+        return 0
+    try:
+        return _stale_output_sweep_run(args, Path(output), patches_dir, results,
+                                       claimed_dst_paths, state, ctx)
+    except Exception as e:
+        return _stale_output_sweep_failed(Path(output), e)
+
+
+def _stale_output_sweep_failed(output, e) -> int:
+    """The sweep raised: put back everything its journal lists, forget what it
+    would have recorded, and say so. Returns warnings. #stale-output-sweep"""
+    global _STALE_ADOPTED
+    _STALE_ADOPTED = {}
+    h = stale_sweep.pending()
+    stale_sweep._set_pending(None)
+    failed: list = []
+    if h is not None:
+        failed = stale_sweep.put_back(h.pairs() + h.planned)
+        stale_sweep.update_journal(h.journal,
+                                   status="partly put back" if failed else "put back",
+                                   put_back_because=f"the sweep stopped: {plain_error(e)}")
+    warn(f"stale-output sweep: stopped by an error ({plain_error(e)}); every file "
+         "it moved this run was put back",
+         consequence="no old conversion moves this run; the restore, coverage and "
+                     "merge run as they would without the sweep",
+         fix="send the run log; CBBE2UBE_NO_STALE_OUTPUT_SWEEP=1 turns the sweep off")
+    _record_failure("stale sweep error", output, "stale-output sweep",
+                    plain_error(e), severity="warning")
+    return 1 + (_stale_put_back_failed(h, failed) if failed else 0)
+
+
+def _stale_output_sweep_run(args, output, patches_dir, results, claimed_dst_paths,
+                            state, ctx) -> int:
+    """The decisions, the moves and the report of `_stale_output_sweep`.
+    #stale-output-sweep"""
+    global _STALE_ADOPTED
+    warns = 0
+    for stamp, failed in stale_sweep.recover_interrupted(output):
+        print(f"  stale-output sweep: {NOTE} put back the files an interrupted "
+              f"run had moved to {stale_sweep.SUPERSEDED_DIR}\\{stamp}"
+              + (f" ({len(failed)} could not go back)" if failed else ""))
+    inv = stale_sweep.inventory(output)
+    manifest, problem = stale_sweep.read_manifest(output)
+    if problem:
+        warn(f"stale-output sweep: the conversion manifest {problem}, so no old "
+             "conversion an earlier run recorded can move this run",
+             where=str(output / stale_sweep.MANIFEST_NAME),
+             consequence="they are only listed; the record is written anew at the "
+                         "end of this run, and a later full run can move them again",
+             fix="nothing to do, unless the file was edited by hand")
+        _record_failure("stale sweep manifest unreadable", output,
+                        stale_sweep.MANIFEST_NAME, problem, severity="warning")
+        warns += 1
+    claimed: set = set()
+    superseded: set = set()
+    ran: "dict[str, dict]" = {}
+    claims_by_source: "dict[str, bool]" = {}
+    written: set = set()
+    for src, r, _err in results:
+        name = _stale_source_name(src)
+        why = ran.setdefault(name, {})
+        if r is None:
+            continue
+        claimed |= set(r.claimed_weight_bases)
+        superseded |= set(r.superseded_weight_bases)
+        why.update(r.dropped_base_reasons)
+        claims_by_source[name] = (claims_by_source.get(name, False)
+                                  or bool(r.claimed_weight_bases))
+        written |= {Path(p).name.lower() for p in r.output_esps}
+    ube = output / "meshes" / "!UBE"
+    try:
+        ube_r = ube.resolve()
+    except OSError:
+        ube_r = ube
+    for p in claimed_dst_paths or ():
+        try:
+            claimed.add(_weight_base_key(Path(p).relative_to(ube_r).as_posix()))
+        except ValueError:
+            pass
+    stale = set(inv.bases) - claimed - superseded
+    recorded = dict((manifest or {}).get("bases", {}))
+    status, classify = _stale_source_probes(ctx, state)
+    dec = stale_sweep.decide_bases(stale, recorded, ran, status, classify)
+    for d in dec:
+        if d.action == "move" and d.key in inv.unsafe:
+            d.action, d.reason = "hold", "a file of it lies outside the output folder"
+    _STALE_ADOPTED = {d.key: d.source for d in dec if d.action == "adopt"}
+    sets = _stale_patch_sets(patches_dir, written)
+    root_write = Path(patches_dir) == output
+    named: dict = {}
+
+    def _names_of(n: str):
+        if n not in named:
+            named[n] = stale_sweep.patch_bases(Path(patches_dir) / n)
+        return named[n]
+    # A per-source patch left in place can be merged by a later run's fallback:
+    # hold every base it could name, then decide the patches again (one that
+    # moved because all its source's bases moved may have to stay now).
+    while True:
+        pdec = stale_sweep.decide_patches(
+            set(sets), dict((manifest or {}).get("patches", {})), ran, status, dec,
+            claims_by_source, recorded)
+        for d in pdec:
+            if d.action == "move" and (root_write or sets.get(d.key) is None):
+                d.action, d.reason = "hold", ("the per-source patches sit at the mod root"
+                                              if root_write else "a file of it is a link")
+        if not stale_sweep.hold_for_staying_patches(dec, pdec, _names_of):
+            break
+    moves = [d for d in dec if d.action == "move"]
+    pmoves = [d for d in pdec if d.action == "move"]
+
+    gaps = _stale_plan_gaps(args, results, state)
+    limit = stale_sweep.brake_limit(len(inv.bases))
+    report_why: "list[str]" = []
+    if manifest is None:
+        report_why.append(f"the conversion manifest {problem}" if problem else
+                          "no earlier run recorded what it converted yet")
+    if gaps:
+        report_why.append("the plan is incomplete: " + "; ".join(gaps))
+    if len(moves) > limit:
+        report_why.append(f"the brake: {len(moves)} bases is more than the "
+                          f"{limit} one run may move")
+    if stale_sweep.report_only_forced():
+        report_why.append("CBBE2UBE_STALE_OUTPUT_SWEEP_REPORT_ONLY=1")
+
+    print(f"\n--- stale-output sweep: {len(stale)} old conversion(s) in "
+          f"meshes\\!UBE no source claimed this run ---")
+    if gaps and (moves or pmoves):
+        warn(f"stale-output sweep: {len(moves)} old conversion(s) NOT moved -- "
+             f"the plan is incomplete: {'; '.join(gaps)}",
+             consequence="a mesh this run may have lost is not told apart from one it "
+                         "dropped, so nothing moves; they are listed below",
+             fix="fix what the warnings above name and run all mods again")
+        _record_failure("stale sweep report-only", output, "plan incomplete",
+                        "; ".join(gaps), severity="warning")
+        warns += 1
+    if len(moves) > limit:
+        warn(f"stale-output sweep: {len(moves)} old conversion(s) NOT moved -- more "
+             f"than the {limit} one run may move",
+             consequence="a share this large is more likely a fault in this run than "
+                         "pieces that went away; they are listed below",
+             fix="read the list; if it is right, move the files by hand or run again "
+                 "after the cause is fixed")
+        _record_failure("stale sweep report-only", output, "brake",
+                        f"{len(moves)} > {limit}", severity="warning")
+        warns += 1
+
+    handle = None
+    if not report_why and (moves or pmoves):
+        handle, left, torn = _stale_move(output, inv, sets, moves, pmoves,
+                                         stale_sweep.run_stamp(ctx.get("started")
+                                                               or time.time()))
+        if left:
+            names = ", ".join(f"{k} ({e})" for k, e, _t in left[:5])
+            warn(f"stale-output sweep: {len(left)} old conversion(s) could not be "
+                 f"moved (a file is in use): {names}",
+                 consequence="each was left whole in meshes\\!UBE, so it still draws "
+                             "in game",
+                 fix="close the program holding the file (the game, NifSkope, "
+                     "Outfit Studio) and run again")
+            _record_failure("stale sweep move failed", output,
+                            f"{len(left)} base(s)", names, severity="warning")
+            warns += 1
+        if torn:
+            names = ", ".join(f"{k} ({', '.join(t)})" for k, _e, t in torn[:5])
+            warn(f"stale-output sweep: {len(torn)} old conversion(s) were only partly "
+                 f"moved and could not be put back: {names}",
+                 consequence="the named files are in _superseded\\ while the rest "
+                             "of the piece is still in meshes\\!UBE",
+                 fix="move the named files back from _superseded\\ by hand")
+            _record_failure("stale sweep move torn", output,
+                            f"{len(torn)} base(s)", names, severity="warning")
+            warns += 1
+
+    kept_moves = [d for d in dec if d.action == "move"]
+    if handle is not None:
+        n_files = len(handle.pairs())
+        print(f"  moved {len(handle.moved_bases)} base(s) and "
+              f"{len(handle.moved) - len(handle.moved_bases)} per-source patch set(s) "
+              f"({n_files} file(s)) to {handle.stamp_dir.relative_to(output)}\\ "
+              "-- kept only if the merge below succeeds")
+    elif moves or pmoves:
+        print(f"  REPORT ONLY: {'; '.join(report_why)}")
+    _stale_print_list("moved" if handle is not None else "would move", kept_moves)
+    _stale_print_list("left in place", [d for d in dec if d.action == "hold"])
+    _stale_print_list("recorded now (a later run moves them if they are still "
+                      "dropped then)", [d for d in dec if d.action == "adopt"])
+    _stale_print_list("per-source patches " + ("moved" if handle is not None
+                                               else "that would move"),
+                      [d for d in pdec if d.action == "move"])
+    _stale_print_list("per-source patches left in place",
+                      [d for d in pdec if d.action == "hold"])
+    if inv.unknown:
+        print(f"  {len(inv.unknown)} other file(s) in meshes\\!UBE left alone: "
+              + ", ".join(inv.unknown[:5]))
+    from dataclasses import asdict as _asdict
+    try:
+        stale_sweep.write_json(
+            output / stale_sweep.SUPERSEDED_DIR / stale_sweep.REPORT_NAME,
+            {"run_stamp": stale_sweep.run_stamp(ctx.get("started") or time.time()),
+             "moved_to": (str(handle.stamp_dir.relative_to(output))
+                          if handle is not None else None),
+             "report_only": report_why, "plan_complete": not gaps,
+             "plan_gaps": gaps, "brake_limit": limit,
+             "bases_on_disk": len(inv.bases), "stale_bases": len(stale),
+             "bases": [_asdict(d) for d in dec],
+             "patches": [_asdict(d) for d in pdec],
+             "other_files": inv.unknown})
+        print(f"  full list: {stale_sweep.SUPERSEDED_DIR}\\{stale_sweep.REPORT_NAME}")
+    except OSError as e:
+        print(f"  (stale-output report not written: {plain_error(e)})")
+    return warns
+
+
+def _stale_move(output, inv, sets, moves, pmoves, stamp):
+    """Move each decided base and patch set whole into a new stamp folder; the
+    journal (written first) lists them, so an interrupted run's moves can be
+    put back. Returns (handle or None, left [(key, error, [])], torn [(key,
+    error, [names])]).
+
+    The patch sets move first: a base whose source's patch set, or a patch set
+    naming it, could not move stays too (`hold_for_staying_patches`). The handle
+    is pending from the first move on, so an error anywhere after it puts back
+    what moved. #stale-output-sweep"""
+    sdir = stale_sweep.new_stamp_dir(output, stamp)
+    h = stale_sweep.Handle(output=output, stamp_dir=sdir,
+                           journal=sdir / stale_sweep.JOURNAL_NAME)
+    planned = []
+    for d in pmoves:
+        planned += [p.relative_to(output).as_posix() for p in sets[d.key]]
+    for d in moves:
+        planned += [p.relative_to(output).as_posix() for p in inv.bases[d.key]]
+    h.planned = [(output / rel, sdir / rel) for rel in planned]
+    journal = {"status": "moving", "run_stamp": stamp, "planned": planned,
+               "moves": []}
+    left: list = []
+    torn: list = []
+    try:
+        stale_sweep.write_json(h.journal, journal)
+    except OSError as e:
+        return None, [(d.key, plain_error(e), []) for d in moves + pmoves], []
+    stale_sweep._set_pending(h)
+    stayed: list = []
+    for kind, rows, files_of in (("patch", pmoves, lambda d: sets[d.key]),
+                                 ("mesh", moves, lambda d: sorted(inv.bases[d.key]))):
+        if kind == "mesh" and stayed:
+            stale_sweep.hold_for_staying_patches(
+                moves, stayed, lambda n: stale_sweep.patch_bases(sets[n][-1]))
+        for d in rows:
+            if d.action != "move":
+                continue
+            pairs, err, t = stale_sweep.move_group(files_of(d), output, sdir)
+            if err:
+                (torn if t else left).append((d.key, err, t))
+                d.action, d.reason = "hold", f"could not be moved ({err})"
+                if kind == "patch":
+                    stayed.append(d)
+                continue
+            h.moved.append((d.key, kind, pairs))
+            journal["moves"].append({"key": d.key, "kind": kind, "source": d.source,
+                                     "reason": d.reason,
+                                     "files": [a.relative_to(output).as_posix()
+                                               for a, _b in pairs]})
+    journal["status"] = "waiting for the merge" if h.moved else "nothing moved"
+    try:
+        stale_sweep.write_json(h.journal, journal)
+    except OSError:
+        pass            # the first journal still lists every planned file
+    if not h.moved:
+        stale_sweep._set_pending(None)
+        return None, left, torn
+    return h, left, torn
+
+
+def _stale_settle(h, why: str) -> int:
+    """Keep `h`'s moves, or -- `why` says the merge did not confirm them --
+    put every file back. Returns warnings printed. #stale-output-sweep"""
+    if not why:
+        stale_sweep.update_journal(h.journal, status="kept")
+        print(f"  stale-output sweep: kept {len(h.moved)} move(s) in "
+              f"{h.stamp_dir.relative_to(h.output)}\\ (the new Combined names none)")
+        return 0
+    # Every file the journal lists, not only the whole groups: a file of a base
+    # whose move was torn is in the stamp folder too. #stale-output-sweep
+    failed = stale_sweep.put_back(h.pairs() + h.planned)
+    stale_sweep.update_journal(h.journal,
+                               status="partly put back" if failed else "put back",
+                               put_back_because=why)
+    report = h.output / stale_sweep.SUPERSEDED_DIR / stale_sweep.REPORT_NAME
+    if report.is_file():
+        stale_sweep.update_journal(report, moved_to=None, put_back_because=why)
+    warn(f"stale-output sweep: the {len(h.moved)} old conversion(s) moved this run "
+         f"were put back: {why}",
+         consequence="an old Combined plugin may still name them, and a plugin that "
+                     "names a missing mesh crashes the game; they stay in "
+                     "meshes\\!UBE until a run completes the merge",
+         fix="fix the merge problem above and run all mods again")
+    _record_failure("stale sweep put back", h.output, "moved files", why,
+                    severity="warning")
+    return 1 + (_stale_put_back_failed(h, failed) if failed else 0)
+
+
+def _stale_put_back_failed(h, failed) -> int:
+    """Name the moved files that could not go back. #stale-output-sweep"""
+    names = ", ".join(Path(f).name for f in failed[:5])
+    warn(f"stale-output sweep: {len(failed)} moved file(s) could not be put back: "
+         f"{names}",
+         consequence="a plugin that still names one of them crashes the game "
+                     "when an actor wearing it loads",
+         fix=f"move them back by hand from {h.stamp_dir}")
+    _record_failure("stale sweep put back failed", h.output,
+                    f"{len(failed)} file(s)", ", ".join(failed[:5]))
+    return 1
+
+
+def _stale_output_sweep_failover(output, patches_dir) -> int:
+    r"""The merge falls back to the per-source patches (coverage failed or came
+    back empty): put back every file this run moved BEFORE the fallback lists
+    the patches, so it merges what a run without the sweep would -- the moved
+    patch sets, and patches whose armatures name a moved mesh. Then run the
+    female-model restore again: it ran while those meshes were away, and it
+    re-points only to a mesh on disk (idempotent), so a second pass ends where
+    one pass over the whole folder would. Returns warnings. #stale-output-sweep"""
+    h = stale_sweep.pending()
+    if h is None:
+        return 0
+    stale_sweep._set_pending(None)
+    warns = _stale_settle(h, "the merge falls back to the per-source patches, "
+                             "which may name them")
+    try:
+        _fmr = ube_patcher.restore_female_models(patches_dir, output)
+        if _fmr.get("models_restored"):
+            print(f"  female-model restore (after the put-back): re-pointed "
+                  f"{_fmr['models_restored']} ARMA model(s) in "
+                  f"{_fmr['patches_changed']} patch(es)")
+    except Exception as e:
+        warn(f"female-model restore after the stale-output put-back failed: "
+             f"{plain_error(e)}",
+             consequence="a patch may keep a male fallback for a mesh that is back")
+        _record_failure("female-model restore failed", output, "after the "
+                        "stale-output put-back", plain_error(e), severity="warning")
+        warns += 1
+    return warns
+
+
+def _stale_output_sweep_settle(args, output, *, merged) -> int:
+    r"""#stale-output-sweep: keep this run's pending moves when the merge wrote
+    a new Combined from coverage alone and none of its pieces names a moved
+    base; otherwise put every moved file back. A no-op when nothing is pending
+    (already settled, or the sweep did not move). Returns warnings.
+
+    #sweep-settle-before-postmerge: called right after the merge, before the
+    alt-texture reconcile and the other passes that read `meshes\!UBE`, so a
+    put-back returns the NIF before a colour set is indexed against its
+    absence; `_stale_output_sweep_finish` calls it too (the merge failed, was
+    skipped, or the switch is set)."""
+    ctx = getattr(args, "stale_sweep", None)
+    if not ctx or not stale_sweep.sweep_on():
+        return 0
+    output = Path(output)
+    h = stale_sweep.pending()
+    if h is None:
+        return 0
+    stale_sweep._set_pending(None)
+    why = ""
+    if not merged:
+        why = "the new Combined plugin was not written from coverage this run"
+    else:
+        try:
+            refs = stale_sweep.combined_references(
+                output / args.merged_name, h.moved_bases)
+        except Exception as e:
+            refs = []
+            why = f"the new Combined plugin could not be read back ({plain_error(e)})"
+        if refs:
+            why = (f"the new Combined plugin still names {len(refs)} of them: "
+                   + ", ".join(refs[:3]))
+    return _stale_settle(h, why)
+
+
+def _stale_output_sweep_finish(args, output, results, *, merged) -> int:
+    r"""#stale-output-sweep, after the merge: keep this run's moves only when
+    the merge wrote a new Combined from coverage alone and none of its pieces
+    names a moved base -- otherwise every moved file goes back, because an old
+    Combined pointing at a moved `!UBE` mesh is a missing-mesh crash. Then write
+    the manifest (every `auto` run, a Select run too). Returns warnings."""
+    global _STALE_ADOPTED
+    ctx = getattr(args, "stale_sweep", None)
+    if not ctx or not stale_sweep.sweep_on():
+        return 0
+    output = Path(output)
+    warns = _stale_output_sweep_settle(args, output, merged=merged)
+    adopted, _STALE_ADOPTED = _STALE_ADOPTED, {}
+    try:
+        _stale_write_manifest(args, output, results, adopted)
+    except Exception as e:
+        warn(f"could not write the conversion manifest ({plain_error(e)})",
+             where=str(output / stale_sweep.MANIFEST_NAME),
+             consequence="the next run cannot tell which old conversions are ours, so "
+                         "it moves none of this run's",
+             fix="check that the output folder is writable and run again")
+        _record_failure("manifest not written", output, stale_sweep.MANIFEST_NAME,
+                        plain_error(e), severity="warning")
+        warns += 1
+    return warns
+
+
+def _stale_write_manifest(args, output, results, adopted) -> None:
+    """Record every base this run claimed and every per-source patch it wrote,
+    with the source that made it; carry what an earlier run recorded while its
+    file is still on disk. #stale-output-sweep"""
+    claims: dict = {}
+    patches: dict = {}
+    for src, r, _err in results:
+        if r is None:
+            continue
+        name = _stale_source_name(src)
+        for b in sorted(getattr(r, "claimed_weight_bases", ()) or ()):
+            claims.setdefault(b, name)
+        for p in getattr(r, "output_esps", ()) or ():
+            patches.setdefault(Path(p).name, name)
+    inv = stale_sweep.inventory(output)
+    pdir = _patches_dir_of(output, getattr(args, "unmerged_patch_subdir",
+                                           "_unmerged_patches"))
+    try:
+        pfiles = ({q.name.lower() for q in pdir.glob("*.esp")}
+                  if pdir.is_dir() else set())
+    except OSError:
+        pfiles = set()
+    prev, _problem = stale_sweep.read_manifest(output)
+    try:
+        from .build_info import stamp_line as _stamp_line
+        build = _stamp_line()
+    except Exception:
+        build = ""
+    ctx = getattr(args, "stale_sweep", None) or {}
+    # A moved file no run settled keeps its record. #sweep-recover-every-run
+    stranded = (stale_sweep.stranded_files(output)
+                if stale_sweep.recover_every_run() else None)
+    stale_sweep.write_manifest(output, stale_sweep.build_manifest(
+        prev, claims, patches, set(inv.bases), pfiles, adopted,
+        stale_sweep.run_stamp(ctx.get("started") or time.time()), build,
+        stranded))
+
+
+def _stale_recover_at_start(args, output) -> int:
+    r"""#sweep-recover-every-run: put back the files a killed run's sweep left
+    in `_superseded\<stamp>\` (the GUI's Cancel is a hard kill, so its `finally`
+    never ran), at the start of EVERY `auto` run -- before any per-source patch
+    or `meshes\!UBE` is read and before the manifest is written. Only the full
+    run's sweep did it before, so a Select-mods or `--plugins-only` run in
+    between left the old Combined naming missing meshes, and its manifest
+    dropped their record for good. Runs with the sweep off too: turning it off
+    must not leave meshes missing. Prints and records each put-back; a file
+    that cannot go back is a problem. Returns the problem warnings printed."""
+    if (not getattr(args, "stale_sweep", None)
+            or not stale_sweep.recover_every_run()):
+        return 0
+    output = Path(output)
+    warns = 0
+    try:
+        recovered = stale_sweep.recover_interrupted(output)
+    except Exception as e:  # noqa: BLE001 -- a start-of-run step must not kill the run
+        warn(f"stale-output sweep: could not check {stale_sweep.SUPERSEDED_DIR} for "
+             f"moves an interrupted run left ({type(e).__name__}: {e})",
+             consequence="files a stopped run moved aside may still be missing from "
+                         "meshes\\!UBE; this run converts as usual",
+             fix=f"look in {output / stale_sweep.SUPERSEDED_DIR} and send the "
+                    "log if files are missing")
+        _record_failure("stale sweep recovery failed", output,
+                        stale_sweep.SUPERSEDED_DIR, f"{type(e).__name__}: {e}",
+                        severity="warning")
+        return 1
+    for stamp, failed in recovered:
+        sdir = output / stale_sweep.SUPERSEDED_DIR / stamp
+        warn(f"stale-output sweep: put back the old conversions an interrupted run "
+             f"had moved to {stale_sweep.SUPERSEDED_DIR}\\{stamp}"
+             + (f" ({len(failed)} could not go back)" if failed else ""),
+             consequence="that run stopped before its merge confirmed the moves, so "
+                         "its Combined plugin may have named missing meshes until "
+                         "now; " + ("the files listed below are still missing"
+                                    if failed else
+                                    "they are back where it expects them"),
+             level=NOTE)
+        _record_failure("stale sweep put back after an interrupted run", output,
+                        f"{stale_sweep.SUPERSEDED_DIR}\\{stamp}",
+                        "a run stopped between the sweep's moves and its merge; "
+                        "its moved files were put back", severity="warning")
+        if failed:
+            warns += _stale_put_back_failed(
+                stale_sweep.Handle(output=output, stamp_dir=sdir,
+                                   journal=sdir / stale_sweep.JOURNAL_NAME), failed)
+    return warns
+
+
+def _stale_output_sweep_abandoned() -> int:
+    """The run stopped between the sweep and the merge (an exception left
+    `_cmd_convert`): put back whatever the sweep moved. #stale-output-sweep"""
+    h = stale_sweep.pending()
+    if h is None:
+        return 0
+    stale_sweep._set_pending(None)
+    return _stale_settle(h, "the run stopped before the merge confirmed them")
+
+
+def _outside_ube_mesh_resolver(output) -> "callable[[str], bool] | None":
+    r"""The post-merge validator's `mesh_resolves`: does a `!UBE\` path the
+    coverage step pointed OUTSIDE our output load from another mod? Only the two
+    kinds it writes on purpose -- the UBE body's own hands/feet
+    (#coverage-nude-skin, resolved like `_mesh_exists_anywhere`) and, while the
+    twin rule is on (the default), a hand-made twin (#coverage-ube-twin). Anything else under `!UBE\` that our
+    output lacks is still a missing mesh. The question is only "does it load",
+    so an excluded mod's copy counts here. None when both are off; the lookups
+    are built on the first question, which a clean Combined never asks."""
+    nude = ube_patcher._coverage_nude_skin()
+    twin_on = ube_patcher._coverage_ube_twin()
+    if not (nude or twin_on):
+        return None
+    strip = ube_patcher._twin_path_strip_meshes()
+    built: dict = {}
+
+    def resolves(path: str) -> bool:
+        p = str(path or "")
+        if nude and ube_patcher.is_ube_body_part_path(p):
+            if "any" not in built:
+                built["any"] = _mesh_exists_anywhere(output)
+            return bool(built["any"] and built["any"](p))
+        if twin_on and p[:5].lower() == "!ube\\":
+            if "twin" not in built:
+                built["twin"] = _third_party_ube_twin_lookup(output)
+            rest = p[5:]
+            if strip and ube_patcher._strip_meshes_prefix(rest) != rest:
+                # Judged as written: `!UBE\meshes\X` loads meshes\!UBE\meshes\X,
+                # not the twin at meshes\!UBE\X. #twin-path-strip-meshes
+                return bool(built["twin"] and built["twin"](rest, as_written=True))
+            return bool(built["twin"] and built["twin"](p[5:]))
+        return False
+    return resolves
+
+
+def _report_skypatcher_unsafe_names(stats: dict) -> int:
+    """#skypatcher-name-guard: name each plugin whose armour the merge wrote no
+    SkyPatcher line for, because SkyPatcher would split its file name. One
+    warning per plugin, in the run log and the failures file. When the merged
+    plugin's OWN name is the one SkyPatcher would split, that file is named
+    instead, and an armour plugin is named only when its own name splits too.
+    Returns how many files were named."""
+    outs = sorted(set(stats.get("sp_unsafe_output_names") or []))
+    for o in outs:
+        warn(f'the merged plugin "{o}" gets no SkyPatcher lines',
+             consequence="its file name holds a comma or semicolon, which "
+                         "SkyPatcher reads as a separator; every line names it, "
+                         "so none is written and the converted pieces are "
+                         "invisible on UBE actors",
+             fix="choose a merged plugin name without that character "
+                 "(--merged-name) and run the converter again")
+        _record_failure("armour not delivered", o, "every armour line",
+                        "the merged plugin's file name holds a character "
+                        "SkyPatcher splits on (, ;); rename it and run again",
+                        severity="warning")
+    by_plugin: "dict[str, int]" = {}
+    for t in stats.get("sp_unsafe_name_targets") or []:
+        pl = str(t).rsplit("|", 1)[0]
+        if outs and not ube_patcher._skypatcher_name_splits(pl):
+            continue                    # dropped for the output's name alone
+        by_plugin[pl] = by_plugin.get(pl, 0) + 1
+    for pl, n in sorted(by_plugin.items()):
+        warn(f'{n} armour record(s) of the plugin "{pl}" get no UBE armature',
+             consequence="its file name holds a comma or semicolon, which "
+                         "SkyPatcher reads as a separator; a line naming it "
+                         "would silently match nothing, so none is written and "
+                         "these pieces are invisible on UBE actors",
+             fix="rename the plugin file without that character (a plugin that "
+                 "has it as a master needs that master entry renamed too), then "
+                 "run the converter again")
+        _record_failure("armour not delivered", pl, f"{n} armour record(s)",
+                        "the plugin's file name holds a character SkyPatcher "
+                        "splits on (, ;); rename it and run again",
+                        severity="warning")
+    return len(outs) + len(by_plugin)
+
+
+def _report_coverage_holds(stats: "list[dict]") -> None:
+    """Say what the two coverage passes held back, in counts and a few names:
+    armour of an excluded mod left without an armature (#exclude-owned-coverage),
+    left to another mod that patches it, or still drawn as a non-body piece
+    with no mesh converted for that mod (#exclude-body-only),
+    female slots that did not take a converted MALE mesh
+    (#coverage-female-guard), body armatures whose world mesh was not converted
+    (#coverage-world-mesh), nude hands/feet swapped for the UBE body's own or
+    left out (#coverage-nude-skin), slots pointed at a hand-made UBE twin
+    (#coverage-ube-twin), hoods drawn with their body armour
+    (#coverage-body-accessory), armour drawn through an armature whose
+    primary race is not DefaultRace (#coverage-human-race-list), and
+    armatures whose meshes exist nowhere (#coverage-dead-armature). Silent
+    when there is nothing to say."""
+    withheld = [w for s in stats for w in (s.get("withheld") or [])]
+    excl_kept = [w for s in stats for w in (s.get("exclusion_nonbody_kept") or [])]
+    kept = [k for s in stats for k in (s.get("female_kept") or [])]
+    dead = [k for s in stats for k in (s.get("female_dead_male") or [])]
+    # #coverage-female-standin: dead female slots given the vanilla female
+    # counterpart, a non-body piece's own male mesh, or left dead.
+    standin = [k for s in stats for k in (s.get("female_standin") or [])]
+    as_is = [k for s in stats for k in (s.get("female_male_nonbody") or [])]
+    dead_kept = [k for s in stats for k in (s.get("female_dead_kept") or [])]
+    skipped = [k for s in stats for k in (s.get("female_guard_skipped") or [])]
+    dropped = [d for s in stats for d in (s.get("female_guard_dropped") or [])]
+    wskip = [k for s in stats for k in (s.get("world_mesh_skipped") or [])]
+    # Adults named first: children's clothing (skipped on purpose) filled every
+    # named line live and hid the adult outfits. A child piece is what source
+    # selection already calls one, by name. #world-mesh-partial-report
+    wdrop = sorted((d for s in stats for d in (s.get("world_mesh_dropped") or [])),
+                   key=lambda d: _is_child_content_asset(d[1]))
+    # Still drawn, but with no body piece: the hands/feet armature was minted.
+    wpart = sorted((d for s in stats for d in (s.get("world_mesh_partial") or [])),
+                   key=lambda d: _is_child_content_asset(d[1]))
+    nred = [k for s in stats for k in (s.get("nude_redirected") or [])]
+    nskip = [k for s in stats for k in (s.get("nude_skipped") or [])]
+    ndrop = [d for s in stats for d in (s.get("nude_dropped") or [])]
+    twins = [k for s in stats for k in (s.get("ube_twin") or [])]
+    accs = [k for s in stats for k in (s.get("body_accessory") or [])]
+    beasts = sorted({k for s in stats for k in (s.get("beast_variant_skipped") or [])})
+    nonactor = sorted({k for s in stats for k in (s.get("beast_variant_non_actor") or [])})
+    wigs = [w for s in stats for w in (s.get("wigs") or [])]
+    listed = [k for s in stats for k in (s.get("race_listed") or [])]
+    # #coverage-third-party-drawn
+    tp_drawn = [k for s in stats for k in (s.get("third_party_drawn") or [])]
+    tp_part = [k for s in stats for k in (s.get("third_party_partial") or [])]
+    tp_kept = [k for s in stats
+               for k in (s.get("third_party_kept_first_person") or [])]
+    # #exclude-body-only: a piece held because another mod patches it (adds
+    # armatures to it) is left to that mod's patch -- named on its own line,
+    # not among the pieces with no UBE armature from any mod. Body pieces too:
+    # the body pass records the ones a SkyPatcher patch names.
+    left_to: dict = {}
+    for s in stats:
+        for armo_abs, edid, why in ((s.get("exclusion_nonbody_held") or [])
+                                    + (s.get("exclusion_body_held") or [])):
+            mod = ube_patcher._held_for_another_patch(why)
+            if mod is not None:
+                left_to[tuple(armo_abs)] = (edid, mod)
+    withheld = [w for w in withheld if tuple(w[0]) not in left_to]
+    if withheld:
+        warn(f"[unified] {len(withheld)} armour(s) of an excluded mod have no UBE "
+             "armature from any mod",
+             where="--exclude-mods",
+             consequence="they are not drawn on UBE-race actors",
+             fix="take the mod off the exclusion list to have them covered, or "
+                 "install a UBE patch for it")
+        # Each problem line of this report is one entry. #one-tally
+        _record_failure("armour left uncovered", "unified coverage",
+                        f"{len(withheld)} armour(s) of an excluded mod",
+                        "no UBE armature from any mod, so they are not drawn on "
+                        "UBE-race actors; take the mod off the exclusion list or "
+                        "install a UBE patch for it", severity="warning")
+        for (pl, fid), edid in withheld[:5]:
+            print(f"       {edid or '?'}  ({pl}|{fid:06X})")
+        if len(withheld) > 5:
+            print(f"       ... and {len(withheld) - 5} more")
+    if left_to:
+        print(f"  [unified] {len(left_to)} armour(s) of an excluded mod are left to "
+              "the other mod that patches them (it adds armatures to them; this "
+              "tool does not check that those draw on UBE-race actors)")
+        for ((pl, fid), (edid, mod)) in list(left_to.items())[:5]:
+            print(f"       {edid or '?'}  ({pl}|{fid:06X})  patched by {mod}")
+        if len(left_to) > 5:
+            print(f"       ... and {len(left_to) - 5} more")
+    if excl_kept:
+        # #exclude-body-only: information -- the user's rule, working as meant.
+        # A kept piece draws the model its armature names: never a converted
+        # copy of the excluded mod's own mesh, but a shared path another mod's
+        # conversion covers does draw that converted copy.
+        warn(f"[unified] {len(excl_kept)} non-body armour(s) of an excluded mod "
+             "are still drawn on UBE-race actors, with no mesh converted for "
+             "that mod",
+             where="--exclude-mods",
+             consequence="no other mod patches them and they are not body pieces, "
+                         "so each draws the mesh its armature names (converted "
+                         "only where another mod's conversion shares the path)",
+             level=NOTE)
+        for (pl, fid), edid in excl_kept[:5]:
+            print(f"       {edid or '?'}  ({pl}|{fid:06X})")
+        if len(excl_kept) > 5:
+            print(f"       ... and {len(excl_kept) - 5} more")
+    if kept or skipped:
+        warn(f"[unified] {len(kept)} female model slot(s) kept their own unconverted "
+             f"mesh, and {len(skipped)} body armature(s) were not minted "
+             f"({len(dropped)} armour(s) left without one), rather than take a "
+             "converted MALE mesh",
+             consequence="those pieces wear their unconverted mesh on UBE, or are "
+                         "not drawn on UBE-race actors, until their female mesh "
+                         "is converted",
+             fix="convert the mod that ships the female mesh")
+        _record_failure("female mesh not converted", "unified coverage",
+                        f"{len(kept)} female slot(s) kept their unconverted mesh, "
+                        f"{len(skipped)} body armature(s) not minted",
+                        "rather than take a converted MALE mesh; convert the mod "
+                        "that ships the female mesh", severity="warning")
+        for k in kept[:5]:
+            print(f"       {k['slot']} {k['kept']}  (not {k['male']})")
+        if len(kept) > 5:
+            print(f"       ... and {len(kept) - 5} more")
+        for (pl, fid), edid in dropped[:5]:
+            print(f"       not covered: {edid or '?'}  ({pl}|{fid:06X})")
+    if dead:
+        # A NOTE: this is the behaviour from before the guard, kept on purpose.
+        warn(f"[unified] {len(dead)} female model slot(s) name a mesh that exists "
+             "nowhere, so they keep the converted MALE mesh",
+             consequence="the piece is drawn with the male mesh on UBE; with its "
+                         "own path it would not be drawn at all",
+             level=NOTE)
+        for k in dead[:5]:
+            print(f"       {k['slot']} {k['dead']}  (-> {k['male']})")
+        if len(dead) > 5:
+            print(f"       ... and {len(dead) - 5} more")
+    if standin:
+        print(f"  [unified] {len(standin)} female model slot(s) name a mesh that "
+              "exists nowhere and draw the vanilla female counterpart of their "
+              "male mesh instead")
+        for k in standin[:5]:
+            print(f"       {k['slot']} {k['orig']}  (-> {k['standin']})")
+        if len(standin) > 5:
+            print(f"       ... and {len(standin) - 5} more")
+    if as_is:
+        print(f"  [unified] {len(as_is)} female model slot(s) of non-body pieces "
+              "name a mesh that exists nowhere and draw their own male mesh")
+        for k in as_is[:5]:
+            print(f"       {k['slot']} {k['orig']}  (-> {k['male_as_is']})")
+        if len(as_is) > 5:
+            print(f"       ... and {len(as_is) - 5} more")
+    if dead_kept:
+        warn(f"[unified] {len(dead_kept)} female model slot(s) name a mesh that "
+             "exists nowhere and have nothing to draw instead",
+             consequence="those pieces are not drawn on UBE-race actors, as on "
+                         "any female actor",
+             level=NOTE)
+        # One group per reason the male mesh was not drawn instead (the pass
+        # tags each slot, `_dead_kept_why`), each with a few slots; a group's
+        # "more" is what that group did not print. #coverage-female-standin
+        live = [k for k in dead_kept if k.get("male_live")]
+        for group, what in (
+                ([k for k in dead_kept if not k.get("male_live")],
+                 "have no male mesh either"),
+                ([k for k in live if k.get("why") == "body"],
+                 "are body pieces whose male mesh was not converted"),
+                ([k for k in live if k.get("why") == "cloak"],
+                 "are capes or cloaks whose male mesh was not converted"),
+                ([k for k in live if k.get("why") not in ("body", "cloak")],
+                 "have a male mesh that was not converted and could not be read "
+                 "or judged")):
+            if not group:
+                continue
+            print(f"       {len(group)} {what}:")
+            for k in group[:3]:
+                print(f"         {k['slot']} {k['dead_kept']}  ({k['arma']})")
+            if len(group) > 3:
+                print(f"         ... and {len(group) - 3} more")
+    if wskip:
+        warn(f"[unified] {len(wskip)} body armature(s) were not minted because their "
+             f"female world mesh was not converted ({len(wdrop)} armour(s) left "
+             f"without one, {len(wpart)} drawn without the body piece)",
+             consequence="those body pieces are not drawn on UBE-race actors, rather "
+                         "than draw their unconverted CBBE mesh on the UBE body",
+             fix="convert the mod that ships the female mesh")
+        _record_failure("body armature not minted", "unified coverage",
+                        f"{len(wskip)} body armature(s)",
+                        "their female world mesh was not converted, so those body "
+                        "pieces are not drawn on UBE-race actors; convert the mod "
+                        "that ships the female mesh", severity="warning")
+        for (pl, fid), edid in wdrop[:5]:
+            print(f"       not covered: {edid or '?'}  ({pl}|{fid:06X})")
+        if len(wdrop) > 5:
+            print(f"       ... and {len(wdrop) - 5} more")
+        for (pl, fid), edid in wpart[:5]:
+            print(f"       no body piece: {edid or '?'}  ({pl}|{fid:06X})")
+        if len(wpart) > 5:
+            print(f"       ... and {len(wpart) - 5} more")
+    if nred:
+        print(f"  [unified] {len(nred)} hand/foot armature(s) that drew the nude CBBE "
+              "hands or feet now draw the UBE body's own")
+    # Armours are counted per reason (a dropped entry is (armo, edid, why)):
+    # one count for both overstated the skins by every unresolved item.
+    unres = [k for k in nskip if k.get("why") == "unresolved"]
+    unres_drop = [d for d in ndrop if d[2] == "unresolved"]
+    if unres:
+        warn(f"[unified] {len(unres)} hand/foot armature(s) draw the nude CBBE hands "
+             "or feet, and the UBE body's own hands/feet were not found, so they were "
+             f"not minted ({len(unres_drop)} armour(s) left without one)",
+             consequence="those pieces are not drawn on UBE-race actors",
+             fix="build the UBE body's hands and feet in BodySlide")
+        _record_failure("UBE hands/feet not found", "unified coverage",
+                        f"{len(unres)} hand/foot armature(s) not minted",
+                        "they draw the nude CBBE hands or feet and the UBE body's own "
+                        "were not found, so those pieces are not drawn on UBE-race "
+                        "actors; build the UBE hands and feet in BodySlide",
+                        severity="warning")
+        for k in unres[:5]:
+            print(f"       {k['arma']}")
+        for (pl, fid), edid, _why in unres_drop[:5]:
+            print(f"       not covered: {edid or '?'}  ({pl}|{fid:06X})")
+    skins = [k for k in nskip if k.get("why") == "skin"]
+    skin_drop = [d for d in ndrop if d[2] == "skin"]
+    if skins or skin_drop:
+        # A skin's armature minted for a costume item is not in `skins`, but the
+        # skin itself is still left without one -- so either count prints.
+        print(f"  [unified] {len(skins)} nude hand/foot armature(s) of a race skin "
+              f"were not minted ({len(skin_drop)} armour(s) left without one): a UBE "
+              "actor wears UBE's own skin")
+    if twins:
+        print(f"  [unified] {len(twins)} model slot(s) point at a hand-made UBE mesh "
+              "another mod ships")
+        for k in twins[:5]:
+            print(f"       {k['slot']} {k['path']}  ({k.get('mod') or '?'})")
+        if len(twins) > 5:
+            print(f"       ... and {len(twins) - 5} more")
+    if accs:
+        print(f"  [unified] {len(accs)} hood/accessory armature(s) of body armour "
+              "drawn on UBE with the body (their own mesh)")
+    # #coverage-body-cloak: the capes among them, which conversion skipped.
+    capes = [k for s in stats for k in (s.get("body_cloak") or [])]
+    if capes:
+        print(f"  [unified]   {len(capes)} of them a cape draped from the spine "
+              "(no body-fit bones, so it was not converted)")
+    if beasts:
+        print(f"  [unified] {len(beasts)} beast-race variant armature(s) left off UBE "
+              "actors (they list only Argonian/Khajiit races; no human draws them)")
+        # #beast-variant-non-actor: say when the mannequin race was ignored.
+        # Mannequins are actors that wear armour; what the race lacks is a
+        # playable or UBE-race member, so it cannot make a human draw these.
+        if nonactor:
+            print(f"       {len(nonactor)} of them also "
+                  f"{'lists' if len(nonactor) == 1 else 'list'} the mannequin race "
+                  "(Skyrim.esm ManikinRace), ignored when judging: no playable or "
+                  "UBE-race actor has it (mannequins still display the item)")
+    # #coverage-race-subset: both counts are the passes' final targets, so an
+    # armature the other pass mints is not "left off".
+    by_race = {tuple(a) for s in stats for a in (s.get("race_subset") or [])}
+    minted_any = {k for s in stats for k in (s.get("race_subset_minted") or ())}
+    other_race = sorted({k for s in stats for k in (s.get("race_subset_dropped") or [])}
+                        - minted_any)
+    if by_race:
+        print(f"  [unified] {len(by_race)} armour(s) with a separate armature per race "
+              "(one for humans, one for Orcs, ...): each drawn on UBE only for the "
+              "UBE versions of the races it lists")
+    if other_race:
+        print(f"  [unified] {len(other_race)} armature(s) made only for other races "
+              "(a mod's own race), or for none its siblings leave, left off UBE "
+              "actors: no human draws them")
+    # #race-subset-dedup-agree: a same-mesh sibling another one draws for.
+    same_mesh = sorted({k for s in stats for k in (s.get("race_subset_twins") or [])}
+                       - minted_any)
+    if same_mesh:
+        print(f"  [unified] {len(same_mesh)} per-race armature(s) with the same mesh as a "
+              "sibling left off UBE actors: the sibling draws it once for all "
+              "their races")
+    if wigs:
+        print(f"  [unified] {len(wigs)} playable wig(s) drawn on UBE as headgear "
+              "(their own mesh and collider)")
+        for (pl, fid), edid in wigs[:3]:
+            print(f"       {edid or '?'}  ({pl}|{fid:06X})")
+        if len(wigs) > 3:
+            print(f"       ... and {len(wigs) - 3} more")
+    if listed:
+        print(f"  [unified] {len(listed)} armour(s) whose only human-drawing "
+              "armature has another primary race are now drawn on UBE (race "
+              "list mapped)")
+        for (pl, fid), edid in listed[:5]:
+            print(f"       {edid or '?'}  ({pl}|{fid:06X})")
+        if len(listed) > 5:
+            print(f"       ... and {len(listed) - 5} more")
+    if tp_drawn:
+        print(f"  [unified] {len(tp_drawn)} armour(s) already drawn on UBE by another "
+              "mod's armature -- ours not minted")
+        for (pl, fid), edid in tp_drawn[:5]:
+            print(f"       {edid or '?'}  ({pl}|{fid:06X})")
+        if len(tp_drawn) > 5:
+            print(f"       ... and {len(tp_drawn) - 5} more")
+    if tp_part:
+        print(f"  [unified] {len(tp_part)} armour(s) partly drawn on UBE by another "
+              "mod's armature -- ours minted only for the pieces or races it leaves out")
+        for (pl, fid), edid in tp_part[:5]:
+            print(f"       {edid or '?'}  ({pl}|{fid:06X})")
+        if len(tp_part) > 5:
+            print(f"       ... and {len(tp_part) - 5} more")
+    # #coverage-dead-armature: distinct armatures (one can serve both passes),
+    # counted by the plugin that defines them.
+    dead_arm = sorted({k for s in stats for k in (s.get("dead_armature_skipped") or [])})
+    dead_drop = [d for s in stats for d in (s.get("dead_dropped") or [])]
+    if dead_arm:
+        warn(f"[unified] {len(dead_arm)} armature(s) name only meshes that exist "
+             "nowhere (drawn by nobody, the source included) -- not minted "
+             f"({len(dead_drop)} armour(s) left without one)",
+             consequence="those pieces draw nothing on any actor, UBE or not; "
+                         "installing the mod that ships their meshes and running "
+                         "again covers them",
+             level=NOTE)
+        per: dict = {}
+        for k in dead_arm:
+            pl = k.rsplit("|", 1)[0]
+            per[pl] = per.get(pl, 0) + 1
+        for pl, n in sorted(per.items(), key=lambda t: (-t[1], t[0]))[:8]:
+            print(f"       {n:>4}  {pl}")
+        if len(per) > 8:
+            print(f"       ... and {len(per) - 8} more plugin(s)")
+    for (pl, fid), edid, arma in tp_kept:
+        # #coverage-keep-better-first-person: one line each (2 on a real order).
+        print(f"  [unified] note: {edid or '?'} ({pl}|{fid:06X}) keeps our armature "
+              f"{arma} beside another mod's UBE one -- theirs has no converted "
+              "first-person mesh, ours does")
+
+
 def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
-                                   merged_name) -> "tuple[bool, int, bool]":
+                                   merged_name,
+                                   exclude_mods=()) -> "tuple[bool, int, bool]":
     r"""Step 3b: run the winner-scan coverage passes as the PRIMARY generator and
     drop their patch ESPs + `.skypatcher.json` sidecars into the patches dir, so
     the auto-merge folds them straight into the Combined family (the merge dedups
@@ -3145,27 +7495,51 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
     converted `!UBE\` meshes. That is legitimate on a fresh output, but it makes
     the coverage PARTIAL -- it carries no body links at all -- so the caller must
     not then treat it as the sole generator and discard the per-source patches,
-    which in that state are the only thing carrying body coverage."""
+    which in that state are the only thing carrying body coverage.
+
+    `exclude_mods`: the run's --exclude-mods. Armour those mods define gets no
+    armature from either pass (#exclude-owned-coverage, `_armos_defined_by_mods`);
+    CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE=1 covers it again, as before. They are
+    never a source of a hand-made UBE twin either (#coverage-ube-twin)."""
     total_targets = 0
     try:
         # Leave armors alone that ANOTHER mod already patched for UBE --
         # adding a second armature renders two bodies, and a hand-made UBE
         # patch beats an automatic conversion anyway. Coexist, do not compete.
+        # #coverage-third-party-drawn: the passes judge the armatures on each
+        # winning armour record themselves, so only the SkyPatcher half is
+        # asked for here -- what an INI adds is on no armour record. Tied to
+        # the same switch, so no half-and-half combination can be selected.
+        _tpd = ube_patcher._coverage_third_party_drawn()
+        _uba_unchecked: list = []
         try:
             _uba_lay = paths.discover_layout()
             _ube_excl = _third_party_ube_covered_armos(
                 paths.mods_root(),
                 enabled_names=paths.enabled_mods(_uba_lay),
-                skip_mods={Path(output).name})
+                skip_mods={Path(output).name},
+                halves=("ini",) if _tpd else ("ini", "esp"),
+                # #third-party-ini-slot-check: an INI addon counts only
+                # when its plugin is loaded
+                active_plugins=paths.active_plugins_ordered(_uba_lay),
+                # #third-party-ini-winner-slots: the files the game loads,
+                # whatever the index switch says (#winner-walk-root-index)
+                plugin_index=_winner_walk_plugin_index(_uba_lay),
+                unchecked=_uba_unchecked)
         except Exception as _e:
             # Detection failure must never stop coverage -- but say so, or a
             # silently-empty exclusion set looks exactly like "nothing to skip".
             _ube_excl = set()
             warn(f"[unified] could not scan for existing UBE patches ({plain_error(_e)})",
                  consequence="not excluding any")
+            _record_failure("check skipped", "unified coverage", "already-UBE scan",
+                            f"{plain_error(_e)}; armour another mod already patched "
+                            "for UBE may be given a second armature",
+                            severity="warning")   # #one-tally
         if _ube_excl:
             print(f"  [unified] {len(_ube_excl)} armor(s) already have a UBE "
                   "patch from another mod -- leaving those alone")
+            _print_unchecked_ube(_uba_unchecked)
         # Remove any STALE coverage from a prior run BEFORE regenerating: the
         # standalone ESP+INI (SkyPatcher applies every INI in the folder even if
         # the ESP is disabled -> double-cover) AND the prior coverage PATCHES in
@@ -3206,21 +7580,84 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
         excl |= _combined_output_names(merged_name, ordered)
         print("\n--- unified coverage: winner-scan patches -> merge "
               "(folding into Combined) ---")
+        # #exclude-owned-coverage: armour an excluded mod defines is left alone.
+        _withheld_abs: set = set()
+        if exclude_mods and not _flag("CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE", False):
+            try:
+                _unfound: list = []
+                _withheld_abs, _per_mod = _armos_defined_by_mods(
+                    paths.mods_root(), exclude_mods, ordered, missing=_unfound)
+                print(f"  [unified] --exclude-mods: {len(_withheld_abs)} armour(s) "
+                      f"defined by {len(_per_mod)} excluded mod(s) get no "
+                      "armature from this run")
+                if _unfound:
+                    warn(f"[unified] {len(_unfound)} excluded mod name(s) match no "
+                         f"mod folder: {', '.join(_unfound[:5])}",
+                         consequence="their armour is covered as if they were not "
+                                     "excluded",
+                         fix="use the mod's folder name exactly as MO2 shows it")
+                    _record_failure("excluded mod not found", "--exclude-mods",
+                                    ", ".join(_unfound[:5]),
+                                    "no mod folder has this name, so its armour is "
+                                    "covered as if it were not excluded; use the "
+                                    "folder name exactly as MO2 shows it",
+                                    severity="warning")   # #one-tally
+            except Exception as _e:
+                _withheld_abs = set()
+                warn(f"[unified] could not list the excluded mods' armour "
+                     f"({plain_error(_e)})",
+                     consequence="coverage may give an excluded mod's armour an "
+                                 "armature")
+                _record_failure("check skipped", "unified coverage",
+                                "the excluded mods' armour",
+                                f"{plain_error(_e)}; an excluded mod's armour may "
+                                "be given an armature", severity="warning")
         # Converted-mesh set FIRST: both coverage passes need it so a piece whose
         # OWN mesh was converted points at the !UBE\ mesh, not source. #mnb-converted-redirect
         ube_root = Path(output) / "meshes" / "!UBE"
         conv_rel = {n.relative_to(ube_root).as_posix().lower()
                     for n in ube_root.rglob("*.nif")} if ube_root.is_dir() else set()
+        # #coverage-female-guard: which female paths are dead (exist nowhere).
+        _fexists = (_mesh_exists_anywhere(output)
+                    if ube_patcher._coverage_female_guard() else None)
+        # #coverage-world-mesh (is an unconverted female path dead?) and
+        # #coverage-nude-skin (do the UBE body's own hands/feet resolve?) ask the
+        # same lookup; built once, and only when one of them is on.
+        _mexists = None
+        if ube_patcher._coverage_world_mesh() or ube_patcher._coverage_nude_skin():
+            _mexists = (_fexists if ube_patcher._coverage_female_guard()
+                        else _mesh_exists_anywhere(output))
+        # #coverage-ube-twin: a hand-made UBE mesh a third-party mod ships where
+        # we converted none -- never our output, never an excluded mod.
+        _twin = (_third_party_ube_twin_lookup(output, exclude_mods)
+                 if ube_patcher._coverage_ube_twin() else None)
+        # #coverage-human-race-list: the armour female NPCs wear -- a
+        # non-playable piece of it the race-list rule may take. Built once per
+        # load order (an `auto` run's source selection already has). Asked
+        # for_coverage: the rule's own switch is read on the line below, and
+        # CBBE2UBE_NO_NPC_WORN_NONPLAYABLE turns off only the conversion.
+        _worn = (_batch_npc_worn_armos(for_coverage=True)
+                 if ube_patcher._coverage_human_race_list() else None)
+        # #coverage-third-party-drawn: does another mod's UBE armature draw
+        # anything? Its mesh must be live in the game view.
+        _live = _game_view_mesh_resolver(output) if _tpd else None
+        # #coverage-dead-armature: its own lookup, whatever the rules above use.
+        _dead = _dead_armature_lookup(output, _fexists, _mexists)
         nb_out = patches_dir / "UBE_ModNonBody_Coverage UBE patch.esp"
         nb = ube_patcher.generate_modded_nonbody_ube_coverage_patch(
             nb_out, ordered, converted_rel_paths=conv_rel,
             exclude_armo_abs=_ube_excl, exclude_names=excl,
             master_data_dirs=master_data_dirs, cover_all=True,
-            preserve_textures=True, emit_sidecar=True)
+            preserve_textures=True, emit_sidecar=True,
+            withheld_armo_abs=_withheld_abs, female_mesh_exists=_fexists,
+            mesh_live=_live,
+            dead_mesh_exists=_dead,
+            ube_twin_exists=_twin, npc_worn_armo_abs=_worn)
         total_targets += int(nb.get("armo_targets") or 0)
         print(f"  non-body: minted {nb.get('minted_armas')} | "
               f"targets {nb.get('armo_targets')}")
         _print_coverage_warnings("non-body", nb)
+        _held = [nb]
         if conv_rel:
             bd_out = patches_dir / "UBE_ModBody_Coverage UBE patch.esp"
             bd = ube_patcher.generate_modded_body_ube_coverage_patch(
@@ -3228,13 +7665,19 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
                 exclude_armo_abs=_ube_excl, exclude_names=excl,
                 master_data_dirs=master_data_dirs,
                 cover_all=True, cover_hands_feet=True, preserve_textures=True,
-                emit_sidecar=True)
+                emit_sidecar=True, withheld_armo_abs=_withheld_abs,
+                female_mesh_exists=_fexists, mesh_exists=_mexists,
+                mesh_live=_live,
+                dead_mesh_exists=_dead,
+                ube_twin_exists=_twin, npc_worn_armo_abs=_worn)
             total_targets += int(bd.get("armo_targets") or 0)
             print(f"  body+hands/feet: minted {bd.get('minted_armas')} | "
                   f"targets {bd.get('armo_targets')} | "
                   f"src-primary HF via preserved-race mint")
             _print_coverage_warnings("body", bd)
-        else:
+            _held.append(bd)
+        _report_coverage_holds(_held)
+        if not conv_rel:
             print("  body+hands/feet: SKIPPED -- no converted !UBE meshes "
                   "found, so this coverage carries NO body links")
         return (True, total_targets, bool(conv_rel))
@@ -3260,6 +7703,9 @@ def _sweep_orphan_temps_at_start(output, run_started: float) -> int:
         warn(f"could not sweep orphaned temp files: {plain_error(e)}",
              where=f"under {output}",
              consequence="partial files from an interrupted run may remain")
+        _record_failure("orphaned temp files not swept", "output mod", str(output),
+                        f"{plain_error(e)}; partial files from an interrupted run "
+                        "may remain", severity="warning")   # #one-tally
         return 0
     if removed:
         try:
@@ -3278,6 +7724,13 @@ def _sweep_orphan_temps_at_start(output, run_started: float) -> int:
 
 def _cmd_convert(args):
     _RUN_FAILURES.clear()   # fresh failure record for this run
+    # What `auto` found before this record began (a disabled vanilla sweep):
+    # printed there, recorded here, so the clear above cannot lose it. #one-tally
+    for _cf in (getattr(args, "carried_failures", None) or ()):
+        _record_failure(**_cf)
+    # The mods whose armour coverage leaves alone: a plugin the game loads from
+    # one of them is left alone by the sources too. #excluded-copy-left-alone
+    _set_run_user_exclusions(_split_mod_arg(getattr(args, "exclude_mods", None)))
     _run_started = time.time()   # temps older than this are orphans. #orphan-temps
     # Same echo `auto` prints: the verdict harnesses run THIS subcommand, and
     # a run has to say what it was carrying before anything can abort.
@@ -3312,10 +7765,10 @@ def _cmd_convert(args):
               "--ube-body-ref to convert a folder outside a modlist.")
         return 2
 
-    # Each returns whether its check came back clean. One that did not is
-    # printed, recorded as a warning and counted in the tally. #run-warnings
-    _skypatcher_ok = _warn_if_skypatcher_missing()
-    _settings_malformed = _warn_if_settings_file_malformed()
+    # A check that did not come back clean is printed and recorded as a
+    # warning, and the record is what the tally counts. #run-warnings #one-tally
+    _warn_if_skypatcher_missing()
+    _warn_if_settings_file_malformed()
 
     sources = list(args.sources)
     output = args.output
@@ -3334,6 +7787,14 @@ def _cmd_convert(args):
                   "explicitly to silence this.")
 
     _orphans_removed = _sweep_orphan_temps_at_start(output, _run_started)
+    # A killed run's sweep moves go back first, on every `auto` run: before any
+    # patch or mesh of the output is read and the manifest is written.
+    # #sweep-recover-every-run
+    _stale_recover_at_start(args, output)
+    # Before any per-source patch is written or read (a full run, --only-mods
+    # and --plugins-only all come through here). #source-patch-rename
+    _migrate_source_patch_names_at_start(
+        output, getattr(args, "unmerged_patch_subdir", "_unmerged_patches"))
 
     if len(sources) > 1 and args.esp_name:
         print("warning: --esp-name is ignored when converting multiple "
@@ -3390,31 +7851,81 @@ def _cmd_convert(args):
         except Exception as e:
             warn(f"pre-warm failed (non-fatal): {plain_error(e)}",
                  consequence="the first pieces pay the cold start")
+            # Printed as a problem, and the stale-output sweep counts it as
+            # one, so the list names it too. #one-tally
+            _record_failure("pre-warm failed", "worker pool", "warm-up",
+                            f"{plain_error(e)}; the first pieces paid the cold "
+                            "start", severity="warning")
 
     # First-writer wins: shared set so later sources can't overwrite earlier outputs.
     claimed_dst_paths: set[Path] = set()
+    # The same for per-source patch files: sources run highest MO2 priority
+    # first, so the first writer of a patch name is the copy the game loads.
+    # #loaded-source-plugins
+    claimed_patch_paths: "set[str]" = set()
 
     # Resolve master/Data dirs once for the batch (result is identical per source).
     # Clearing first ensures the patcher's caches don't carry over from a prior run.
     ube_patcher.clear_batch_caches()
+    _LOADED_PLUGIN_INDEX.clear()     # #loaded-source-plugins
+    # Plugins whose owner is no source: no copy of them is converted. Said for
+    # the whole modlist, since a mod left with no plugin is no source either and
+    # never gets to say it. #one-plugin-owner
+    try:
+        _note_plugins_no_source_owns()
+    except Exception as _e:
+        print(f"  (could not list the plugins no source owns: {plain_error(_e)})")
     batch_master_data_dirs = (_discover_master_data_dirs(sources[0])
                               if sources else None)
     if batch_master_data_dirs:
         print(f"  master/Data search: {len(batch_master_data_dirs)} dir(s) "
               "(resolved once for the batch)")
 
+    # Non-playable armour a female NPC of a UBE-capable race wears or carries is
+    # converted like playable armour. Built once for the batch -- `auto` built it
+    # during source selection in this same process, so this is a cache hit
+    # there. None when switched off, without a load order, or on an ESP-only
+    # refresh (which plans no meshes). #npc-worn-nonplayable
+    batch_npc_worn = (None if getattr(args, "plugins_only", False)
+                      else _batch_npc_worn_armos())
+    # An armour's playable flag is its WINNING record's; same cache as source
+    # selection. None when switched off, without a load order, or on an
+    # ESP-only refresh. #selection-winner-playable
+    batch_winner_np = (None if getattr(args, "plugins_only", False)
+                       else _batch_armo_winner_nonplayable())
+    if getattr(args, "plugins_only", False):
+        # The ESP-only refresh asks for no playability map, so the cache hit
+        # that records selection's warning again never happens. #one-tally
+        _record_selection_playability_warning()
+
+    # Meshes another mod already ships BUILT for UBE at the path we would write
+    # are left to it. The same lookup coverage points at them with, so an
+    # excluded mod's build is never relied on. None when switched off or on an
+    # ESP-only refresh. #skip-built-ube-path
+    batch_built_ube = (
+        None if (getattr(args, "plugins_only", False)
+                 or not ube_patcher._skip_built_ube_path())
+        else _third_party_ube_twin_lookup(
+            output, _split_mod_arg(getattr(args, "exclude_mods", None)) or ()))
+
     # Full-VFS mesh index built once for the batch. Maps each armour mesh to the
     # MO2-priority winner across all enabled mods so BodySlide-built / replacer /
     # patch meshes in OTHER mods are found and converted.
     mesh_vfs_index = None
+    # Problems locating meshes: selection's (printed there, recorded here, after
+    # the clear above) and this step's own. Each is recorded once, and the
+    # record is what the tally counts. #vfs-index-fail-loud #one-tally
     try:
         _lay = paths.discover_layout()
         _enabled_ordered = paths.enabled_mods_ordered(_lay)
         _mr = paths.mods_root()
         # Reuse the index built during source selection (superset of selected sources).
-        # Falls back to building one when `convert` is invoked directly.
+        # Falls back to building one when `convert` is invoked directly, or when
+        # selection could not build it (None is cached then, never {}).
         if _mr is not None:
             mesh_vfs_index = _BATCH_MESH_INDEX.get(str(Path(_mr)).lower())
+            for _w in _SELECTION_RUN_WARNINGS.get(str(Path(_mr)).lower(), ()):
+                _record_failure(*_w, severity="warning")
         if mesh_vfs_index is not None:
             print(f"  VFS mesh index: reusing {len(mesh_vfs_index)} located "
                   "armour mesh path(s) from source selection "
@@ -3424,22 +7935,39 @@ def _cmd_convert(args):
             for _src in sources:
                 try:
                     for _b in _player_armor_mesh_bases(
-                            _src, include_candidate_slots=True):
+                            _src, include_candidate_slots=True,
+                            armo_winner_nonplayable=batch_winner_np,
+                            npc_worn_armos=batch_npc_worn):
                         _target_keys.update(
                             (f"{_b}_0.nif", f"{_b}_1.nif", f"{_b}.nif"))
                 except Exception:
                     pass
             if _target_keys:
+                _unreadable: "list[tuple[str, str]]" = []
                 mesh_vfs_index = discovery.build_mesh_index(
                     Path(_mr), _enabled_ordered,
                     target_keys=_target_keys,
-                    skip_mods={Path(output).name})
+                    skip_mods={Path(output).name},
+                    unreadable=_unreadable,
+                    overwrite=_modlist_overwrite(Path(_mr)))   # #overwrite-mesh-index
                 print(f"  VFS mesh index: located {len(mesh_vfs_index)} of "
                       f"{len(_target_keys)} referenced armour mesh path(s) "
                       f"across {len(_enabled_ordered)} enabled mods")
+                for _w in _mesh_index_unreadable_warnings(_unreadable):
+                    _record_failure(*_w, severity="warning")
     except Exception as _e:
-        print(f"  (VFS mesh index unavailable -> source-local meshes only: "
-              f"{plain_error(_e)})")
+        # Said like any other run warning, and counted: each source now converts
+        # its own or an archive copy, not the mesh the game loads.
+        warn(f"could not locate armour meshes across the enabled mods "
+             f"({plain_error(_e)})",
+             consequence="each mod converts its own copy of a mesh (or the one in "
+                         "its archive), not a replacer's or BodySlide build's copy "
+                         "the game loads",
+             fix="look for an over-long path or a broken link in the mods folder, "
+                 "then run again")
+        _record_failure("armour mesh index failed", "convert step", "every source",
+                        f"{plain_error(_e)}; each mod converted its own copy of a "
+                        "mesh, not the one the game loads", severity="warning")
         mesh_vfs_index = None
 
     # BSA fallback: when an armour mesh isn't loose anywhere, extract it from
@@ -3452,15 +7980,23 @@ def _cmd_convert(args):
         _bmr = paths.mods_root()
         if _bmr is not None and _bord:
             # Game Data dir(s) LAST: the vanilla mesh archives back the sweep,
-            # but any mod BSA shipping the same path wins (first hit in _scan),
-            # matching MO2 priority.
-            _bsa_dirs = [Path(_bmr) / n for n in _bord]
-            _bsa_dirs += [Path(d) for d in (_blay.game_data_dirs or [])
-                          if Path(d) not in _bsa_dirs]
+            # but any mod BSA shipping the same path wins -- the archive whose
+            # plugin loads later, as in game. #bsa-load-order-winner
+            _bsa_dirs = _load_order_bsa_dirs(_bmr, _bord, _blay.game_data_dirs)
             _BATCH_BSA_INDEX = _BsaMeshIndex(
-                _bsa_dirs, Path(output) / "_bsa_staging")
+                _bsa_dirs, Path(output) / "_bsa_staging",
+                plugin_order=_bsa_plugin_order(_blay))
+            # Source selection may already have listed these archives to find
+            # mods whose armour lives only in them; take that listing rather
+            # than read ~260 archive tables a second time. #bsa-only-sources
+            _sel_bsa = _SELECTION_BSA_INDEX.pop(str(Path(_bmr)).lower(), None)
+            if _BATCH_BSA_INDEX.adopt_listing(_sel_bsa):
+                print(f"  BSA fallback index: reusing {len(_BATCH_BSA_INDEX._index)} "
+                      "mesh path(s) listed during source selection "
+                      "(no second archive scan)")
     except Exception:
         _BATCH_BSA_INDEX = None
+    _sos_bsa = _stale_bsa_state(_BATCH_BSA_INDEX)   # outlives the index #stale-output-sweep
 
     # Incremental floor = newest of (converter source code, UBE body ref,
     # CONFIG FINGERPRINT). The fingerprint closes the gap that kept this
@@ -3486,6 +8022,9 @@ def _cmd_convert(args):
         except Exception as e:
             warn(f"incremental floor calc failed: {plain_error(e)}",
                  consequence="doing a full convert instead")
+            _record_failure("incremental mode off", "convert step",
+                            "incremental floor", f"{plain_error(e)}; every mesh "
+                            "was converted again", severity="warning")   # #one-tally
             incremental_floor = None
 
     # #skip-already-ube: armors ANOTHER mod has already UBE-patched are skipped
@@ -3507,10 +8046,15 @@ def _cmd_convert(args):
     else:
         try:
             _skip_ube_lay = paths.discover_layout()
+            _skip_unchecked: list = []    # #third-party-ini-winner-slots
             batch_ube_covered = _third_party_ube_covered_armos(
                 paths.mods_root(),
                 enabled_names=paths.enabled_mods(_skip_ube_lay),
-                skip_mods={Path(output).name})
+                skip_mods={Path(output).name},
+                # #third-party-ini-slot-check
+                active_plugins=paths.active_plugins_ordered(_skip_ube_lay),
+                plugin_index=_winner_walk_plugin_index(_skip_ube_lay),
+                unchecked=_skip_unchecked)
             if batch_ube_covered:
                 print(f"  {len(batch_ube_covered)} armor(s) already UBE-patched "
                       "by another mod -- those pieces will NOT be converted")
@@ -3520,6 +8064,9 @@ def _cmd_convert(args):
             warn(f"could not scan for existing UBE patches ({plain_error(_e)})",
                  consequence="converting everything, including armour another mod "
                              "already patched")
+        else:
+            if batch_ube_covered:       # #third-party-ini-winner-slots
+                _print_unchecked_ube(_skip_unchecked)
 
     # THE RECIPE AND AN EMPTY SCOREBOARD BEFORE THE FIRST SOURCE, then the
     # scoreboard again after every source (the `finally` below), so a run that
@@ -3527,8 +8074,62 @@ def _cmd_convert(args):
     _stamp_run_start(output, planned=len(sources), workers=_planned_workers,
                      orphan_temps_removed=_orphans_removed)
     results = []
+    # Every folder a source creates for its pieces before they convert; the
+    # ones still empty are removed once the batch is done. #planned-folders
+    planned_folders: list = []
+
+    def _source_kwargs(_pool, _workers):
+        return dict(
+            output_esp_name=(args.esp_name if len(sources) == 1 else None),
+            # Default: DON'T copy textures. The converted NIFs keep the
+            # original (Data-relative) texture paths, so the engine
+            # resolves them from the SOURCE mods via the MO2 VFS -- the
+            # same path BSA-archived textures already use successfully.
+            # Copying duplicated ~17 GB AND, because the copy lands at the
+            # output mod's high priority, silently overrode standalone
+            # retexture mods. Opt back in with --copy-textures. #no-tex-copy
+            copy_textures=(bool(getattr(args, "copy_textures", False))
+                           and not bool(getattr(args, "no_textures", False))),
+            ube_body_ref_path=args.ube_body_ref,
+            nif_workers=_workers,
+            nif_pool=_pool,
+            unmerged_patch_subdir=args.unmerged_patch_subdir,
+            claimed_dst_paths=claimed_dst_paths,
+            # Per-source patch names, first writer wins: both schedules.
+            # #loaded-source-plugins
+            claimed_patch_paths=claimed_patch_paths,
+            master_data_dirs=batch_master_data_dirs,
+            mesh_vfs_index=mesh_vfs_index,
+            incremental_floor=incremental_floor,
+            ube_covered_armos=batch_ube_covered,
+            npc_worn_armos=batch_npc_worn,
+            armo_winner_nonplayable=batch_winner_np,
+            built_ube_twin=batch_built_ube,
+            planned_folders=planned_folders,
+        )
+
+    def _convert_one(_src, *, _pool, _workers):
+        return auto_convert_mod(_src, output, **_source_kwargs(_pool, _workers))
+
+    # #global-schedule: with a shared pool, every source is planned first and
+    # all their NIFs run on one schedule; the loop below then has nothing to
+    # do. CBBE2UBE_NO_GLOBAL_SCHEDULE=1 (or no pool) -> one source at a time.
+    _one_schedule = isinstance(shared_pool, _NifPool) and _global_schedule()
     try:
-        for i, src in enumerate(sources, 1):
+        if _one_schedule:
+            _convert_sources_global(
+                sources, results, shared_pool, claimed_dst_paths,
+                make_steps=lambda _s: _auto_convert_mod_steps(
+                    _s, output, batch_schedule=True,
+                    **_source_kwargs(shared_pool, args.workers)),
+                convert_serial=lambda _s: _convert_one(_s, _pool=None, _workers=1),
+                checkpoint=lambda _view, _progress: _checkpoint_report(
+                    output, _view, planned=len(sources),
+                    workers=_planned_workers,
+                    orphan_temps_removed=_orphans_removed,
+                    progress=_progress),
+                claimed_patch_paths=claimed_patch_paths)
+        for i, src in enumerate(() if _one_schedule else sources, 1):
             # Vanilla sweep = its own PASS: distinct header + progress label,
             # and (below) its failure never blocks the merge -- a dead sweep
             # just means no vanilla coverage this run, mod armor unaffected.
@@ -3542,36 +8143,14 @@ def _cmd_convert(args):
                 print("\n=== VANILLA SWEEP pass: base game + DLC as the "
                       "lowest-priority source ===")
             print(f"\n--- [{i}/{len(sources)}] converting '{_disp}' ---")
-            def _convert_one(_src, *, _pool, _workers):
-                return auto_convert_mod(
-                    _src, output,
-                    output_esp_name=(args.esp_name if len(sources) == 1 else None),
-                    # Default: DON'T copy textures. The converted NIFs keep the
-                    # original (Data-relative) texture paths, so the engine
-                    # resolves them from the SOURCE mods via the MO2 VFS -- the
-                    # same path BSA-archived textures already use successfully.
-                    # Copying duplicated ~17 GB AND, because the copy lands at the
-                    # output mod's high priority, silently overrode standalone
-                    # retexture mods. Opt back in with --copy-textures. #no-tex-copy
-                    copy_textures=(bool(getattr(args, "copy_textures", False))
-                                   and not bool(getattr(args, "no_textures", False))),
-                    ube_body_ref_path=args.ube_body_ref,
-                    nif_workers=_workers,
-                    nif_pool=_pool,
-                    unmerged_patch_subdir=args.unmerged_patch_subdir,
-                    claimed_dst_paths=claimed_dst_paths,
-                    master_data_dirs=batch_master_data_dirs,
-                    mesh_vfs_index=mesh_vfs_index,
-                    incremental_floor=incremental_floor,
-                    ube_covered_armos=batch_ube_covered,
-                )
 
             try:
                 if getattr(args, "plugins_only", False):
                     r = refresh_mod_esp(
                         src, output,
                         output_esp_name=(args.esp_name
-                                         if len(sources) == 1 else None))
+                                         if len(sources) == 1 else None),
+                        claimed_patch_paths=claimed_patch_paths)
                     results.append((src, r, None))
                     continue
                 # Sweep self-heal: snapshot output-path claims so a crashed
@@ -3579,6 +8158,7 @@ def _cmd_convert(args):
                 # retry skip its own meshes as "collisions".
                 _claims_before = (set(claimed_dst_paths)
                                   if _is_sweep_src else None)
+                _patch_claims_before = set(claimed_patch_paths)
                 try:
                     r = _convert_one(src, _pool=shared_pool,
                                      _workers=args.workers)
@@ -3595,8 +8175,12 @@ def _cmd_convert(args):
                          indent="")
                     claimed_dst_paths.clear()
                     claimed_dst_paths.update(_claims_before)
+                    # ...and its patch names. #loaded-source-plugins
+                    claimed_patch_paths.clear()
+                    claimed_patch_paths.update(_patch_claims_before)
                     r = _convert_one(src, _pool=None, _workers=1)
                     print("  vanilla sweep serial retry SUCCEEDED")
+                    _record_sweep_retried(_e1)
                 results.append((src, r, None))
             except Exception as e:
                 results.append((src, None, e))
@@ -3620,7 +8204,10 @@ def _cmd_convert(args):
         # live state, not on top of it. #postflight-release
         gc.collect()
 
+    # The pool is down, so no piece is being written. #planned-folders
+    _remove_empty_planned_folders(planned_folders)
     print(f"\n=== batch auto-conversion done ({len(results)} mod(s)) ===")
+    _sos_warns = problem_count()   # warnings up to the end of the batch #stale-output-sweep
 
     # Guarantee both _0 and _1 exist: a missing weight partner breaks the piece
     # at that body weight. Fill any single-weight base from its present partner.
@@ -3632,11 +8219,13 @@ def _cmd_convert(args):
         # function, and an unused loop variable of that name collides with them
         # -- which is why pyflakes reported the "unused _e" against one of the
         # HANDLERS (whose `_e` is used) instead of against this line.
+        _left_to_builder: set = set()
         for _s, _r, _errs in results:
             for _b, _sufs in getattr(_r, "source_weight_variants", {}).items():
                 _src_variants.setdefault(_b, set()).update(_sufs)
+            _left_to_builder |= getattr(_r, "superseded_weight_bases", set())
         _filled, _refreshed = _complete_weight_partners(
-            output, source_variants=_src_variants)
+            output, source_variants=_src_variants, skip_bases=_left_to_builder)
         if _filled:
             print(f"  weight-partner completion: filled {_filled} missing "
                   "_0/_1 partner mesh(es) (would otherwise break at one weight)")
@@ -3647,21 +8236,21 @@ def _cmd_convert(args):
         print(f"  (weight-partner completion skipped: {plain_error(_e)})")
 
     # merge_blockers: hard ESP-generation failures -> block auto-merge.
-    # overall_failures: merge_blockers + NIF errors + load failures -> non-zero exit.
-    # overall_warnings: validator notes -> surfaced loudly, don't fail exit.
+    # The end-of-run tally (failures -> non-zero exit; warnings -> surfaced
+    # loudly, exit unchanged) is counted from _RUN_FAILURES: every problem below
+    # is recorded, and recording is what counts it. #one-tally
     merge_blockers = 0
-    overall_failures = 0
-    # Run-level warnings found before the batch: printed where they were found,
-    # recorded there or here, counted now. #run-warnings
+    # Run-level warnings found before the batch were recorded where they were
+    # found (settings file, SkyPatcher, orphan temps, renames); this one is
+    # recorded here. #run-warnings
     if _ube_scan_skipped:
         _record_failure("check skipped", "existing UBE patches", "already-UBE scan",
                         "other mods could not be checked for UBE patches, so armor "
                         "one of them already patched may have been converted again",
                         severity="warning")
-    overall_warnings = (int(_ube_scan_skipped) + int(not _skypatcher_ok)
-                        + int(_settings_malformed)
-                        # recorded at the start AND counted here. #orphan-temps
-                        + int(bool(_orphans_removed)))
+    # Patch-validator hits of the whole batch: ONE entry for the class, so a
+    # batch of N does not put N lines in the popup. #one-tally
+    _validator_all: "list[str]" = []
     for src, r, err in results:
         _is_sweep_src = bool(_vanilla_sweep_esps(src))
         print("\n  " + ("Vanilla sweep (base game + DLC)" if _is_sweep_src
@@ -3689,13 +8278,10 @@ def _cmd_convert(args):
                 merge_blockers += 1
                 _record_failure("source failed", src.name,
                                 "whole source", plain_error(err))
-            overall_failures += 1
             continue
         if r.source_esps:
-            print(f"    source ESPs: {len(r.source_esps)}")
-            for i, (src_e, out_e) in enumerate(
-                    zip(r.source_esps, r.output_esps)):
-                print(f"      [{i}] {src_e.name} -> {out_e.name}")
+            for _ln in _esp_patch_log_lines(r):
+                print(_ln)
         else:
             print(f"    source ESP : {r.source_esp}")
             print(f"    output ESP : {r.output_esp}")
@@ -3711,7 +8297,6 @@ def _cmd_convert(args):
                 print(f"       {er.src_path.name}: {er.reason}")
                 _record_failure("mesh failed", src.name,
                                 er.src_path.name, er.reason)
-            overall_failures += r.nif_errors
         if r.nif_load_failures:
             warn(f"LOAD FAILURES on {len(r.nif_load_failures)} output NIFs",
                  consequence="the files below were written but cannot be read back; "
@@ -3720,7 +8305,6 @@ def _cmd_convert(args):
             for p in r.nif_load_failures:
                 print(f"       {p}")
                 _record_failure("output mesh unreadable", src.name, p)
-            overall_failures += 1
         if r.nif_invariant_warnings:
             # CTD-class, symmetric with the merged-ESP postflight: a zero-vert
             # shape is invisible and an over-cap shape left in <=1 partition
@@ -3734,7 +8318,6 @@ def _cmd_convert(args):
             for w in r.nif_invariant_warnings:
                 print(f"       {w}")
                 _record_failure("CTD-class mesh issue", src.name, w)
-            overall_failures += len(r.nif_invariant_warnings)
         if r.virtualbody_rehide_failures:
             warn(f"VirtualBody re-hide: {len(r.virtualbody_rehide_failures)} NIF(s) "
                  "may show a visible body-double",
@@ -3742,7 +8325,12 @@ def _cmd_convert(args):
                  indent="    ")
             for w in r.virtualbody_rehide_failures:
                 print(f"       {w}")
-            overall_warnings += len(r.virtualbody_rehide_failures)
+            _record_failure("VirtualBody re-hide failed", src.name,
+                            f"{len(r.virtualbody_rehide_failures)} mesh(es) may show "
+                            "a visible body-double",
+                            _first_few(r.virtualbody_rehide_failures),
+                            severity="warning",
+                            count=len(r.virtualbody_rehide_failures))
         # ESP generation failure: that ESP's ARMA/ARMO absent from merge (invisible).
         # Non-zero exit, but NOT a merge_blocker (one bad ESP shouldn't lose the rest).
         if r.esp_gen_failures:
@@ -3755,7 +8343,6 @@ def _cmd_convert(args):
                 _name, _why = (_f if isinstance(_f, (list, tuple)) and
                                len(_f) == 2 else (_f, ""))
                 _record_failure("plugin patch failed", src.name, _name, _why)
-            overall_failures += len(r.esp_gen_failures)
         if r.esp_skipped_no_armor:
             print(f"    {r.esp_skipped_no_armor} source ESP(s) skipped: no armor "
                   f"(landscape/quest/patch ESPs) — not a failure")
@@ -3766,8 +8353,10 @@ def _cmd_convert(args):
                  indent="    ")
             _record_failure("partial mesh (shape dropped)", src.name,
                             f"{r.nif_partial} mesh(es)",
-                            "see conversion report, PARTIAL section")
-            overall_failures += r.nif_partial
+                            "see conversion report, PARTIAL section",
+                            count=r.nif_partial)
+        # What the mesh writer reported from the worker. #one-tally
+        _report_writer_pass_failures(src.name, r.nif_results)
         # Validator warnings: surfaced loudly but don't block the merge or fail exit.
         validator_hits = []
         for stats in (r.esp_stats_list or
@@ -3781,7 +8370,7 @@ def _cmd_convert(args):
                  indent="    ")
             for w in validator_hits:
                 print(f"       {w}")
-            overall_warnings += len(validator_hits)
+            _validator_all += [f"{src.name}: {w}" for w in validator_hits]
         print(f"    Textures   : {r.textures_copied} files copied")
         if r.notes:
             for n in r.notes:
@@ -3789,6 +8378,11 @@ def _cmd_convert(args):
                 if n.startswith("!! patch validator"):
                     continue
                 print(f"    note: {n}")
+    if _validator_all:
+        _record_failure("patch validator", "per-source patches",
+                        f"{len(_validator_all)} warning(s); each patch still loads",
+                        _first_few(_validator_all), severity="warning",
+                        count=len(_validator_all))
     print(f"\n  Combined output mod: {output}")
 
     # Postflight: scan the WHOLE output tree for body meshes missing a _0/_1
@@ -3802,10 +8396,15 @@ def _cmd_convert(args):
                  indent="\n")
             for _w in _wp_miss:
                 print(f"     {_w}")
-            overall_warnings += len(_wp_miss)
+            _record_failure("missing _0/_1 partner", "output mod",
+                            f"{len(_wp_miss)} body mesh(es), invisible at one "
+                            "body weight", _first_few(_wp_miss),
+                            severity="warning", count=len(_wp_miss))
     except Exception as _wpe:
         warn(f"postflight weight-partner scan skipped: {plain_error(_wpe)}",
              consequence="missing _0/_1 partners were not checked this run")
+        _record_failure("check skipped", "output mod", "missing _0/_1 partners",
+                        plain_error(_wpe), severity="warning")   # #one-tally
 
     # Postflight REPAIR, and it runs BEFORE the detector below so that detector
     # reports the state that actually ships. The jiggle graft's fit gate is
@@ -3813,14 +8412,25 @@ def _cmd_convert(args):
     # the threshold and end up with belly or butt jiggle at one body weight
     # only. This gives the deficient weight its partner's bone.
     # #weight-partner-jiggle-sync
+    # #tail-fold: the sync and the parity check below share one walk, each
+    # pair loaded once; None -> the two serial passes run, as before. A fold
+    # that raises is a sync that raised: warned below, and the check then
+    # walks the pairs on its own.
+    _wp_fold = None
     try:
-        _wp_sync = _postflight_sync_weight_partner_jiggle(output)
+        _wp_fold = _postflight_weight_partner_fold(
+            output, check=not _flag("CBBE2UBE_NO_WEIGHT_PARITY_CHECK", False))
+        _wp_sync = (_wp_fold[0] if _wp_fold is not None
+                    else _postflight_sync_weight_partner_jiggle(output))
         if _wp_sync:
             print(f"\n  weight-partner jiggle sync: {_wp_sync} vert(s) given "
                   f"their partner's scale bone")
     except Exception as _wps:
         warn(f"postflight weight-partner jiggle sync skipped: {plain_error(_wps)}",
              consequence="the two weights of a pair may jiggle differently")
+        _record_failure("repair skipped", "output mod", "_0/_1 jiggle sync",
+                        f"{plain_error(_wps)}; the two weights of a pair may "
+                        "jiggle differently", severity="warning")   # #one-tally
 
     # Postflight: flag `_0`/`_1` partners whose converted scale-bone set diverges
     # (per-file metadata leaking to one weight -> the two morph differently; e.g.
@@ -3829,7 +8439,12 @@ def _cmd_convert(args):
     _wp_div: "list" = []          # reused by the JSON health report below
     if not _flag("CBBE2UBE_NO_WEIGHT_PARITY_CHECK", False):
         try:
-            _wp_div = _postflight_weight_partner_divergence(output)
+            _wp_div = (_wp_fold[1] if _wp_fold is not None
+                       else _postflight_weight_partner_divergence(output))
+            if isinstance(_wp_div, Exception):
+                # The fold's check died on a pair, as the serial one would.
+                _wp_err, _wp_div = _wp_div, []
+                raise _wp_err
             if _wp_div:
                 warn(f"POSTFLIGHT weight-partner parity: {len(_wp_div)} shape(s) convert "
                      "differently at _0 vs _1",
@@ -3840,10 +8455,15 @@ def _cmd_convert(args):
                     print(f"     {_d}")
                 if len(_wp_div) > 20:
                     print(f"     ... and {len(_wp_div) - 20} more")
-                overall_warnings += len(_wp_div)
+                _record_failure("_0/_1 parity", "output mod",
+                                f"{len(_wp_div)} shape(s) convert differently at "
+                                "_0 vs _1", _first_few(_wp_div),
+                                severity="warning", count=len(_wp_div))
         except Exception as _wpe2:
             warn(f"postflight weight-partner parity scan skipped: {plain_error(_wpe2)}",
                  consequence="_0/_1 parity was not checked this run")
+            _record_failure("check skipped", "output mod", "_0/_1 parity",
+                            plain_error(_wpe2), severity="warning")   # #one-tally
 
     # What the end of the batch costs, in the log beside the start-of-run
     # "machine:" line's figures: PARENT_COMMIT_GB prices this process's
@@ -3883,14 +8503,13 @@ def _cmd_convert(args):
                   f"fixed {vc['shapes_fixed']} shape(s) in "
                   f"{vc['files_changed']} file(s)")
             if vc.get("pool_error"):
-                # Printed, counted and recorded. Silence here is what made an
-                # out-of-memory death at the end of a multi-hour run look like
-                # a clean finish. #commit-headroom
+                # Printed, and recorded -- which counts it. Silence here is what
+                # made an out-of-memory death at the end of a multi-hour run
+                # look like a clean finish. #commit-headroom #one-tally
                 warn(vc['pool_error'],
                      consequence="the vertex-colour sweep fell back to running one file at "
                                  "a time and finished; nothing was lost",
                      fix="if this repeats, lower the worker count in Settings")
-                overall_warnings += 1
                 # A WARNING, not a failure: the sweep fell back to serial and
                 # finished. Recorded as a failure, the GUI popup titled it
                 # "1 item(s) failed to convert" and told the user the armour
@@ -3900,13 +8519,20 @@ def _cmd_convert(args):
                                 severity="warning")
         except Exception as e:
             warn(f"vertex-color sanitize failed: {plain_error(e)}",
-                 consequence="vertex colours were left as the source had them", indent="")
+                 consequence="the output meshes' vertex-colour flags were not all "
+                             "checked, and a mesh whose shader asks for vertex "
+                             "colours it does not carry crashes the game when "
+                             "equipped",
+                 fix="convert again: the sweep checks every output mesh, "
+                     "--plugins-only included", indent="")
+            _record_vc_sweep_failed(e)
 
     # Did unified coverage actually run? It now lives INSIDE the merge, so
     # every path that skips the merge also skips coverage -- and coverage
     # silently not happening is invisible until armor turns up missing
     # in game. Tracked so the tail can say so out loud.
     _coverage_ran = False
+    _sos_merged = False   # a new Combined from coverage alone #stale-output-sweep
     # --- Auto-merge into Combined ESP ---
     # Merge all per-source UBE patch ESPs into one ESL-flagged ESP at the mod root.
     # Only the merged ESP should be visible to MO2's scanner; per-source patches in
@@ -3917,8 +8543,21 @@ def _cmd_convert(args):
         else:
             patches_dir = output
         if patches_dir.is_dir():
-            patch_paths = sorted(patches_dir.glob("*UBE patch.esp"))
+            # This gates the WHOLE block -- female-model restore, coverage and
+            # the merge -- so it must see the renamed per-source patches too.
+            # #source-patch-rename
+            patch_paths = _merge_gate_patch_paths(patches_dir)
             if patch_paths:
+                # #stale-output-sweep: move our old conversions no source makes
+                # any more -- on a recorded source and a positive reason -- out
+                # of meshes\!UBE before the restore and coverage read it. The
+                # merge below confirms the moves or they all go back. Its
+                # warnings are recorded, so the tally counts them. #one-tally
+                _stale_output_sweep(
+                    args, output, patches_dir, results, claimed_dst_paths,
+                    {"mesh_index": mesh_vfs_index, "bsa": _sos_bsa,
+                     "npc_worn": batch_npc_worn, "winner_np": batch_winner_np,
+                     "covered": batch_ube_covered, "warns": _sos_warns})
                 # Female-model re-check before merge: per-mod patches may have
                 # fallen back to a male model at patch time; re-point any ARMA
                 # whose female mesh is now on disk. Must run before the merge.
@@ -3934,6 +8573,10 @@ def _cmd_convert(args):
                 except Exception as e:
                     warn(f"female-model restore failed: {plain_error(e)}",
                          consequence="continuing with male fallbacks")
+                    _record_failure("female-model restore failed", output,
+                                    "before coverage", f"{plain_error(e)}; patches "
+                                    "keep their male fallbacks",
+                                    severity="warning")   # #one-tally
                 # UNIFIED COVERAGE (3b/3c): emit winner-scan coverage patches
                 # AFTER female-model restore (so it never touches their sidecar
                 # fids). 3c = the winner-scan is the SOLE generator: merge ONLY
@@ -3948,19 +8591,10 @@ def _cmd_convert(args):
                 _cov_ok, _cov_targets, _cov_body = \
                     _emit_unified_coverage_patches(
                         output, patches_dir, batch_master_data_dirs,
-                        args.merged_name)
+                        args.merged_name,
+                        exclude_mods=_split_mod_arg(
+                            getattr(args, "exclude_mods", None)) or ())
                 _coverage_ran = True
-                if not _cov_ok:
-                    # Record it. Coverage failing silently is the worst outcome
-                    # here: mod-defined helmets/circlets/jewelry and body
-                    # variants go INVISIBLE on UBE actors, and without this the
-                    # run exits 0 with nothing in the failures file to explain
-                    # it. (The old standalone passes recorded a failure; when
-                    # coverage moved inside the merge that accounting was lost.)
-                    _record_failure("coverage", output, "unified coverage",
-                                    f"winner-scan incomplete (targets={_cov_targets})",
-                                    severity="warning")
-                    overall_warnings += 1      # recorded AND counted #run-warnings
                 _cov_only = sorted(
                     patches_dir.glob("UBE_Mod*Coverage* UBE patch.esp"))
                 # Use coverage as the SOLE generator ONLY when it fully ran and
@@ -3970,7 +8604,9 @@ def _cmd_convert(args):
                 # !UBE meshes the body pass is skipped, and taking the sole
                 # branch there would discard the per-source patches that are
                 # the only remaining source of body coverage.
-                if _cov_ok and _cov_targets > 0 and _cov_only and _cov_body:
+                _cov_sole = bool(_cov_ok and _cov_targets > 0 and _cov_only
+                                 and _cov_body)
+                if _cov_sole:
                     print(f"  [unified/3c] merging {len(_cov_only)} winner-scan "
                           f"coverage patch(es) ({_cov_targets} armors) as the "
                           "SOLE generator (per-source patches left unmerged)")
@@ -3979,16 +8615,36 @@ def _cmd_convert(args):
                     warn(f"[unified] coverage empty/incomplete (ok={_cov_ok}, "
                          f"targets={_cov_targets}, body={_cov_body})",
                          consequence="merging per-source patches instead")
+                    # Record it. Coverage failing silently is the worst outcome
+                    # here: mod-defined helmets/circlets/jewelry and body
+                    # variants go INVISIBLE on UBE actors, and without this the
+                    # run exits 0 with nothing in the failures file to explain
+                    # it. (The old standalone passes recorded a failure; when
+                    # coverage moved inside the merge that accounting was lost.)
+                    # A failed emit (ok False) always lands here, so this is
+                    # its one entry; a finished emit that came back empty or
+                    # without body links is recorded here too. #one-tally
+                    _record_failure("coverage", output, "unified coverage",
+                                    f"winner-scan incomplete (targets={_cov_targets})"
+                                    if not _cov_ok else
+                                    f"empty or without body links (targets="
+                                    f"{_cov_targets}, body={_cov_body}); the "
+                                    "per-source patches were merged instead",
+                                    severity="warning")   # counted #one-tally
                     # EXCLUDE any coverage patch still on disk. The glob
                     # "*UBE patch.esp" also matches
                     # "UBE_Mod*Coverage UBE patch.esp", so a partial run --
                     # non-body pass wrote its patch, body pass threw -- would
                     # merge per-source AND coverage links for the same armors,
                     # doubling the armature (body renders twice). The unified
-                    # path is all-or-nothing; the fallback is per-source ONLY.
-                    patch_paths = [q for q in
-                                   sorted(patches_dir.glob("*UBE patch.esp"))
-                                   if not q.name.startswith("UBE_Mod")]
+                    # path is all-or-nothing; the fallback is per-source ONLY,
+                    # and one file per source (never an old-named and a renamed
+                    # copy of the same one). #source-patch-rename
+                    # #stale-output-sweep: the fallback merges what a run
+                    # without the sweep would -- every moved file goes back
+                    # before the patches are listed.
+                    _stale_output_sweep_failover(output, patches_dir)
+                    patch_paths = _per_source_patch_paths(patches_dir)
                 merged_out = output / args.merged_name
                 print(f"\n--- auto-merging {len(patch_paths)} patch(es) "
                       f"into {merged_out.name} ---")
@@ -4013,6 +8669,13 @@ def _cmd_convert(args):
                              consequence="shipped as a NON-ESL full ESP (consumes one "
                                          "load-order slot)",
                              fix="position it to win")
+                        _record_failure("Combined ESP not ESL", "Combined ESP",
+                                        merged_out.name,
+                                        f"{stats.get('own_arma_records')} new ARMAs "
+                                        f"exceed the {stats.get('esl_slots_max')}-"
+                                        "record ESL cap; shipped as a full ESP that "
+                                        "takes a load-order slot",
+                                        severity="warning")   # #one-tally
                     print(f"  masters   : {len(stats.get('masters', []))}")
                     print(f"  ARMA total: {stats.get('total_arma_records')} "
                           f"(own: {stats.get('own_arma_records')}"
@@ -4025,6 +8688,7 @@ def _cmd_convert(args):
                     # Combined FormIDs -- write the runtime INI. The Combined
                     # then carries NO third-party overrides.
                     _sp_lines = stats.get("skypatcher_ini_lines") or []
+                    _report_skypatcher_unsafe_names(stats)
                     _sp_ini_path = (output / "SKSE" / "Plugins"
                                     / "SkyPatcher" / "armor"
                                     / (merged_out.stem + ".ini"))
@@ -4043,6 +8707,11 @@ def _cmd_convert(args):
                                  consequence="an old SkyPatcher ini may still apply beside "
                                              "the new one",
                                  fix="delete it by hand")
+                            _record_failure("stale SkyPatcher ini", "Combined ESP",
+                                            _sp_ini_path.name,
+                                            f"{plain_error(_e)}; it may still apply "
+                                            "beside the new one; delete it by hand",
+                                            severity="warning")   # #one-tally
                     if _sp_lines:
                         from .atomic_io import atomic_write_bytes
                         _sp_hdr = [
@@ -4057,53 +8726,61 @@ def _cmd_convert(args):
                               f"{_sp_ini_path.name} (no ESP overrides)")
                         for _rl in ube_patcher.report_link_reconciliation(stats):
                             print(_rl)
-                        # Vanilla-coverage assertion: crashes are caught by
-                        # the sweep pass's own isolation, but a SILENT hole
-                        # (sweep ran, linked nothing) would only show up as
-                        # invisible armor in-game. Count links whose target
-                        # record lives in a vanilla/DLC master and warn when
-                        # the sweep is enabled yet none landed.
-                        _van = {m.lower() for m in
-                                ube_patcher.VANILLA_DLC_MASTERS}
-                        _van_links = 0
-                        for _l in _sp_lines:
-                            if not _l.startswith("filterByArmors="):
-                                continue
-                            _t = _l.split("=", 1)[1].split("|", 1)[0]
-                            if _t.lower() in _van:
-                                _van_links += 1
+                        # Vanilla-coverage assertion (`_vanilla_links_check`):
+                        # the delivered count decides when coverage is the
+                        # sole generator. #vanilla-links-delivered
+                        _van_links, _sweep_dead = _vanilla_links_check(
+                            _sp_lines, results, _cov_sole)
                         print(f"  vanilla coverage: {_van_links} vanilla/DLC "
                               "armor record(s) linked")
-                        # Precise form: mod-driven links to vanilla records
-                        # (bugfix-patch overrides) would mask a dead sweep in
-                        # the count above, so assert on the SWEEP SOURCE's own
-                        # link contribution when one ran this batch.
-                        _sweep_links = None
-                        for _rsrc, _r, _rerr in results:
-                            if not _vanilla_sweep_esps(_rsrc):
-                                continue
-                            _sweep_links = 0
-                            if _rerr is None and _r is not None:
-                                for _st in (_r.esp_stats_list or []):
-                                    _sweep_links += int(_st.get(
-                                        "skypatcher_link_targets", 0) or 0)
-                        if _sweep_links == 0:
+                        if _sweep_dead and _cov_sole:
+                            warn("the VANILLA SWEEP ran but the delivered "
+                                 "coverage links 0 vanilla/DLC records",
+                                 consequence="vanilla armor will be invisible on "
+                                             "UBE actors",
+                                 fix="check the unified coverage step above for "
+                                     "errors, or rerun just the sweep (Select mods "
+                                     "-> 'vanilla')")
+                            # Counted and in the failures file. #one-tally
+                            _record_failure("vanilla coverage missing", "vanilla",
+                                            "the delivered coverage",
+                                            "links 0 vanilla/DLC records",
+                                            severity="warning")
+                        elif _sweep_dead:
                             warn("the VANILLA SWEEP ran but linked 0 records",
                                  consequence="vanilla armor no mod overrides will be "
                                              "invisible on UBE actors",
                                  fix="check the VANILLA SWEEP pass above for errors, or "
                                      "rerun just the sweep (Select mods -> 'vanilla')")
+                            _record_failure("vanilla coverage missing", "vanilla",
+                                            "the vanilla sweep", "linked 0 records",
+                                            severity="warning")
+                    _sos_merged = patch_paths is _cov_only   # #stale-output-sweep
+                    # Settle the sweep's moves now, before the passes below read
+                    # meshes\!UBE: a put-back returns the NIF before a colour set
+                    # is indexed against its absence. The decision reads only the
+                    # Combined's model paths, which those passes never change.
+                    # #sweep-settle-before-postmerge
+                    if stale_sweep.settle_before_postmerge_on():
+                        _stale_output_sweep_settle(args, output, merged=_sos_merged)
                     # Reconcile alt-texture 3D indices against the converted NIFs.
                     # Shape reordering during the NIF merge shifts MO2S/MO3S indices;
                     # reconcile ALL split pieces (overflow also carries alt-texture sets).
+                    _alttex_problems: list = []   # #one-tally
                     try:
                         nfix = ube_patcher.reconcile_alt_texture_indices_all(
-                            merged_out, output / "meshes")
+                            merged_out, output / "meshes",
+                            problems=_alttex_problems)
                         print(f"  alt-texture reconcile: fixed {nfix} ARMA(s)")
                     except Exception as e:
                         warn(f"alt-texture reconcile failed: {plain_error(e)}",
                              consequence="colour variants may bind to the wrong shape",
                              fix="check the affected armour's variants in game")
+                        _record_failure("alt-texture reconcile failed",
+                                        merged_out.name, "colour variants",
+                                        f"{plain_error(e)}; colour variants may bind "
+                                        "to the wrong shape", severity="warning")
+                    _warn_alttex_problems(_alttex_problems, merged_out.name)
                     # Clear slot 33 (Hands) from forearm bracers that claim it but have
                     # no hand geometry — else they hide nude hands and draw nothing.
                     # Mesh-driven: real gloves/gauntlets are never touched.
@@ -4117,6 +8794,10 @@ def _cmd_convert(args):
                     except Exception as e:
                         warn(f"hands-slot fix failed: {plain_error(e)}",
                              consequence="hand pieces may keep their source slot")
+                        _record_failure("hands-slot fix failed", merged_out.name,
+                                        "forearm pieces claiming the hands slot",
+                                        f"{plain_error(e)}; they may keep the slot "
+                                        "and hide the hands", severity="warning")
                     # Dedup redundant own-ARMA armature refs: a body-armor ARMO that
                     # ended up with two converter-minted UBE ARMAs of the SAME race +
                     # meshes renders the body-swap mesh TWICE (doubled / blown-out /
@@ -4129,6 +8810,10 @@ def _cmd_convert(args):
                     except Exception as e:
                         warn(f"armature dedup failed: {plain_error(e)}",
                              consequence="duplicate armatures may remain in the Combined ESP")
+                        _record_failure("armature dedup failed", merged_out.name,
+                                        "duplicate UBE armatures",
+                                        f"{plain_error(e)}; a piece may be drawn twice",
+                                        severity="warning")
                     # Self-heal a stale/mis-sorted master list (a master-tier
                     # plugin after a regular ESP = load-order/FormID CTD). No-op on
                     # a correctly-ordered piece; repairs a stale Combined an earlier
@@ -4144,6 +8829,11 @@ def _cmd_convert(args):
                              consequence="the Combined ESP's masters may be out of order, "
                                          "and the game may refuse to load it",
                              fix="check the merged plugin's master list in xEdit")
+                        # A warning: the postflight below records a mis-ordered
+                        # master list as load-breaking, which fails the run.
+                        _record_failure("master re-sort failed", merged_out.name,
+                                        "master list", f"{plain_error(e)}; check the "
+                                        "master list in xEdit", severity="warning")
                     # POSTFLIGHT: re-validate the FINAL Combined (+ ESL split
                     # pieces) AFTER the merge/winner-rebase/reconcile/hands-fix
                     # mutations. validate_patch ran per-SOURCE only; a structural
@@ -4152,7 +8842,11 @@ def _cmd_convert(args):
                     try:
                         _pf = ube_patcher.postflight_validate_combined(
                             merged_out, output / "meshes",
-                            master_data_dirs=batch_master_data_dirs)
+                            master_data_dirs=batch_master_data_dirs,
+                            # the UBE body's own hands/feet and hand-made twins
+                            # load from other mods (an excluded mod's mesh loads
+                            # too, so no exclusions here). #coverage-nude-skin
+                            mesh_resolves=_outside_ube_mesh_resolver(output))
                         if _pf["ctd"] or _pf["soft"]:
                             warn(f"POSTFLIGHT: {len(_pf['ctd'])} load-breaking + {len(_pf['soft'])} "
                                  "other issue(s) on the FINAL Combined",
@@ -4162,21 +8856,38 @@ def _cmd_convert(args):
                                 print(f"       CTD  [{_n}] {_w}")
                             for _n, _w in _pf["soft"]:
                                 print(f"       warn [{_n}] {_w}")
-                            overall_failures += len(_pf["ctd"])
-                            overall_warnings += len(_pf["soft"])
+                            # The SHIPPED plugin: the popup must name it, not
+                            # only the log. #one-tally
+                            if _pf["ctd"]:
+                                _record_failure(
+                                    "load-breaking plugin issue", "Combined ESP",
+                                    f"{len(_pf['ctd'])} issue(s): the plugin is NOT "
+                                    "safe to load",
+                                    _first_few(f"[{_n}] {_w}" for _n, _w in _pf["ctd"]),
+                                    count=len(_pf["ctd"]))
+                            if _pf["soft"]:
+                                _record_failure(
+                                    "plugin postflight", "Combined ESP",
+                                    f"{len(_pf['soft'])} other issue(s)",
+                                    _first_few(f"[{_n}] {_w}" for _n, _w in _pf["soft"]),
+                                    severity="warning", count=len(_pf["soft"]))
                         else:
                             print(f"  postflight: Combined "
                                   f"({len(_pf['pieces'])} piece(s)) validated clean")
                     except Exception as _pfe:
                         warn(f"postflight validation skipped: {plain_error(_pfe)}",
              consequence="the plugin was not checked for load-breaking issues")
+                        _record_failure("check skipped", "Combined ESP",
+                                        "postflight validation",
+                                        f"{plain_error(_pfe)}; the plugin was not "
+                                        "checked for load-breaking issues",
+                                        severity="warning")   # #one-tally
                 except Exception as e:
                     warn(f"auto-merge failed: {plain_error(e)}",
                          consequence="no Combined ESP this run; the per-source patches "
                                      "are still in the output", indent="")
                     _record_failure("merge failed", "Combined ESP",
                                     args.merged_name, plain_error(e))
-                    overall_failures += 1
             else:
                 print(f"\n  (no patches found in {patches_dir} — "
                       "skipping auto-merge)")
@@ -4187,6 +8898,11 @@ def _cmd_convert(args):
              indent="\n")
         _record_failure("merge skipped", "Combined ESP", args.merged_name,
                         f"{merge_blockers} source(s) failed ESP generation")
+
+    # #stale-output-sweep: keep this run's moves only when the new Combined was
+    # written from coverage and names none of them, else put every file back;
+    # then record what this run converted, and from which source.
+    _stale_output_sweep_finish(args, output, results, merged=_sos_merged)
 
     if not _coverage_ran:
         # Unified coverage is the ONLY coverage model and it is emitted as part
@@ -4204,9 +8920,9 @@ def _cmd_convert(args):
         _record_failure("coverage", output, "unified coverage",
                         "merge did not run, so no coverage was generated",
                         severity="warning")
-        # Counted too: measured 2026-09-15, this printed NO RACE COVERAGE
-        # GENERATED and the run still ended "=== all clear ===". #run-warnings
-        overall_warnings += 1
+        # Counted too (the record is the count): measured 2026-09-15, this
+        # printed NO RACE COVERAGE GENERATED and the run still ended
+        # "=== all clear ===". #run-warnings #one-tally
 
     if args.render_previews:
         from . import preview
@@ -4217,6 +8933,9 @@ def _cmd_convert(args):
             warn(f"preview render failed: {plain_error(e)}",
                  consequence="no preview images this run; the conversion itself is unaffected",
                  indent="")
+            _record_failure("previews not rendered", "morph previews", "every preview",
+                            f"{plain_error(e)}; the conversion itself is unaffected",
+                            severity="warning")   # #one-tally
             preview_results = []
         ok = sum(1 for r in preview_results if "error" not in r)
         err = sum(1 for r in preview_results if "error" in r)
@@ -4237,6 +8956,12 @@ def _cmd_convert(args):
         if broken_bodytri:
             warn(f"{len(broken_bodytri)} NIF(s) reference a BODYTRI that doesn't exist on disk",
                  consequence="those pieces will not follow body sliders; listed below")
+            _record_failure("BODYTRI file missing", "output mod",
+                            f"{len(broken_bodytri)} mesh(es)",
+                            "they name a BODYTRI file that is not on disk, so they "
+                            "will not follow body sliders; "
+                            + _first_few(r["nif"] for r in broken_bodytri),
+                            severity="warning")   # #one-tally
             for r in broken_bodytri[:8]:
                 print(f"       {r['nif']}  ->  {r['bodytri_string']}")
             if len(broken_bodytri) > 8:
@@ -4257,6 +8982,14 @@ def _cmd_convert(args):
         workers=(args.workers if args.workers is not None
                  else default_worker_count()))
 
+    # `auto`'s nude-skin morph check: printed and recorded before the tally, so
+    # the count below and the window's list hold the same warnings. #one-tally
+    if getattr(args, "nude_morph_check", False) is True:
+        args.nude_morph_check = "done"
+        _check_ube_nude_morphs()
+
+    # Counted from the record the failures file is written from. #one-tally
+    overall_failures, overall_warnings = _run_tally()
     if overall_failures or overall_warnings:
         print(f"\n=== {overall_failures} failure(s), "
               f"{overall_warnings} warning(s) ===")
@@ -4412,13 +9145,52 @@ _BODY_CANDIDATE_SLOT_BITS = sum(1 << (s - 30) for s in (44, 45, 47, 48, 59, 61))
 _CLOAK_MESH_KEYWORDS = ("cape", "cloak", "mantle", "shroud", "cloth_cloak")
 
 # Nude body skin basenames. A mod whose only DefaultRace ARMAs are these IS the
-# body mod; don't convert it. Real armour pieces are never named femalebody etc.
+# body mod; don't convert it. The name alone does not make a model skin: real
+# armour is sometimes named femalebody etc. (a pair of pants ships as
+# femalebody_1.nif), so `_is_nude_body_skin_model` also reads where the model
+# sits and what record uses it. #nude-basename-path
 _BODY_SKIN_BASENAMES = frozenset({
     "femalebody", "malebody", "femalehands", "malehands",
     "femalefeet", "malefeet",
     "1stpersonfemalebody", "1stpersonmalebody",
     "1stpersonfemalehands", "1stpersonmalehands",
 })
+
+# Where the body skin lives: the game's character assets and every body or race
+# mod that replaces them. #nude-basename-path
+_BODY_SKIN_HOME = "actors/character/"
+
+
+def _is_nude_body_skin_model(base: str, by_name_alone: bool = False,
+                             named_item: bool = False) -> bool:
+    """True if the weight-agnostic model key `base` is the nude body skin.
+
+    #nude-basename-path (2026-09-24): the basename alone was the test, and "real
+    armour pieces are never named femalebody" is false -- a pair of playable
+    pants ships as `armor\\<set>\\pants\\femalebody_1.nif` and was never
+    converted, while the coverage step gave it a UBE armature anyway, so the
+    CBBE pants drew on the UBE body.
+
+    The PATH alone is not the answer either. Measured over a real load order:
+    114 armatures carry a skin-named model outside `actors\\character\\`, and
+    108 of them are bodies -- 40 an NPC or race wears as its skin, 59 only
+    nameless records use (a follower's unused body variants), 3 a named but
+    non-playable record, 6 nothing. Taking the path alone admitted three such
+    follower and race bodies as new "armour" (10 of the 15 bases it added were
+    a live skin). The other 6 are armour: the pants and five robes and
+    cuirasses whose first-person model is `1stpersonfemalebody`, each used by
+    a PLAYABLE, NAMED armour record -- something a player can pick up and see
+    by name, which a skin record never is.
+
+    So a skin basename is skin under `actors\\character\\` (where the game and
+    every body mod keep it), and anywhere else unless `named_item`: the
+    armature is used by a playable armour record with a name (FULL) in its own
+    plugin. `by_name_alone` is the old rule (CBBE2UBE_NO_NUDE_BASENAME_PATH=1)."""
+    if base.rsplit("/", 1)[-1] not in _BODY_SKIN_BASENAMES:
+        return False
+    if by_name_alone or base.startswith(_BODY_SKIN_HOME):
+        return True
+    return not named_item
 
 
 def _weight_agnostic_slot_map(nif_slot_map: "dict[str, int]") -> "dict[str, int]":
@@ -4483,7 +9255,8 @@ def _meshes_rel(p: Path) -> str:
 
 
 def _complete_weight_partners(output_dir: "str | Path",
-                              source_variants: "dict | None" = None):
+                              source_variants: "dict | None" = None,
+                              skip_bases=()):
     """Safety net (#180): Skyrim needs BOTH ``_0`` and ``_1`` on disk for a
     weighted body mesh -- it derives the absent weight from the present one's
     PATH, so a missing partner makes the piece break / vanish at that body
@@ -4518,6 +9291,10 @@ def _complete_weight_partners(output_dir: "str | Path",
     `source_variants` nothing is ever refreshed and the behaviour is exactly
     as before.
 
+    `skip_bases` (same keys) are bases the run left to a mod that ships them
+    built for UBE: nothing is filled or refreshed there, or our stale copy would
+    land at the builder's path again. #supersede-whole-base
+
     Returns ``(filled, refreshed)``."""
     import re as _re
     ube_root = Path(output_dir) / "meshes" / "!UBE"
@@ -4538,6 +9315,8 @@ def _complete_weight_partners(output_dir: "str | Path",
             base = _weight_base_key(anchor.relative_to(ube_root).as_posix())
         except ValueError:
             base = None
+        if base is not None and base in skip_bases:
+            continue              # left to its builder
         src_sufs = (source_variants or {}).get(base)
         if both:
             # Refresh a partner this function FILLED. Only the source can say
@@ -4796,25 +9575,249 @@ def _postflight_sync_weight_partner_jiggle(output_dir) -> int:
     return total
 
 
+def _tail_fold() -> bool:
+    """#tail-fold (2026-09-25): does the end of the run sync the `_0`/`_1`
+    jiggle bones and check the pairs for divergence in ONE walk, loading each
+    pair once? Yes, by default.
+
+    The two were serial walks over every pair of the whole output, each loading
+    both files: 150 s for the sync and 72 s for the check on the reported
+    modlist (3342 NIFs, read-only replay), in the batch parent after the last
+    source. The check is detect-only and reads the state the sync leaves, so it
+    can run on the files the sync already holds whenever the sync left them as
+    they are on disk. CBBE2UBE_NO_TAIL_FOLD=1 runs the two serial walks again."""
+    return not _flag("CBBE2UBE_NO_TAIL_FOLD", False)
+
+
+def _pass_failures_noted() -> int:
+    """How many pass failures this process has recorded so far. #tail-fold"""
+    return sum(nif_convert.pass_failure_summary().values())
+
+
+def _postflight_weight_partner_fold(output_dir, check: bool):
+    """`_postflight_sync_weight_partner_jiggle`, then (when `check`)
+    `_postflight_weight_partner_divergence`, in one walk. #tail-fold
+
+    Returns (verts synced, divergence findings) -- the two serial passes'
+    results, in their order -- or None when switched off or when the pairs
+    cannot even be listed; the caller then runs the two serial passes, as
+    before, and nothing has been touched yet. When the CHECK raises on a pair,
+    the findings are that exception instead of a list: the serial check
+    raised it too and reported nothing, while the sync had already walked every
+    pair -- so the fold stops checking and goes on syncing.
+
+    THE PAIR IS LOADED ONCE. The check reads the files the sync opened when
+    the sync left them exactly as they are on disk: it changed no vert and
+    recorded no failure. Otherwise (it wrote the pair, or saved one side and
+    failed on the other) the pair is read from disk again, so the check
+    always sees what ships, as the serial check did. The open copy cannot
+    stand in for the disk after an edit: its shapes still read the bones and
+    weights from before the graft (measured on a synthetic pair), so it would
+    report the very divergence the sync just repaired. Pairs are
+    grouped, ordered and skipped exactly as both serial passes do it, and a
+    pair whose sync raises is skipped, as the serial sync skips it."""
+    if not _tail_fold():
+        return None
+    import re as _re
+    meshes = Path(output_dir) / "meshes"
+    sync = bool(nif_convert.WEIGHT_PARTNER_JIGGLE_SYNC)
+    try:
+        if not meshes.is_dir() or not (sync or check):
+            return 0, []
+        # Grouped exactly as both serial passes group them.
+        groups: "dict[tuple, dict]" = {}
+        for p in meshes.glob("**/*.nif"):
+            m = _re.match(r"(.*)_([01])\.nif$", p.name, _re.IGNORECASE)
+            if m:
+                groups.setdefault((str(p.parent), m.group(1)), {})[m.group(2)] = p
+    except Exception:
+        return None
+    return _weight_partner_fold_walk(meshes, sorted(groups.items()), sync, check)
+
+
+def _weight_partner_fold_walk(meshes, pairs, sync: bool, check: bool):
+    """The walk behind `_postflight_weight_partner_fold`. #tail-fold"""
+    from .nif_convert_weights import _sync_weight_partner_jiggle_loaded
+    try:
+        pyn, open_err = nif_convert._pynifly(), None
+    except Exception as _pe:
+        pyn, open_err = None, _pe
+    total = 0
+    out: "list[str]" = []
+    check_err = None
+
+    def _open(byw):
+        nf: dict = {}
+        try:
+            if pyn is None:
+                raise open_err
+            nf["0"] = pyn.NifFile(filepath=str(byw["0"]))
+            nf["1"] = pyn.NifFile(filepath=str(byw["1"]))
+        except Exception:
+            for _f in nf.values():
+                nif_io.release_nif(_f)
+            raise
+        return nf
+
+    for (_parent, base), byw in pairs:
+        if "0" not in byw or "1" not in byw:
+            continue
+        try:
+            nf = _open(byw)
+        except Exception as _oe:
+            if sync:
+                # What the serial sync records for a pair it cannot open; the
+                # serial check skipped such a pair silently.
+                nif_convert._note_pass_failure(
+                    "_sync_weight_partner_jiggle/open", _oe)
+            continue
+        try:
+            reread = False
+            if sync:
+                failed_before = _pass_failures_noted()
+                try:
+                    n = _sync_weight_partner_jiggle_loaded(
+                        byw["0"], byw["1"], nf)
+                except Exception:
+                    n, reread = 0, True
+                total += n
+                if n > 0 or _pass_failures_noted() != failed_before:
+                    reread = True
+            if not check:
+                continue
+            if reread:
+                for _f in nf.values():
+                    nif_io.release_nif(_f)
+                nf = {}
+                try:
+                    nf = _open(byw)
+                except Exception:
+                    continue
+            try:
+                label = byw["1"].relative_to(meshes).as_posix()
+            except Exception:
+                label = f"{base}_1.nif"
+            try:
+                out.extend(_weight_partner_scale_divergence(
+                    list(nf["0"].shapes), list(nf["1"].shapes), label))
+            except Exception as _ce:
+                # The serial check died here, reporting nothing; the serial
+                # sync had finished. Check no more pairs; sync the rest.
+                check_err, check = _ce, False
+                if not sync:
+                    break
+        finally:
+            # Released by reference counting per pair. #postflight-release
+            for _f in nf.values():
+                nif_io.release_nif(_f)
+    return total, (check_err if check_err is not None else out)
+
+
 _BATCH_BSA_INDEX = None   # set per-batch by _cmd_convert; lazy BSA mesh resolver
+
+
+def _load_order_bsa_dirs(mods_root, enabled_ordered, game_data_dirs) -> "list[Path]":
+    """The folders whose archives `_BsaMeshIndex` lists: every enabled mod by MO2
+    priority, then the game Data dir(s) LAST. Between two archives shipping the
+    same path, the one whose PLUGIN loads later wins (#bsa-load-order-winner);
+    this order decides only among archives no plugin loads, and with that rule
+    switched off. ONE definition, so source selection and the convert step
+    index the same archives. #bsa-only-sources"""
+    dirs = [Path(mods_root) / n for n in (enabled_ordered or ())]
+    dirs += [Path(d) for d in (game_data_dirs or []) if Path(d) not in dirs]
+    return dirs
+
+
+def _bsa_load_order_winner() -> bool:
+    r"""#bsa-load-order-winner (2026-09-25): when two archives hold the same
+    mesh, does the index take the one the game loads? Yes, by default.
+
+    `_BsaMeshIndex` took the first archive in MO2 priority order. The game does
+    not: a plugin loads `<plugin>.bsa` and `<plugin> - Textures.bsa`, and an
+    archive loaded later overrides one loaded earlier, so the archive of the
+    plugin that loads LATER wins. MO2's priority decides only between loose
+    files, and between two archive FILES of the same name. The archives the
+    game INI lists (the base game's `Skyrim - *.bsa`) load before every
+    plugin's, and an archive no plugin loads is not loaded at all -- both rank
+    below every plugin-loaded archive and keep the MO2 order among themselves.
+    Live census: 406 archives (390 plugin-loaded), 4,221 mesh paths in more
+    than one, 436 winners change -- none extracted by the last run, converted
+    into !UBE or armour (a particle patch's archive against a weather plugin's
+    is 405 of them). CBBE2UBE_NO_BSA_LOAD_ORDER_WINNER=1 takes the MO2 order."""
+    return not _flag("CBBE2UBE_NO_BSA_LOAD_ORDER_WINNER", False)
+
+
+def _bsa_plugin_order(lay) -> "list[str] | None":
+    """The active plugins in load order for `_BsaMeshIndex(plugin_order=)`, or
+    None when #bsa-load-order-winner is off or the profile cannot be read (the
+    index then keeps the MO2 order). #bsa-load-order-winner"""
+    if not _bsa_load_order_winner():
+        return None
+    try:
+        return paths.active_plugins_ordered(lay)
+    except Exception:
+        return None
+
+
+def _bsa_loading_ranks(plugin_order) -> "dict[str, int] | None":
+    """{archive stem lowercase: load index of the plugin that loads it}: a
+    plugin loads `<stem>.bsa` and `<stem> - Textures.bsa`. The first plugin of
+    a stem opens the archive, so its index counts. #bsa-load-order-winner"""
+    if not plugin_order:
+        return None
+    ranks: "dict[str, int]" = {}
+    for i, name in enumerate(plugin_order):
+        st = Path(str(name)).stem.lower()
+        ranks.setdefault(st, i)
+        ranks.setdefault(st + " - textures", i)
+    return ranks
 
 
 class _BsaMeshIndex:
     """Load-order-wide fallback resolver: extracts armour meshes from mod BSAs
     (bespoke-armor mods, quest mods, ...) when they aren't loose anywhere. Consulted only
     after the VFS + source-local lookups miss. Lazy: BSA scan on first miss only.
-    Texture/voice/sound BSAs are skipped. Archive data buffers are released after
+    Voice/sound/facegen BSAs are skipped. Archive data buffers are released after
     listing; only BSAs with needed meshes are re-opened for extraction."""
 
-    _SKIP_BSA = ("texture", "voice", " sound", "sounds", "- snd", "facegen")
+    # #texture-archive-meshes (2026-09-24): "texture" used to lead this list, and
+    # it hid real armour. A large content mod keeps ALL its meshes in
+    # "<name> - Textures.bsa" (3,224 + 1,411 .nif in its two archives; the plain
+    # "<name>.bsa" holds scripts and sound), and the substring also caught two
+    # "... Retexture SE.bsa" armour archives. Measured on a real modlist: 143 more
+    # archives listed (406, +4,506 mesh paths, 0.6 -> 0.7 s warm); 21 NIFs added
+    # -- three suffixless world meshes the game draws (iron boots, two leather
+    # pieces) and 18 first-person models -- 2 male fallbacks dropped because the
+    # female mesh in such an archive now resolves, 16 armatures the coverage step
+    # had been minting over an unconverted mesh now get a converted one, and 21
+    # already-converted pieces of one armour set now come from the higher-priority
+    # retexture archive -- the copy the game loads. No decision behind the old
+    # entry was ever recorded; it looked like a cost shortcut.
+    # CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES=1 skips them again.
+    _SKIP_BSA = ("voice", " sound", "sounds", "- snd", "facegen")
+    _SKIP_BSA_TEXTURE = ("texture",)
 
     def __init__(self, enabled_mod_dirs, staging_dir,
-                 bsa_name_prefixes=None):
+                 bsa_name_prefixes=None, skip_bsa=None, plugin_order=None):
         self._dirs = list(enabled_mod_dirs)   # MO2 priority order (highest first)
+        # The active plugins in load order: between two archives listing the
+        # same mesh, the one whose plugin loads later wins, as in game. None
+        # keeps the MO2 order (the caller passes `_bsa_plugin_order`, None when
+        # CBBE2UBE_NO_BSA_LOAD_ORDER_WINNER is set). #bsa-load-order-winner
+        self._plugin_order = tuple(plugin_order) if plugin_order else None
+        self._ranks = _bsa_loading_ranks(self._plugin_order)
+        # A caller asking "does this mesh exist AT ALL" passes its own skip list:
+        # a mesh shipped in a texture-named archive still exists in game.
+        if skip_bsa is not None:
+            self._SKIP_BSA = tuple(skip_bsa)
         # None = lookup-only: extract() refuses, so the index can never write a
         # file (the setup check builds one this way). #tool-folder-only
         self._staging = Path(staging_dir) if staging_dir is not None else None
         self._index = None                    # rel_lower -> (bsa_path, internal_name)
+        # Folders and archives the listing could not read: the index is then
+        # SMALLER than the load order, and the stale-output sweep must not read
+        # a mesh it lost as one no source makes. #stale-output-sweep
+        self.skipped: "list[str]" = []
         self._open: dict = {}                 # bsa_path -> BSAArchive (extract cache)
         self._out: dict = {}                  # rel_lower -> (Path, rel) | None
         # Optional archive-name allowlist (lowercase prefixes). The setup-check
@@ -4822,19 +9825,53 @@ class _BsaMeshIndex:
         # the game Data dir lists EVERY enabled mod's BSAs (330 vs 6 observed).
         self._name_prefixes = ([p.lower() for p in bsa_name_prefixes]
                                if bsa_name_prefixes else None)
+        # Read once, here: an index lists its archives under ONE rule for its
+        # whole life. #texture-archive-meshes. The switch governs the DEFAULT
+        # list only: a caller's own list is its whole rule, so the switch cannot
+        # make the coverage step's "does this mesh exist in game" lookup stop
+        # seeing texture archives (the two lanes met there, 2026-09-24).
+        self._skip = (self._SKIP_BSA_TEXTURE + self._SKIP_BSA
+                      if skip_bsa is None
+                      and _flag("CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES", False)
+                      else self._SKIP_BSA)
+
+    def listing_key(self) -> tuple:
+        """What this index's listing depends on: the archive folders in order,
+        the two name filters and the plugin order that picks between archives.
+        Two indexes with the same key list the same paths from the same
+        archives. #bsa-only-sources #bsa-load-order-winner"""
+        return (tuple(str(d).lower() for d in self._dirs), self._skip,
+                tuple(self._name_prefixes or ()),
+                tuple(str(p).lower() for p in (self._plugin_order or ())))
+
+    def adopt_listing(self, other) -> bool:
+        """Take `other`'s archive listing instead of scanning again, when `other`
+        has scanned and lists exactly what this index would. Extraction state is
+        not shared: `other` may be lookup-only. Returns True if adopted.
+        #bsa-only-sources"""
+        if (other is None or other is self or other._index is None
+                or self._index is not None
+                or other.listing_key() != self.listing_key()):
+            return False
+        self._index = other._index
+        self.skipped.extend(getattr(other, "skipped", ()))   # #stale-output-sweep
+        return True
 
     def _scan(self) -> None:
         from .bsa_strings import BSAArchive
         import sys as _s
         self._index = {}
         n = 0
+        ranks = self._ranks
+        won: "dict[str, int | None]" = {}     # rel -> the listed archive's rank
         for d in self._dirs:
             try:
                 bsas = sorted(d.glob("*.bsa"))
             except Exception:
+                self.skipped.append(str(d))
                 continue
             for bsa in bsas:
-                if any(k in bsa.name.lower() for k in self._SKIP_BSA):
+                if any(k in bsa.name.lower() for k in self._skip):
                     continue
                 if (self._name_prefixes is not None
                         and not any(bsa.name.lower().startswith(p)
@@ -4844,13 +9881,28 @@ class _BsaMeshIndex:
                     arch = BSAArchive(bsa, eager=False)   # table-only: cheap list
                     files = arch.list_files()
                 except Exception:
+                    self.skipped.append(bsa.name)
                     continue
+                # The load index of the plugin that loads this archive; None
+                # for one no plugin loads (the INI-listed base-game archives,
+                # a stray), which ranks below every plugin-loaded archive.
+                rank = ranks.get(bsa.stem.lower()) if ranks is not None else None
                 for f in files:
                     fl = f.lower().replace("\\", "/")
                     if not fl.endswith(".nif"):
                         continue
                     rel = fl[7:] if fl.startswith("meshes/") else fl
-                    self._index.setdefault(rel, (bsa, f))
+                    if ranks is None:
+                        self._index.setdefault(rel, (bsa, f))
+                        continue
+                    # First in MO2 order, until an archive whose plugin loads
+                    # LATER lists it: that copy is the one the game draws.
+                    # #bsa-load-order-winner
+                    if rel not in self._index or (
+                            rank is not None
+                            and (won[rel] is None or rank > won[rel])):
+                        self._index[rel] = (bsa, f)
+                        won[rel] = rank
                 arch._data = b""              # release the (table) buffer
                 n += 1
         print(f"  BSA fallback index: scanned {n} mesh archive(s) -> "
@@ -4863,8 +9915,29 @@ class _BsaMeshIndex:
             if self._index is None:
                 self._scan()
             return key in self._index
-        except Exception:
+        except Exception as e:
+            self.skipped.append(f"(the listing stopped: {plain_error(e)})")
             return False
+
+    def read_bytes(self, key: str) -> "bytes | None":
+        """key = lowercase meshes-rel. The mesh's bytes from the archive that
+        lists it, read into memory -- nothing is written, so a lookup-only index
+        may use it. None if no archive lists it or it cannot be read.
+        #coverage-female-standin"""
+        try:
+            if self._index is None:
+                self._scan()
+            hit = self._index.get(key)
+            if hit is None:
+                return None
+            from .bsa_strings import BSAArchive
+            arch = self._open.get(hit[0])
+            if arch is None:
+                arch = BSAArchive(hit[0], eager=False)   # table-only; seek-read
+                self._open[hit[0]] = arch
+            return arch.read_file(hit[1]) or None
+        except Exception:
+            return None
 
     def extract(self, key: str):
         """key = lowercase meshes-rel (e.g. 'armor/x/cuirass_1.nif').
@@ -4910,6 +9983,10 @@ class _BsaMeshIndex:
                  consequence="the archive entry points outside the extraction folder "
                              "and was skipped",
                  file=sys.stderr)
+            # Printed once per entry (the refusal is cached). #one-tally
+            _record_failure("unsafe archive path skipped", Path(bsa_path).name,
+                            internal, "the archive entry points outside the "
+                            "extraction folder and was skipped", severity="warning")
             self._out[key] = None
             return None
         try:
@@ -5371,10 +10448,491 @@ def _skip_esp_less_fallback(armor_bases, src_esps) -> bool:
     return False                        # nothing parsed -> treat as plugin-less
 
 
+# ---------- #npc-worn-nonplayable: which armour NPCs actually wear ----------
+#
+# The vanilla playable races and their vampire variants (Skyrim.esm, low 24
+# bits) -- the races a UBE body covers with no race mod. A UBE race is recognised
+# by the plugin that DEFINES it (#ube-race-by-plugin); switched off, by the old
+# editor ID prefix.
+_UBE_CAPABLE_VANILLA_RACES = frozenset({
+    0x013740, 0x013741, 0x013742, 0x013743, 0x013744,   # Argonian .. Imperial
+    0x013745, 0x013746, 0x013747, 0x013748, 0x013749,   # Khajiit .. Wood Elf
+    0x08883A, 0x08883C, 0x08883D, 0x088840, 0x088844,   # their vampire variants
+    0x088845, 0x088846, 0x088884, 0x088794, 0x0A82B9,
+})
+# #ube-race-by-plugin: the UBE races are the RACE records UBE_AllRace.esp
+# defines (their editor IDs begin "00UBE_", so the old "ube_" prefix test below
+# never matched one). The same identity the coverage passes and the loose-mesh
+# index use. The prefix is kept only for the off-switch.
+_UBE_RACE_PLUGIN = "ube_allrace.esp"
+_UBE_RACE_EDID_PREFIX = "ube_"
+_ACBS_FEMALE = 0x00000001        # NPC_ ACBS flags, bit 0
+_TPLT_USE_TRAITS = 0x0001        # NPC_ ACBS template-data flags (offset 18)
+_RECORD_DELETED = 0x00000020
+# {load-order key -> worn set}; one load order at a time. #npc-worn-nonplayable
+_NPC_WORN_CACHE: "dict[tuple, frozenset]" = {}
+
+
+def _read_plugin_groups(path, labels) -> "tuple[list[str], dict[bytes, list]]":
+    """(masters, {label: [Record, ...]}) for the top-level groups named in
+    `labels`, SEEKING past every other group unread. The NPC scan needs four
+    small groups of every active plugin; cells and worldspaces are most of each
+    file's bytes, and `ESP.load` would read and parse all of them. Raises on a
+    file that is not a plugin; stops at a corrupt group size rather than spin."""
+    from . import esp as _esp
+    import struct as _struct
+    out: "dict[bytes, list]" = {}
+    with open(path, "rb") as fh:
+        head = fh.read(24)
+        if len(head) < 24 or head[:4] != b"TES4":
+            raise ValueError(f"{Path(path).name}: no TES4 header")
+        size = _struct.unpack_from("<I", head, 4)[0]
+        tes4, _ = _esp.Record.parse(head + fh.read(size), 0)
+        masters = list(_esp.TES4Header.parse_from_record(tes4).masters)
+        while True:
+            gh = fh.read(24)
+            if len(gh) < 24 or gh[:4] != b"GRUP":
+                break
+            gsize = _struct.unpack_from("<I", gh, 4)[0]
+            if gsize < 24:
+                break
+            label = gh[8:12]
+            if label in labels:
+                grp, _ = _esp.Group.parse(gh + fh.read(gsize - 24), 0)
+                out.setdefault(label, []).extend(grp.records)
+            else:
+                fh.seek(gsize - 24, 1)
+    return masters, out
+
+
+def _ube_race_by_plugin() -> bool:
+    """#ube-race-by-plugin: a UBE race is one UBE_AllRace.esp defines, not one
+    whose editor ID starts with "ube_". CBBE2UBE_NO_UBE_RACE_BY_PLUGIN=1 turns
+    it off."""
+    return not _flag("CBBE2UBE_NO_UBE_RACE_BY_PLUGIN", False)
+
+
+def _npc_worn_armos(plugin_paths) -> "frozenset[tuple[str, int]]":
+    """Every form a female NPC of a UBE-capable race wears or carries, as
+    {(defining plugin lowercase, formid low24)} -- the identity
+    `_player_armor_mesh_bases` checks a non-playable ARMO against.
+    #npc-worn-nonplayable
+
+    `plugin_paths` is the active load order (last = conflict winner). Only the
+    WINNING record of each NPC_, outfit (OTFT) and leveled item list (LVLI)
+    counts: a replacer that re-dresses an NPC takes the old outfit out of the
+    game. From each qualifying NPC the walk follows its default outfit (DOFT),
+    sleep outfit (SOFT) and inventory (CNTO), through outfits and leveled lists
+    to any depth. The worn skin (WNAM) is NOT followed -- that is the NPC's
+    body, not something it wears over it.
+
+    Qualifying = female (ACBS flag 0x1) and of a vanilla playable race, its
+    vampire variant, or a UBE race: one DEFINED by UBE_AllRace.esp, whatever
+    plugin overrides it last (#ube-race-by-plugin). The first cut tested the
+    editor ID for "ube_", but UBE_AllRace's races are all "00UBE_..." -- on a
+    real load order it matched none of its 18, and 13 winning NPC records on
+    those races (12 female) were not read as wearers. Counting them took that
+    set from 9,675 to 9,686 forms (2026-09-25): 8 armours, every record of each
+    playable, 2 outfits and a weapon -- no non-playable armour, so what is
+    converted and linked there did not change. With the switch
+    CBBE2UBE_NO_UBE_RACE_BY_PLUGIN=1 that prefix test is back. An NPC whose
+    traits come from a template (TPLT with the Use Traits flag) takes its sex
+    and race from that template, followed through NPC records to the first one
+    with its own traits. A leveled-NPC-list template has no single answer, so
+    that NPC does NOT count: the user's rule is armour a FEMALE NPC wears. The
+    first cut counted every templated NPC as a possible wearer; on a real load
+    order 48 of its 125 new meshes came only that way -- creature-cavity
+    bodies, animal costumes, and male bosses' and orders' gear -- and none of
+    them through a known female.
+
+    A SKIN is never worn, however it is reached: every form that any NPC_ or
+    RACE record -- winning or not -- names as its skin (WNAM) is taken out of
+    the set at the end (review, 2026-09-24). Not following WNAM was not enough:
+    the first cut, which counted every templated NPC, still reached 23 skins
+    -- templated NPCs carry skeleton, dragon, wraith and other creature skins
+    in their own outfits and inventories -- and a skeleton skin's DefaultRace
+    armature passed every later gate and was planned as armour. The template
+    rule above reaches none of that load order's 1,387 skin forms, so today
+    the subtraction is a guard and changes nothing.
+
+    Measured on a real load order (3,254 active plugins, 2026-09-24): 9,675
+    forms reached, 1,584 of them ARMOs; about 10 s including the plugin-file
+    lookup with the plugins in the disk cache (7.6 s for the walk alone), 103 s
+    in one cold full run. The first cut reached 15,763 forms, 15,740 once the
+    skins were out; with WNAM followed and race-less NPCs counted -- the
+    2026-09-24 report's two differences -- it reproduced that report's 3,783
+    worn ARMOs exactly, 236 of them reachable only that way. An unreadable
+    plugin is skipped. The set holds every reached form but the skins, not only
+    armour -- callers test armour identities against it."""
+    from . import esp as _esp
+    import struct as _struct
+    _wanted = (b"NPC_", b"OTFT", b"LVLI", b"RACE")
+    npcs: "dict[tuple, tuple | None]" = {}   # winner: (female, race, traits-template, items)
+    lists: "dict[tuple, tuple]" = {}         # OTFT/LVLI winner -> its entries
+    race_edid: "dict[tuple, str]" = {}
+    skins: "set[tuple[str, int]]" = set()    # any NPC_/RACE WNAM, any record
+    for p in plugin_paths:
+        try:
+            masters, groups = _read_plugin_groups(p, _wanted)
+        except Exception:
+            continue
+        lc = [m.lower() for m in masters]
+        own = Path(p).name.lower()
+
+        def _abs(fid, _lc=lc, _own=own):
+            mi = fid >> 24
+            return (_lc[mi] if mi < len(_lc) else _own, fid & 0xFFFFFF)
+
+        for r in groups.get(b"NPC_", ()):
+            rid = _abs(r.formid)
+            if r.flags & _RECORD_DELETED:
+                npcs[rid] = None
+                continue
+            female, race, tpl, tflags, items = False, None, None, 0, []
+            for sig, d in _esp.iter_subrecords(r.payload):
+                if sig == b"ACBS" and len(d) >= 20:
+                    female = bool(_struct.unpack_from("<I", d, 0)[0] & _ACBS_FEMALE)
+                    tflags = _struct.unpack_from("<H", d, 18)[0]
+                elif sig == b"RNAM" and len(d) == 4:
+                    race = _abs(_struct.unpack("<I", d)[0])
+                elif sig in (b"DOFT", b"SOFT") and len(d) == 4:
+                    items.append(_abs(_struct.unpack("<I", d)[0]))
+                elif sig == b"CNTO" and len(d) >= 4:
+                    items.append(_abs(_struct.unpack_from("<I", d, 0)[0]))
+                elif sig == b"TPLT" and len(d) == 4:
+                    _t = _struct.unpack("<I", d)[0]
+                    tpl = _abs(_t) if _t else None
+                elif sig == b"WNAM" and len(d) == 4:     # the NPC's own skin
+                    skins.add(_abs(_struct.unpack("<I", d)[0]))
+            npcs[rid] = (female, race,
+                         tpl if tflags & _TPLT_USE_TRAITS else None,
+                         tuple(items))
+        for r in groups.get(b"OTFT", ()):
+            ents: list = []
+            if not r.flags & _RECORD_DELETED:
+                for sig, d in _esp.iter_subrecords(r.payload):
+                    if sig == b"INAM":
+                        ents += [_abs(_struct.unpack_from("<I", d, i)[0])
+                                 for i in range(0, len(d) - 3, 4)]
+            lists[_abs(r.formid)] = tuple(ents)
+        for r in groups.get(b"LVLI", ()):
+            ents = []
+            if not r.flags & _RECORD_DELETED:
+                for sig, d in _esp.iter_subrecords(r.payload):
+                    if sig == b"LVLO" and len(d) >= 8:
+                        ents.append(_abs(_struct.unpack_from("<I", d, 4)[0]))
+            lists[_abs(r.formid)] = tuple(ents)
+        for r in groups.get(b"RACE", ()):
+            for sig, d in _esp.iter_subrecords(r.payload):
+                if sig == b"EDID":
+                    race_edid[_abs(r.formid)] = d.rstrip(b"\x00").decode(
+                        "cp1252", errors="replace")
+                elif sig == b"WNAM" and len(d) == 4:     # the race's skin
+                    skins.add(_abs(_struct.unpack("<I", d)[0]))
+
+    by_plugin = _ube_race_by_plugin()
+
+    def _ube_capable(race) -> bool:
+        if race is None:
+            return False
+        if race[0] == "skyrim.esm" and race[1] in _UBE_CAPABLE_VANILLA_RACES:
+            return True
+        if by_plugin:                 # the race's identity: its DEFINING plugin
+            return race[0] == _UBE_RACE_PLUGIN
+        return race_edid.get(race, "").lower().startswith(_UBE_RACE_EDID_PREFIX)
+
+    known: "dict[tuple, bool]" = {}
+
+    def _female_wearer(rid, depth=0) -> bool:
+        """Sex and race of `rid`, through its traits template chain. A leveled-
+        NPC template, an unknown or deleted record and a cycle are not female."""
+        if rid in known:
+            return known[rid]
+        npc = npcs.get(rid)
+        if npc is None or depth > 16:
+            return False
+        female, race, tpl, _items = npc
+        if tpl is not None:
+            got = _female_wearer(tpl, depth + 1)
+        else:
+            got = female and _ube_capable(race)
+        known[rid] = got
+        return got
+
+    worn: "set[tuple[str, int]]" = set()
+    stack: list = []
+    for rid, npc in npcs.items():
+        if npc is not None and _female_wearer(rid):
+            stack.extend(npc[3])
+    while stack:                      # outfits and lists may nest or cycle
+        it = stack.pop()
+        if it in worn:
+            continue
+        worn.add(it)
+        stack.extend(lists.get(it, ()))
+    return frozenset(worn - skins)    # a skin is the body, never worn over it
+
+
+def _batch_npc_worn_armos(for_coverage: bool = False
+                          ) -> "frozenset[tuple[str, int]] | None":
+    """`_npc_worn_armos` over the active load order, built once per load order
+    per process: source selection and the convert step of one `auto` run share
+    it, and a GUI refresh does not re-read every plugin while the mod and plugin
+    order stay the same.
+
+    None -- the old rule, every non-playable armour skipped -- when switched off
+    (CBBE2UBE_NO_NPC_WORN_NONPLAYABLE=1) or when there is no load order to read.
+    Never raises: a failed read is a warning and the old rule. #npc-worn-nonplayable
+
+    `for_coverage`: the coverage step's race-list rule asks after reading its
+    own switch (CBBE2UBE_NO_COVERAGE_HUMAN_RACE_LIST), so the conversion switch
+    is not read -- each switch turns off only its own feature. Same cache.
+    #coverage-human-race-list"""
+    if not for_coverage and _flag("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", False):
+        return None
+    try:
+        lay = paths.discover_layout()
+        names = paths.active_plugins_ordered(lay)
+        if not names:
+            return None
+        # Keyed on what decides which plugin files load -- the mods folder, the
+        # mod priority order and the plugin load order -- the way
+        # `_third_party_ube_covered_armos` keys its scan. NOT on the files' own
+        # stat: resolving the names to files walks every mod folder (~5 s of the
+        # ~10 s on a 3,254-plugin order), which would make a hit cost half a miss.
+        key = (str(lay.mods_root), tuple(paths.enabled_mods_ordered(lay) or ()),
+               tuple(n.lower() for n in names))
+        # And on the index mode (#root-plugin-index): its switch can flip in a
+        # long-lived GUI process, and the two indexes can resolve a name to
+        # different files.
+        key += (paths.root_plugin_index_on(),)
+        # And on the UBE-race rule (#ube-race-by-plugin): its switch decides
+        # who counts as a wearer.
+        key += (_ube_race_by_plugin(),)
+        hit = _NPC_WORN_CACHE.get(key)
+        if hit is not None:
+            return hit
+        t0 = time.time()
+        fidx = paths.plugin_file_index(lay)
+        ordered = [Path(fidx[n.lower()]) for n in names if n.lower() in fidx]
+        if not ordered:
+            return None
+        worn = _npc_worn_armos(ordered)
+        _NPC_WORN_CACHE.clear()
+        _NPC_WORN_CACHE[key] = worn
+        print(f"  NPC outfits: read {len(ordered)} active plugin(s) in "
+              f"{time.time() - t0:.0f}s -- {len(worn)} form(s) worn or carried "
+              "by female NPCs of UBE-capable races")
+        return worn
+    except Exception as e:
+        warn(f"could not read which armour NPCs wear ({plain_error(e)})",
+             consequence="non-playable armour that female NPCs wear is not "
+                         "converted, and the coverage race-list rule does not "
+                         "link it, this run")
+        # Not cached, so every call reads (and prints) again: one entry for the
+        # run, also when source selection read it before the record began.
+        # #one-tally
+        _record_once("load order not read", "load order", "armour NPCs wear",
+                     f"{plain_error(e)}; non-playable armour that female NPCs "
+                     "wear was not converted or linked")
+        return None
+
+
+# ---------- #selection-winner-playable: the playable flag the game uses ----------
+#
+# {load-order key -> {(defining plugin lowercase, formid low24) -> not playable}};
+# one load order at a time. A failed build is cached as None so it warns once.
+_ARMO_WINNER_CACHE: "dict[tuple, dict | None]" = {}
+# The plugins that build could not read, same key: the map is then missing their
+# overrides, and the stale-output sweep treats the plan as incomplete.
+# #stale-output-sweep
+_ARMO_WINNER_UNREADABLE: "dict[tuple, list[str]]" = {}
+# The warning that build printed, same key, as `_record_once` arguments: source
+# selection builds the map before `_cmd_convert` starts the run's record (and
+# clears it), so a cache hit records it again, once. #one-tally
+_ARMO_WINNER_WARNED: "dict[tuple, tuple]" = {}
+_ARMO_NONPLAYABLE_FLAG = 0x00000004   # ARMO record header flag
+
+
+def _armo_winner_unreadable() -> "list[str]":
+    """The plugins the cached playability map could not read (one load order is
+    cached at a time). #stale-output-sweep"""
+    return [n for k, v in _ARMO_WINNER_UNREADABLE.items()
+            if k in _ARMO_WINNER_CACHE for n in v]
+
+
+def _selection_winner_playable() -> bool:
+    r"""#selection-winner-playable (2026-09-25): does source selection read an
+    armour's playable flag from its WINNING record -- the one the game uses --
+    instead of from the scanned plugin's own record? Yes, by default.
+    CBBE2UBE_NO_SELECTION_WINNER_PLAYABLE=1 reads each plugin's own record
+    again. Its own switch: CBBE2UBE_NO_NPC_WORN_NONPLAYABLE does not touch it."""
+    return not _flag("CBBE2UBE_NO_SELECTION_WINNER_PLAYABLE", False)
+
+
+def _armo_winner_nonplayable(plugin_paths) -> "tuple[dict, list[str]]":
+    """({(defining plugin lowercase, formid low24) -> True when the WINNING
+    record is non-playable or deleted}, [unreadable plugin names]) over
+    `plugin_paths`, the active load order (last = winner). #selection-winner-playable
+
+    Only the ARMO group of each plugin is read (`_read_plugin_groups`). The
+    identity is the DEFINING plugin through the record's master list -- the
+    same key `_player_armor_mesh_bases` and `_npc_worn_armos` use -- so an
+    override in an ESL- or ESM-flagged plugin lands on its master's armour, and
+    a record whose defining plugin holds no record of it is still keyed on that
+    name: the last loaded record carrying it wins. Each record's own header
+    flag decides; a template (TNAM) is not followed, since every variant keeps
+    its own flag and models. The legacy BODT non-playable bit (0x10) is not
+    read -- on the measured load order only creature skins carried it. An
+    unreadable plugin is skipped and named, so its overrides do not count."""
+    out: "dict[tuple[str, int], bool]" = {}
+    bad: "list[str]" = []
+    for path in plugin_paths:
+        try:
+            masters, groups = _read_plugin_groups(path, (b"ARMO",))
+        except Exception:
+            bad.append(Path(path).name)
+            continue
+        lc = [m.lower() for m in masters]
+        own = Path(path).name.lower()
+        for r in groups.get(b"ARMO", ()):
+            mi = r.formid >> 24
+            ident = (lc[mi] if mi < len(lc) else own, r.formid & 0xFFFFFF)
+            out[ident] = bool(r.flags & (_ARMO_NONPLAYABLE_FLAG | _RECORD_DELETED))
+    return out, bad
+
+
+def _batch_armo_winner_nonplayable() -> "dict[tuple[str, int], bool] | None":
+    r"""`_armo_winner_nonplayable` over the active load order as the GAME sees
+    it -- plugin files at the root of overwrite, of an enabled mod and of the
+    game Data folder (`paths._plugin_file_index_root`), whatever the index
+    switch says: a recursive walk can hand back our own un-loaded copy of a
+    plugin in place of the one the game loads. Built once per load order per
+    process, like `_batch_npc_worn_armos`, but not inside it: that set's switch
+    and failures must not turn this rule off.
+
+    None -- every plugin's own record decides, as before -- when switched off
+    (CBBE2UBE_NO_SELECTION_WINNER_PLAYABLE=1). FAILS OPEN with a warning: a
+    modlist whose plugin order cannot be read, a load order no plugin file
+    resolves for, or a read error gives None too, once per load order. With no
+    modlist at all (a plain `convert` of a folder) there is no load order to
+    read, so it is None without a warning. Never raises. #selection-winner-playable"""
+    if not _selection_winner_playable():
+        return None
+    key = None
+    try:
+        lay = paths.discover_layout()
+        if lay.mods_root is None:
+            return None               # no modlist: nothing to read, nothing lost
+        names = paths.active_plugins_ordered(lay) or []
+        # Keyed on what decides which plugin files load -- the mods folder, the
+        # mod priority order and the plugin load order -- and on the switch.
+        key = (str(lay.mods_root), tuple(paths.enabled_mods_ordered(lay) or ()),
+               tuple(n.lower() for n in names), _selection_winner_playable())
+        if key in _ARMO_WINNER_CACHE:
+            if key in _ARMO_WINNER_WARNED:           # #one-tally
+                _record_once(*_ARMO_WINNER_WARNED[key])
+            return _ARMO_WINNER_CACHE[key]
+        t0 = time.time()
+        fidx = paths._plugin_file_index_root(lay)
+        ordered = [Path(fidx[n.lower()]) for n in names if n.lower() in fidx]
+        if not ordered:
+            raise ValueError("no active plugin file found" if names
+                             else "the plugin load order could not be read")
+        flags, bad = _armo_winner_nonplayable(ordered)
+        _ARMO_WINNER_CACHE.clear()
+        _ARMO_WINNER_CACHE[key] = flags
+        _ARMO_WINNER_UNREADABLE.clear()
+        _ARMO_WINNER_UNREADABLE[key] = list(bad)
+        _ARMO_WINNER_WARNED.clear()
+        print(f"  Armour playability: read the winning record of {len(flags)} "
+              f"armour(s) in {len(ordered)} active plugin(s) in "
+              f"{time.time() - t0:.1f}s")
+        if bad:
+            _names = ", ".join(bad[:5]) + (" ..." if len(bad) > 5 else "")
+            warn(f"{len(bad)} active plugin(s) could not be read for armour "
+                 f"playability: {_names}",
+                 consequence="an armour those plugins override keeps the "
+                             "playable flag of the record before them")
+            _ARMO_WINNER_WARNED[key] = (
+                "load order not read", "load order",
+                f"{len(bad)} plugin(s) not read for armour playability", _names
+                + "; an armour they override keeps the playable flag of the "
+                  "record before them")
+            _record_once(*_ARMO_WINNER_WARNED[key])
+        return flags
+    except Exception as e:
+        warn(f"could not read which armour the load order makes playable "
+             f"({plain_error(e)})",
+             consequence="each plugin's own record decides whether its armour "
+                         "is playable, as before this rule, this run")
+        _rec = ("load order not read", "load order", "armour playability",
+                f"{plain_error(e)}; each plugin's own record decided whether its "
+                "armour is playable")
+        if key is not None:
+            _ARMO_WINNER_CACHE.clear()
+            _ARMO_WINNER_CACHE[key] = None
+            _ARMO_WINNER_WARNED.clear()
+        # Kept under the key it had, or None when the read failed before one
+        # was known: a cache hit looks up only a cached key, and an ESP-only
+        # refresh records what is kept. #one-tally
+        _ARMO_WINNER_WARNED[key] = _rec
+        _record_once(*_rec)
+        return None
+
+
+def _record_selection_playability_warning() -> None:
+    """`--plugins-only`: the convert step asks for no playability map, so the
+    cache hit that records source selection's warning again after
+    `_cmd_convert` clears the record never happens, and a warning the log
+    printed was in neither the tally nor the window's list. Records what the
+    last read kept, reading nothing; nothing when the rule is switched off.
+    #one-tally #selection-winner-playable"""
+    if not _selection_winner_playable():
+        return
+    for rec in list(_ARMO_WINNER_WARNED.values()):
+        _record_once(*rec)
+
+
+def _female_slot_pairs_on() -> bool:
+    r"""#female-slot-pairs (2026-09-25): does the female-only rule judge the
+    world pair (female MOD3 over male MOD2) and the first-person pair (MOD5 over
+    MOD4) each on its own for the dead-path exception? Yes, by default.
+
+    The rule skipped the male models when ANY female model resolved, MOD3 and
+    MOD5 together. An armature whose female world mesh is a dead path but whose
+    first-person female mesh ships (or the reverse) therefore never converted
+    the male of the dead pair, against the rule's own exception: a dead female
+    path keeps the male, so the armature can point at a converted male. Now a
+    pair whose female model is set and resolves nowhere keeps its male as well;
+    nothing the old rule kept is dropped. CBBE2UBE_NO_FEMALE_SLOT_PAIRS=1 judges
+    the two together again."""
+    return not _flag("CBBE2UBE_NO_FEMALE_SLOT_PAIRS", False)
+
+
+def _female_slot_absent_on() -> bool:
+    r"""#female-slot-absent (2026-09-25, OFF -- a policy call): does a slot pair
+    with NO female model keep its male when the other pair has a live female
+    model? Only with CBBE2UBE_FEMALE_SLOT_ABSENT_KEEPS_MALE=1 (and
+    #female-slot-pairs on).
+
+    The engine draws the male model of a pair whose female model is not set,
+    so a female actor in first person wears MOD4 when an armature has MOD3 but
+    no MOD5. The female-only rule skips that male today. Converting it follows
+    the rule's own male-only-piece exception per slot, but it is a new class of
+    converted mesh (mostly first-person male arms and torsos, one of them a
+    base-game gauntlet), not the dead-path fix, so it is left to the user."""
+    return _flag("CBBE2UBE_FEMALE_SLOT_ABSENT_KEEPS_MALE", False)
+
+
 def _player_armor_mesh_bases(mod_dir: Path,
                              include_candidate_slots: bool = False,
                              mesh_resolves=None,
-                             ube_covered_armos=None) -> "set[str]":
+                             ube_covered_armos=None,
+                             npc_worn_armos=None,
+                             worn_admitted=None,
+                             armo_winner_nonplayable=None,
+                             drop_reasons=None) -> "set[str]":
     """Weight-agnostic rel-path keys of every mesh a DefaultRace ARMA in this mod
     points at as an armor piece (biped slot is not hair-only).
 
@@ -5394,6 +10952,29 @@ def _player_armor_mesh_bases(mod_dir: Path,
     time and leaving orphan meshes in the output with no SkyPatcher link.
     #skip-already-ube
 
+    `npc_worn_armos`: optional set, same identity, of forms a female NPC of a
+    UBE-capable race wears or carries (`_npc_worn_armos`). A NON-PLAYABLE ARMO in
+    it counts as worn, so an ARMA only non-playable armour references is kept
+    when one of those ARMOs is in the set. None keeps the old rule (every such
+    ARMA skipped). `worn_admitted`: optional set the caller passes to learn which
+    armatures, as (plugin lowercase, ARMA formid), were kept ONLY for that
+    reason and planned at least one mesh. #npc-worn-nonplayable
+
+    `armo_winner_nonplayable`: optional map, same identity, from
+    `_batch_armo_winner_nonplayable`: is the armour's WINNING record in the load
+    order non-playable (or deleted)? When it knows an ARMO, its answer replaces
+    the scanned record's own flag for every test here, the worn test included;
+    an identity it does not know keeps the record's flag. None = each plugin's
+    own record decides (the old rule). Which armatures a plugin's ARMOs admit is
+    still judged per plugin. #selection-winner-playable
+
+    `drop_reasons`: optional dict the caller passes to learn, for a mesh base
+    this plugin's armatures name but the result does not plan, the POSITIVE
+    reason a rule gave: "non-playable", "third-party covered" or "female-only"
+    -- only for an armature that passes every other test, so the reason is the
+    one that took it out. The stale-output sweep moves our old conversion of a
+    base only on such a reason, never on absence. #stale-output-sweep
+
     `include_candidate_slots`: also admit ambiguous modder slots (44/45/47/48/59/61)
     used for body cloth. The crash guard in auto_convert_mod drops any non-body-skinned
     mesh on these slots. Default False = strict body-slot allowlist (for selection;
@@ -5405,6 +10986,11 @@ def _player_armor_mesh_bases(mod_dir: Path,
     from . import esp as _esp
     import struct as _struct
     bases: "set[str]" = set()
+    # #nude-basename-path: the nude-skin basenames mean body skin only at the
+    # body's own home (see `_is_nude_body_skin_model`). Read once per call.
+    _skin_by_name_alone = _flag("CBBE2UBE_NO_NUDE_BASENAME_PATH", False)
+    _slot_pairs = _female_slot_pairs_on()       # #female-slot-pairs
+    _absent_keeps_male = _female_slot_absent_on()   # #female-slot-absent
     # Vanilla sweep: the game Data dir enumerates the vanilla/DLC masters
     # (_find_source_esps skips those by design for normal mod folders).
     for ep in (_vanilla_sweep_esps(mod_dir) or _find_source_esps(mod_dir)):
@@ -5422,8 +11008,26 @@ def _player_armor_mesh_bases(mod_dir: Path,
         # aren't converted. An ARMA referenced by NO same-plugin ARMO (e.g. a
         # vanilla replacer whose ARMO lives in Skyrim.esm) is left in -- we can't
         # see the master ARMO's flag here, and those are real armour.
+        #
+        # #npc-worn-nonplayable (2026-09-24): "non-playable" is not "never worn".
+        # Follower and quest outfits are flagged non-playable too, and the unified
+        # coverage step deliberately gives non-playable body and hands/feet armour
+        # a UBE armature -- so the skip here left that armature drawing the
+        # unconverted CBBE mesh on a UBE actor. A non-playable ARMO that a female
+        # NPC of a UBE-capable race WEARS or CARRIES (`npc_worn_armos`: a winning
+        # NPC_'s default/sleep outfit or inventory, through outfits and leveled
+        # lists) now counts as worn. Script-applied gore is reached by no outfit
+        # or inventory, so it stays skipped, and no skin is ever in the set (a
+        # skeleton skin got through before that rule). Measured on a real
+        # modlist, with templated NPCs counted only through their template
+        # chain: 43 armatures in 14 sources (7 of them new sources), 37 pieces,
+        # 60 NIFs planned, 17 armatures the coverage step had minted over an
+        # unconverted mesh; 0 child pieces. Accepted edge: wound meshes that sit
+        # in a victim's inventory are converted too.
         _ARMO_NONPLAYABLE = 0x00000004
         playable_ref: "set[int]" = set()
+        worn_ref: "set[int]" = set()      # non-playable, but an NPC wears it
+        named_item_ref: "set[int]" = set()   # playable AND named (FULL)
         any_ref: "set[int]" = set()
         # #skip-already-ube: same shape as the playable/non-playable split above,
         # for armors a third-party mod has ALREADY UBE-patched. An ARMA is only
@@ -5437,41 +11041,69 @@ def _player_armor_mesh_bases(mod_dir: Path,
                 continue
             for arec in g.records:
                 _play = not (arec.flags & _ARMO_NONPLAYABLE)
-                if ube_covered_armos:
+                _ident = None
+                if (armo_winner_nonplayable or ube_covered_armos
+                        or (npc_worn_armos and not _play)):
                     # Identity as `_third_party_ube_covered_armos` returns it: the
                     # DEFINING plugin (a master when this record is an override,
                     # else this plugin) + the low-24 formid.
                     _mi = arec.formid >> 24
                     _def = (_lc_masters[_mi] if _mi < len(_lc_masters)
                             else ep.name.lower())
-                    _is_cov = (_def, arec.formid & 0xFFFFFF) in ube_covered_armos
-                else:
-                    _is_cov = False
+                    _ident = (_def, arec.formid & 0xFFFFFF)
+                # #selection-winner-playable: the flag the game uses is the
+                # WINNING record's, not this plugin's (an override or a record
+                # a later plugin overrides). An identity the map does not know
+                # keeps this record's own flag. The worn test below is judged
+                # against the same flag.
+                if armo_winner_nonplayable and _ident in armo_winner_nonplayable:
+                    _play = not armo_winner_nonplayable[_ident]
+                _is_cov = bool(ube_covered_armos) and _ident in ube_covered_armos
+                _worn = (not _play and bool(npc_worn_armos)
+                         and _ident in npc_worn_armos)
+                _refs: "list[int]" = []
+                _named = False
                 for s, d in _esp.iter_subrecords(arec.payload):
                     if s == b"MODL" and len(d) == 4:
-                        rf = _struct.unpack("<I", d)[0]
-                        any_ref.add(rf)
-                        if _play:
-                            playable_ref.add(rf)
-                        (covered_ref if _is_cov else uncovered_ref).add(rf)
+                        _refs.append(_struct.unpack("<I", d)[0])
+                    elif s == b"FULL" and d.strip(b"\x00"):
+                        _named = True      # an item a player sees by name
+                for rf in _refs:
+                    any_ref.add(rf)
+                    if _play:
+                        playable_ref.add(rf)
+                        if _named:
+                            named_item_ref.add(rf)   # #nude-basename-path
+                    elif _worn:
+                        worn_ref.add(rf)
+                    (covered_ref if _is_cov else uncovered_ref).add(rf)
         for g in e.groups:
             if g.label != b"ARMA":
                 continue
             for rec in g.records:
                 # Gore/effect: this ARMA is referenced ONLY by non-playable
-                # ARMO(s) in this plugin -> not player-equippable -> don't convert.
-                if rec.formid in any_ref and rec.formid not in playable_ref:
-                    continue
+                # ARMO(s) in this plugin -> not player-equippable -> don't convert
+                # -- unless an NPC wears one of them. #npc-worn-nonplayable
+                _np_skip = (rec.formid in any_ref and rec.formid not in playable_ref
+                            and rec.formid not in worn_ref)
+                _only_worn = (rec.formid in worn_ref
+                              and rec.formid not in playable_ref)
                 # #skip-already-ube: referenced ONLY by armors another mod has
                 # already UBE-patched -> that mod owns this piece; converting it
                 # would ship a mesh we then suppress at the coverage stage.
-                if rec.formid in covered_ref and rec.formid not in uncovered_ref:
+                _cov_skip = (rec.formid in covered_ref
+                             and rec.formid not in uncovered_ref)
+                # Asked for reasons, a skipped armature is read on through the
+                # tests below and dropped after them. #stale-output-sweep
+                if (_np_skip or _cov_skip) and drop_reasons is None:
                     continue
                 rnam = None
                 slot = 0
                 edid = ""
                 female_models: "list[str]" = []   # MOD3 (world) + MOD5 (1st-person)
                 male_models: "list[str]" = []      # MOD2 (world) + MOD4 (1st-person)
+                # The same models by slot: {sig: [paths]}. #female-slot-pairs
+                by_sig: "dict[bytes, list[str]]" = {}
                 for sig, sd in _esp.iter_subrecords(rec.payload):
                     if sig == b"EDID":
                         edid = sd.rstrip(b"\x00").decode("utf-8", errors="ignore")
@@ -5479,12 +11111,13 @@ def _player_armor_mesh_bases(mod_dir: Path,
                         rnam = _struct.unpack("<I", sd)[0]
                     elif sig in (b"BOD2", b"BODT") and len(sd) >= 4:
                         slot = _struct.unpack_from("<I", sd, 0)[0]
+                    # The paths as the game reads them. #model-path-codepage
                     elif sig in (b"MOD3", b"MOD5"):
-                        female_models.append(sd.rstrip(b"\x00").decode(
-                            "utf-8", errors="ignore"))
+                        female_models.append(_model_path_text(sd, "utf-8"))
+                        by_sig.setdefault(sig, []).append(female_models[-1])
                     elif sig in (b"MOD2", b"MOD4"):
-                        male_models.append(sd.rstrip(b"\x00").decode(
-                            "utf-8", errors="ignore"))
+                        male_models.append(_model_path_text(sd, "utf-8"))
+                        by_sig.setdefault(sig, []).append(male_models[-1])
                 # FEMALE-ONLY conversion: UBE is a female body, so convert the FEMALE
                 # model(s) and skip the male mesh (a female actor never renders it, and
                 # refitting it to the female body would be wrong). Two exceptions keep
@@ -5494,12 +11127,35 @@ def _player_armor_mesh_bases(mod_dir: Path,
                 # path) -- then the male mesh is the real one the female
                 # ARMA gets redirected to, so it must convert. mesh_resolves==None
                 # (callers without VFS context) keeps the legacy "convert both".
+                _female_only: "list[str]" = []   # male models the rule leaves out
+                # The dead-path exception is judged per SLOT PAIR too -- world
+                # (MOD3 over MOD2) and first-person (MOD5 over MOD4) apart: a live
+                # first-person female mesh says nothing about a dead female world
+                # mesh. It only ever ADDS a male model to the old answer. A pair
+                # with NO female model keeps its male only under the opt-in
+                # #female-slot-absent rule (a policy call, off). #female-slot-pairs
                 if not female_models:
                     models = male_models
                 elif mesh_resolves is None:
                     models = female_models + male_models
+                elif _slot_pairs:
+                    _live = {m: mesh_resolves(_weight_base_key(m))
+                             for m in female_models}
+                    _all_dead = not any(_live.values())
+                    models = list(female_models)
+                    for _fs, _ms in ((b"MOD3", b"MOD2"), (b"MOD5", b"MOD4")):
+                        _fem = by_sig.get(_fs, [])
+                        if (_all_dead
+                                or (_fem and not any(_live[m] for m in _fem))
+                                or (not _fem and _absent_keeps_male)):
+                            models += by_sig.get(_ms, [])
+                        else:
+                            # The male of a pair the rule leaves out: its reason
+                            # for the stale-output sweep. #stale-output-sweep
+                            _female_only += by_sig.get(_ms, [])
                 elif any(mesh_resolves(_weight_base_key(m)) for m in female_models):
                     models = female_models
+                    _female_only = male_models
                 else:
                     models = female_models + male_models
                 if rnam is None:
@@ -5526,18 +11182,35 @@ def _player_armor_mesh_bases(mod_dir: Path,
                                   # circlet/amulet/ring/ears) — don't convert
                 if _is_child_content_asset(edid):
                     continue  # child clothing — not armour "for the player"
+                if drop_reasons is not None:
+                    # #stale-output-sweep: the rule that took these meshes out.
+                    _why = ("non-playable" if _np_skip else
+                            "third-party covered" if _cov_skip else None)
+                    for m in (female_models + male_models if _why
+                              else _female_only):
+                        if _weight_base_key(m):
+                            drop_reasons.setdefault(_weight_base_key(m),
+                                                    _why or "female-only")
+                    if _why:
+                        continue
                 for m in models:
                     if not m:
                         continue
                     base = _weight_base_key(m)
-                    if base.rsplit("/", 1)[-1] in _BODY_SKIN_BASENAMES:
+                    if _is_nude_body_skin_model(base, _skin_by_name_alone,
+                                                rec.formid in named_item_ref):
                         continue  # nude body skin — not an armour piece
                     if _is_child_content_asset(m):
                         continue  # child clothing reached via an adult-named ARMA
                     if _is_already_ube_model(m):
                         continue  # already UBE-shaped — refitting would break it
                     bases.add(base)
+                    if _only_worn and base and worn_admitted is not None:
+                        worn_admitted.add((ep.name.lower(), rec.formid))
     bases.discard("")
+    if drop_reasons is not None:
+        for b in bases:           # planned after all, by another armature
+            drop_reasons.pop(b, None)
     return bases
 
 
@@ -5565,14 +11238,141 @@ def _nif_has_bodyfit_skin(nif_path: Path) -> bool:
     return False
 
 
+_SKIN_INSTANCE_BLOCKS = (b"NiSkinInstance", b"BSDismemberSkinInstance")
+
+
+def _nif_bytes_body_fit(data: bytes) -> "bool | None":
+    """`_nif_has_bodyfit_skin` for NIF bytes held in memory (a mesh read out of
+    an archive is never written to disk): is any skin bound to a body-fit bone?
+    None when the bytes are not an SSE NIF (20.2.0.7) this reader follows, so a
+    caller can fail closed where the pynifly test fails open.
+
+    Reads the header's string table and every skin instance's bone list (each
+    bone's block starts with its name's string index) -- the bones pynifly
+    reports as a shape's bone_names. #coverage-female-standin"""
+    import struct as _st
+    from .hh_offset import _parse
+    try:
+        p = _parse(data)
+        if p["version"] != 0x14020007:
+            return None
+        blocks, strings = p["blocks"], p["strings"]
+        for ti, blk in zip(p["bti"], blocks):
+            if p["block_types"][ti] not in _SKIN_INSTANCE_BLOCKS:
+                continue
+            # Data, Skin Partition, Skeleton Root (refs), then the bone count.
+            n = _st.unpack_from("<I", blk, 12)[0]
+            for ref in _st.unpack_from("<%di" % n, blk, 16):
+                if not 0 <= ref < len(blocks):
+                    return None
+                si = _st.unpack_from("<i", blocks[ref], 0)[0]
+                if not 0 <= si < len(strings):
+                    return None
+                name = strings[si].decode("cp1252", "replace").lower()
+                if any(m in name for m in _BODYFIT_BONE_MARKERS):
+                    return True
+        return False
+    except Exception:
+        return None
+
+
+def _nif_bytes_unfitted_skin(data: bytes) -> "bool | None":
+    """#coverage-body-cloak: is this NIF skinned (a skin instance on some
+    shape) with no skin bound to a body-fit bone (`_BODYFIT_BONE_MARKERS`; any
+    other bone, pelvis and arms included, is allowed) -- a cape or cloak the
+    crash guard left unconverted? False for an unskinned mesh and for body-fitted
+    cloth; None when the bytes are not an SSE NIF this reader follows, so the
+    caller fails closed."""
+    from .hh_offset import _parse
+    fit = _nif_bytes_body_fit(data)
+    if fit is None:
+        return None
+    try:
+        p = _parse(data)
+        skinned = any(p["block_types"][ti] in _SKIN_INSTANCE_BLOCKS
+                      for ti in p["bti"])
+    except Exception:
+        return None
+    return skinned and not fit
+
+
 # Full-VFS mesh index built once during source selection; reused by the convert
 # step to avoid a second modlist walk. Keyed by lowercased mods_root.
-_BATCH_MESH_INDEX: "dict[str, dict]" = {}
+_BATCH_MESH_INDEX: "dict[str, dict | None]" = {}
 
-# Memo of _find_armor_mod_dirs results so the GUI Refresh and the subsequent
-# Convert (same process) share one discovery pass. _BATCH_MESH_INDEX side-effect
-# is set on the first call and persists through cache hits.
+# Run warnings source selection found (the mesh index failed, a mod folder was
+# unreadable, the vanilla sweep's mesh keys could not be read), as
+# `_record_failure` arguments. Selection prints them where they happen; the
+# convert step clears the run's record first, so IT records them. Keyed by
+# lowercased mods_root; each uncached selection replaces its entry.
+# #vfs-index-fail-loud
+_SELECTION_RUN_WARNINGS: "dict[str, list[tuple[str, str, str, str]]]" = {}
+
+
+def _mesh_index_unreadable_warnings(
+        unreadable: "list[tuple[str, str]]") -> "list[tuple[str, str, str, str]]":
+    """Print ONE warning naming every mod folder the mesh index could not fully
+    read (`discovery.build_mesh_index`'s `unreadable`), and return one
+    `_record_failure` record per folder. Only the unreadable part of each was
+    skipped; every other mod was located as normal. #vfs-index-fail-loud"""
+    if not unreadable:
+        return []
+    warn(f"{len(unreadable)} mod folder(s) could not be fully read while "
+         "locating armour meshes",
+         consequence="a mesh in the unreadable part of each folder named below "
+                     "was not located; every other mod was located as normal",
+         fix="look for an over-long path or a broken link in each folder, then "
+             "run again")
+    for name, why in unreadable:
+        print(f"    - {name}: {why}")
+    return [("mod folder unreadable", name, "its meshes folder",
+             f"{why}; a mesh there was not located") for name, why in unreadable]
+
+# The lookup-only archive index source selection built to find mods whose
+# armour lives only in archives; the convert step adopts (and pops) its listing
+# when it would list the same archives. Keyed by lowercased mods_root.
+# #bsa-only-sources
+_SELECTION_BSA_INDEX: "dict[str, _BsaMeshIndex]" = {}
+
+# Memo of _find_armor_mod_dirs results so repeated discovery in one process
+# (the UBE-mesh scan right after the Exclusions list) shares one pass.
+# _BATCH_MESH_INDEX side-effect is set on the first call and persists through
+# cache hits. The key holds no mod contents, so the window's Refresh and
+# Exclusions lists pass rescan=True and forget it: a mod updated in MO2 while
+# the window is open is read again. #mod-scan-rescan
 _ARMOR_MOD_DIRS_CACHE: "dict[tuple, list[dict]]" = {}
+
+# A kept selection whose only problem was a folder it could not read: memo key
+# -> ((mod, error) per folder, for the warning; the folders' paths). Reused
+# while every one of those folders stays unreadable, saying the warning again
+# each time; selected afresh once one can be read. Filled from
+# _SELECTION_UNREADABLE, which each uncached selection sets. #vfs-index-fail-loud
+_ARMOR_MOD_DIRS_UNREADABLE: "dict[tuple, tuple[list, list[str]]]" = {}
+_SELECTION_UNREADABLE: "dict[str, tuple[list, list[str]]]" = {}
+
+
+def _folder_unreadable(path: str) -> bool:
+    """Does listing `path` still fail? A folder gone since (deleted or renamed:
+    the fix the warning asks for) does NOT: its memoized warning names a folder
+    that is not there, so the selection runs again. An over-long path can
+    report "not found" while it exists, so a missing folder is checked again
+    through the extended-length form before it counts as gone."""
+    try:
+        with os.scandir(path):
+            return False
+    except (FileNotFoundError, NotADirectoryError):
+        return _long_path_exists(path)
+    except OSError:
+        return True
+
+
+def _long_path_exists(path: str) -> bool:
+    """Does `path` exist, asked in Windows' extended-length form (no 260-char
+    limit)? Elsewhere: as asked."""
+    p = os.path.abspath(str(path))
+    if os.name == "nt" and not p.startswith("\\\\?\\"):
+        p = ("\\\\?\\UNC\\" + p[2:]) if p.startswith("\\\\") else ("\\\\?\\" + p)
+    return os.path.lexists(p)
 
 
 def _has_any_source_plugin(mod_dir: Path) -> bool:
@@ -5588,6 +11388,38 @@ def _has_any_source_plugin(mod_dir: Path) -> bool:
                 return True
         dirs[:] = [d for d in dirs if d.lower() not in _skip]  # prune asset trees
     return False
+
+
+def _source_gate_ok(mod_dir: Path, excl: "set[str] | frozenset",
+                    enabled_names: "set[str] | frozenset | None",
+                    require_arma: bool) -> bool:
+    """The gate selection puts every mod folder through before reading its
+    plugins: enabled, not excluded (`excl`, lowercased names), no non-source
+    name, not child content, and holding a plugin. A folder it refuses is never
+    a conversion source."""
+    nl = mod_dir.name.lower()
+    if nl in excl:
+        return False
+    if enabled_names is not None and mod_dir.name not in enabled_names:
+        return False  # disabled in the active MO2 profile
+    # The beast-race hints are a TIE-BREAKER, not a veto: under
+    # `require_arma` the ARMA test is the evidence and it decides, so a
+    # khajiit ARMOUR mod is admitted while a khajiit body/fur/race mod still
+    # yields no armour base and is dropped below. The `scan` preview has no
+    # ESP parse, hence no evidence, so there the name is all we have.
+    _hints = (_NONSOURCE_NAME_HINTS_HARD if require_arma
+              else _NONSOURCE_NAME_HINTS)
+    if any(h in nl for h in _hints):
+        return False
+    if _is_child_content_mod(mod_dir.name):
+        return False  # child clothing — not armour "for the player"
+    # A source plugin can be .esp OR a bespoke-armour master/.esl (quest mods,
+    # bespoke-armor masters, ...). #179. SINGLE asset-pruned
+    # walk (stops at first plugin) -- masters/CC are excluded downstream by
+    # _find_source_esps, so a master-only folder still gets dropped.
+    if not _has_any_source_plugin(mod_dir):
+        return False
+    return True
 
 
 def _find_armor_mod_dirs(mods_root: Path,
@@ -5612,16 +11444,70 @@ def _find_armor_mod_dirs(mods_root: Path,
             # the returned candidate set (see the union_all sweep branch), so it
             # must be part of the memo key or a mid-process toggle returns a
             # stale list.
-            _flag("CBBE2UBE_NO_VANILLA_SWEEP", False))
+            _flag("CBBE2UBE_NO_VANILLA_SWEEP", False),
+            # Each of these four changes which mods are sources (or, for the
+            # archive rule, which archives decide that), so a toggle between a
+            # GUI refresh and the convert must not return the other list.
+            # #bsa-only-sources #texture-archive-meshes #nude-basename-path
+            # #npc-worn-nonplayable
+            # Which plugin copies are read decides sources too.
+            # #loaded-source-plugins
+            _loaded_source_plugins_on(), _loaded_copy_reader_on(),
+            # ...and so do the user's exclusions, through the copies they
+            # leave alone. #excluded-copy-left-alone
+            _excluded_copy_left_alone_on(), frozenset(_RUN_USER_EXCLUSIONS),
+            # ...and whether one owner decides for every copy. #one-plugin-owner
+            _one_plugin_owner_on(),
+            # The female-only rule's pairs change the mesh keys indexed.
+            # #female-slot-pairs #female-slot-absent
+            _female_slot_pairs_on(), _female_slot_absent_on(),
+            # Whether overwrite's meshes are indexed. #overwrite-mesh-index
+            discovery._overwrite_mesh_index_on(),
+            _flag("CBBE2UBE_NO_BSA_ONLY_SOURCES", False),
+            _flag("CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES", False),
+            _flag("CBBE2UBE_NO_NUDE_BASENAME_PATH", False),
+            _flag("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", False),
+            # Whose playable flag counts -- the winning record's or the scanned
+            # plugin's -- decides sources too. #selection-winner-playable
+            _selection_winner_playable())
     _cached = _ARMOR_MOD_DIRS_CACHE.get(_key)
+    _held = _ARMOR_MOD_DIRS_UNREADABLE.get(_key)
+    if _cached is not None and _held is not None and not all(
+            _folder_unreadable(d) for d in _held[1]):
+        # A folder it could not read can be read now: select again.
+        # #vfs-index-fail-loud
+        _cached = None
     if _cached is not None:
+        # A kept selection found no problem, or only folders that are still
+        # unreadable: its warning is said again for this run to record.
+        # #vfs-index-fail-loud
+        if require_arma:
+            _SELECTION_RUN_WARNINGS[_key[0]] = (
+                _mesh_index_unreadable_warnings(_held[0]) if _held else [])
+            # Its gate judges the loaded plugin copies of the convert step
+            # that follows. #loaded-copy-reader
+            _set_source_gate(mods_root, extra_exclude_names, enabled_names)
         return list(_cached)
+    _ARMOR_MOD_DIRS_CACHE.pop(_key, None)
+    _ARMOR_MOD_DIRS_UNREADABLE.pop(_key, None)
     _result = _find_armor_mod_dirs_uncached(
         mods_root, extra_exclude_names=extra_exclude_names,
         enabled_names=enabled_names, require_arma=require_arma,
         enabled_ordered=enabled_ordered, index_skip_mods=index_skip_mods,
         progress=progress)
-    _ARMOR_MOD_DIRS_CACHE[_key] = list(_result)
+    # A selection that could not build its index or read the vanilla sweep is
+    # not kept: the next refresh or convert tries again instead of reusing a
+    # list short of mods. One whose only problem is folders it could not read
+    # IS kept, with them, while they stay unreadable -- else every GUI refresh
+    # repeats the whole scan for a folder that never becomes readable.
+    # #vfs-index-fail-loud
+    _warns = _SELECTION_RUN_WARNINGS.get(_key[0]) if require_arma else None
+    _unread = _SELECTION_UNREADABLE.get(_key[0], ([], []))
+    if not _warns:
+        _ARMOR_MOD_DIRS_CACHE[_key] = list(_result)
+    elif _unread[1] and len(_warns) == len(_unread[0]):
+        _ARMOR_MOD_DIRS_CACHE[_key] = list(_result)
+        _ARMOR_MOD_DIRS_UNREADABLE[_key] = _unread
     return _result
 
 
@@ -5666,29 +11552,7 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
         return []
 
     def _name_ok(mod_dir: Path) -> bool:
-        nl = mod_dir.name.lower()
-        if nl in excl:
-            return False
-        if enabled_names is not None and mod_dir.name not in enabled_names:
-            return False  # disabled in the active MO2 profile
-        # The beast-race hints are a TIE-BREAKER, not a veto: under
-        # `require_arma` the ARMA test is the evidence and it decides, so a
-        # khajiit ARMOUR mod is admitted while a khajiit body/fur/race mod still
-        # yields no armour base and is dropped below. The `scan` preview has no
-        # ESP parse, hence no evidence, so there the name is all we have.
-        _hints = (_NONSOURCE_NAME_HINTS_HARD if require_arma
-                  else _NONSOURCE_NAME_HINTS)
-        if any(h in nl for h in _hints):
-            return False
-        if _is_child_content_mod(mod_dir.name):
-            return False  # child clothing — not armour "for the player"
-        # A source plugin can be .esp OR a bespoke-armour master/.esl (quest mods,
-        # bespoke-armor masters, ...). #179. SINGLE asset-pruned
-        # walk (stops at first plugin) -- masters/CC are excluded downstream by
-        # _find_source_esps, so a master-only folder still gets dropped.
-        if not _has_any_source_plugin(mod_dir):
-            return False
-        return True
+        return _source_gate_ok(mod_dir, excl, enabled_names, require_arma)
 
     if not require_arma:
         # scan/preview: conventional armor-path name heuristic (no ESP parse).
@@ -5712,6 +11576,20 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
         candidates.sort(key=lambda c: c["armor_nifs"], reverse=True)
         return candidates
 
+    # Which plugin copies load is read afresh for each selection.
+    # #loaded-source-plugins
+    _LOADED_PLUGIN_INDEX.clear()
+    # ...and which mods ship a body. #excluded-copy-left-alone
+    _BODY_MODS_SEEN.clear()
+    # A loaded copy counts as read only in a folder this gate admits.
+    # #loaded-copy-reader
+    _set_source_gate(mods_root, extra_exclude_names, enabled_names)
+    # This selection's run warnings, for the convert step to record.
+    # #vfs-index-fail-loud
+    _sel_warns: "list[tuple[str, str, str, str]]" = []
+    _SELECTION_RUN_WARNINGS[str(mods_root).lower()] = _sel_warns
+    _SELECTION_UNREADABLE.pop(str(mods_root).lower(), None)
+
     def _prog(text: str) -> None:
         if progress is None:
             return
@@ -5719,6 +11597,20 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
             progress(text)
         except Exception:
             pass
+
+    # Non-playable armour a female NPC wears counts as armour for every test
+    # below: eligibility, coverage keys and the vanilla sweep's keys, so the mesh
+    # the game loads for it is located like any other. #npc-worn-nonplayable
+    if not _flag("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", False):
+        _prog("reading which armour NPCs wear…")     # ~11 s on a large order
+    _npc_worn = _batch_npc_worn_armos()
+    _worn_admitted: "set[tuple[str, int]]" = set()
+    _worn_mods = 0
+    # An armour's playable flag is its WINNING record's, for every test below.
+    # #selection-winner-playable
+    if _selection_winner_playable():
+        _prog("reading which armour the load order makes playable…")
+    _winner_np = _batch_armo_winner_nonplayable()
 
     # require_arma: a mod is a source if a DefaultRace ARMA equips an armour-slot
     # mesh. Count own-folder NIFs first (fast); mods whose meshes are BodySlide-
@@ -5730,12 +11622,21 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
             _prog(f"checking mod folders… {_mi}/{len(mod_dirs)}")
         if not _name_ok(mod_dir):
             continue
-        armor_bases = _player_armor_mesh_bases(mod_dir)  # STRICT = eligibility
+        armor_bases = _player_armor_mesh_bases(  # STRICT = eligibility
+            mod_dir, npc_worn_armos=_npc_worn,
+            armo_winner_nonplayable=_winner_np)
         if not armor_bases:
             continue  # no player-equippable armour piece -> not a source
         # Broaden to ambiguous modder slots for VFS coverage on mods already
         # eligible via a standard body slot. The crash guard drops non-body-skinned.
-        cov_bases = _player_armor_mesh_bases(mod_dir, include_candidate_slots=True)
+        _mod_worn: "set[tuple[str, int]]" = set()
+        cov_bases = _player_armor_mesh_bases(
+            mod_dir, include_candidate_slots=True,
+            armo_winner_nonplayable=_winner_np,
+            npc_worn_armos=_npc_worn, worn_admitted=_mod_worn)
+        if _mod_worn:
+            _worn_admitted |= _mod_worn
+            _worn_mods += 1
         for b in cov_bases:
             union_all.update((f"{b}_0.nif", f"{b}_1.nif", f"{b}.nif"))
         own = 0
@@ -5760,36 +11661,134 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
             _swlay = paths.discover_layout()
             for _dd in (_swlay.game_data_dirs or [])[:1]:
                 for b in _player_armor_mesh_bases(
-                        Path(_dd), include_candidate_slots=True):
+                        Path(_dd), include_candidate_slots=True,
+                        armo_winner_nonplayable=_winner_np,
+                        npc_worn_armos=_npc_worn):
                     union_all.update((f"{b}_0.nif", f"{b}_1.nif", f"{b}.nif"))
-        except Exception:
-            pass
+        except Exception as _e:
+            # Said, not passed over: without these keys every vanilla piece
+            # converts from the game's archives. #vfs-index-fail-loud
+            _why = plain_error(_e)
+            warn(f"could not read which vanilla armour meshes to locate ({_why})",
+                 where="the game Data folder",
+                 consequence="vanilla armour converts from the game's archives this "
+                             "run, even where a mod replaces its mesh with a loose file",
+                 fix="check that the game Data folder and its plugins are readable, "
+                     "then run again")
+            _sel_warns.append(("vanilla mesh paths unread",
+                               "Vanilla sweep (base game + DLC)", "vanilla armour",
+                               f"{_why}; vanilla armour converted from the game's "
+                               "archives, even where a loose replacer ships its mesh"))
 
     # Build the VFS mesh index over ALL candidates so the convert step can reuse
     # it. Skip only the output mod, NOT body/BodySlide mods — those host most
     # armours' built female meshes and must be visible for mesh resolution.
     # Body-mod exclusion is a selection concern handled by `_name_ok`.
     _index_skip = {n.lower() for n in (index_skip_mods or set())}
-    vfs: "dict" = {}
+    vfs: "dict | None" = {}
+    _index_failed = ""
     if enabled_ordered and union_all:
         _prog(f"locating {len(union_all)} armour mesh path(s) across "
               f"{len(enabled_ordered)} enabled mods…")
+        _unreadable: "list[tuple[str, str]]" = []
+        _unreadable_dirs: "list[str]" = []
         try:
             vfs = discovery.build_mesh_index(
                 mods_root, enabled_ordered, target_keys=union_all,
-                skip_mods=_index_skip)
-        except Exception:
-            vfs = {}
+                skip_mods=_index_skip, unreadable=_unreadable,
+                overwrite=_modlist_overwrite(mods_root),  # #overwrite-mesh-index
+                unreadable_dirs=_unreadable_dirs)
+        except Exception as _e:
+            # NOT an empty index: {} reads as "no mod ships these meshes", and
+            # the convert step reused it, so every source converted its own or
+            # an archive copy, not the mesh the game loads, in silence. None
+            # makes the convert step build its own. #vfs-index-fail-loud
+            vfs = None
+            _index_failed = plain_error(_e)
+            warn(f"could not locate armour meshes across the enabled mods "
+                 f"({_index_failed})",
+                 where=str(mods_root),
+                 consequence="a mod whose armour meshes are in another mod (a "
+                             "BodySlide build, a replacer, a patch) is not converted "
+                             "this run; the convert step tries again for the rest",
+                 fix="look for an over-long path or a broken link in the mods "
+                     "folder, then run again")
         _BATCH_MESH_INDEX[str(mods_root).lower()] = vfs
+        _sel_warns.extend(_mesh_index_unreadable_warnings(_unreadable))
+        _SELECTION_UNREADABLE[str(mods_root).lower()] = (
+            list(_unreadable), list(_unreadable_dirs))
 
+    # #bsa-only-sources (2026-09-24): a mod whose armour meshes are in no loose
+    # file anywhere may still ship them in an ARCHIVE, and the convert step
+    # resolves from archives (`_BsaMeshIndex`) -- but this gate only ever looked
+    # at loose files, so such a mod was dropped here before conversion could
+    # run, in silence: it appeared in no log and no report. Measured on a real
+    # modlist: 9 mods (a fur armour set's update, a clothing set, a quest
+    # overhaul and its hotfix, a scarf, cloaks, robes), 37 pieces, 49 NIFs
+    # planned after the female-only rule, 66 armatures the coverage step had
+    # been minting over an unconverted mesh; 0 child and 0 creature pieces
+    # (DefaultRace only, and the child and non-playable gates still apply);
+    # the other 138 sources plan exactly what they did. The index is lookup-only
+    # (staging None: it can never write) over the SAME folders the convert step
+    # lists, and lazy: it is read only when some mod finds nothing loose. The
+    # convert step adopts its listing. CBBE2UBE_NO_BSA_ONLY_SOURCES=1 turns this
+    # off, and with it the log of mods still dropped.
+    _bsa_only = not _flag("CBBE2UBE_NO_BSA_ONLY_SOURCES", False)
+    _sel_bsa = None
+    if _bsa_only and pending_vfs:
+        try:
+            _slay = paths.discover_layout()
+            _sel_bsa = _BsaMeshIndex(
+                _load_order_bsa_dirs(mods_root, enabled_ordered,
+                                     _slay.game_data_dirs),
+                None, plugin_order=_bsa_plugin_order(_slay))
+            _SELECTION_BSA_INDEX[str(mods_root).lower()] = _sel_bsa
+        except Exception:
+            _sel_bsa = None
+    _found_nowhere: "list[str]" = []
+    _located = vfs or {}
     for mod_dir, armor_bases in pending_vfs:
         c = sum(1 for b in armor_bases
-                if any(f"{b}{suf}.nif" in vfs for suf in ("_1", "_0", "")))
+                if any(f"{b}{suf}.nif" in _located for suf in ("_1", "_0", "")))
+        if c == 0 and _sel_bsa is not None:
+            c = sum(1 for b in armor_bases
+                    if any(_sel_bsa.contains(f"{b}{suf}.nif")
+                           for suf in ("_1", "_0", "")))
         if c == 0:
+            if _bsa_only or _index_failed:
+                _found_nowhere.append(mod_dir.name)
             continue  # armour meshes genuinely don't exist anywhere
         candidates.append({
             "name": mod_dir.name, "path": mod_dir, "armor_nifs": c,
             "esps": sum(1 for _ in mod_dir.rglob("*.esp"))})
+    if _index_failed:
+        # Not "found nowhere": the other mods' loose files were never searched.
+        # #vfs-index-fail-loud
+        _sel_warns.append((
+            "armour mesh index failed", "source selection", str(mods_root),
+            f"{_index_failed}; {len(_found_nowhere)} mod(s) whose armour meshes "
+            "are in another mod were not converted"
+            + (": " + ", ".join(_found_nowhere) if _found_nowhere else "")))
+        if _found_nowhere:
+            print(f"  armour meshes not searched for: {len(_found_nowhere)} mod(s) "
+                  "equip armour whose meshes are not in their own folder or an "
+                  "archive, and the other mods' loose files could not be searched "
+                  "(see the warning above), so they are not converted this run:")
+            for _unsearched in _found_nowhere:
+                print(f"    - {_unsearched}")
+    elif _found_nowhere:
+        print(f"  armour meshes found nowhere: {len(_found_nowhere)} mod(s) equip "
+              "armour whose meshes are in no enabled mod's loose files or "
+              "archives, so they are not converted:")
+        # EVERY name, uncapped: this line is the only place such a mod is ever
+        # named -- it is in no report -- so a "... and N more" would leave the
+        # ones past the cut as silent as before. 2 on a 3,254-plugin modlist.
+        for n in _found_nowhere:
+            print(f"    - {n}")
+    if _worn_admitted:
+        print(f"  non-playable armour a female NPC wears: {len(_worn_admitted)} "
+              f"armature(s) in {_worn_mods} mod(s) kept for conversion "
+              "(these were skipped before)")
 
     # Duplicate-plugin dedup: when the same filename ships in multiple mods, the
     # game loads only the highest-MO2-priority copy. Patching a lower-priority
@@ -5848,12 +11847,24 @@ def _cmd_scan(args):
 
 
 def list_convertible_mods(output_dir: "Path | None" = None,
-                          progress=None) -> list:
+                          progress=None, *, rescan: bool = False,
+                          mark_ube_native: bool = False) -> list:
     """Discover the armor mods the `auto` pipeline would convert, WITHOUT
     converting — for the GUI selection list. Mirrors `_cmd_auto`'s discovery
     EXACTLY so the names match what `--only-mods` filters against. Returns
     [{'name': str, 'nifs': int}] in load-priority order. Returns [] if the
-    modpack layout can't be located."""
+    modpack layout can't be located.
+
+    `rescan` forgets the memoised folder scan first, so a mod updated in MO2
+    since the last scan is read again (the window's Refresh and Exclusions
+    lists). #mod-scan-rescan
+
+    `mark_ube_native` adds 'ube_native': True to each mod the run's UBE-native
+    scan drops before --only-mods is applied (the same `_ube_native_hits`), so
+    the Select list can leave it out instead of offering a mod the run then
+    refuses as "NOT FOUND". #select-list-ube-native"""
+    if rescan:
+        _ARMOR_MOD_DIRS_CACHE.clear()
     lay = paths.discover_layout()
     paths.export_to_env(lay)
     mr = paths.mods_root()
@@ -5874,6 +11885,10 @@ def list_convertible_mods(output_dir: "Path | None" = None,
         # whole session. #esp-cache-release
         from . import esp as _esp
         _esp.clear_load_cache()
+        # Same for the archive listing selection may have read: only a convert
+        # in THIS process could reuse it, and the GUI never converts in-process.
+        # #bsa-only-sources
+        _SELECTION_BSA_INDEX.pop(str(mr).lower(), None)
     prio = paths.enabled_mods_ordered(lay)
     if prio:
         rank = {name: i for i, name in enumerate(prio)}
@@ -5883,6 +11898,10 @@ def list_convertible_mods(output_dir: "Path | None" = None,
         v = c.get("armor_nifs", 0)
         return len(v) if isinstance(v, (list, tuple, set)) else int(v or 0)
     out = [{"name": c["name"], "nifs": _n(c)} for c in cands]
+    if mark_ube_native:
+        native = {n for n, _s in _ube_native_hits(cands)}
+        for it in out:
+            it["ube_native"] = it["name"] in native
     # Vanilla sweep pseudo-source, LAST (mirrors its lowest-priority position
     # in _cmd_auto). The name must be exactly "vanilla" — that's the token
     # --only-mods special-cases — so Select-mods runs can rerun just the sweep.
@@ -5940,8 +11959,20 @@ def _largest_shape_verts(path):
 
 def _body_trees():
     """(ube_tree, cbbe_tree) KD-trees over the UBE and CBBE reference body verts,
-    cached. (None, None) if either body can't be located/read."""
-    if not _BODY_TREE_CACHE:
+    cached. (None, None) if either body can't be located/read.
+
+    #body-cache-by-inputs: cached for the bodies the finders name NOW, so the
+    window's scan follows a changed Paths-tab pick; built once while they stay
+    the same. Switched off, the first pair is kept for the process, as before."""
+    from .nif_convert_bodyrefs import _body_cache_by_inputs
+    key = None
+    if _body_cache_by_inputs():
+        try:
+            key = (nif_convert._find_ube_femalebody("_1"),
+                   nif_convert._find_cbbe_base_body("_1"))
+        except Exception:
+            key = (None, None)
+    if not _BODY_TREE_CACHE or _BODY_TREE_CACHE.get("key") != key:
         res = (None, None)
         try:
             from scipy.spatial import cKDTree
@@ -5956,6 +11987,7 @@ def _body_trees():
         except Exception:
             res = (None, None)
         _BODY_TREE_CACHE["t"] = res
+        _BODY_TREE_CACHE["key"] = key
     return _BODY_TREE_CACHE["t"]
 
 
@@ -6075,6 +12107,29 @@ def _ube_native_verdict(mod_dir, ube_tree, cbbe_tree, sample_per_mod=6):
     return "unknown", "low", [f"shape fit: dUBE={du:.2f}, dCBBE={dc:.2f}"]
 
 
+def _ube_native_hits(candidates: list) -> "list[tuple[str, str]]":
+    """(name, first signal) of each candidate the UBE-native scan would drop:
+    a HIGH-confidence "ube" verdict. One decision for the run's drop and the
+    window's Select list (#select-list-ube-native). Fails open: no reference
+    bodies or an unreadable mod is no hit."""
+    try:
+        ube_tree, cbbe_tree = _body_trees()
+    except Exception:
+        return []
+    if ube_tree is None or cbbe_tree is None:
+        return []
+    native = []
+    for c in candidates:
+        try:
+            verdict, conf, signals = _ube_native_verdict(
+                c["path"], ube_tree, cbbe_tree)
+        except Exception:
+            continue            # unreadable -> convert as normal
+        if verdict == "ube" and conf == "high":
+            native.append((c["name"], signals[0] if signals else ""))
+    return native
+
+
 def _drop_ube_native_candidates(candidates: list) -> list:
     """Drop candidates whose armor is ALREADY shaped for UBE.
 
@@ -6087,21 +12142,7 @@ def _drop_ube_native_candidates(candidates: list) -> list:
     Fails OPEN at every step -- no reference bodies, an unreadable mod, or any
     other error converts as normal. Wrongly skipping a real CBBE mod leaves its
     armor unfitted in game, which is far worse than double-converting one."""
-    try:
-        ube_tree, cbbe_tree = _body_trees()
-    except Exception:
-        return candidates
-    if ube_tree is None or cbbe_tree is None:
-        return candidates
-    native = []
-    for c in candidates:
-        try:
-            verdict, conf, signals = _ube_native_verdict(
-                c["path"], ube_tree, cbbe_tree)
-        except Exception:
-            continue            # unreadable -> convert as normal
-        if verdict == "ube" and conf == "high":
-            native.append((c["name"], signals[0] if signals else ""))
+    native = _ube_native_hits(candidates)
     if not native:
         return candidates
     skip = {n for n, _s in native}
@@ -6150,13 +12191,199 @@ def scan_ube_native(domain: str = "armor", sample_per_mod: int = 6,
     return out
 
 
-def _split_mod_arg(vals):
+def _whole_mod_names() -> bool:
+    """#whole-mod-names (2026-09-25): is a --*-mods value that names an
+    existing mod folder kept whole, commas and all? Yes, by default.
+    CBBE2UBE_NO_WHOLE_MOD_NAMES=1 splits every value on commas again."""
+    return not _flag("CBBE2UBE_NO_WHOLE_MOD_NAMES", False)
+
+
+def _is_mod_folder(name: str, mods_root) -> bool:
+    """True when `name` is exactly one folder in the mods root."""
+    if not name or "/" in name or "\\" in name or mods_root is None:
+        return False
+    try:
+        return (Path(mods_root) / name).is_dir()
+    except (OSError, ValueError):
+        return False
+
+
+def _split_mod_arg(vals, mods_root=None):
     """Parse a repeatable + comma-separated --*-mods CLI arg into a list of mod
-    names, or None when unset/empty."""
+    names, or None when unset/empty.
+
+    THE RULE (#whole-mod-names): a value that is exactly the name of a folder in
+    the mods root is ONE name, commas included; any other value is split on
+    commas, so `--exclude-mods "a,b"` still means two mods. The window passes
+    every name as its own flag and every name it passes is a folder it listed,
+    so a folder called "Armor, Clothing Pack" used to arrive as two names that
+    matched nothing -- the mod was converted and covered although excluded.
+    The mods root is looked up only when a value holds a comma."""
     if not vals:
         return None
-    out = [n.strip() for chunk in vals for n in chunk.split(",") if n.strip()]
+    whole = _whole_mod_names()
+    root = mods_root
+    out = []
+    for chunk in vals:
+        v = str(chunk).strip()
+        if whole and "," in v:
+            if root is None:
+                try:
+                    root = paths.mods_root()
+                except Exception:
+                    root = None
+            if _is_mod_folder(v, root):
+                out.append(v)
+                continue
+        out.extend(n.strip() for n in str(chunk).split(",") if n.strip())
     return out or None
+
+
+def _apply_saved_exclusions(args, mods_root=None) -> "dict | None":
+    r"""A headless `auto` skips the mods saved in CBBEtoUBE_exclusions.json, as
+    the window's Convert button does. #headless-exclusions
+
+    The window turns its Exclusions list into arguments for its child
+    (`gui._armor_selection_argv`, `--overlay-exclude-mods`). A headless `auto`
+    applied the saved settings (#settings-everywhere) but never read this file,
+    while USING.md said such a run matches the Convert button: a mod marked as
+    already built for UBE was converted again, which breaks its meshes, and its
+    armour was covered. The window's mapping, here:
+
+      All mods (no --only-mods)   each armour exclusion -> --exclude-mods
+      --only-mods                 each one not picked   -> --coverage-exclude-mods
+      overlays, no --overlay-mods each overlay one      -> --overlay-exclude-mods
+
+    Added to what the command line names, never replacing it; a name it already
+    holds is not added twice. Only for a run the entry point prepared
+    (`gui_settings.headless_report()` is set): the window's child carries
+    CBBE2UBE_SETTINGS_APPLIED and gets them as arguments already, and
+    `python -m src.auto_convert` or a direct call reads only what it is given.
+    CBBE2UBE_NO_HEADLESS_SETTINGS=1 ignores the file, as before. Returns
+    {attr: [names added]}, or None when the file was not read. Never raises."""
+    try:
+        from . import exclusions as _ex
+        from . import gui_settings as _gs
+        rep = _gs.headless_report()
+        if rep is None or rep.get("by"):
+            return None
+        if not _gs._headless_settings_enabled(os.environ):
+            return None
+        src = _ex.config_path()
+        state = _ex.load(src)
+        armor = _ex.excluded_names(state, "armor")
+        overlay = _ex.excluded_names(state, "overlay")
+    except Exception as e:
+        print(f"note: the saved exclusions were not read ({type(e).__name__}: {e})")
+        return None
+    added: dict = {"exclude_mods": [], "coverage_exclude_mods": [],
+                   "overlay_exclude_mods": []}
+
+    def _add(attr, names):
+        have = {n.lower() for n in (_split_mod_arg(getattr(args, attr, None),
+                                                   mods_root) or ())}
+        new = [n for n in names if n.lower() not in have]
+        if new:
+            setattr(args, attr, list(getattr(args, attr, None) or []) + new)
+            added[attr] = new
+
+    if armor and not getattr(args, "overlays_only", False):
+        only = getattr(args, "only_mods", None)
+        if only:
+            chosen = {n.lower() for n in (_split_mod_arg(only, mods_root) or ())}
+            _add("coverage_exclude_mods",
+                 [n for n in armor if n.lower() not in chosen])
+        else:
+            _add("exclude_mods", armor)
+    if overlay and (getattr(args, "overlays_only", False)
+                    or getattr(args, "convert_overlays", False)) \
+            and not getattr(args, "overlay_mods", None):
+        _add("overlay_exclude_mods", overlay)
+    _what = {"exclude_mods": "armour mod(s) not converted (--exclude-mods)",
+             "coverage_exclude_mods": "armour mod(s) given no coverage "
+                                      "(--coverage-exclude-mods)",
+             "overlay_exclude_mods": "overlay mod(s) left as they are "
+                                     "(--overlay-exclude-mods)"}
+    for attr, names in added.items():
+        if names:
+            print(f"  saved exclusions ({src}): {len(names)} {_what[attr]}: "
+                  + ", ".join(names))
+    return added
+
+
+def _list_overlays_only(args, output, lay, overlay_transfer) -> int:
+    """`auto --overlays-only --list-only`: name the overlays a transfer would
+    remap, per region and per mod, and write nothing. #dry-run-writes-nothing
+
+    For the mode the real run would use, and saying so (#dry-run-copy-mode):
+    under --overlay-copy only the overlays a RaceMenu paint script registers
+    get a copy, and a missing tool skips the whole real run -- the list used
+    to show the replace mode's set either way. A region whose CBBE/UBE
+    reference mesh is missing or unreadable is skipped by either pass, and
+    the list says so under that region (`plan_region_gaps`, the pass's own
+    check)."""
+    kw = dict(skip_male=getattr(args, "overlay_skip_male", False),
+              only_mods=_split_mod_arg(getattr(args, "overlay_mods", None)),
+              exclude_mods=_split_mod_arg(getattr(args, "overlay_exclude_mods", None)))
+    if getattr(args, "overlay_copy", False):
+        print("\n--- OVERLAYS-ONLY (--list-only, 'Add UBE copy' mode): overlays "
+              "that WOULD get a UBE copy ---")
+        print("  copy mode bakes only overlays a RaceMenu paint script "
+              "registers; every original stays as it is")
+        plan = overlay_transfer.plan_overlay_copies(output, lay, **kw)
+        gap = overlay_transfer.copy_mode_tool_gap()
+    else:
+        print("\n--- OVERLAYS-ONLY (--list-only, replace mode): overlays that "
+              "WOULD be remapped to UBE UV ---")
+        plan = overlay_transfer.plan_overlays(output, lay, **kw)
+        gap = overlay_transfer.replace_mode_tool_gap()
+    region_gaps = overlay_transfer.plan_region_gaps(plan)
+    total = 0
+    mods: "dict[str, int]" = {}
+    for region, items in plan.items():
+        print(f"  {region}: {len(items)} overlay(s)")
+        if region in region_gaps:
+            print(f"    !! the real run would SKIP this region: {region_gaps[region]}")
+        total += len(items)
+        for src in items.values():
+            if isinstance(src, str):                 # copy plan: the mod itself
+                mod = src
+            else:
+                mod = (src[-1] if isinstance(src, (tuple, list)) and len(src) >= 3
+                       else "?")
+            mods[mod] = mods.get(mod, 0) + 1
+    for mod, n in mods.items():
+        print(f"    {mod}  ({n})")
+    if gap:
+        print(f"  !! the real run would SKIP every overlay above: {gap}")
+    print(f"\n--list-only: {total} overlay(s) listed; nothing was written.")
+    return 0
+
+
+def _check_ube_nude_morphs() -> None:
+    """`auto`'s pre-flight of the UBE nude skin: missing hands/feet .tri makes
+    them stay CBBE-shaped while the body morphs UBE (built without 'Build
+    Morphs'). Printed and recorded as one warning. Never raises.
+
+    Run by `_cmd_convert` just before it prints its tally: run after it (as it
+    was until 2026-09-26), the log's "=== N failure(s), M warning(s) ===" left
+    this warning out while the list the window opens named it. #one-tally"""
+    try:
+        morph_warns = nif_convert.check_ube_nude_morph_files()
+        if morph_warns:
+            warn("UBE nude-skin morph check:",
+                 consequence="listed below: a nude part without its morph file stays at "
+                             "base shape while the body morphs",
+                 fix="rebuild that part in BodySlide with 'Build Morphs' checked",
+                 indent="\n  ")
+            for w in morph_warns:
+                print(f"     - {w}")
+            _record_failure("nude-skin morph missing", "UBE body",
+                            f"{len(morph_warns)} nude part(s)",
+                            _first_few(morph_warns) + "; rebuild each in BodySlide "
+                            "with 'Build Morphs' checked", severity="warning")
+    except Exception:
+        pass
 
 
 def _cmd_auto(args):
@@ -6165,6 +12392,9 @@ def _cmd_auto(args):
     the Combined ESP, and emit vanilla race coverage. This is what the MO2
     executable button runs."""
     import argparse as _ap
+    # Warnings from here on make the stale-output sweep report only.
+    # #stale-output-sweep
+    _sos_warn_base, _sos_started = problem_count(), time.time()
     # FIRST thing in the log, before discovery and before anything can abort: a run
     # that dies early still has to say what flags it was carrying. #settings-did-not-apply
     _echo_active_experiment_flags()
@@ -6178,6 +12408,8 @@ def _cmd_auto(args):
     print(f"  mods root: {mr}")
     if lay.game_data_dirs:
         print(f"  game Data: {lay.game_data_dirs[0]}")
+    # The saved exclusions, as the window passes them. #headless-exclusions
+    _apply_saved_exclusions(args, mr)
 
     output = (args.output if getattr(args, "output", None)
               else mr / "CBBEtoUBE Auto")
@@ -6191,6 +12423,13 @@ def _cmd_auto(args):
     # (slow) armor reconvert. Returns right after.
     if getattr(args, "overlays_only", False):
         from . import overlay_transfer
+        if getattr(args, "list_only", False):
+            # --list-only IS "convert nothing" -- the GUI's Dry run -- and this
+            # branch returned before the list-only check below, so a dry run
+            # with only overlays ticked rebaked every overlay into the output
+            # mod. List what WOULD be remapped; write nothing.
+            # #dry-run-writes-nothing
+            return _list_overlays_only(args, output, lay, overlay_transfer)
         print("\n--- OVERLAYS-ONLY: body overlay (tattoo) -> UBE UV transfer ---")
         ovl = overlay_transfer.convert_overlays(
             output, lay,
@@ -6215,6 +12454,11 @@ def _cmd_auto(args):
         exclude |= set(_user_excl)
         print(f"  --exclude-mods: skipping {len(_user_excl)} mod(s): "
               + ", ".join(sorted(_user_excl)))
+    # Every exclusion the coverage step withholds, the Select-mods ones too: a
+    # plugin the game loads from one of them is left alone by the sources, in
+    # this selection and in the convert step alike. #excluded-copy-left-alone
+    _set_run_user_exclusions(_user_excl + (_split_mod_arg(
+        getattr(args, "coverage_exclude_mods", None)) or []))
 
     print("  scanning mods for player-equippable armor...")
     candidates = _find_armor_mod_dirs(
@@ -6241,16 +12485,18 @@ def _cmd_auto(args):
     # as normal, because wrongly skipping a real CBBE mod leaves its armor
     # unfitted in game. Needs both reference bodies; without them the scan
     # returns nothing and the pipeline is unchanged.
+    _ube_native_dropped: "set[str]" = set()
     if not getattr(args, "no_ube_native_scan", False):
+        _before_scan = {c["name"].lower() for c in candidates}
         candidates = _drop_ube_native_candidates(candidates)
+        _ube_native_dropped = _before_scan - {c["name"].lower() for c in candidates}
 
     # --only-mods: reconvert a subset. The merge still re-globs ALL patches in
     # _unmerged_patches/ so unselected mods keep their existing patch + meshes.
     only = getattr(args, "only_mods", None)
     _sweep_only_requested = False
     if only:
-        wanted = {n.strip().lower()
-                  for chunk in only for n in chunk.split(",") if n.strip()}
+        wanted = {n.lower() for n in (_split_mod_arg(only, mr) or ())}
         # "vanilla" selects the vanilla sweep (a pseudo-source, not a mod dir).
         _sweep_only_requested = "vanilla" in wanted
         wanted.discard("vanilla")
@@ -6268,6 +12514,14 @@ def _cmd_auto(args):
             # be absent here -- that cost three arms on 2026-09-07 -- so name
             # the right list and show the near misses instead of a bare refusal.
             for miss in missing:
+                if miss in _ube_native_dropped:
+                    # Dropped above, before this filter: say so, rather than
+                    # send the reader to a list that offered it.
+                    # #select-list-ube-native
+                    print(f"    '{miss}' -- skipped by the UBE-native scan (its "
+                          "armour already fits the UBE body); add "
+                          "--no-ube-native-scan to convert it anyway")
+                    continue
                 real = _near_mod_names(miss, all_names)
                 if real:
                     print(f"    '{miss}' -- did you mean: "
@@ -6300,6 +12554,9 @@ def _cmd_auto(args):
     # keeps mod-source links wherever both cover the same armor.
     # CBBE2UBE_NO_VANILLA_SWEEP=1 disables. Under --only-mods, the sweep runs
     # only when named explicitly ('vanilla').
+    # Problems found here, before `_cmd_convert` starts the run's record (and
+    # clears it): it records them first thing. #one-tally
+    _carried: "list[dict]" = []
     if (not _flag("CBBE2UBE_NO_VANILLA_SWEEP", False)
             and lay.game_data_dirs
             and (not only or _sweep_only_requested)
@@ -6319,6 +12576,10 @@ def _cmd_auto(args):
             warn(f"vanilla sweep DISABLED this run: {_sw_why}",
                  consequence="vanilla armour that no mod overrides stays unlinked, so it "
                              "is invisible on UBE actors until a run with the sweep")
+            _carried.append({"kind": "vanilla sweep disabled",
+                             "source": "Vanilla sweep (base game + DLC)",
+                             "item": "whole source", "detail": str(_sw_why),
+                             "severity": "warning"})
             print("     (mod armor converts normally; vanilla armor no mod "
                   "overrides stays unconverted. Fix the game-Data path or "
                   "report this if the path looks right.)")
@@ -6347,8 +12608,28 @@ def _cmd_auto(args):
         render_previews=False, mods_root=mr,
         incremental=getattr(args, "incremental", False),
         plugins_only=getattr(args, "plugins_only", False),
+        # The coverage winner scan must leave the excluded mods' armour alone
+        # too, not only skip their meshes -- on a Select-mods run as well, where
+        # the window passes them as --coverage-exclude-mods. #exclude-owned-coverage
+        exclude_mods=(_user_excl + (_split_mod_arg(
+            getattr(args, "coverage_exclude_mods", None)) or [])) or None,
+        # What the stale-output sweep needs to know about this run: only a run
+        # of all mods may move anything, and a recorded source that did not run
+        # is judged by where it went. #stale-output-sweep
+        stale_sweep={"all_mods": not only, "warn_base": _sos_warn_base,
+                     "started": _sos_started, "mods_root": str(mr),
+                     "enabled": None if enabled is None else sorted(enabled),
+                     "excluded": sorted(exclude)},
+        carried_failures=_carried,   # #one-tally
+        # `auto` checks the UBE nude skin's morph files; the convert step runs
+        # the check before it prints its tally and marks it "done". #one-tally
+        nude_morph_check=True,
     )
-    rc = _cmd_convert(conv)
+    try:
+        rc = _cmd_convert(conv)
+    finally:
+        # Moves the merge never confirmed go back. #stale-output-sweep
+        _stale_output_sweep_abandoned()
     # Failures of anything that runs AFTER `rc` was fixed by the convert above,
     # so an exception down here still fails the run instead of exiting 0.
     #
@@ -6364,8 +12645,10 @@ def _cmd_auto(args):
     #
     # The one post-convert step that CAN still fail is the opt-in overlay
     # transfer, which caught its own exception and let the run exit 0. It now
-    # counts, so `--convert-overlays` failing is visible in the exit code.
-    post_merge_failures = 0
+    # counts, so `--convert-overlays` failing is visible in the exit code:
+    # counted from the failures recorded after this point, so the exit code
+    # and the GUI's popup read one record. #one-tally
+    _failures_at_convert_end = _run_tally()[0]
 
     # Vanilla race coverage (Vanilla_UBE_Race_Compat.esp) REMOVED 2026-07-03:
     # RaceCompatibility SKSE / RaceDispatcher does this race + nude-skin dispatch
@@ -6402,27 +12685,21 @@ def _cmd_auto(args):
         except Exception as e:
             # Counted: the user explicitly asked for this with
             # --convert-overlays, so exiting 0 hides that the textures they
-            # expect were never written.
-            post_merge_failures += 1
+            # expect were never written. Recorded, which is what counts it,
+            # so the GUI's popup names it too. #one-tally
             warn(f"overlay transfer FAILED: {plain_error(e)}",
                  consequence="overlays were not transferred this run")
+            _record_failure("overlay transfer failed", "body overlays",
+                            "every selected overlay", plain_error(e))
 
-    # Pre-flight: missing hands/feet .tri makes them stay CBBE-shaped while the
-    # body morphs UBE (built without 'Build Morphs'). Surface the warning loudly.
-    try:
-        morph_warns = nif_convert.check_ube_nude_morph_files()
-        if morph_warns:
-            warn("UBE nude-skin morph check:",
-                 consequence="listed below: a nude part without its morph file stays at "
-                             "base shape while the body morphs",
-                 fix="rebuild that part in BodySlide with 'Build Morphs' checked",
-                 indent="\n  ")
-            for w in morph_warns:
-                print(f"     - {w}")
-    except Exception:
-        pass
+    # The nude-skin morph check ran inside `_cmd_convert`, before its tally; a
+    # convert that returned before its tally did not run it, so it runs here.
+    # #one-tally
+    if conv.nude_morph_check != "done":
+        _check_ube_nude_morphs()
 
     _enable = f"'{output.name}' + its Combined ESP(s)"
+    post_merge_failures = _run_tally()[0] - _failures_at_convert_end
     if post_merge_failures:
         warn(f"{post_merge_failures} post-convert phase(s) FAILED",
              consequence="see the errors above; the run is reported as failed",
@@ -6488,6 +12765,7 @@ def _cmd_merge(args):
     # FULL SKYPATCHER: write the armorAddonsToAdd INI next to the output
     # (same layout as the integrated path: <modroot>/SKSE/Plugins/SkyPatcher).
     _sp_lines = stats.get("skypatcher_ini_lines") or []
+    _report_skypatcher_unsafe_names(stats)
     if _sp_lines:
         _outp = Path(stats.get('output', args.output))
         _sp_ini_path = (_outp.parent / "SKSE" / "Plugins" / "SkyPatcher"
@@ -6515,8 +12793,10 @@ def _cmd_merge(args):
     # / malformed-MODT CTD class). The integrated auto/convert path already does
     # this; the standalone `merge` subcommand must not skip it.
     try:
+        _merged = Path(stats.get('output', args.output))
         _pf = ube_patcher.postflight_validate_combined(
-            Path(stats.get('output', args.output)), master_data_dirs=_mdd)
+            _merged, master_data_dirs=_mdd,
+            mesh_resolves=_outside_ube_mesh_resolver(_merged.parent))
         if _pf["ctd"]:
             warn(f"POSTFLIGHT CTD on merged output: {len(_pf['ctd'])} load-breaking issue(s)",
                  consequence="NOT safe to load; listed below")
@@ -6527,9 +12807,34 @@ def _cmd_merge(args):
             print(f"  postflight: {len(_pf['soft'])} soft warning(s) "
                   "(invisible/cosmetic, non-fatal)")
     except Exception as _pfe:
+        _rc = 1 if _merge_unverified_exit() else 0
         warn(f"postflight validation skipped: {plain_error(_pfe)}",
-             consequence="the plugin was not checked for load-breaking issues")
+             consequence="the plugin was not checked for load-breaking issues; "
+                         f"`merge` exits {_rc}",
+             fix="run `validate` on the merged plugin's folder before enabling it")
+        # `merge` keeps no run record: its exit code is its result, so a plugin
+        # nobody checked is not reported as a clean merge. #merge-unverified-exit
+        return _rc
     return 0
+
+
+def _merge_unverified_exit() -> bool:
+    r"""#merge-unverified-exit (2026-09-26): does the standalone `merge` exit 1
+    when its postflight check of the merged plugin could not run? Yes, by
+    default.
+
+    `merge` has no run record, no tally and no failures file; the exit code is
+    the only result a caller can read, and it was 0 for a plugin the check
+    never saw -- the same 0 as a checked clean one. Exit 2 stays "checked and
+    NOT safe to load"; 1 is "written, not checked".
+
+    A failed master re-sort does NOT change the exit code: the merge already
+    tier-sorts the masters (the re-sort only repairs a stale plugin, and is a
+    no-op on a fresh one), and the postflight that follows checks the master
+    order as a load-breaking issue -- a mis-sort left behind exits 2 there, and
+    a re-sort failure with the postflight skipped exits 1 through this.
+    CBBE2UBE_NO_MERGE_UNVERIFIED_EXIT=1 exits 0, as before."""
+    return not _flag("CBBE2UBE_NO_MERGE_UNVERIFIED_EXIT", False)
 
 
 def _cmd_validate(args):
@@ -6573,7 +12878,13 @@ def _cmd_validate(args):
     try:
         _vlay = paths.discover_layout()
         _vidx = paths.plugin_file_index(_vlay)
-        _mdd = sorted({Path(p).parent for p in _vidx.values()}) or None
+        if paths.root_plugin_index_on():
+            # #root-plugin-index: in the index's priority order (highest first),
+            # so a master name two folders ship resolves to the copy the game
+            # loads.
+            _mdd = list(dict.fromkeys(Path(p).parent for p in _vidx.values())) or None
+        else:
+            _mdd = sorted({Path(p).parent for p in _vidx.values()}) or None
     except Exception as _e:
         print(f"  note: no plugin index ({type(_e).__name__}); ESL-flagged .esp "
               "masters may be misreported as ordering errors")
@@ -6582,10 +12893,13 @@ def _cmd_validate(args):
 
     total_warnings = 0
     failing = 0
+    # The coverage step points some `!UBE\` slots at other mods' meshes on purpose
+    # (the UBE body's own hands/feet; by default, hand-made twins). #coverage-nude-skin
+    _outside = _outside_ube_mesh_resolver(mod_dir) if meshes_root else None
     for esp_path in esps:
         warnings = ube_patcher.validate_patch(
             esp_path, meshes_root=meshes_root, check_nifs=check_nifs,
-            master_data_dirs=_mdd)
+            master_data_dirs=_mdd, mesh_resolves=_outside)
         if warnings:
             failing += 1
             total_warnings += len(warnings)
@@ -6604,8 +12918,20 @@ def _cmd_validate(args):
 
 def _cmd_check_setup(args) -> int:
     """`check-setup`: the GUI's Check setup without a window -- for a command
-    line, or a user whose GUI will not start. #check-setup"""
+    line, or a user whose GUI will not start. #check-setup
+
+    Run through the entry point, it checks with the saved settings, as the
+    window does (a UBE body picked on the Paths tab); its first line then says
+    where they came from, so a setup.txt in a bug report says which setup it
+    checked. A direct call prints the checks alone, as before.
+    #check-setup-settings"""
     from . import preflight
+    try:
+        from . import gui_settings as _gs
+        if _gs.headless_report() is not None:
+            print(_gs.settings_source_line().strip())
+    except Exception:
+        pass
     checks = preflight.run_checks()
     for line in preflight.format_checks(checks):
         print(line)

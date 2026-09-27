@@ -1839,12 +1839,21 @@ PHASE1_ANTIPOKE = (
 # wrapper the authoring tool never opened. XML forbids non-whitespace after the
 # document element, so every strict parser rejects the file outright.
 #
-# WHAT IT COSTS TODAY. `_read_source_hdt_xml_text` hands that text to every
-# collider / soft-body / validation consumer, and the destination copy is a
-# VERBATIM `atomic_copy`, so the damage ships. Measured on the shipped pack:
-# **94 of 3673 NIFs reference an unparseable XML** and get no physics
-# processing at all -- and an empty collider set is the condition BUG-00
-# recorded as disarming every guard at once.
+# WHAT IT DOES NOT FIX (corrected 2026-09-25; an earlier note here claimed 94
+# NIFs "get no physics processing at all"). Nothing in the converter or the game
+# is blinded by the junk. Every converter consumer of these files is REGEX-based
+# (the collider / soft-body sets, the finalize rewriters: harden, chest
+# collider, static chains, bust split, butt / skirt proxies) and reads the same
+# declarations with or without the tail -- probed: identical collider, soft-body
+# and bone sets. FSMP stops reading at `</system>` and never tokenises the tail;
+# in game the junk-XML loincloth swings. The measured shipped population is 20
+# NIFs (10 garments), not 94 (that census counted by filename and included BOM
+# and namespaced files, which parse).
+#
+# WHAT IT IS FOR: hygiene and diagnostics. The shipped file then passes strict
+# tools, and the audit's unparseable-XML count stops sitting at a permanent 10
+# that would hide a real regression. `validate_armor_hdt_xml` tolerates the tail
+# on its own now, so the converter's checks run on these pieces either way.
 #
 # The repair drops 8-16 bytes per file and is verified on all ten: the
 # per-vertex-shape / per-triangle-shape / bone declarations are IDENTICAL
@@ -1853,7 +1862,8 @@ PHASE1_ANTIPOKE = (
 # BUG-12 double-encoded a BOM -- and returns the input unchanged unless the
 # repaired text parses AND keeps the same root tag.
 #
-# DEFAULT OFF pending a verdict: it changes what ships for those pieces.
+# DEFAULT OFF pending the user's call: it changes what ships for those pieces
+# (8-16 trailing bytes each). A repair is recorded as a pass EFFECT.
 HDT_XML_SANITISE = _flag("CBBE2UBE_HDT_XML_SANITISE", False)
 
 # --- Phase-2 source-standoff conform (#phase2-conform) --------------------
@@ -2255,6 +2265,10 @@ def _shape_bake_translation(shape):
 # since 2026-09-01. Imported BY NAME so `nc.<name>` keeps working everywhere.
 from .nif_convert_writer import (  # noqa: E402
     _copy_shape,
+    _dup_shape_names_on,
+    _dup_shape_rename_plan,
+    _open_source_nif,
+    _uniquify_source_shape_names,
     _install_skin,
     _reauthor_nif_fresh,
     validate_dst_nif,
@@ -4515,6 +4529,11 @@ def convert_nif(
     # (BUG-00). Must stay AFTER the load so the already-parsed nif is reused,
     # and BEFORE any pass that reads a collider/soft-body set.
     _hdt_xml_bind_piece_source(src_path, nif=nif)
+    # #dup-shape-names: shapes that share a name each get their own, before
+    # anything keys per-shape data by name. AFTER the bind: the rename asks the
+    # piece's physics XML which names FSMP binds, and before the bind that
+    # lookup could still fall back to the PREVIOUS piece's XML.
+    _uniquify_source_shape_names(nif, src_path, report=True)
     body_names, armor_names = classify_shapes(nif)
 
     # HH_OFFSET is a NiFloatExtraData that pynifly silently drops on load.
@@ -4575,7 +4594,9 @@ def convert_nif(
                         _stem[: -len(_a)] + _b + src_path.suffix)
                     if _sib.exists():
                         try:
-                            _pair.append((_sib, nif_io.load_nif(_sib)))
+                            _snif_pair = nif_io.load_nif(_sib)
+                            _uniquify_source_shape_names(_snif_pair, _sib)
+                            _pair.append((_sib, _snif_pair))
                         except Exception:
                             pass
                     break
@@ -4693,6 +4714,7 @@ def convert_nif(
             # ordinary skinning.  [DESIGN: Fitting]
             pyn_lib = _pynifly()
             src_nif_for_fit = nif_io.open_nif_retry(str(src_path))  # transient-IO resilient
+            _uniquify_source_shape_names(src_nif_for_fit, src_path)
             dst_nif_for_fit = pyn_lib.NifFile()
             dst_nif_for_fit.initialize("SKYRIMSE", str(dst_path))
 
@@ -4935,9 +4957,14 @@ def convert_nif(
                     )
             atomic_nif_save(dst_nif_for_fit, dst_nif_for_fit.filepath)
 
-        # Hand/foot slots are rigid — never cloth. HDT-SMP on gauntlets/boots
-        # collapses them at runtime even though the static mesh looks fine.
-        # Gold-standard UBE gauntlets carry no HDT XML; enforce the same here.
+        # Hand/foot slots get no physics pointer, found or generated. WHY: never
+        # let the generator or the missing-bone regen below put a soft body on
+        # an extremity -- a generated, unconstrained soft body on a glove drape
+        # is the one glove-physics failure seen in game (it exploded). Authored
+        # extremity chains are untested; one piece on the reference load order
+        # has one. NOT because "SMP collapses gauntlets": that 2026-06-01 theory
+        # was refuted the same day -- the invisible gauntlet was a missing `_0`
+        # weight partner. Phase 2 applies the same gate (#finalize-repoint).
         if biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT):
             hdt_xml = None
         else:
@@ -6002,7 +6029,10 @@ def _finalize_physics_and_motion_match(dst_path, src_path, biped_slots) -> None:
     # extra-data survives them. NOT literally last: the passes below use
     # the in-place load+save pattern and preserve it — any NEW pass added
     # after this point must do the same (a rebuild drops it). Skip
-    # hand/foot: cloth physics collapses them.
+    # hand/foot: no soft body from the generator or the regen may land on an
+    # extremity, and authored extremity chains are untested (one piece on the
+    # reference load order). The older "cloth physics collapses gauntlets"
+    # reason was refuted on 2026-06-01 (a missing `_0` partner). See phase 1.
     if not (biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT)):
         try:
             _finalize_hdt_physics(dst_path, src_path)
@@ -6142,7 +6172,9 @@ from .nif_convert_physics import (  # noqa: E402
     _add_skirt_collider_proxy,
     _audit_registered_shape_declared_bones,
     _cluster_decimate,
+    _dst_xml_stem_scan,
     _finalize_hdt_physics,
+    _finalize_repoint,
     _find_hdt_xml_for_armor,
     _generate_hdt_xml_for_dst,
     _hdt_collider_shape_names,
@@ -6914,13 +6946,16 @@ def _conform_skip_keys(piece_has_hdt_xml=None) -> tuple:
     return _CONFORM_SKIP_NAMES
 
 
-def _piece_has_hdt_xml(path, nif=None) -> bool:
+def _piece_has_hdt_xml(path, nif=None, stem_scan: bool = True) -> bool:
     """Does this piece declare an HDT-SMP physics XML that actually resolves?
 
     False for a piece driven by a runtime-global config (nothing to read) -- which is
-    precisely the population the draping-name skip exists to protect. #drape-xml-gate"""
+    precisely the population the draping-name skip exists to protect. #drape-xml-gate
+    A caller holding a DESTINATION path passes `stem_scan=_dst_xml_stem_scan()`
+    (#dst-xml-no-stem-scan)."""
     try:
-        return bool(_read_source_hdt_xml_text(Path(path), nif=nif))
+        return bool(_read_source_hdt_xml_text(Path(path), nif=nif,
+                                              stem_scan=stem_scan))
     except Exception:
         return False        # unreadable -> treat as "no XML" -> keep the guard
 
@@ -7091,6 +7126,72 @@ MATCH_LEG_MOTION = (
 # CBBE2UBE_NO_LEG_MOTION_MORPHTRI=1 restores the gated behaviour.
 LEG_MOTION_ON_MORPHTRI = (
     not _flag("CBBE2UBE_NO_LEG_MOTION_MORPHTRI", False))
+# #morphtri-hug-feather. `#leg-motion-morphtri` let the leg match reach the
+# TRI-owning shapes at the pass's own 9u hug distance -- a distance chosen for a
+# dress. REPORTED IN GAME 2026-09-26 on a one-piece plated cuirass (legs, faulds
+# and a plate hanging between the legs, all ONE TRI-owning shape): the plate
+# between the legs "clips into itself" instead of deforming; the build before
+# `#leg-motion-morphtri` was fine, and a build with only that switched off fixed
+# it in game. Mechanism: the plates stand OFF the body (median 2.2-4.3u over the
+# leggings they cover), and each plate row was re-split to the skin nearest to
+# it, independently of the plate it overlaps, so overlapping plates stopped
+# moving together. The rows `#leg-motion-morphtri` was FOR are fitted cloth: on
+# the reported trousers every changed part sits at a median standoff of 0.6-1.9u.
+#
+# So on the TRI-owning shapes this instance reaches only through the opt-out, a
+# row that stands over ANOTHER visible layer of the piece takes the full match
+# inside _MORPHTRI_HUG_NEAR, none beyond _MORPHTRI_HUG_FAR, and a linear share
+# between (a hard cut would put a hinge in a plate that spans the band). A row
+# that is the ONLY layer over the skin keeps the full reach. "Another layer" = the
+# line to the row's body point meets a visible surface of the piece that FACES
+# AWAY from the body, more than _MORPHTRI_HUG_LAYER_GAP in (so neither the plate's
+# own thickness nor its body-facing inside counts; colliders, proxies and the body
+# are not layers).
+#
+# SCOPE: the leg band only. At z >= 72 and within 5u, `#full-weight-match` runs
+# after this pass and writes the covered body's whole row, so the fade does not
+# reach there (on the plated cuirass 70 of the 355 rows the fade changed ship as
+# the build does). The reported plate hangs below it.
+#
+# WHY THE LAYER CONDITION. Distance alone was built first. Censused on the live
+# pack, 545 admitted shapes on 328 pieces have leg-band rows at 2-9u that the fade
+# could act on, many of them skirts and outfits. In a parent-vs-lane sample of
+# the most affected it lost coverage on a lower panel over a swinging thigh
+# (thigh 0.25% -> 0.75%) and a steel body (upper chest 1.36% -> 1.63%): rows that
+# were the only layer over the skin. With the layer condition the same census
+# counts 449 shapes on 256 pieces (rows the fade can act on; the written files
+# change on fewer). Nothing separates the classes by PART: the
+# plates are stitched to the leggings, so the welded plate+leggings is one part.
+#
+# Measured, zeroed UBE body, weight 1, seed 1, poses matched by name:
+#   plated cuirass, NEW self-crossing pairs vs bind (plate x plate):
+#       stride L     build 13 / 7    this 8 / 7    #leg-motion-morphtri off 8 / 7
+#       thighs fwd   build 26 / 7    this 19 / 5   #leg-motion-morphtri off 19 / 5
+#     whole shape, both thighs back: build +144, this +218, #leg-motion-morphtri
+#     off +209 -- the one pose worse than the build (plates x leggings), at the
+#     level the user accepted in game with #leg-motion-morphtri off.
+#     Body exposure (multipose, every region): identical in all three. NOT a full
+#     revert: the fitted leggings (0.8u) keep the match, so their own crossings
+#     at the crotch stay at the build's level (stride L 24, switch-off 13).
+#   reported trousers: multipose identical to the build (thigh 1.25% / butt 0%;
+#     #leg-motion-morphtri off 2.50% / 0.25%). Their standing-off rows are faded
+#     too (Greaves: 360 of 362 rows at 2-3u stand over another layer); the fix did
+#     not depend on them. Checked at the zeroed body only.
+#   18 of the pieces the fade reaches most (skirts, outfits, plated and layered
+#     armour, both convert paths, the two above included): 15 identical; a skirt
+#     1 point better at the thigh; a loincloth armour's thigh in a stride 2.39% ->
+#     2.69%; one mage armour mixed (butt 1 sampled point better in 2 poses, thigh
+#     1-2 points worse in 3, of 400 sampled).
+# Other shapes are untouched (the population is only what the opt-out admits).
+# CBBE2UBE_NO_MORPHTRI_HUG_FEATHER=1 restores the 9u reach.
+MORPHTRI_HUG_FEATHER = (
+    not _flag("CBBE2UBE_NO_MORPHTRI_HUG_FEATHER", False))
+_MORPHTRI_HUG_NEAR = _knob("CBBE2UBE_MORPHTRI_HUG_NEAR", 2.0)
+_MORPHTRI_HUG_FAR = _knob("CBBE2UBE_MORPHTRI_HUG_FAR", 3.0)
+# A row is faded only when the line to its body point meets another visible,
+# outward-facing surface of the piece at least this far in -- more than a plate's
+# own thickness.
+_MORPHTRI_HUG_LAYER_GAP = _knob("CBBE2UBE_MORPHTRI_HUG_LAYER_GAP", 0.75)
 # Fraction of the body-vs-garment leg-share gap to close (1.0 = full match).
 _LEG_MOTION_STRENGTH = _knob("CBBE2UBE_LEG_MOTION_STRENGTH", 1.0)
 # Only match verts within this distance of the body: beyond it the cloth is drape, not
@@ -8477,10 +8578,11 @@ def _selfint_overrides(nf, dst_path, src_path) -> dict:
     if body is None:
         return {}
     Vb, Nb, tree = body
-    collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
+    collider_names = _hdt_collider_shape_names(
+        dst_path, nif=nf, stem_scan=_dst_xml_stem_scan())
     src_shapes: dict = {}
     try:
-        snf = _pynifly().NifFile(filepath=str(src_path))
+        snf = _open_source_nif(src_path)   # #dup-shape-names
         for s in snf.shapes:
             src_shapes[s.name] = (np.asarray(s.verts, np.float64),
                                   np.asarray(s.tris, np.int64))
@@ -9078,7 +9180,8 @@ def _conform_collider_to_body(dst_path) -> int:
         nf = pyn.NifFile(filepath=str(p))
     except Exception:
         return 0
-    collider_names = _hdt_collider_shape_names(p, nif=nf)
+    collider_names = _hdt_collider_shape_names(
+        p, nif=nf, stem_scan=_dst_xml_stem_scan())
     if not collider_names:
         return 0
     base = ube_body_shape(nf)
@@ -11761,6 +11864,43 @@ def _resolve_data_rel_in_vfs(rel: str, src_nif_path: Path) -> "Path | None":
         print(f"  !! physics XML path rejected (escapes the mods tree): {rel!r}"
               " -- collider/soft-body detection may fail open for this armor")
         return None
+    hit = _resolve_safe_rel_in_vfs(norm, src_nif_path)
+    if hit is not None or not _physics_data_prefix():
+        return hit
+    # #physics-data-prefix: the raw rel missed. An author who wrote the pointer
+    # as "Data\meshes\..." meant the game's Data folder, which no mod folder
+    # contains, so try once more with that ONE leading segment removed. The raw
+    # rel went first so a mod packaged as <mod>/data/meshes/... still wins.
+    head, _sep, tail = norm.partition("/")
+    if head.lower() != "data" or not tail:
+        return None
+    stripped = _safe_data_rel(tail)     # re-check: the strip exposes a new head
+    if stripped is None:
+        print(f"  !! physics XML path rejected (escapes the mods tree): {rel!r}"
+              " -- collider/soft-body detection may fail open for this armor")
+        return None
+    return _resolve_safe_rel_in_vfs(stripped, src_nif_path)
+
+
+def _physics_data_prefix() -> bool:
+    r"""#physics-data-prefix (2026-09-25): may a physics-XML pointer written as
+    "Data\meshes\...\x.xml" resolve with its leading "Data" segment removed?
+    Yes, by default.
+
+    The pointer is the NIF's `HDT Skinned Mesh Physics Object` string. Some
+    authors write it relative to the game folder, "Data\meshes\...", instead of
+    relative to Data. No mod folder contains a "data" folder, so the resolver
+    missed every such pointer, the piece failed CLOSED (`hdt_xml_unresolved`)
+    and shipped with no physics at all. The raw rel is still tried FIRST; only
+    a miss falls back to the stripped one, and the stripped rel passes the same
+    escape checks. Nothing is fetched from an archive.
+    CBBE2UBE_NO_PHYSICS_DATA_PREFIX=1 restores the old miss."""
+    return not _flag("CBBE2UBE_NO_PHYSICS_DATA_PREFIX", False)
+
+
+def _resolve_safe_rel_in_vfs(norm: str, src_nif_path: Path) -> "Path | None":
+    """The lookup half of `_resolve_data_rel_in_vfs`: `norm` has ALREADY
+    passed `_safe_data_rel`. Never call it with an unchecked path."""
     # 1) Local: the source NIF's own mod root (dir that contains 'meshes').
     local_root = None
     for parent in [src_nif_path, *src_nif_path.parents]:
@@ -14302,6 +14442,9 @@ def convert_nif_phase2(
 
     # Determine body vs armor shapes in src
     src_wrapped = nif_io.load_nif(src_path)
+    # #dup-shape-names: the same names `convert_nif` gave this source.
+    _uniquify_source_shape_names(src_nif, src_path)
+    _uniquify_source_shape_names(src_wrapped, src_path)
     body_names, armor_names = classify_shapes(src_wrapped)
 
     # Fold in any caller-supplied exposed-skin slices: treat them as body
@@ -15189,8 +15332,14 @@ def convert_nif_phase2(
     # this same extra-data on root.
     hdt_injected = False     # True ONLY after the source XML ref is attached
     _hdt_inject_err = None    # set if a FOUND source XML failed to attach
+    # Hand/foot: no physics pointer, found or generated -- the same gate phase 1
+    # applies. The shared finalize skips these slots, so a pointer attached here
+    # would ship the SOURCE mod's XML with no finalize at all. #finalize-repoint
+    _hdt_extremity = (bool(biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT))
+                      and _finalize_repoint())
     try:
-        hdt_xml_path = _find_hdt_xml_for_armor(src_path)
+        hdt_xml_path = (None if _hdt_extremity
+                        else _find_hdt_xml_for_armor(src_path))
         # If source XML references chain bones we stripped, clear it so the
         # post-save generator builds a fresh soft-body XML on standard bones.
         if hdt_xml_path is not None:
@@ -15313,7 +15462,8 @@ def convert_nif_phase2(
     # until the save above). Skip auto-gen only if the block above
     # actually ATTACHED a source HDT reference (we prefer hand-authored);
     # if it found one but failed to attach it, fall through and regen.
-    if not hdt_injected:
+    # Never for a hand/foot piece (#finalize-repoint, as above).
+    if not hdt_injected and not _hdt_extremity:
         try:
             generated_xml_path = _generate_hdt_xml_for_dst(dst_path, only_loose=True)
             if generated_xml_path:
@@ -15473,6 +15623,8 @@ __all__ = [
     "_conform_weights_core",
     "_damp_to_avoid_inversion",
     "_drop_scale_bones_from_skin",
+    "_dup_shape_names_on",
+    "_dup_shape_rename_plan",
     "_ensure_cloth_body_collider",
     "_fill_zero_weight_verts",
     "_find_ube_shapedata",

@@ -51,12 +51,36 @@ dirty flag lies.
 Every seeded mutation (`scripts/mutation_pairs.py`) is applied in a detached
 worktree and must turn its named tests red. An anchor that no longer matches
 reads NOT_APPLIED and fails the gate, because a test that stays green on a
-mutation that was never applied proves nothing; a MISSED pair is a guard that
+mutation that was never applied proves nothing. A mutated `.py` file that no
+longer compiles reads INVALID, is never run, and fails the gate too: a
+SyntaxError turns every test that imports the file red, the named ones among
+them, whatever the guard does -- rewrite the pair so the file still compiles.
+A MISSED pair is a guard that
 has become decoration -- fix the guard, never the pair. It is slow (40 pairs
 took 879 s when the gate landed; 202 pairs took 1942 s on 2026-09-21): run it once
 per release, after the last source commit and before the rebuild, and from the
 mutation-gate workflow on demand. `tests/test_mutation_gate.py`
 keeps every anchor and test id current between releases.
+
+    python scripts/mutation_gate.py run --jobs 6
+
+`--jobs N` runs the same gate as N shards at once: pair i goes to shard i mod N,
+each shard is a child process with its own fresh worktree and its own baseline
+and control-after (a control run in another worktree cannot vouch for this
+one), and the shards' rows come back as one report in the usual order with one
+verdict. The verdict is FAIL when a shard crashed or failed a control (the
+report names the shard and ends with its log), when a pair was judged by no
+shard or by two, or when any pair was MISSED, NOT_APPLIED or INVALID; `--jobs 1`, the
+default, is the single run above, unchanged. Every worktree is removed on
+success, failure and Ctrl+C. The price is memory: each shard runs pytest, and
+every pytest process that imports the converter commits the ~1.5 GB BLAS arena,
+so six shards commit about 9 GB at once -- check the page file before raising N
+(`CONTRIBUTING.md`). MEASURED 2026-09-24 with the same split made by hand: 674
+pairs in 6 shards took 1098 s, against about 2650 s in one run. MEASURED
+2026-09-25 with `--jobs 6`: 769 pairs, all CAUGHT, in 3549 s on a machine held
+at 100% CPU by other work; the six shards spent about 20,500 s between them, a
+third of it in their own baselines and controls, because round-robin gives
+every shard nearly every test file.
 
 ## The golden check, on the maintainer machine
 
@@ -77,8 +101,12 @@ maintainer machine and not in CI: the runner has no game and no pieces.
 An unintended diff is a regression. An intended one must be explainable shape
 by shape, and then `capture` re-baselines. `check` refuses across a different
 `CBBE2UBE_*` flag set and says so when the baseline was captured on another
-commit; keep the shell free of converter flags for both runs. What it cannot
-see: a class the piece list does not cover (the base-game set unless
+commit; keep the shell free of converter flags for both runs. The verdict
+line counts the pieces it compared: `PASS (PARTIAL)` names how many it did not
+look at (source changed, not in the baseline), and a check that compared none
+exits 3 with `NOTHING COMPARED` instead of passing. Each run empties its work
+folder first, so nothing a killed run left there is read as new output. What
+it cannot see: a class the piece list does not cover (the base-game set unless
 `golden/pieces.json` points it at more), and anything a float on another
 machine would round differently -- it is a same-machine, same-toolchain check.
 
@@ -103,6 +131,26 @@ on 15 of 15 pieces (`verts moved max=0.2000u`) in 235 s and exited 1.
 The synthetic counterpart, one conversion per convert path through the batch
 door on a sphere, runs in the suite and in CI:
 `tests/test_convert_paths_through_the_batch_door.py`.
+
+Both `capture` and `check` take `--jobs N` (default 1, one piece after
+another) to convert the pieces in N worker processes. Each worker inherits the
+shell's environment and refuses to convert if its hash seed, BLAS thread caps or
+`CBBE2UBE_*` set differ from the parent's; `--jobs` with no pinned
+`PYTHONHASHSEED` is refused. The parent records and compares in piece order,
+so the baseline and the verdict are the sequential run's. A piece whose worker
+raised reads `FAIL  worker failed: <error>` under its own name. A worker that
+dies takes the whole pool down with it, and every unfinished piece fails with
+the same error that names nobody, so those pieces are converted again one at a
+time in a single-worker pool: the piece that kills its worker there reads
+`FAIL  worker died: <piece>` and every other gets its real verdict. The check
+fails whenever a worker died, even if no piece reproduces the death alone, and a
+`capture` with any failed piece writes nothing. N is capped at the piece count and at the
+batch's own worker count for the machine (each converter process peaks near
+2 GB of commit). MEASURED 2026-09-25 on 94340ee plus this change, 15 pieces,
+on a shared machine: `capture` 187 s at `--jobs 1`, 65 s at `--jobs 5`, with
+every array and the manifest the same (and the same as a `capture` on 94340ee
+itself); `check --jobs 5` read 15 of 15 ok in 57 s against the `--jobs 1`
+baseline, where `check --jobs 1` took 176 s.
 
 ## Rebuilding
 

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -51,8 +52,61 @@ else:
     _IMPORT_ERROR = None
 
 
+# #nif-library-one-search (2026-09-26): the import above looks ONLY in
+# PYNIFLY_PATH when that variable is set, while nif_convert._pynifly() -- which
+# the conversion itself uses -- looks in the repo's `.pynifly/`. A source run
+# with a PYNIFLY_PATH that no longer holds the library therefore converted
+# (nif_convert found it) while every read through this module failed with
+# "'NoneType' object has no attribute 'NifFile'": the zeroed-body check called
+# the game's bodies "unreadable" and the run fell back to finding bodies by
+# name (no CBBE body at all, a UBE body picked by folder name), the Reference
+# bodies dialog listed every body as unreadable, and the zeroed garment source
+# switched off. `library()` retries ONCE the other search -- the same one
+# nif_convert._pynifly() makes -- so both halves read NIFs with the same
+# library. Frozen builds bundle `pyn` and never reach the retry.
+# CBBE2UBE_NO_NIF_LIBRARY_RETRY=1 keeps the one import above.
+from .envflags import flag as _flag  # noqa: E402
+
+NIF_LIBRARY_RETRY = not _flag("CBBE2UBE_NO_NIF_LIBRARY_RETRY", default=False)
+_RETRIED = False
+_RETRY_LOCK = threading.Lock()
+
+
+def library():
+    """The pynifly module this module reads NIFs with, or None when it cannot
+    be imported (`import_error()` then says why). The retry is made once, under
+    a lock, and marked done only when it has finished, so a second thread's
+    first read waits for it instead of failing."""
+    global pynifly, _IMPORT_ERROR, _RETRIED
+    if pynifly is not None or _RETRIED or not NIF_LIBRARY_RETRY:
+        return pynifly
+    with _RETRY_LOCK:
+        if pynifly is not None or _RETRIED:
+            return pynifly
+        if not getattr(sys, "frozen", False):
+            pn = str(Path(__file__).resolve().parent.parent / ".pynifly")
+            if pn not in sys.path:
+                sys.path.insert(0, pn)
+        try:
+            from pyn import pynifly as mod  # type: ignore
+        except ImportError as e:
+            _IMPORT_ERROR = e
+            _RETRIED = True
+            return None
+        pynifly = mod
+        _IMPORT_ERROR = None
+        _RETRIED = True
+        return mod
+
+
+def import_error() -> str:
+    """Why `library()` is None, as one line ("" when it is loaded)."""
+    e = _IMPORT_ERROR
+    return f"{type(e).__name__}: {e}" if e is not None else ""
+
+
 def _require_pynifly() -> None:
-    if pynifly is None:
+    if library() is None:
         raise RuntimeError(
             "pynifly is not importable. Install it from "
             "https://github.com/BadDogSkyrim/PyNifly and either drop it into "
@@ -63,8 +117,9 @@ def _require_pynifly() -> None:
 
 @dataclass
 class Shape:
-    """A single NiShape's data as numpy arrays. Backed by the underlying
-    pynifly object so writes round-trip through save_nif().
+    """A single NiShape's data as numpy arrays, read-only: nothing here writes
+    a NIF (the converter writes through its own re-author path and
+    atomic_nif_save). `_backing` keeps the underlying pynifly object.
     """
     name: str
     verts: np.ndarray            # (N, 3) float32
@@ -99,7 +154,7 @@ def open_nif_retry(path_str: str, attempts: int = 5, base_delay: float = 0.08):
     last: "Exception | None" = None
     for i in range(max(1, attempts)):
         try:
-            return pynifly.NifFile(filepath=path_str)  # type: ignore[attr-defined]
+            return library().NifFile(filepath=path_str)  # type: ignore[union-attr]
         except Exception as e:  # noqa: BLE001 - transient IO; retried below
             last = e
             if i < attempts - 1:
@@ -136,42 +191,6 @@ def load_nif(path: str | os.PathLike) -> Nif:
             _backing=raw,
         ))
     return Nif(path=path, shapes=shapes, _backing=nf)
-
-
-def save_nif(nif: Nif, out_path: str | os.PathLike) -> None:
-    """Push numpy state back into the backing pynifly objects and write."""
-    _require_pynifly()
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    if nif._backing is None:
-        raise RuntimeError("Nif has no backing pynifly object; was it constructed via load_nif()?")
-
-    for s in nif.shapes:
-        raw = s._backing
-        if raw is None:
-            continue
-        raw.set_verts([tuple(v) for v in s.verts.tolist()])
-        if s.normals.size:
-            raw.set_normals([tuple(n) for n in s.normals.tolist()])
-        # Bone weight write-back: clear+set per bone.
-        if hasattr(raw, "set_bone_weights"):
-            for bn, pairs in s.bone_weights.items():
-                raw.set_bone_weights(bn, [(int(i), float(w)) for i, w in pairs.tolist()])
-
-    # Atomic write: save to a temp in the same dir then os.replace, so a crash /
-    # kill / locked destination during pynifly's native write never leaves a
-    # truncated NIF (CTD on load). Matches atomic_nif_save; used by the CLI refit
-    # path (the batch converter already routes through atomic_nif_save).
-    tmp = out_path.with_name(out_path.name + ".nifsave.tmp")
-    try:
-        nif._backing.save(str(tmp))
-    except BaseException:
-        try:
-            os.unlink(str(tmp))
-        except OSError:
-            pass
-        raise
-    os.replace(str(tmp), str(out_path))
 
 
 def release_nif(nf) -> None:

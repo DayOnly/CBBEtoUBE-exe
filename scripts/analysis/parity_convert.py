@@ -91,6 +91,9 @@ def build_env(settings_json: Path, mo2_ini: Path | None, overrides: list[str],
     if mo2_ini is not None:
         env["CBBE2UBE_MO2_INI"] = str(mo2_ini)
     env["CBBE2UBE_NO_PAUSE"] = "1"
+    # The settings are applied above; the child must not re-read a settings
+    # file of its own (the repo root's) over an arm. #settings-everywhere
+    env[gs.APPLIED_MARKER] = f"the parity harness ({settings_json})"
     env.setdefault("PYTHONHASHSEED", "1")
     for ov in overrides:
         if "=" not in ov:
@@ -99,7 +102,8 @@ def build_env(settings_json: Path, mo2_ini: Path | None, overrides: list[str],
         env[k] = v
         print(f"OVERRIDE : {k}={v}   <- A/B ARM")
     managed = sorted(k for k in env if k.startswith("CBBE2UBE_")
-                     and k not in ("CBBE2UBE_MO2_INI", "CBBE2UBE_NO_PAUSE"))
+                     and k not in ("CBBE2UBE_MO2_INI", "CBBE2UBE_NO_PAUSE",
+                                   gs.APPLIED_MARKER))
     print(f"settings : {settings_json}")
     print(f"mo2 ini  : {mo2_ini}")
     print(f"env      : {len(managed)} var(s): {', '.join(managed)}")

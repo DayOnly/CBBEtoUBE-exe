@@ -27,9 +27,12 @@ expected test id must exist, so a refactor that moves an anchor fails the
 suite rather than the next release."""
 import ast
 import json
+import os
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -119,6 +122,54 @@ def test_a_replacement_the_tests_cannot_see_reads_missed_and_fails_the_gate(tiny
     assert rep["verdict"] == "FAIL"
 
 
+def _lazy_pair(body, id="P5"):
+    """A pair that creates a module and a test importing it INSIDE the test
+    function -- the shape of the entry-point tests, where a SyntaxError is a
+    per-test failure of the named test, not a collection error."""
+    return mg.Pair(id, "a lazily imported module",
+                   (("lazy.py", None, body, 0),
+                    ("tests/test_lazy.py", None,
+                     "import sys\nfrom pathlib import Path\n\n\ndef test_lazy():\n"
+                     "    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))\n"
+                     "    import lazy\n    assert lazy.v() == 1\n", 0)),
+                   ("tests",), ("test_lazy",))
+
+
+def test_a_mutation_that_does_not_compile_reads_invalid_not_caught(
+        tiny, tmp_path, monkeypatch, capsys):
+    """LOW-f's edit commented out a line's closing parentheses: every test that
+    loaded the file failed on the SyntaxError, the named one among them, and
+    the row read CAUGHT whatever its guard did. A mutated file that does not
+    compile is never run; it reads INVALID and fails the gate. The same pair
+    written as valid Python is judged as usual."""
+    rep = _run(tiny, tmp_path, [_lazy_pair("def v(:\n    return 2\n")])
+    row = rep["pairs"][0]
+    assert row["status"] == mg.INVALID, row
+    assert "lazy.py: the mutation does not compile" in row["reason"] and "line 1" in row["reason"]
+    assert row["failing"] == [] and rep["verdict"] == "FAIL"
+    assert not (tiny / "lazy.py").exists()
+    valid = _run(tiny, tmp_path / "valid", [_lazy_pair("def v():\n    return 2\n")])
+    assert valid["pairs"][0]["status"] == mg.CAUGHT and valid["verdict"] == "PASS", valid["pairs"]
+    monkeypatch.setattr(mg, "REPO", tiny)
+    monkeypatch.setattr(mg, "_seeded_pairs", lambda: [_lazy_pair("def v(:\n    return 2\n")])
+    _private_temp(tmp_path, monkeypatch)
+    assert mg.main(["run"]) == 1
+    out = capsys.readouterr().out
+    assert "INVALID" in out and "1 invalid" in out and "VERDICT: FAIL" in out, out
+
+
+def test_the_compile_check_reads_every_edit_of_a_file_together(tiny):
+    """Two edits of one file: the first alone would not compile, the second
+    completes it. The gate writes both, so it judges both together."""
+    pair = mg.Pair("P6", "two edits", (
+        ("thing.py", "def f():\n    return 1\n", "def f():\n    return (1\n", 1),
+        ("thing.py", "\n\ndef g():", ")\n\ndef g():", 1)), ("tests/test_thing.py",), ("test_f",))
+    assert mg.check_anchors(tiny, pair) is None
+    assert mg.compile_problem(tiny, pair) is None
+    half = mg.Pair("P7", "one edit", pair.edits[:1], pair.tests, pair.expect)
+    assert "does not compile" in (mg.compile_problem(tiny, half) or "")
+
+
 def test_a_wrong_expected_id_reads_missed_even_on_a_red_run(tiny, tmp_path):
     """The mutation breaks g, but the pair claims f's test: a red run is not
     enough, the NAMED test must be the one that fails."""
@@ -181,12 +232,23 @@ def test_a_red_baseline_judges_nothing(tiny, tmp_path):
     assert rep["verdict"] == "FAIL" and rep["pairs"] == [] and "baseline" in rep["reason"]
 
 
+def _private_temp(tmp_path, monkeypatch):
+    """A temp folder of this test's own for mkdtemp. The machine-wide one is
+    shared: other gate runs -- the shards of a --jobs run among them, running
+    this very file -- make and remove their mutation-gate-* folders there all
+    the time, so a before/after census of it is a race, not a check."""
+    private = tmp_path / "temp"
+    private.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(private))
+    return private
+
+
 def test_the_cli_reports_and_exits_by_verdict(tiny, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(mg, "REPO", tiny)
     monkeypatch.setattr(mg, "_seeded_pairs", lambda: [_pair()])
-    temp_before = set(Path(tempfile.gettempdir()).glob("mutation-gate-*"))
+    private = _private_temp(tmp_path, monkeypatch)
     assert mg.main(["run", "--json", str(tmp_path / "r.json")]) == 0
-    assert set(Path(tempfile.gettempdir()).glob("mutation-gate-*")) == temp_before, (
+    assert list(private.iterdir()) == [], (
         "the gate left its temp folder behind (the worktree's wrapper, made by mkdtemp)")
     out = capsys.readouterr().out
     assert "VERDICT: PASS" in out and "1 caught" in out
@@ -204,6 +266,340 @@ def test_failure_lines_are_read_whole_including_parametrized_ids():
            "ERROR tests/t.py::test_y\nFAILED tests/t.py::test_z - x - y\n")
     ids = sorted({m.group(1).split("::")[-1] for m in mg._FAIL_LINE.finditer(out)})
     assert ids == ["test_x[USING.md-program files]", "test_y", "test_z"]
+
+
+# --- --jobs N: shards, aggregation, cleanup ------------------------------------------
+
+def _ids(n):
+    return [_pair(id=f"P{i}", why=f"pair {i}") for i in range(n)]
+
+
+def test_shards_are_disjoint_complete_and_deterministic():
+    pairs = _ids(10)
+    shards = mg.shard_pairs(pairs, 3)
+    got = [[p.id for p in s] for s in shards]
+    assert got == [["P0", "P3", "P6", "P9"], ["P1", "P4", "P7"], ["P2", "P5", "P8"]]
+    flat = [i for s in got for i in s]
+    assert sorted(flat) == sorted(p.id for p in pairs) and len(flat) == len(set(flat))
+    assert [[p.id for p in s] for s in mg.shard_pairs(pairs, 3)] == got, "not deterministic"
+    assert [len(s) for s in mg.shard_pairs(pairs, 25)] == [1] * 10, "more shards than pairs"
+    with pytest.raises(mg.GateError, match="--jobs"):
+        mg.shard_pairs(pairs, 0)
+
+
+def test_completeness_names_a_missing_a_duplicate_and_a_stray():
+    assert mg.completeness(["A", "B", "C"], [["A", "C"], ["B"]]) == []
+    out = mg.completeness(["A", "B", "C"], [["A", "C"], ["C", "X"]])
+    assert len(out) == 3, out
+    assert "judged by no shard: B" in out[0]
+    assert "judged more than once: C" in out[1]
+    assert "judged but never selected: X" in out[2]
+
+
+def _row(pid, status=mg.CAUGHT):
+    return {"id": pid, "why": pid, "status": status, "seconds": 1.0, "failing": ["test_f"],
+            "missing": [] if status == mg.CAUGHT else ["test_f"]}
+
+
+def _shard_result(k, rows, *, rc=0, verdict="PASS", after_rc=0, error=None, reason=None):
+    if error:
+        return {"shard": k, "rc": rc, "report": None, "error": error}
+    rep = {"worktree": f"w{k}", "pairs": rows, "verdict": verdict,
+           "baseline": {"rc": 0, "summary": "ok", "seconds": 1.0},
+           "control_after": {"rc": after_rc, "summary": "ok", "seconds": 1.0}, "seconds": 2.0}
+    if reason:
+        rep["reason"] = reason
+    return {"shard": k, "rc": rc, "report": rep, "error": None}
+
+
+def test_aggregation_keeps_seed_order_and_passes_when_every_shard_passed():
+    pairs = _ids(5)
+    shard_ids = [["P0", "P2", "P4"], ["P1", "P3"]]
+    # Shard 1 finishes first, and its rows arrive before shard 0's.
+    results = [_shard_result(1, [_row("P1"), _row("P3")]),
+               _shard_result(0, [_row("P0"), _row("P2"), _row("P4")])]
+    rep = mg.aggregate(pairs, shard_ids, results)
+    assert [r["id"] for r in rep["pairs"]] == ["P0", "P1", "P2", "P3", "P4"]
+    assert rep["verdict"] == "PASS" and "reasons" not in rep
+    assert rep["jobs"] == 2 and [s["shard"] for s in rep["shards"]] == [0, 1]
+
+
+def test_a_crashed_shard_fails_the_verdict_and_is_named():
+    pairs = _ids(4)
+    results = [_shard_result(0, [_row("P0"), _row("P2")]),
+               _shard_result(1, [], rc=3, error="exited 3; its log ends:\nMemoryError")]
+    rep = mg.aggregate(pairs, [["P0", "P2"], ["P1", "P3"]], results)
+    assert rep["verdict"] == "FAIL"
+    assert any(r.startswith("shard 1 crashed") and "MemoryError" in r for r in rep["reasons"])
+    assert [r["id"] for r in rep["pairs"]] == ["P0", "P2"], "the healthy shard's rows are kept"
+
+
+def test_a_pair_no_shard_judged_fails_the_verdict():
+    """Every shard says PASS and exits 0, yet one pair has no row: not a pass."""
+    pairs = _ids(3)
+    results = [_shard_result(0, [_row("P0")]), _shard_result(1, [_row("P1")])]
+    rep = mg.aggregate(pairs, [["P0", "P2"], ["P1"]], results)
+    assert rep["verdict"] == "FAIL"
+    assert any("judged by no shard: P2" in r for r in rep["reasons"]), rep.get("reasons")
+
+
+def test_a_missed_pair_in_one_shard_fails_the_combined_verdict():
+    pairs = _ids(2)
+    results = [_shard_result(0, [_row("P0")]),
+               _shard_result(1, [_row("P1", mg.MISSED)], rc=1, verdict="FAIL")]
+    rep = mg.aggregate(pairs, [["P0"], ["P1"]], results)
+    assert rep["verdict"] == "FAIL" and rep["pairs"][1]["status"] == mg.MISSED
+    assert "reasons" not in rep, "a MISSED row is the verdict's reason, shown in its row"
+
+
+def test_a_shard_control_that_failed_or_disagrees_with_its_exit_code_fails():
+    pairs = _ids(2)
+    red_after = [_shard_result(0, [_row("P0")]),
+                 _shard_result(1, [_row("P1")], rc=1, verdict="FAIL", after_rc=1)]
+    rep = mg.aggregate(pairs, [["P0"], ["P1"]], red_after)
+    assert rep["verdict"] == "FAIL" and any("control after" in r for r in rep["reasons"])
+    red_base = [_shard_result(0, [_row("P0")]),
+                _shard_result(1, [], rc=1, verdict="FAIL", reason="the baseline is not green")]
+    rep = mg.aggregate(pairs, [["P0"], ["P1"]], red_base)
+    assert any(r == "shard 1: the baseline is not green" for r in rep["reasons"])
+    liar = [_shard_result(0, [_row("P0")]), _shard_result(1, [_row("P1")], rc=1)]
+    rep = mg.aggregate(pairs, [["P0"], ["P1"]], liar)
+    assert rep["verdict"] == "FAIL" and any("disagrees" in r for r in rep["reasons"])
+
+
+def test_an_invalid_pair_in_one_shard_fails_the_combined_verdict():
+    pairs = _ids(2)
+    results = [_shard_result(0, [_row("P0")]),
+               _shard_result(1, [_row("P1", mg.INVALID)], rc=1, verdict="FAIL")]
+    rep = mg.aggregate(pairs, [["P0"], ["P1"]], results)
+    assert rep["verdict"] == "FAIL" and rep["pairs"][1]["status"] == mg.INVALID
+
+
+def test_a_not_judged_pair_passes_as_it_does_in_a_single_run():
+    pairs = _ids(2)
+    results = [_shard_result(0, [_row("P0")]), _shard_result(1, [_row("P1", mg.NOT_JUDGED)])]
+    assert mg.aggregate(pairs, [["P0"], ["P1"]], results)["verdict"] == "PASS"
+
+
+def _worktrees(repo):
+    return [ln for ln in _g(repo, "worktree", "list", "--porcelain").splitlines()
+            if ln.startswith("worktree ")]
+
+
+def test_jobs_gives_the_verdicts_a_single_run_gives(tiny, tmp_path):
+    """Real child processes, one worktree each: the same rows, in the same
+    order, with the same statuses as --jobs 1; nothing left behind."""
+    pairs = [_pair(id="P1"),
+             _pair(id="P2", why="invisible", repl="def f():\n    return 1  # the same\n"),
+             _pair(id="P3", why="g", anchor="def g():\n    return 1\n",
+                   repl="def g():\n    return 2\n", expect=("test_g",)),
+             _pair(id="P4", why="absent", anchor="def h():\n")]
+    single = _run(tiny, tmp_path, pairs)
+    lines: list = []
+    multi = mg.run_gate_jobs(tiny, pairs, jobs=2, log=lines.append)
+    assert [(r["id"], r["status"]) for r in multi["pairs"]] == \
+        [(r["id"], r["status"]) for r in single["pairs"]] == \
+        [("P1", mg.CAUGHT), ("P2", mg.MISSED), ("P3", mg.CAUGHT), ("P4", mg.NOT_APPLIED)]
+    assert multi["verdict"] == single["verdict"] == "FAIL"
+    assert [s["ids"] for s in multi["shards"]] == [["P1", "P3"], ["P2", "P4"]]
+    assert all(s["baseline"]["rc"] == 0 and s["control_after"]["rc"] == 0 for s in multi["shards"])
+    trees = [Path(ln.split(" in ", 1)[1]) for ln in lines if " pair(s) in " in ln]
+    assert len(trees) == 2 and len(set(trees)) == 2, lines
+    assert not any(t.exists() for t in trees) and not trees[0].parent.exists()
+    assert len(_worktrees(tiny)) == 1, "a shard worktree was left behind"
+    assert (tiny / "thing.py").read_text(encoding="utf-8") == _THING
+
+
+def _alive(pid):
+    if os.name == "nt":
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                             capture_output=True, text=True).stdout
+        return str(pid) in out.split()
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _stop(pid):
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+    else:
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+
+
+def test_kill_tree_stops_a_shard_and_what_it_started(tmp_path):
+    """A shard's pytest is the shard's child: stopping the shard alone would
+    leave it running, holding files in a worktree the parent is removing.
+    Both processes sit in tmp_path, and whatever survives is stopped after,
+    so a failing run holds no folder of the gate's own worktree."""
+    code = ("import subprocess, sys, time\n"
+            "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            "print(c.pid, flush=True)\ntime.sleep(60)\n")
+    proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True,
+                            cwd=str(tmp_path), **mg.own_group())
+    grandchild = None
+    try:
+        grandchild = int(proc.stdout.readline())
+        assert _alive(grandchild)
+        mg._kill_tree(proc)
+        assert proc.poll() is not None
+        deadline = time.monotonic() + 15
+        while _alive(grandchild) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert not _alive(grandchild), "the shard's own child survived"
+    finally:
+        proc.stdout.close()
+        for pid in (grandchild, proc.pid):
+            if pid is not None:
+                _stop(pid)
+        proc.wait(timeout=30)
+
+
+class _Proc:
+    """A stand-in shard process: `rc` None runs forever; `boom` raises from poll."""
+    def __init__(self, rc=None, boom=None):
+        self.rc, self.boom, self.pid = rc, boom, -1
+
+    def poll(self):
+        if self.boom:
+            raise self.boom
+        return self.rc
+
+
+def test_every_worktree_is_removed_when_a_launch_raises(tiny, monkeypatch):
+    killed, made = [], []
+
+    def launch(k, shard, tree, run_dir):
+        made.append((tree, run_dir))
+        if k == 1:
+            raise RuntimeError("the second shard could not start")
+        return _Proc()
+
+    monkeypatch.setattr(mg, "_kill_tree", lambda proc: killed.append(proc))
+    with pytest.raises(RuntimeError, match="second shard"):
+        mg.run_gate_jobs(tiny, _ids(4), jobs=3, launch=launch, log=_QUIET, poll=0.01)
+    assert len(killed) == 1, "the shard already running was not stopped"
+    assert len(made) == 2 and not any(t.exists() for t, _ in made)
+    assert not made[0][1].exists(), "the run folder was left behind"
+    assert len(_worktrees(tiny)) == 1, "a shard worktree was left behind"
+
+
+def test_ctrl_c_kills_the_shards_and_removes_every_worktree(tiny, monkeypatch):
+    killed, made = [], []
+
+    def launch(k, shard, tree, run_dir):
+        made.append(tree)
+        return _Proc(boom=KeyboardInterrupt()) if k == 2 else _Proc()
+
+    monkeypatch.setattr(mg, "_kill_tree", lambda proc: killed.append(proc))
+    with pytest.raises(KeyboardInterrupt):
+        mg.run_gate_jobs(tiny, _ids(6), jobs=3, launch=launch, log=_QUIET, poll=0.01)
+    assert len(killed) == 3, "every shard is stopped, the running ones included"
+    assert len(made) == 3 and not any(t.exists() for t in made)
+    assert len(_worktrees(tiny)) == 1
+
+
+def test_a_shard_that_exits_without_a_report_is_a_named_crash(tiny):
+    def launch(k, shard, tree, run_dir):
+        if k == 0:
+            rep = {"worktree": str(tree), "pairs": [_row(p.id) for p in shard], "verdict": "PASS",
+                   "baseline": {"rc": 0}, "control_after": {"rc": 0}, "seconds": 1.0}
+            (run_dir / "shard0.json").write_text(json.dumps(rep), encoding="utf-8")
+            return _Proc(rc=0)
+        (run_dir / f"shard{k}.log").write_bytes(b"Traceback\nMemoryError\n")
+        return _Proc(rc=3221225477)
+
+    rep = mg.run_gate_jobs(tiny, _ids(4), jobs=2, launch=launch, log=_QUIET, poll=0.01)
+    assert rep["verdict"] == "FAIL"
+    assert [r["id"] for r in rep["pairs"]] == ["P0", "P2"]
+    crash = [r for r in rep["reasons"] if r.startswith("shard 1 crashed")]
+    assert crash and "MemoryError" in crash[0], rep["reasons"]
+    assert any("judged by no shard: P1, P3" in r for r in rep["reasons"])
+    assert len(_worktrees(tiny)) == 1
+
+
+def test_the_shard_command_refuses_a_tree_it_did_not_make(tiny, tmp_path, capsys):
+    spec = tmp_path / "pairs.json"
+    spec.write_text(json.dumps([mg._pair_to_json(_pair())]), encoding="utf-8")
+    out = tmp_path / "out.json"
+    assert mg.main(["shard", "--tree", str(tiny), "--pairs", str(spec), "--json", str(out)]) == 2
+    _g(tiny, "worktree", "add", "-q", "-b", "lane", str(tmp_path / "lane"))
+    assert mg.main(["shard", "--tree", str(tmp_path / "lane"), "--pairs", str(spec),
+                    "--json", str(out)]) == 2
+    err = capsys.readouterr().err
+    assert "main checkout" in err and "branch" in err
+    assert not out.exists()
+    assert (tiny / "thing.py").read_text(encoding="utf-8") == _THING
+
+
+def test_the_shard_command_refuses_a_clean_detached_worktree_it_did_not_make(
+        tiny, tmp_path, capsys):
+    """Any other clean detached worktree of the repo (another session's, say)
+    is refused too: a shard runs only in <temp>/mutation-gate-jobs-*/shard<k>."""
+    spec = tmp_path / "pairs.json"
+    spec.write_text(json.dumps([mg._pair_to_json(_pair())]), encoding="utf-8")
+    out = tmp_path / "out.json"
+    other = tmp_path / "elsewhere"
+    _g(tiny, "worktree", "add", "-q", "--detach", str(other))
+    assert mg.main(["shard", "--tree", str(other), "--pairs", str(spec),
+                    "--json", str(out)]) == 2
+    assert "is not a shard worktree" in capsys.readouterr().err
+    assert not out.exists()
+    assert (other / "thing.py").read_text(encoding="utf-8") == _THING
+
+
+def test_a_worktree_that_cannot_be_removed_is_named_in_the_report(
+        tiny, tmp_path, monkeypatch):
+    """--jobs 1 exits 2 when its worktree cannot be removed; --jobs N records
+    every tree it left behind (and keeps the run folder so they are found)."""
+    made = []
+
+    def launch(k, shard, tree, run_dir):
+        made.append(tree)
+        return _Proc(rc=0)
+
+    def stuck(repo, tree):
+        raise mg.GateError("in use")
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(mg, "drop_worktree", stuck)
+    monkeypatch.setattr(mg.time, "sleep", lambda s: None)
+    rep = mg.run_gate_jobs(tiny, _ids(2), jobs=2, launch=launch, log=_QUIET, poll=0.01)
+    assert rep["left_behind"] == [str(t) for t in made] and len(made) == 2
+    assert made[0].parent.exists(), "the run folder holding them was removed"
+
+
+def test_a_run_that_left_worktrees_behind_exits_2(monkeypatch, capsys):
+    monkeypatch.setattr(mg, "_seeded_pairs", lambda: [])
+    monkeypatch.setattr(mg, "run_gate_jobs", lambda *a, **k: {
+        "pairs": [], "verdict": "PASS", "seconds": 0, "jobs": 2,
+        "left_behind": ["T:/mutation-gate-jobs-x/shard0"]})
+    assert mg.main(["run", "--jobs", "2"]) == 2
+    assert "left behind: T:/mutation-gate-jobs-x/shard0" in capsys.readouterr().err
+
+
+def test_a_pair_survives_the_trip_to_a_shard_unchanged():
+    planted = mg.Pair("P3", "planted", (("tests/t.py", None, "x\n", 0), ("a.py", "b", "c", 2)),
+                      ("tests",), ("test_x[a-b]",), ("display",))
+    assert mg._pair_from_json(json.loads(json.dumps(mg._pair_to_json(planted)))) == planted
+
+
+def test_the_cli_runs_jobs_and_refuses_zero(tiny, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(mg, "REPO", tiny)
+    monkeypatch.setattr(mg, "_seeded_pairs", lambda: [_pair(id="P1"), _pair(id="P2", why="b")])
+    private = _private_temp(tmp_path, monkeypatch)
+    assert mg.main(["run", "--jobs", "2", "--json", str(tmp_path / "r.json")]) == 0
+    assert list(private.iterdir()) == [], "the run folder or a shard worktree was left behind"
+    assert "VERDICT: PASS -- 2 caught" in capsys.readouterr().out
+    rep = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+    assert rep["jobs"] == 2 and [r["id"] for r in rep["pairs"]] == ["P1", "P2"]
+    assert mg.main(["run", "--jobs", "0"]) == 2
+    assert "--jobs" in capsys.readouterr().err
 
 
 # --- the seeded pairs, against this tree -------------------------------------------

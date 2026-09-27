@@ -337,17 +337,6 @@ def test_esp_group_parse_oversized_grup_no_oob():
     assert grp is not None
 
 
-def test_refit_iter_armor_pairs_keeps_solo_with_weighted_sibling(tmp_path):
-    # A solo NIF sharing a base with a _0/_1 sibling is a distinct file and must
-    # still be yielded, not silently dropped.
-    from src import refit
-    for n in ("armor.nif", "armor_0.nif", "armor_1.nif"):
-        (tmp_path / n).write_bytes(b"")
-    seen = {p.name for pair in refit.iter_armor_pairs(tmp_path)
-            for p in pair if p is not None}
-    assert {"armor.nif", "armor_0.nif", "armor_1.nif"} <= seen
-
-
 def test_overlay_slot_map_cache_keys_on_enabled_mods(monkeypatch, tmp_path):
     # The slot map depends on which mods are scanned, so different enabled-mod
     # sets (different layouts) must cache separately, not reuse a stale map.

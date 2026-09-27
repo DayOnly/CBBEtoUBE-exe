@@ -95,7 +95,7 @@ CBBEtoUBE Auto/
   SKSE/Plugins/SkyPatcher/armor/*.ini the armature links -- how armor reaches the game
   CBBE_to_UBE_Combined.esp            the merged patch plugin
   CBBE_to_UBE_Combined2.esp           ...and any further pieces (see below)
-  _unmerged_patches/                  per-source patches (not loaded; inputs to the merge)
+  _unmerged_patches/                  per-source patches, '<plugin> (CBBEtoUBE src).esp' (not loaded; inputs to the merge)
   conversion_report_<mod>.txt         per-source detail
   conversion_report.json              the scoreboard the Results tab shows; rewritten after every mod
   conversion_settings.json            the settings this run used, written before the first mod
@@ -207,6 +207,19 @@ you run the converter directly from a shell.
 Settings persist to `CBBEtoUBE_settings.json` next to the exe (only your
 overrides are stored, so defaults keep tracking the build), and it survives a
 redeploy.
+
+The same file applies when you run `CBBEtoUBE.exe auto`, `convert` or
+`check-setup` without the window (from an MO2 executable entry or a shell), so
+those runs match the Convert button and Check setup. A headless `auto` also skips
+the mods on your Exclusions list (`CBBEtoUBE_exclusions.json`), as the window
+does: on top of any `--exclude-mods` you name, and with `--only-mods` only as
+far as coverage for the mods you did not pick. A variable already set in the
+environment wins over the file (the window does the reverse, so a variable you
+set yourself can make `check-setup` and the window's Check setup disagree). The
+top of the log (and `check-setup`, before its checks) says where the settings came from, in a line starting `effective
+settings: from`, and lists what the file set; the log also names any saved
+exclusions it added. To run without either file, set
+`CBBE2UBE_NO_HEADLESS_SETTINGS=1`.
 
 Several settings are worth calling out, because they target the hardest symptom
 to fix — chest or butt clipping that only shows up **in motion**. Most of them

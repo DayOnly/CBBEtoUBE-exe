@@ -28,8 +28,9 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
 1. **Discovers** candidate CBBE/3BA armor mods by walking the MO2 mod tree, and
    resolves every armor mesh through the full virtual file system (BodySlide
    output, BSAs, and loose files all count). Only **player-equippable** armor on
-   body slots is selected — non-equippable items (gore / dismemberment effect
-   "armor" flagged non-playable) are skipped. Because UBE is a female body, only
+   body slots is selected, plus non-playable outfits a female NPC of a
+   UBE-capable race actually wears or carries; other non-equippable items (gore /
+   dismemberment effect "armor" flagged non-playable) are skipped. Because UBE is a female body, only
    the **female** mesh of each piece is converted; the male mesh is skipped unless
    the piece is male-only (a female actor falls back to the male mesh, so it still
    needs the refit).
@@ -39,7 +40,8 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
    a **body-swap**: the baked skin slice is dropped and the real UBE body is
    injected, so exposed skin morphs and jiggles like the actual body.
 3. Writes the converted meshes under `meshes/!UBE/...` in a single output mod.
-4. Generates a **per-mod UBE patch ESP** for each source, then merges them into
+4. Generates a **per-mod UBE patch ESP** for each source
+   (`_unmerged_patches/<plugin> (CBBEtoUBE src).esp`, never loaded), then merges them into
    one **ESL-flagged combined plugin** with a correct master order. If the
    merge outgrows the 2048-record ESL cap it **splits** into numbered pieces
    (`CBBE_to_UBE_Combined.esp`, `CBBE_to_UBE_Combined2.esp`, ...) — enable
@@ -372,7 +374,9 @@ Useful `auto` flags:
 - `--merged-name NAME` — filename of the merged Combined ESP
 - `--exclude-mods NAME …` — never convert the named mod folders. Use this for
   armor **already built for UBE**: converting it again would double-convert and
-  break it.
+  break it. Repeat the flag or comma-separate the names; a name that is exactly
+  a mod folder's name is kept whole, even when it contains a comma. The mods on
+  the window's Exclusions list are added to these (see USING.md §7).
 - `--no-ube-native-scan` — turn off the geometry check that skips mods whose
   armor **already fits the UBE body**. Meshes under `meshes/!UBE/` are skipped
   by path regardless; this check is the backstop for UBE-native armor shipped
@@ -470,9 +474,7 @@ using another body. `CBBE2UBE_NO_ZEROED_BODY_REFS=1` (Paths tab, advanced:
 *Fit against the zeroed BodySlide bodies*) turns the zeroed lookup off and
 restores discovery by name.
 
-`convert` takes `--ube-body-ref` to pin the UBE reference explicitly. The
-low-level single-NIF CLI (`src/cli.py`) takes the parent folders via
-`--cbbe-dir` / `--ube-dir`, defaulting to the same lookup.
+`convert` takes `--ube-body-ref` to pin the UBE reference explicitly.
 
 An **All mods** run skips body mods — any mod folder that ships either body
 file above — because they are the body, not armour.
@@ -523,8 +525,9 @@ cbbe-to-ube/
     preview.py              # headless morph-preview renderer
     gui.py / gui_settings.py             # Tkinter GUI, and the settings registry behind it
     build_mod.py            # output-mod assembly helpers
-    cli.py / refit.py / correspondence.py / weights.py / nif_io.py
-                            # low-level single-armor refit interface
+    correspondence.py / weights.py / nif_io.py
+                            # closest-point deformation, the skin-weight write
+                            # rule, a read-only numpy view of a NIF
     preflight.py / diagnostics.py / report_template.py / failure_summary.py
                             # Check setup, the diagnostics zip, the problem report, the
                             # failures file in words

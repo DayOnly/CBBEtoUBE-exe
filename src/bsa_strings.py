@@ -44,6 +44,77 @@ import struct
 import zlib
 from pathlib import Path
 
+from .envflags import flag as _flag
+
+
+def model_path_codepage() -> bool:
+    r"""#model-path-codepage (2026-09-26): are archive entry names read in the
+    game's codepage, as the armature model paths that name them are? Yes, by
+    default.
+
+    The game reads a model path and an archive's folder and file names as the
+    same bytes, in cp1252. #arma-path-bytes made the converter read MOD2-5 as
+    cp1252, but this reader decoded archive names as latin-1, and the
+    alt-texture reconcile and the postflight missing-mesh check still read
+    MOD2-5 as latin-1. The two agree on every byte but 0x80-0x9F (a curly
+    apostrophe, an en dash, s with a caron ...), where cp1252 has a character
+    and latin-1 a control code: an archive-only mesh named with one was never
+    found by the coverage step's "does this mesh exist" lookup, and our own
+    converted NIF at such a path was not found by the reconcile or the
+    postflight. Names are now decoded as cp1252 with `surrogateescape` -- the
+    codec `ube_patcher._model_path_str` reads model paths with, lossless for
+    the five bytes cp1252 leaves undefined -- and both ARMA readers read
+    through `_model_path_str`.
+
+    Round 2 (2026-09-26): the planner (`auto_convert._player_armor_mesh_bases`)
+    and the coverage and patch readers decoded MOD2-5 as UTF-8 with errors
+    ignored (a byte >= 0x80 that is not UTF-8 dropped before any lookup) or as
+    cp1252 with `replace`. Every ARMA model-path reader now reads through
+    `model_path_text`, one codec (`game_codepage_text`) for all of them.
+    CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1 gives each reader its old decode back
+    (archive names and our own plugins' paths latin-1)."""
+    return not _flag("CBBE2UBE_NO_MODEL_PATH_CODEPAGE", False)
+
+
+def game_codepage_text(raw: bytes) -> str:
+    """Bytes the game reads as a path (a model path, an archive's folder or
+    file name) as text: cp1252, the game's codepage, with `surrogateescape`,
+    so `text.encode("cp1252", "surrogateescape")` gives back the very bytes --
+    the five bytes cp1252 leaves undefined included. THE one codec of
+    #model-path-codepage and #arma-path-bytes."""
+    return raw.decode("cp1252", "surrogateescape")
+
+
+#: Each reader's decode before #model-path-codepage, by the name its call
+#: site passes; CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1 restores it.
+_LEGACY_MODEL_PATH_CODECS = {
+    "utf-8": ("utf-8", "ignore"),        # the planner, coverage, patch readers
+    "cp1252": ("cp1252", "replace"),     # the existence lookups, stand-ins
+    "latin-1": ("latin-1", "ignore"),    # the reconcile, the postflight
+}
+
+
+def model_path_text(data: bytes, legacy: str) -> str:
+    """An ARMA's MOD2-5 model path (a NUL-terminated string) as text, as the
+    game reads it: `game_codepage_text`. EVERY reader of a model path in a
+    plugin reads through here (#model-path-codepage), so the planner, the
+    coverage step, the rebuild's lookups and the post-merge checks all see
+    one path, the one the archive index and the loose files are named by.
+    `legacy` names the decode the reader had before ("utf-8", "cp1252",
+    "latin-1"), used only with CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1."""
+    s = data.rstrip(b"\x00")
+    if model_path_codepage():
+        return game_codepage_text(s)
+    codec, errors = _LEGACY_MODEL_PATH_CODECS[legacy]
+    return s.decode(codec, errors)
+
+
+def _decode_name(raw: bytes, codepage: bool) -> str:
+    """An archive folder or file name as text. #model-path-codepage"""
+    if codepage:
+        return game_codepage_text(raw)
+    return raw.decode("latin-1", "ignore")
+
 
 # --------------------------------------------------------------------------
 # BSA archive reader (Bethesda Archive, TES5/SSE: version 104 / 105)
@@ -111,6 +182,7 @@ class BSAArchive:
         self.archive_flags = archive_flags
         default_compressed = bool(archive_flags & _ARCHIVE_FLAG_COMPRESSED)
         embed_names = bool(archive_flags & _ARCHIVE_FLAG_EMBED_NAMES)
+        codepage = model_path_codepage()      # #model-path-codepage
 
         # Folder record size differs across versions: v103/104 = 16 bytes
         # (hash:8 count:4 offset:4); v105 = 24 bytes (hash:8 count:4
@@ -150,8 +222,8 @@ class BSAArchive:
             if archive_flags & _ARCHIVE_FLAG_DIRNAMES:
                 strlen = d[p]
                 p += 1
-                fname = d[p:p + strlen].split(b"\x00", 1)[0].decode(
-                    "latin-1", "ignore")
+                fname = _decode_name(d[p:p + strlen].split(b"\x00", 1)[0],
+                                     codepage)
                 p += strlen
             recs = []
             # Clamp the per-folder file count to what actually fits (16 bytes
@@ -175,7 +247,7 @@ class BSAArchive:
             block = d[names_start:names_start + total_file_name_len]
             for chunk in block.split(b"\x00"):
                 if chunk:
-                    file_names.append(chunk.decode("latin-1", "ignore"))
+                    file_names.append(_decode_name(chunk, codepage))
 
         # Build the name -> (offset, size, compressed) index.
         name_iter = iter(file_names)
@@ -293,7 +365,13 @@ class BSAArchive:
                     return lz4.block.decompress(comp, uncompressed_size=orig_size)
                 except Exception:
                     return None
-        return d[p:p + size]
+        # The entry ends where the compressed branch's does: `size` is the
+        # whole file block, INCLUDING an embedded name's prefix. `d[p:p + size]`
+        # returned 1 + len(name) bytes of the NEXT file on the end of an
+        # uncompressed entry in an embed-names archive. Checked on the vanilla
+        # Textures0 (flags 0x107): an LZ4 frame fits [prefix, off + size)
+        # exactly. #bsa-embed-name-end
+        return d[p:off - base + size]
 
 
 # --------------------------------------------------------------------------

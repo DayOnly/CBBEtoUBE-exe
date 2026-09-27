@@ -100,5 +100,10 @@ def test_minting_still_requires_default_race_and_a_converted_mesh():
     src = inspect.getsource(up.generate_modded_body_ube_coverage_patch)
     assert "v[3] == DEFAULT_RACE" in src, \
         "the beast-race guard is gone -- a custom-race armature could be minted"
-    assert "_conv_exists(mp) for mp in _arma_models" in src, \
+    assert "_admits(mp) for mp in _arma_models" in src, \
         "the converted-mesh requirement is gone -- an unconverted mesh could be minted"
+    # `_admits` is a converted mesh, or a BUILT UBE twin another mod ships when
+    # the planner leaves the mesh to it (#skip-built-ube-path) -- never an
+    # unconverted source mesh.
+    assert ("_admits = _ube_exists if (_twin and _skip_built_ube_path()) "
+            "else _conv_exists") in src

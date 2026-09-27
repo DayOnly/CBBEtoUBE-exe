@@ -130,6 +130,9 @@ def main(argv: "list[str]") -> int:
     env = gs.apply_env(values, base_env=base)
     env["CBBE2UBE_MO2_INI"] = ini
     env["CBBE2UBE_NO_PAUSE"] = "1"      # scripted run: never block on a keypress
+    # Applied above, as the window does: an exe that reads its settings file
+    # itself must not read it again over an arm. #settings-everywhere
+    env[gs.APPLIED_MARKER] = f"the exe parity harness ({live_json})"
 
     for ov in argv[2:]:
         if "=" not in ov:
@@ -140,7 +143,8 @@ def main(argv: "list[str]") -> int:
         print(f"OVERRIDE : {k}={v}   <- A/B ARM, not the shipped recipe")
 
     managed = sorted(k for k in env if k.startswith("CBBE2UBE_")
-                     and k not in ("CBBE2UBE_MO2_INI", "CBBE2UBE_NO_PAUSE"))
+                     and k not in ("CBBE2UBE_MO2_INI", "CBBE2UBE_NO_PAUSE",
+                                   gs.APPLIED_MARKER))
     print(f"settings : {live_json}")
     print(f"env      : {len(managed)} registry var(s) set -- "
           f"{', '.join(managed) or '(none)'}")

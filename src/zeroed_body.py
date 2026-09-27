@@ -40,6 +40,7 @@ Weight 0 must come from the same folder as weight 1 (the sibling rule of
 """
 from __future__ import annotations
 
+import contextlib
 import functools
 import os
 import re
@@ -52,6 +53,7 @@ import numpy as np
 
 from . import nif_io
 from . import paths as _paths
+from .envflags import flag as _flag
 from .osd import OsdFile
 
 TOL = 1e-4          # float32 round-off; a real build matched at 0.00000u
@@ -102,6 +104,39 @@ def _shape_sizes(nif_path: Path) -> "dict[str, int]":
     return {s.name: len(s.verts) for s in nf.shapes}
 
 
+# #zeroed-probe-memo (2026-09-25): the #zeroed-output-source check asks
+# `_Vfs.winner` about ~3,000 paths (only ~930 distinct) and each question probed
+# every one of ~3,300 overwrite/mod/Data folders -- 5.4M file-system stats, 72%
+# of a ~6.5 min preamble step. Inside a `probe_memo()` scope a winner is asked
+# of the disk once per (folder list, exact path), and a path of more than one
+# part is only probed in the folders that HAVE its first component as a folder
+# (checked once per folder per component; a folder that cannot be checked is
+# kept in, `_may_have_dir`, so an unreadable folder the plain probe never
+# reaches cannot raise here either). The answers are the ones the plain
+# probe gives -- same order, same case rules, same `_ci_join` -- as long as the
+# folders do not change while the scope is open. So the scope is short: the
+# caller opens it for one check and it is dropped on return, and a long-lived
+# process (the GUI) never answers from a memo taken before the user re-ran
+# BodySlide. Outside a scope nothing is remembered.
+# CBBE2UBE_NO_ZEROED_PROBE_MEMO=1 makes every scope a no-op (the plain probe).
+_PROBE_MEMO: "dict | None" = None
+
+
+@contextlib.contextmanager
+def probe_memo():
+    """#zeroed-probe-memo: remember `_Vfs.winner` answers until the block ends.
+    A nested scope shares the outer one's memo; the outer one drops it."""
+    global _PROBE_MEMO
+    if _PROBE_MEMO is not None or _flag("CBBE2UBE_NO_ZEROED_PROBE_MEMO", False):
+        yield
+        return
+    _PROBE_MEMO = {}
+    try:
+        yield
+    finally:
+        _PROBE_MEMO = None
+
+
 class _Vfs:
     """Loose-file resolution over `dirs`, highest priority first -- MO2's
     overwrite, the enabled mods, then the game Data folder. Case-insensitive,
@@ -112,8 +147,31 @@ class _Vfs:
 
     def winner(self, rel: str) -> "tuple[Path, Path] | None":
         """(file, the dir that provides it) for a Data-relative path, or None."""
+        memo = _PROBE_MEMO
+        if memo is None:
+            return self._probe(rel, None)
+        # One memo per folder list: two instances over different folders never
+        # share an answer.
+        mine = memo.setdefault(tuple(self.dirs), ({}, {}))
+        answers, first = mine
+        if rel not in answers:
+            answers[rel] = self._probe(rel, first)
+        return answers[rel]
+
+    def _probe(self, rel: str, first: "dict | None") -> "tuple[Path, Path] | None":
+        """The disk probe `winner` answers with. `first` (in a memo scope only):
+        {first component: the folders, in priority order, that have it as a
+        folder}. A path of ONE part is a file at the folder root, so it is never
+        filtered that way."""
         parts = [p for p in rel.replace("\\", "/").split("/") if p]
-        for d in self.dirs:
+        dirs = self.dirs
+        if first is not None and len(parts) > 1:
+            head = parts[0]
+            if head not in first:
+                first[head] = [d for d in self.dirs
+                               if _may_have_dir(d, head)]
+            dirs = first[head]
+        for d in dirs:
             p = _ci_join(d, parts)
             if p is not None:
                 return p, d
@@ -136,6 +194,19 @@ class _Vfs:
             except OSError:
                 continue
         return out
+
+
+def _may_have_dir(base: Path, head: str) -> bool:
+    """#zeroed-probe-memo's first-folder filter: may `base` hold `head` as a
+    folder? The filter asks every folder, including the ones below the winner
+    that the plain probe never reaches, so a folder it cannot read (the check
+    raises, e.g. PermissionError on an access-denied folder) is kept in: the
+    plain per-folder probe then decides, and raises only if it gets that far,
+    as it would without the filter."""
+    try:
+        return _ci_join(base, [head], want_dir=True) is not None
+    except OSError:
+        return True     # cannot tell: the plain probe decides
 
 
 def _ci_join(base: Path, parts: "list[str]", want_dir: bool = False) -> "Path | None":
@@ -422,6 +493,13 @@ def zeroed_body(kind: str, weight: str = "_1", *, mods_root=None, order=None,
     try:
         _shape_sizes(game_file)
     except Exception as e:
+        # A missing NIF library is not a bad file: say which
+        # (#nif-library-one-search).
+        if nif_io.library() is None:
+            raise ZeroedBodyError(
+                f"the NIF library (pynifly) is not loaded, so {game_file} could "
+                f"not be checked ({nif_io.import_error() or 'not importable'})"
+            ) from e
         raise ZeroedBodyError(f"{game_file} is unreadable "
                               f"({type(e).__name__}: {e})") from e
     builds, unusable, any_set = _builds(vfs, kind, weight, _CACHE)
@@ -654,6 +732,9 @@ def _candidate(vfs, kind, provider, pair, game_loads, memo) -> BodyCandidate:
         try:
             sizes = _shape_sizes(p)
         except Exception as e:
+            if nif_io.library() is None:        # #nif-library-one-search
+                return cand("unreadable", False, "the NIF library (pynifly) is "
+                            f"not loaded, so {Path(p).name} could not be read")
             return cand("unreadable", False, f"{Path(p).name} is unreadable "
                         f"({type(e).__name__})")
         # Family = SOME shape of the body's size, not the largest one: an extra
