@@ -267,9 +267,14 @@ def run_tests(root, files, *, timeout=1800) -> dict:
                 "summary": f"TIMEOUT after {timeout} s (a hang, not a verdict)", "failing": []}
     failing = sorted({m.group(1).split("::")[-1].strip() for m in _FAIL_LINE.finditer(r.stdout)})
     summaries = _SUMMARY.findall(r.stdout)
-    return {"rc": r.returncode, "seconds": round(time.perf_counter() - t0, 1),
-            "summary": summaries[-1] if summaries else r.stdout[-300:].strip(),
-            "failing": failing}
+    out = {"rc": r.returncode, "seconds": round(time.perf_counter() - t0, 1),
+           "summary": summaries[-1] if summaries else r.stdout[-300:].strip(),
+           "failing": failing}
+    if r.returncode != 0:
+        # Keep WHY: a red control whose report holds only a test name cannot be
+        # diagnosed once the shard's worktree is gone (2026-09-27).
+        out["tail"] = (r.stdout + r.stderr)[-6000:]
+    return out
 
 
 # ------------------------------------------------------------------- the gate

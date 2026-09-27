@@ -65,6 +65,12 @@ def make_probe(tmp_path, monkeypatch):
 
     def _make(stem="_guard_probe"):
         (tmp_path / f"{stem}.py").write_bytes(_PROBE_SRC.encode("utf-8"))
+        # The import system caches each folder's listing, refreshed only when
+        # the folder's mtime changes: a second probe written in the same clock
+        # tick as the first import is invisible without this (Python's docs
+        # require it for a module created at run time). The full mutation gate
+        # of 2026-09-27 failed this fixture's reload test in 2 of 6 controls.
+        importlib.invalidate_caches()
         mg._RUN_TIME_NAMES.pop(f"src.{stem}", None)
         made.append(stem)
         return importlib.import_module(f"src.{stem}")
