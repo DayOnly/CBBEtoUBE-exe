@@ -32,7 +32,7 @@ body:
     attributes:
       label: CBBEtoUBE version
       description: The GUI title bar shows it. Newer builds also keep `VERSION.txt` beside the exe, naming the exact build — paste its line if you have one.
-      placeholder: "1.4.1"
+      placeholder: "1.5"
     validations:
       required: true
 
