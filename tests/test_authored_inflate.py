@@ -199,6 +199,10 @@ def test_source_tree_cache_is_identity_checked():
     that, a freed array's id could be reused and the pass would measure the
     authored standoff against a DIFFERENT body -- silently, and only on some
     pieces."""
+    # Start from an empty cache: it clears itself past 8 entries, so arriving
+    # with 8 left by earlier tests emptied it on the third call below and the
+    # last assert failed -- only in some shard orders (seen 2026-09-26).
+    nc._AUTHORED_SRC_TREE.clear()
     a = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
     t1 = nc._authored_src_tree(a)
     assert nc._authored_src_tree(a) is t1          # same array -> cached

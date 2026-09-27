@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Fixed — plates that stand off the body move as their author made them again
+
+The fix that made BodySlide-built trousers follow the leg (below: "the pass
+that makes leg cloth follow the thigh never reached these shapes") also reached
+plates that hang in front of the body. On a one-piece plated cuirass the plate
+between the legs then clipped into itself when the legs moved, instead of
+bending: each plate followed the skin nearest to it rather than the plate it
+overlaps. Now, where such a piece has a plate standing over another layer of
+the same armour, below the hips, that plate takes the leg follow fully only
+within 2 units of the body and not at all beyond 3 units, so it moves with the
+layer under it as its author made it. A panel that is the only layer over the
+skin keeps the leg follow, so skirts and lower panels still move with the
+thigh. On the reported cuirass the earlier fix switched off cured this in game;
+with this change its plates cross each other as they did then, and it shows
+the same exposed skin as before. The trousers the earlier fix was made for show
+the same exposed skin in every pose as before. Of 18 skirts, outfits and
+armours this reaches most (these two included), 15 show the same exposed skin
+as before, one a little less, and two a little more in a few poses (at most
+two of 400 measured points). Only weights change, never the shape of the armour.
+`CBBE2UBE_NO_MORPHTRI_HUG_FEATHER=1` (set to 1) gives those plates the full
+leg follow again.
+
 ### Fixed — colour variants of an armour built into Mod Organizer's overwrite folder read the right copy
 
 When the tool converts an armour from a BodySlide build in the overwrite folder

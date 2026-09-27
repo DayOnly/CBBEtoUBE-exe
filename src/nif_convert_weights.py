@@ -1845,6 +1845,106 @@ def _limb_morph_tri_skip(dst_path, nf, src_nif_path, ignore_morph_tri: bool,
     return {n for n in names if any(k in (n or "").lower() for k in keys)}
 
 
+def _limb_tri_admitted(src_nif_path, ignore_morph_tri: bool, tri_hug,
+                       skipped) -> set:
+    """The TRI-owning shapes a limb-motion instance reaches ONLY because it opted
+    out of the morph-TRI gate -- the population `tri_hug` applies to
+    (#morphtri-hug-feather). Empty unless the instance passes a `tri_hug` AND
+    ignores the gate AND the gate is live; the shapes it still `skipped`
+    (draping names) are not reached, so they are not admitted."""
+    if not (tri_hug and ignore_morph_tri and src_nif_path
+            and _nc().MORPHTRI_NO_LEG_GRAFT):
+        return set()
+    return _source_morph_tri_shape_names(Path(src_nif_path)) - set(skipped)
+
+
+def _layer_soup(shapes, skip_names, body_tree=None) -> tuple:
+    """World-space triangles of every VISIBLE garment surface in the NIF -- the
+    layers a standing-off row can cover (#morphtri-hug-feather). Leaves out the
+    body, colliders and proxies (by the piece's XML and by the structural name
+    keys), which a row may stand over without being an outer layer.
+
+    With `body_tree` (a KD-tree of the body's verts) only triangles that FACE
+    AWAY from the body are kept: an underlying layer is met on its outer face,
+    while a thick part's own back face points at the body. Without this a lone
+    part thicker than the gap read as standing over "another layer" (its own
+    inside) and lost the match (adversarial review of d30720b)."""
+    keys = tuple(_nc()._CONFORM_SKIP_STRUCTURAL) + ("proxy", "stabil")
+    Vs, Ts, off = [], [], 0
+    for sh in shapes:
+        nm = sh.name or ""
+        if nm in skip_names or any(k in nm.lower() for k in keys):
+            continue
+        try:
+            V = _verts_skin_to_world(np.asarray(sh.verts, dtype=np.float64),
+                                     _shape_global_to_skin(sh))
+            T = np.asarray(sh.tris, dtype=np.int64).reshape(-1, 3)
+        except Exception:
+            continue
+        if not len(V) or not len(T):
+            continue
+        if body_tree is not None:
+            a = V[T[:, 0]]
+            n = np.cross(V[T[:, 1]] - a, V[T[:, 2]] - a)
+            c = V[T].mean(axis=1)
+            _, bi = body_tree.query(c)
+            T = T[np.einsum("ij,ij->i", n, c - body_tree.data[bi]) > 0.0]
+            if not len(T):
+                continue
+        Vs.append(V)
+        Ts.append(T + off)
+        off += len(V)
+    if not Vs:
+        return None, None
+    return np.vstack(Vs), np.vstack(Ts)
+
+
+def _rows_covering_a_layer(O, P, lay_V, lay_T, gap: float):
+    """True where the straight line from a garment row `O` to its body point `P`
+    passes through another garment surface first -- the row is an OUTER layer.
+
+    The ray starts `gap` along the line, so the row's own triangles and a
+    plate's own thickness are not counted, and must hit before it is within
+    0.1u of the body (#morphtri-hug-feather)."""
+    O = np.asarray(O, dtype=np.float64)
+    out = np.zeros(len(O), dtype=bool)
+    if not len(O) or lay_V is None or not len(lay_T):
+        return out
+    D = np.asarray(P, dtype=np.float64) - O
+    L = np.linalg.norm(D, axis=1)
+    ok = L > gap + 0.1
+    if not ok.any():
+        return out
+    Dn = D[ok] / L[ok, None]
+    tmax = L[ok] - gap - 0.1
+    try:
+        tester = fit_metrics._ClipTester(lay_V, lay_T, tmax=float(tmax.max()) + 1e-3)
+        # Small chunks: on a dense piece one 512-ray chunk built 9.2M ray/triangle
+        # pairs (1.6 GB) -- a MemoryError there would cost the shape its match.
+        t = np.asarray(fit_metrics.cast_chunked(tester, O[ok] + Dn * gap, Dn,
+                                                chunk=_LAYER_RAY_CHUNK,
+                                                finite_only=False), dtype=np.float64)
+    except MemoryError as _me:
+        # Fail toward the build's behaviour (no row faded), and say so.
+        _note_pass_failure("_rows_covering_a_layer", _me)
+        return out
+    out[np.flatnonzero(ok)] = np.isfinite(t) & (t <= tmax)
+    return out
+
+
+_LAYER_RAY_CHUNK = 64
+
+
+def _hug_feather(dist, near: float, far: float):
+    """Share of the limb match a row takes by its distance to the body
+    (#morphtri-hug-feather): 1 at or inside `near`, 0 at or beyond `far`, linear
+    between. `far <= near` is a hard cut at `near`."""
+    d = np.asarray(dist, dtype=np.float64)
+    if far <= near:
+        return (d <= near).astype(np.float64)
+    return np.clip((far - d) / (far - near), 0.0, 1.0)
+
+
 def _match_leg_motion_to_body(dst_path, biped_slots: int = 0, src_nif_path=None) -> int:
     """LEG instance of the limb-motion match -- see _match_limb_motion_to_body.
 
@@ -1866,7 +1966,9 @@ def _match_leg_motion_to_body(dst_path, biped_slots: int = 0, src_nif_path=None)
         # #leg-motion-morphtri: the population this instance was built for --
         # minus the DRAPING-named shapes the leg passes already skip by name.
         ignore_morph_tri=_nc().LEG_MOTION_ON_MORPHTRI,
-        keep_draping_skip=True)
+        keep_draping_skip=True,
+        tri_hug=((_nc()._MORPHTRI_HUG_NEAR, _nc()._MORPHTRI_HUG_FAR)
+                 if _nc().MORPHTRI_HUG_FEATHER else ()))
 
 def _match_arm_motion_to_body(dst_path, biped_slots: int = 0, src_nif_path=None) -> int:
     """ARM instance of the limb-motion match  (#armhole-arm-follow).
@@ -1979,6 +2081,7 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                                shoulder_z: float = 0.0,
                                shoulder_max_dist: float = 0.0,
                                keep_draping_skip: bool = False,
+                               tri_hug: tuple = (),
                                src_nif_path=None) -> int:
     """Raise a garment's LIMB-BONE share toward the body's so it travels WITH the
     limb instead of being left behind. Returns the number of verts matched.
@@ -2039,6 +2142,13 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
         with it set needs its own in-game verdict on a TRI-owning piece. The
         LEG instance (`#leg-motion-morphtri`) takes it from
         `LEG_MOTION_ON_MORPHTRI`.
+      * `tri_hug` = (near, far) narrows what that opt-out admits: a row that
+        stands over ANOTHER visible, outward-facing layer of the piece takes the
+        full match inside `near`, none beyond `far`, a linear share between; a
+        row that is the only layer over the skin keeps `max_dist`
+        (`#morphtri-hug-feather`, see MORPHTRI_HUG_FEATHER). Only on the
+        TRI-owning shapes the opt-out admitted. Rows the full-vector instance
+        reaches afterwards (z >= 72) are rewritten by it.
       * skips colliders / soft-body / HDT-SMP-rigged shapes, per the standing rule
         that every skin pass leaves authored physics geometry alone.
     """
@@ -2063,6 +2173,9 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
     # Same rule as the reskin and the graft gates. #morphtri-no-leg-graft
     morph_tri_names = _limb_morph_tri_skip(dst_path, nf, src_nif_path,
                                            ignore_morph_tri, keep_draping_skip)
+    _tri_admitted = _limb_tri_admitted(src_nif_path, ignore_morph_tri, tri_hug,
+                                       morph_tri_names)
+    _lay = None              # the piece's visible layers, built on first need
     # Does a physics XML exist for this piece at all? Drives the inert-chain
     # allowance below. Stem is per-armor (weight suffix stripped), matching where
     # both the generator and the source-XML copy write.
@@ -2575,6 +2688,29 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                         if _b not in ube_bones:
                             foreign += G[:, _j]
                     _sel &= foreign <= 1e-4
+                # #morphtri-hug-feather: see _MORPHTRI_HUG_NEAR. Only on a shape
+                # this instance reached THROUGH the morph-TRI opt-out; 1 at or
+                # inside the near distance, 0 at or beyond the far one.
+                _hug_f = None
+                if s.name in _tri_admitted:
+                    _hug_f = _hug_feather(dist, tri_hug[0], tri_hug[1])
+                    # ... but only on a row that stands over ANOTHER layer of the
+                    # piece. A row that is the only layer over the skin keeps the
+                    # full reach: a panel over a swinging thigh lost coverage
+                    # without it (see MORPHTRI_HUG_FEATHER).
+                    _cand = np.flatnonzero(_sel & (_hug_f < 1.0))
+                    if len(_cand):
+                        if _lay is None:
+                            _lay = _layer_soup(
+                                nf.shapes,
+                                set(collider_names) | {"BaseShape"}
+                                | set(_nc().UBE_BODY_INJECT_NAMES),
+                                body_tree=tree)
+                        _cov = _rows_covering_a_layer(
+                            wv[_cand], Vb[np.asarray(near)[_cand]],
+                            _lay[0], _lay[1], _nc()._MORPHTRI_HUG_LAYER_GAP)
+                        _hug_f[_cand[~_cov]] = 1.0
+                    _sel &= _hug_f > 0.0
                 rows = np.where(_sel)[0]
                 if len(rows) == 0:
                     continue
@@ -2588,6 +2724,11 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                     nzo = o_old > 1e-6
                     sc[nzo] = o_new[nzo] / o_old[nzo]
                     NEW[np.ix_(rows, other)] = G[np.ix_(rows, other)] * sc[:, None]
+                if _hug_f is not None:
+                    # A row between the two distances takes that fraction of the
+                    # match; both ends sum to 1, so the blend does too.
+                    _f = _hug_f[rows][:, None]
+                    NEW[rows] = G[rows] + _f * (NEW[rows] - G[rows])
 
             # 4-INFLUENCE CAP, APPLIED HERE ON PURPOSE. Matching to the body's split
             # can give a vert a 5th influence, and Skyrim's skin partition only holds
