@@ -4725,6 +4725,15 @@ def write_conversion_report_json(output_dir, results,
             # far, and the sources whose every NIF is in but whose turn to
             # finish (their patch included) had not come. #global-schedule
             rep["nif_phase"] = dict(progress)
+        # Which pieces #zeroed-output-source moved to the verified zeroed
+        # BodySlide build and which it kept on the mod's own mesh, by reason,
+        # with the shapes that differed (#zos-body-only-diff). The run log
+        # has the same lines; this is the durable copy. {} when the pass did
+        # not run in this process.
+        try:
+            rep["zeroed_output_source"] = discovery.zeroed_output_source_report()
+        except Exception as _e:
+            rep["zeroed_output_source"] = {"error": f"{type(_e).__name__}: {_e}"}
         # Attribution: which build, which settings (RESOLVED, not just the
         # env overrides), which settings file. Also written on its own as
         # conversion_settings.json so a pack carries its recipe with it.
