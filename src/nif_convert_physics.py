@@ -3242,8 +3242,13 @@ def _repoint_physics_pointer(dst_path, old: str, new: str) -> bool:
 # At the threshold the authored XML is not shipped: the piece is regenerated
 # on the bones it has (the phases' own path), or, when the generator
 # declines, points at the generator's empty config so the game loads no
-# physics instead of the author's file. Either way a named `PASS FAILED` line
-# reaches the run summary.
+# physics instead of the author's file. Either way the piece converted, so the
+# decline is recorded as an EFFECT under `HDT_XML_DECLINED_TAG`, not a pass
+# failure, and the parent turns it into one run warning per source naming each
+# piece (`auto_convert._report_authored_xml_declines`).
+HDT_XML_DECLINED_TAG = "#hdt-xml-unresolvable-bones"
+
+
 def _hdt_xml_unresolvable_bones(xml_text: str, nif_bone_names,
                                 source_bone_names=()) -> "list[str]":
     """Bones the XML refers to (declared, text-form or constraint body) that
@@ -3355,22 +3360,7 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                 _nb, _nc_ = len(_phantom["bones"]), len(_phantom["chains"])
                 _shown = ", ".join(repr(p) for p in _phantom["chains"][:6])
                 _more = f", +{_nc_ - 6} more" if _nc_ > 6 else ""
-                _note_pass_failure(
-                    "hdt_xml_unresolvable_bones",
-                    RuntimeError(
-                        f"{Path(src_xml).name}: {_nb} bone(s) in {_nc_} chain(s) "
-                        f"no link of which exists in the converted NIF, its source "
-                        f"or the actor skeleton ({_shown}{_more}; "
-                        f"{_phantom['nowhere']} bones resolve nowhere in all) -- a "
-                        f"rig this mesh never had; the authored XML is not shipped"),
-                    dst_path)
-                try:
-                    print(f"  authored-xml guard: {dst_path.name} declines "
-                          f"{Path(src_xml).name} ({_nb} bones in {_nc_} whole "
-                          f"chain(s) this mesh never had) -> regenerated on the "
-                          f"bones the piece has, or no physics", file=sys.stderr)
-                except Exception:
-                    pass
+                _declined_name = Path(src_xml).name
                 src_xml = None
                 # The phases' own regen path: a soft-body on the chain bones
                 # the piece actually carries. When it declines (no carriers,
@@ -3388,6 +3378,35 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                         dst_xml_disk, [], body_collision_shape_name=None,
                         chains=[])
                 wrote_sibling = True
+                # A decline is the guard DOING ITS JOB, so it is an effect, not
+                # a failure -- the #hdt-xml-sanitise precedent: recorded as a
+                # pass failure it read "PASS FAILED" in the pack summary's "the
+                # pass did not do its job" block and scored the piece broken
+                # (single-piece harness exit 4). The piece converted; what the
+                # user must hear is that the author's physics is not what ships.
+                # `auto_convert._report_authored_xml_declines` turns this into a
+                # run warning with the piece names.
+                _outcome = ("physics regenerated on the chain bones the piece "
+                            "has" if _regen else
+                            "the piece ships with no physics (nothing to "
+                            "regenerate on)")
+                # No "; " in the detail: `reason` is joined on it, and the
+                # parent splits on it to find this line.
+                _note_pass_effect(
+                    HDT_XML_DECLINED_TAG,
+                    f"{_declined_name} not shipped: {_nb} bone(s) in {_nc_} "
+                    f"whole chain(s) ({_shown}{_more}) no link of which exists "
+                    f"in the converted NIF, its source or the actor skeleton, "
+                    f"{_phantom['nowhere']} bones resolve nowhere in all -- "
+                    f"{_outcome}",
+                    dst_path)
+                try:
+                    print(f"  authored-xml guard: {dst_path.name} declines "
+                          f"{_declined_name} ({_nb} bones in {_nc_} whole "
+                          f"chain(s) this mesh never had) -> {_outcome}",
+                          file=sys.stderr)
+                except Exception:
+                    pass
         if src_xml is not None:
             # (an authored-XML breast-chain bone remap was an unproven opt-in and was removed -- refuted; see git history. verbatim copy is the long-standing default.)
             try:

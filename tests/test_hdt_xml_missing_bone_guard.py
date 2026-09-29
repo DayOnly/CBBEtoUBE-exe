@@ -34,7 +34,9 @@ them would decline 72 of the pack's 153 authored XMLs.
 Pinned here: resolution is against the output NIF (skin bones and nodes), the
 source NIF and the actor skeleton; tail links are not a phantom chain; the
 guard needs a skeleton to judge; and at the threshold the finalize ships the
-generator's file instead of the author's, with a named `PASS FAILED` line.
+generator's file instead of the author's, recorded as an EFFECT (the piece
+converted; a `PASS FAILED` line scored it broken), which the parent turns into
+one run WARNING per source naming each piece.
 """
 from __future__ import annotations
 
@@ -230,8 +232,12 @@ def _piece(tmp_path, monkeypatch, authored_text):
 
 
 def _recorded(label):
-    return [e for e in nc._piece_pass_failures()
-            if e.startswith(f"PASS FAILED {label} ")]
+    """The guard's line on this piece: an effect, never a pass failure."""
+    assert not [e for e in nc._piece_pass_failures()
+                if "hdt_xml_unresolvable" in e or label in e], (
+        "a decline is the guard doing its job, not a failed pass")
+    return [e for e in nc._piece_pass_effects()
+            if e.startswith(f"CHANGED BY {label} ")]
 
 
 @pytest.mark.skipif(not pynifly_available(), reason="pynifly native lib unavailable")
@@ -248,8 +254,11 @@ def test_the_finalize_does_not_ship_an_authored_xml_at_the_threshold(
     assert "SkirtF 4_00" not in text, "the authored XML was shipped"
     assert "<system" in text and "Auto-generated" in text
     assert _pointer(dst) == SIBLING_PTR
-    assert _recorded("hdt_xml_unresolvable_bones"), "the guard left no line"
-    assert "12 bone(s) in 2 chain(s)" in _recorded("hdt_xml_unresolvable_bones")[0]
+    lines = _recorded(ph.HDT_XML_DECLINED_TAG)
+    assert lines, "the guard left no line"
+    assert "AuthoredSkirt.xml not shipped: 12 bone(s) in 2 whole chain(s)" in lines[0]
+    assert "'SkirtF 4', 'SkirtF 5'" in lines[0]
+    assert "ships with no physics" in lines[0]
 
 
 @pytest.mark.skipif(not pynifly_available(), reason="pynifly native lib unavailable")
@@ -265,6 +274,7 @@ def test_the_finalize_prefers_the_regenerated_xml_when_the_generator_writes_one(
     text = sibling.read_text(encoding="utf-8")
     assert "SkirtF" not in text and "NPC Spine [Spn0]" in text
     assert _pointer(dst) == SIBLING_PTR
+    assert "physics regenerated" in _recorded(ph.HDT_XML_DECLINED_TAG)[0]
 
 
 @pytest.mark.skipif(not pynifly_available(), reason="pynifly native lib unavailable")
@@ -273,7 +283,7 @@ def test_below_the_threshold_the_authored_xml_ships_as_before(tmp_path, monkeypa
     dst, src, sibling, authored = _piece(tmp_path, monkeypatch, _xml(_chain("SkirtF 4", 3)))
     assert ph._finalize_hdt_physics(dst, src) is True
     assert "SkirtF 4_02" in sibling.read_text(encoding="utf-8")
-    assert not _recorded("hdt_xml_unresolvable_bones")
+    assert not _recorded(ph.HDT_XML_DECLINED_TAG)
 
 
 @pytest.mark.skipif(not pynifly_available(), reason="pynifly native lib unavailable")
@@ -285,4 +295,61 @@ def test_tail_links_alone_ship_the_authored_xml(tmp_path, monkeypatch):
     _cs.patch(monkeypatch, "_open_source_nif", lambda *_a, **_k: _Nif(have))
     assert ph._finalize_hdt_physics(dst, src) is True
     assert "Skirt 16_05" in sibling.read_text(encoding="utf-8")
-    assert not _recorded("hdt_xml_unresolvable_bones")
+    assert not _recorded(ph.HDT_XML_DECLINED_TAG)
+
+
+# ------------------------------------------------ the run's warning (parent)
+
+from src import auto_convert as ac                # noqa: E402
+
+
+class _Res:
+    def __init__(self, dst, reason):
+        self.dst_path = Path(dst)
+        self.reason = reason
+        self.status = "converted (copy)"
+
+
+def _declined(xml="SharedRig.xml"):
+    return (f"CHANGED BY {ph.HDT_XML_DECLINED_TAG} ({xml} not shipped: 24 "
+            f"bone(s) in 4 whole chain(s) ('SkirtF 4', 'SkirtF 5', 'SkirtF 6', "
+            f"'SkirtF 7') no link of which exists in the converted NIF, its "
+            f"source or the actor skeleton, 48 bones resolve nowhere in all -- "
+            f"physics regenerated on the chain bones the piece has)")
+
+
+def test_the_parent_reads_one_decline_per_piece_from_reason():
+    """`_0` and `_1` share one XML: one piece. Other fragments are ignored."""
+    res = [_Res("out/tassetcuirassf_0.nif", "a; " + _declined()),
+           _Res("out/tassetcuirassf_1.nif", _declined() + "; CHANGED BY #other (x)"),
+           _Res("out/cuirass_1.nif", _declined("OtherRig.xml")),
+           _Res("out/boots_1.nif", "PASS FAILED something (RuntimeError: y)")]
+    got = ac.authored_xml_declines(res)
+    assert [p for p, _d in got] == ["tassetcuirassf", "cuirass"]
+    assert got[0][1].startswith("SharedRig.xml not shipped: 24 bone(s) in 4 whole chain(s)")
+    assert got[0][1].endswith("the piece has")
+    assert got[1][1].startswith("OtherRig.xml not shipped")
+    assert ac.count_pass_failures(res) == {"something": 1}, (
+        "the decline must not read as a failed pass")
+
+
+def test_a_decline_is_a_run_WARNING_naming_the_piece(monkeypatch, capsys):
+    monkeypatch.setattr(ac, "_RUN_FAILURES", [])
+    res = [_Res("out/tassetcuirassf_0.nif", _declined()),
+           _Res("out/tassetcuirassf_1.nif", _declined())]
+    ac._report_authored_xml_declines("Some Mod", res)
+    out = capsys.readouterr().out
+    assert "1 piece(s) did not get their authored physics XML: tassetcuirassf" in out
+    assert "tassetcuirassf: SharedRig.xml not shipped: 24 bone(s) in 4 whole chain(s)" in out
+    assert len(ac._RUN_FAILURES) == 1
+    e = ac._RUN_FAILURES[0]
+    assert e["severity"] == "warning" and e["source"] == "Some Mod"
+    assert e["kind"] == "authored physics XML not shipped"
+    assert "tassetcuirassf" in e["detail"]
+    assert ac._run_tally() == (0, 1)
+
+
+def test_no_decline_no_warning(monkeypatch, capsys):
+    monkeypatch.setattr(ac, "_RUN_FAILURES", [])
+    ac._report_authored_xml_declines("Some Mod", [_Res("out/x_1.nif", "")])
+    assert ac._RUN_FAILURES == [] and capsys.readouterr().out == ""
