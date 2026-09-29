@@ -3367,6 +3367,16 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                 # chainless, unconstrained pair) the sibling is the generator's
                 # EMPTY config, so the pointer set below names a file that
                 # loads no physics rather than the author's file.
+                #
+                # Everything below that reads the sibling now reads THIS file,
+                # so a decline also leaves out what existed only for the
+                # author's: a framework carrier (a hidden `Stabilizer` holding
+                # the custom bones the authored constraints hang off) is not
+                # re-imported, because no bone of it is named any more. That is
+                # intended -- measured 2026-09-29 on the second cuirass the
+                # guard fires on, the one shape that differs from v1.5 and from
+                # the same lane with the threshold out of reach -- and pinned
+                # by tests/test_hdt_xml_missing_bone_guard.py.
                 _regen = None
                 try:
                     _regen = _generate_hdt_xml_for_dst(dst_path)

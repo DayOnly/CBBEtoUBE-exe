@@ -215,9 +215,38 @@ def _pointer(nif_path):
     return None
 
 
-def _piece(tmp_path, monkeypatch, authored_text):
+def _shapes_nif(path, shapes):
+    """A NIF of several skinned tetrahedra, each on ITS OWN bones: `shapes` is
+    [(name, [bone, bone])]."""
+    from tests.synthetic_nif import TRIS, VERTS
+    pyn = nc._pynifly()
+    nif = pyn.NifFile()
+    nif.initialize("SKYRIMSE", str(path))
+    for name, bones in shapes:
+        sh = nif.createShapeFromData(name, VERTS, TRIS, [(0.0, 0.0)] * len(VERTS),
+                                     [(0.0, 0.0, 1.0)] * len(VERTS))
+        tb = pyn.TransformBuf()
+        tb.set_identity()
+        sh.transform = tb
+        sh.skin()
+        for bn in bones:
+            sh.add_bone(bn)
+        idt = pyn.TransformBuf()
+        idt.set_identity()
+        for bn in bones:
+            sh.set_skin_to_bone_xform(bn, idt)
+        sh.setShapeWeights(bones[0], [(0, 1.0), (1, 1.0)])
+        sh.setShapeWeights(bones[1], [(2, 1.0), (3, 1.0)])
+    nif.save()
+    return path
+
+
+def _piece(tmp_path, monkeypatch, authored_text, src_shapes=None):
     (tmp_path / "Src").mkdir()
-    src = build_skinned_shape_nif(tmp_path / "Src" / "skirt_1.nif", name="Skirt")
+    if src_shapes:
+        src = _shapes_nif(tmp_path / "Src" / "skirt_1.nif", src_shapes)
+    else:
+        src = build_skinned_shape_nif(tmp_path / "Src" / "skirt_1.nif", name="Skirt")
     piece_dir = tmp_path / "Out" / "meshes" / "!UBE" / "brand" / "piece"
     piece_dir.mkdir(parents=True)
     dst = build_skinned_shape_nif(piece_dir / "skirt_1.nif", name="Skirt")
@@ -353,3 +382,46 @@ def test_no_decline_no_warning(monkeypatch, capsys):
     monkeypatch.setattr(ac, "_RUN_FAILURES", [])
     ac._report_authored_xml_declines("Some Mod", [_Res("out/x_1.nif", "")])
     assert ac._RUN_FAILURES == [] and capsys.readouterr().out == ""
+
+
+# ------------------------- what a decline leaves out: the framework carrier
+
+STAB = ["Stabilizer A 02", "Stabilizer A 03"]
+SRC_WITH_FRAMEWORK = [("Skirt", ["NPC Spine [Spn0]", "NPC L Thigh [LThg]"]),
+                      ("Stabilizer", STAB)]
+
+
+def _shape_names(nif_path):
+    return [s.name for s in nc._pynifly().NifFile(filepath=str(nif_path)).shapes]
+
+
+@pytest.mark.skipif(not pynifly_available(), reason="pynifly native lib unavailable")
+def test_a_shipped_authored_xml_brings_its_framework_carrier_back(tmp_path, monkeypatch):
+    """The control. The authored XML constrains to custom bones only the
+    source's hidden `Stabilizer` shape carries; shipped, the finalize
+    re-imports that shape so the bones exist at runtime."""
+    xml = _xml(["NPC Spine [Spn0]"] + STAB + _chain("SkirtF 4", 3))
+    dst, src, sibling, _a = _piece(tmp_path, monkeypatch, xml, SRC_WITH_FRAMEWORK)
+    assert ph._finalize_hdt_physics(dst, src) is True
+    assert "Stabilizer" in _shape_names(dst)
+
+
+@pytest.mark.skipif(not pynifly_available(), reason="pynifly native lib unavailable")
+def test_a_declined_xml_does_not_bring_its_framework_carrier(tmp_path, monkeypatch):
+    """A decline drops the `Stabilizer` shape, and that is right: the carrier
+    exists only for the authored XML's constraint bones, the regenerated XML
+    names none of them, so re-importing it would ship a hidden shape skinned
+    to bones nothing drives. Measured on the second cuirass the guard fires
+    on: v1.5 shipped `Stabilizer` (180 verts, hidden, 12 custom bones, all
+    referenced by the authored XML only); the lane, and the same lane with the
+    guard's threshold raised out of reach, differ in exactly that shape."""
+    xml = _xml(["NPC Spine [Spn0]"] + STAB + PHANTOM)
+    dst, src, sibling, _a = _piece(tmp_path, monkeypatch, xml, SRC_WITH_FRAMEWORK)
+
+    def _regen(dst_path, only_loose=False):
+        sibling.write_text(_xml(["NPC Spine [Spn0]"]), encoding="utf-8")
+        return SIBLING_PTR
+    _cs.patch(monkeypatch, "_generate_hdt_xml_for_dst", _regen)
+    assert ph._finalize_hdt_physics(dst, src) is True
+    assert "Stabilizer" not in _shape_names(dst)
+    assert _recorded(ph.HDT_XML_DECLINED_TAG)
