@@ -162,7 +162,12 @@ def test_a_body_skin_shape_the_swap_misses_is_refused():
 
 
 def test_a_small_skin_slice_is_not_a_body():
-    hands = _Shape("Hands", nverts=46, nbones=10, zspan=5.0, diffuse=BODY_TEX)
+    """Bare hands on hand bones: the body detector leaves them (#skin-stub-drop
+    keeps extremities), and the bespoke-body size rule must not call them a
+    body that would ship as cloth either."""
+    hands = _Shape("Hands", nverts=46, zspan=5.0, diffuse=BODY_TEX,
+                   bones=["NPC L Hand [LHnd]", "NPC R Hand [RHnd]",
+                          "NPC L Finger00 [LF00]", "NPC R Finger00 [RF00]"])
     assert _verdict(build=[_named_body(), hands, _Shape("Skirt")]) is None
 
 
