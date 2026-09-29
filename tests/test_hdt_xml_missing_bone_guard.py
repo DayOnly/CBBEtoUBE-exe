@@ -425,3 +425,122 @@ def test_a_declined_xml_does_not_bring_its_framework_carrier(tmp_path, monkeypat
     assert ph._finalize_hdt_physics(dst, src) is True
     assert "Stabilizer" not in _shape_names(dst)
     assert _recorded(ph.HDT_XML_DECLINED_TAG)
+
+
+# --------------- #declined-xml-keeps-body-collider: the author's body collider
+
+LEGS = ["NPC Pelvis [Pelv]", "NPC L Thigh [LThg]"]
+
+
+def _authored_with_colliders():
+    return ('<system>'
+            + "".join(f'<bone name="{b}"/>' for b in PHANTOM)
+            + '<per-triangle-shape name="Collision"><margin>0.1</margin>'
+              '<penetration>1</penetration><shared>private</shared>'
+              '<tag>ColBody</tag><can-collide-with-tag>Fabric</can-collide-with-tag>'
+              '</per-triangle-shape>'
+              '<per-triangle-shape name="SkirtProxy"><margin>0.1</margin>'
+              '<tag>Proxy</tag></per-triangle-shape>'
+              '<per-triangle-shape name="Ghost"><tag>ColBody</tag></per-triangle-shape>'
+              '<per-triangle-shape name="3BA"><tag>ColBody</tag></per-triangle-shape>'
+              '<per-vertex-shape name="Skirt"><tag>Fabric</tag>'
+              '<can-collide-with-tag>ColBody</can-collide-with-tag></per-vertex-shape>'
+              '</system>')
+
+
+def _regen_text(constraint=True, body=None):
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n<system>\n'
+            '\t<bone name="NPC Spine [Spn0]"/>\n'
+            + ('\t<generic-constraint bodyA="NPC Pelvis [Pelv]" bodyB="NPC Spine [Spn0]"/>\n'
+               if constraint else '')
+            + (f'\t<per-triangle-shape name="{body}">\n\t\t<tag>body</tag>\n'
+               f'\t</per-triangle-shape>\n' if body else '')
+            + '\t<per-vertex-shape name="Skirt">\n\t\t<tag>cloth1</tag>\n'
+              '\t\t<can-collide-with-tag>body</can-collide-with-tag>\n'
+              '\t</per-vertex-shape>\n</system>\n')
+
+
+def test_only_kinematic_colliders_the_piece_has_are_kept():
+    """`Collision` (skeleton bones only, in the source) is kept; a proxy on
+    chain bones is not, nor a shape no mesh has, nor an inline body."""
+    nif = _Nif(NIF_BONES)
+    src = _Nif([])
+    src.shapes = [_Shape("Collision", LEGS),
+                  _Shape("SkirtProxy", ["NPC Pelvis [Pelv]", "Skirt 1_01"]),
+                  _Shape("3BA", LEGS)]
+    got = ph._authored_kinematic_colliders(_authored_with_colliders(), nif, src)
+    assert [n for n, _b in got] == ["Collision"]
+    assert "<penetration>1</penetration>" in got[0][1]
+
+
+def test_a_collider_skinned_to_a_bone_off_the_skeleton_is_not_kinematic():
+    src = _Nif([])
+    src.shapes = [_Shape("Collision", ["NPC Pelvis [Pelv]", "NPC Tail1"])]
+    assert ph._authored_kinematic_colliders(_authored_with_colliders(), _Nif([]), src) == []
+
+
+def test_the_collider_joins_the_regenerated_xml_as_a_body_collider(tmp_path):
+    p = tmp_path / "piece.xml"
+    p.write_text(_regen_text(), encoding="utf-8")
+    block = "<margin>0.1</margin><penetration>1</penetration><tag>ColBody</tag>"
+    assert ph._add_authored_colliders_to_regen(p, [("Collision", block)]) == ["Collision"]
+    text = p.read_text(encoding="utf-8")
+    col = text[text.index('<per-triangle-shape name="Collision">'):]
+    col = col[:col.index("</per-triangle-shape>")]
+    assert "<tag>body</tag>" in col and "ColBody" not in col
+    assert "<can-collide-with-tag>cloth1</can-collide-with-tag>" in col
+    assert "<margin>0.1</margin>" in col and "<penetration>1</penetration>" in col
+    assert text.index("Collision") < text.index('<per-vertex-shape name="Skirt">')
+    import xml.etree.ElementTree as ET
+    ET.fromstring(text.split("?>", 1)[1])          # still one well-formed file
+
+
+@pytest.mark.parametrize("regen,why", [
+    (_regen_text(constraint=False), "no constraint: the equip-CTD pair"),
+    (_regen_text(body="BaseShape"), "the generator already has a body collider"),
+    ('<system>\n</system>\n', "no cloth"),
+])
+def test_the_collider_is_not_added_when(tmp_path, regen, why):
+    p = tmp_path / "piece.xml"
+    p.write_text(regen, encoding="utf-8")
+    assert ph._add_authored_colliders_to_regen(p, [("Collision", "<margin>0.1</margin>")]) == [], why
+    assert p.read_text(encoding="utf-8") == regen
+
+
+@pytest.mark.skipif(not pynifly_available(), reason="pynifly native lib unavailable")
+def test_a_declined_piece_ships_the_authors_body_collider(tmp_path, monkeypatch):
+    """End to end on real NIFs: the converted mesh lost the authored hidden
+    `Collision` hull; after the decline it is in the regenerated XML as a body
+    collider and back in the NIF, hidden. The chain-driven proxy is not."""
+    src_shapes = [("Skirt", ["NPC Spine [Spn0]", "NPC L Thigh [LThg]"]),
+                  ("Collision", LEGS),
+                  ("SkirtProxy", ["NPC Pelvis [Pelv]", "Skirt 1_01"])]
+    dst, src, sibling, _a = _piece(tmp_path, monkeypatch, _authored_with_colliders(),
+                                   src_shapes)
+
+    def _regen(dst_path, only_loose=False):
+        sibling.write_text(_regen_text(), encoding="utf-8")
+        return SIBLING_PTR
+    _cs.patch(monkeypatch, "_generate_hdt_xml_for_dst", _regen)
+    assert ph._finalize_hdt_physics(dst, src) is True
+    text = sibling.read_text(encoding="utf-8")
+    assert '<per-triangle-shape name="Collision">' in text
+    assert "SkirtProxy" not in text and "SkirtF 4" not in text
+    shapes = {s.name: s for s in nc._pynifly().NifFile(filepath=str(dst)).shapes}
+    assert "Collision" in shapes and int(shapes["Collision"].flags) & 0x1, (
+        "re-imported, hidden")
+    assert "SkirtProxy" not in shapes
+    assert "with the author's body collider 'Collision'" in _recorded(ph.HDT_XML_DECLINED_TAG)[0]
+
+
+@pytest.mark.skipif(not pynifly_available(), reason="pynifly native lib unavailable")
+def test_without_an_authored_collider_the_line_says_so(tmp_path, monkeypatch):
+    dst, src, sibling, _a = _piece(tmp_path, monkeypatch, _xml(PHANTOM))
+
+    def _regen(dst_path, only_loose=False):
+        sibling.write_text(_regen_text(), encoding="utf-8")
+        return SIBLING_PTR
+    _cs.patch(monkeypatch, "_generate_hdt_xml_for_dst", _regen)
+    assert ph._finalize_hdt_physics(dst, src) is True
+    assert "<per-triangle-shape" not in sibling.read_text(encoding="utf-8")
+    assert _recorded(ph.HDT_XML_DECLINED_TAG)[0].endswith("with no body collider)")

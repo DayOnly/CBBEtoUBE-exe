@@ -3311,7 +3311,114 @@ def _authored_hdt_xml_unshippable(src_xml, nf, src_nif_path) -> "dict | None":
     if len(bones) < _nc()._HDT_REGEN_MISSING_BONES:
         return None
     return {"chains": [ch.prefix for ch in chains], "bones": bones,
-            "nowhere": len(_hdt_xml_unresolvable_bones(txt, nif_bones, src_bones))}
+            "nowhere": len(_hdt_xml_unresolvable_bones(txt, nif_bones, src_bones)),
+            "text": txt}
+
+
+# #declined-xml-keeps-body-collider. A decline throws away the author's whole
+# file, and with it the one thing the regenerated XML cannot make on a piece
+# with no body in it: a BODY COLLIDER. The generator's body block names the
+# NIF's own `VirtualBody`/`BaseShape` (`pick_body_collision_shape_name`); a
+# copy-path cuirass carries neither, so its regenerated cloth collides only
+# with whatever answers the "body" tag at runtime -- and on the in-game test
+# (2026-09-29, UBE, the first piece the guard fires on) the regenerated skirt
+# and tassets passed through the thighs and buttocks.
+#
+# The author HAD one. Both pieces the guard fires on in the pack declare a
+# KINEMATIC per-triangle collider their cloth collides with: a 110-vert
+# hidden `Collision` hull skinned to pelvis/spine/thigh/calf/foot on one, the
+# leg armour itself on the other. Carrying that block into the regenerated
+# XML restores what the author proved in game, with no invented geometry:
+# the finalize's proxy re-import below then brings a collider shape the
+# converter dropped back from the source, warped to the UBE body and hidden,
+# exactly as it does for a shipped authored XML (v1.5 shipped both pieces'
+# colliders this way), and the later passes that read the sibling XML (the
+# collider shrink-wrap, the jiggle graft's collider exemption) see it.
+#
+# KINEMATIC means every bone the shape is skinned to is a standard skeleton
+# bone (`NPC ` naming AND resolvable on the actor skeleton): a chain-driven
+# proxy (`SkirtProxy` on `Skirt N_NN`, a belt collider on tasset chain
+# bones) moves with the chains the decline just removed and is left out --
+# the same donor rule `_add_butt_collider_patch` uses, for the same reason.
+# Only when the regenerated XML has cloth, has a constraint (a collider on
+# unconstrained cloth is the equip-CTD pair, #body-collider-constraint-gate)
+# and declares no body collider of its own. The block keeps the author's
+# margin and penetration; its tag becomes `body`, the tag the generator's
+# cloth collides with, and it names the regenerated cloth's tags back.
+def _authored_kinematic_colliders(authored_text: str, nf, src_nf) -> "list[tuple[str, str]]":
+    """[(shape name, authored block text)] for the authored XML's per-triangle
+    colliders that are kinematic (see the note above) and whose shape exists
+    in the converted NIF or its source. Author order."""
+    have = {s.name: s for s in (getattr(src_nf, "shapes", None) or [])}
+    have.update({s.name: s for s in (getattr(nf, "shapes", None) or [])})
+    out: "list[tuple[str, str]]" = []
+    for m in re.finditer(
+            r'<per-triangle-shape\s+name="([^"]+)"\s*>(.*?)</per-triangle-shape>',
+            authored_text or "", re.S):
+        name, block = m.group(1), m.group(2)
+        sh = have.get(name)
+        if sh is None or _nc()._is_inline_body_name(name):
+            continue
+        if name in {n for n, _b in out}:
+            continue
+        bones = list(getattr(sh, "bone_names", None) or [])
+        if not bones:
+            continue
+        if all(b.startswith("NPC ") and _actor_can_resolve_bone(b) for b in bones):
+            out.append((name, block))
+    return out
+
+
+def _add_authored_colliders_to_regen(xml_path, colliders) -> "list[str]":
+    """Append the `colliders` (from `_authored_kinematic_colliders`) to the
+    regenerated XML at `xml_path` as per-triangle `body` colliders of its
+    cloth. Returns the names added; [] when it declines (see the note)."""
+    if not colliders:
+        return []
+    _rt = _read_xml_roundtrip(xml_path)
+    if _rt is None:
+        return []
+    text, codec = _rt
+    if re.search(r"<per-triangle-shape\b", text) or "</system>" not in text:
+        return []
+    cloth_tags: "list[str]" = []
+    for m in re.finditer(r"<per-vertex-shape\b.*?</per-vertex-shape>", text, re.S):
+        for t in re.findall(r"<tag>([^<]+)</tag>", m.group(0)):
+            if t.strip() and t.strip() not in cloth_tags:
+                cloth_tags.append(t.strip())
+    if not cloth_tags:
+        return []
+    from . import hdt_xml_gen
+    # The same constraint test `_ensure_cloth_body_collider` makes
+    # (#body-collider-constraint-gate); spelled apart so the mutation gate's
+    # anchors there stay unique.
+    kinds = (hdt_xml_gen._CONSTRAINT_TAGS if hdt_xml_gen._constraint_group_scan()
+             else ("generic-constraint",))
+    if not any(re.search(rf"<{re.escape(k)}\b", text) for k in kinds):
+        return []
+    blocks, added = [], []
+    for name, authored in colliders:
+        # The author's contact tuning, element by element (an authored block
+        # may sit on one line; its tags and collide-with lists are replaced).
+        keep = [f"<{k}>{v.strip()}</{k}>" for k, v in re.findall(
+            r"<(margin|penetration|prenetration)>([^<]*)</\1>", authored)]
+        if not keep:
+            keep = [f"<margin>{hdt_xml_gen.DEFAULT_BODY_MARGIN}</margin>",
+                    f"<prenetration>{hdt_xml_gen.DEFAULT_BODY_PRENETRATION}"
+                    f"</prenetration>"]
+        blocks.append(
+            f'\t<!-- the author\'s body collider, kept by the chain guard -->\n'
+            f'\t<per-triangle-shape name="{hdt_xml_gen._xml_escape(name)}">\n'
+            + "".join(f"\t\t{ln}\n" for ln in keep)
+            + "\t\t<shared>private</shared>\n\t\t<tag>body</tag>\n"
+            + "".join(f"\t\t<can-collide-with-tag>{t}</can-collide-with-tag>\n"
+                      for t in cloth_tags)
+            + "\t</per-triangle-shape>\n\n")
+        added.append(name)
+    m = re.search(r"[ \t]*<per-vertex-shape\b", text)
+    at = m.start() if m else text.rindex("</system>")
+    atomic_write_bytes(xml_path, (text[:at] + "".join(blocks) + text[at:]).encode(codec))
+    return added
 
 
 def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
@@ -3388,6 +3495,22 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                         dst_xml_disk, [], body_collision_shape_name=None,
                         chains=[])
                 wrote_sibling = True
+                # #declined-xml-keeps-body-collider: the author's kinematic
+                # body collider goes into the regenerated file; the proxy
+                # re-import below brings its shape back if it was dropped.
+                _kept_cols: "list[str]" = []
+                if _regen:
+                    try:
+                        try:
+                            _src_nf = _nc()._open_source_nif(src_nif_path)
+                        except Exception:
+                            _src_nf = None
+                        _kept_cols = _add_authored_colliders_to_regen(
+                            dst_xml_disk, _authored_kinematic_colliders(
+                                _phantom.get("text", ""), nf, _src_nf))
+                    except Exception as _ke:
+                        _note_pass_failure("_finalize_hdt_physics/keep-collider",
+                                           _ke, dst_path)
                 # A decline is the guard DOING ITS JOB, so it is an effect, not
                 # a failure -- the #hdt-xml-sanitise precedent: recorded as a
                 # pass failure it read "PASS FAILED" in the pack summary's "the
@@ -3400,6 +3523,13 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                             "has" if _regen else
                             "the piece ships with no physics (nothing to "
                             "regenerate on)")
+                if _kept_cols:
+                    _outcome += (", with the author's body collider "
+                                 + ", ".join(repr(c) for c in _kept_cols))
+                elif _regen and "<per-triangle-shape" not in (
+                        dst_xml_disk.read_text(errors="ignore")
+                        if dst_xml_disk.is_file() else ""):
+                    _outcome += ", with no body collider"
                 # No "; " in the detail: `reason` is joined on it, and the
                 # parent splits on it to find this line.
                 _note_pass_effect(
