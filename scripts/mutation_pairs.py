@@ -2815,7 +2815,7 @@ PAIRS = (
               '                                       True)]  # MUTATED', 1),
          ),
          tests=('tests/test_zeroed_smp_gain.py',),
-         expect=('test_an_xml_named_skin_decal_is_taken',),
+         expect=('test_an_xml_named_skin_decal_on_hand_bones_is_taken',),
     ),
     Pair('ZSG-u', 'a refusal at one weight is ignored',
          edits=(

@@ -151,8 +151,12 @@ def test_a_build_the_converter_copies_keeps_todays_source():
 
 
 def test_a_body_skin_shape_the_swap_misses_is_refused():
-    """A body shape too thinly boned for the detector would ship as cloth."""
+    """A body shape the detector declines would ship as cloth. Since
+    #skin-stub-drop every VISIBLE skinned body-skin shape is a body, so the
+    shape the swap can still miss is a HIDDEN one (flag bit 0) that is too
+    thinly boned for the size-gated heuristic."""
     loose = _Shape("CBBE", nverts=1333, nbones=10, zspan=60.0, diffuse=BODY_TEX)
+    loose.flags = 1
     assert _verdict(build=[_named_body(), loose, _Shape("Skirt")]) == \
         "the build's body 'CBBE' would ship as cloth"
 
@@ -207,10 +211,20 @@ def test_an_xml_named_exposed_skin_slice_is_refused():
     assert why == "its physics XML would bring back the stripped body 'Cleavage'"
 
 
-def test_an_xml_named_skin_decal_is_taken():
-    """Below the exposed-skin floor a body-skin shape stays in the output, so
-    the re-import has nothing to bring back."""
-    decal = _Shape("Hands", nverts=46, zspan=5.0, diffuse=BODY_TEX)
+def test_an_xml_named_skin_stub_is_refused():
+    """#skin-stub-drop: a visible body-skin patch on torso bones is stripped
+    at any size (issue #30), so an XML that names it would bring it back."""
+    stub = _Shape("Collar", nverts=46, zspan=5.0, diffuse=BODY_TEX)
+    why = _verdict(build=[_named_body(), stub, _Shape("Skirt")],
+                   xml=_xml(shapes=("Skirt", "Collar")))
+    assert why == "its physics XML would bring back the stripped body 'Collar'"
+
+
+def test_an_xml_named_skin_decal_on_hand_bones_is_taken():
+    """Bare hands share the body diffuse but stay in the output (the injected
+    body has none), so the re-import has nothing to bring back."""
+    decal = _Shape("Hands", nverts=46, zspan=5.0, diffuse=BODY_TEX,
+                   bones=["NPC L Hand [LHnd]", "NPC R Hand [RHnd]"])
     assert _verdict(build=[_named_body(), decal, _Shape("Skirt")],
                     xml=_xml(shapes=("Skirt", "Hands"))) is None
 
