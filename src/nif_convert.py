@@ -9321,6 +9321,14 @@ _BUTT_COL_MARGIN = _knob("CBBE2UBE_BUTT_COLLIDER_MARGIN", 0.1)
 # "Uncovered" = no existing collider vert within this. Also the fire gate.
 _BUTT_COL_GAP = _knob("CBBE2UBE_BUTT_COLLIDER_GAP", 3.0)
 _BUTT_COL_MIN_UNCOVERED = _knob("CBBE2UBE_BUTT_COLLIDER_MIN_UNCOVERED", 150, int)
+# #butt-col-encloses-body: after the derived standoff, raise the offset (never
+# above _BUTT_COL_OFFSET) until the DECIMATED collider surface encloses the rear
+# body verts -- its triangles are chords that sag ~0.3u under a convex skin, so
+# a vertex offset below that left 36-73% of the buttock poking through it on
+# the measured pieces. Mechanism and numbers at `_butt_col_enclosing_offset` in
+# nif_convert_physics.py. Kill switch: CBBE2UBE_NO_BUTT_COLLIDER_ENCLOSE=1 (the
+# cloth-derived vertex offset alone, as before).
+BUTT_COLLIDER_ENCLOSE = not _flag("CBBE2UBE_NO_BUTT_COLLIDER_ENCLOSE", False)
 
 
 # (moved to nif_convert_physics.py, 2026-09-01)
