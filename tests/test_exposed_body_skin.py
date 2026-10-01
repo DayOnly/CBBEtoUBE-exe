@@ -133,13 +133,23 @@ def _body():
 
 
 def test_exposed_skin_slice_flagged_for_injection():
+    """The slice is dropped and the body injected -- since #skin-stub-drop by
+    the body detector itself (a visible skinned body-skin shape is a body at
+    any size), so the slice detector, which lists only what that detector
+    misses, must NOT list it again (double-drop). The geometry test that
+    separates on-body skin from off-body cloth is still exercised directly."""
+    from src import nif_convert_writer as writer
     body = _body()
     band = body[(body[:, 2] >= 90) & (body[:, 2] <= 110)]   # breast-band slice
     skin = _Shape("CBBE", band[:400] + 0.1, _BODY_DIFF)     # on-body skin slice
     corset = _Shape("corset", band[:400] + 1.5, _CLOTH_DIFF)  # off-body cloth
-    decal = _Shape("decal", band[:50] + 0.1, _BODY_DIFF)     # too few verts
-    names = nc._exposed_body_skin_shape_names(_Nif([skin, corset, decal]), body)
-    assert names == ["CBBE"]
+    decal = _Shape("decal", band[:50] + 0.1, _BODY_DIFF)     # small skin patch
+    assert nc._is_exposed_body_skin_shape(skin.verts, body) is True
+    assert nc._is_exposed_body_skin_shape(corset.verts, body) is False
+    body_names, armor_names = writer.classify_shapes(_Nif([skin, corset, decal]))
+    assert body_names == ["CBBE", "decal"]
+    assert armor_names == ["corset"]
+    assert nc._exposed_body_skin_shape_names(_Nif([skin, corset, decal]), body) == []
 
 
 def test_full_inline_body_left_to_classify_shapes():
