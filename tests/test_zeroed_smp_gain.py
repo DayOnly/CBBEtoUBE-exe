@@ -209,8 +209,11 @@ def test_a_stripped_body_on_skeleton_bones_only_is_taken():
 
 
 def test_an_xml_named_exposed_skin_slice_is_refused():
-    """A body-skin slice big enough for the exposed-skin swap is stripped too."""
+    """A body-skin slice big enough for the exposed-skin swap is stripped too.
+    Hidden, so it is not the visible-skin-patch rule (#skin-stub-drop) that
+    strips it: only the exposed-skin count is left to see it."""
     slice_ = _Shape("Cleavage", nverts=320, zspan=20.0, diffuse=BODY_TEX)
+    slice_.flags = 1
     why = _verdict(build=[_named_body(), slice_, _Shape("Skirt")],
                    xml=_xml(shapes=("Skirt", "Cleavage")))
     assert why == "its physics XML would bring back the stripped body 'Cleavage'"
