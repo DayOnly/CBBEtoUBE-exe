@@ -544,6 +544,85 @@ def _decimate(verts, tris, target):
     return _cluster_decimate(verts, tris, target)
 
 
+# --- #butt-col-encloses-body -- the collider's SURFACE must enclose the skin ---
+#
+# `#derived-butt-standoff` offsets the decimated patch's KEPT VERTICES by `_off`
+# along the body normal and floors `_off` at 0 "so the collider is never placed
+# inside the skin". That protects the vertices, not the surface: the patch's
+# triangles are chords between kept vertices, and a chord of a convex surface
+# lies INSIDE it. At the ~600 verts the patch decimates to, the sag over the
+# buttock is ~0.3u, so any derived standoff below that puts the collider surface
+# UNDER the skin while every vertex is still outside. Measured with Day's ray
+# clip (body vs the hidden shape alone, weight 0.61, zeroed): standoff 0.12 ->
+# 36% of the buttock body verts poke through the collider (max 0.31u), 0.00 ->
+# 73% (max 0.42u), 0.15 -> 46%; 0.35 and above -> 0%. In a full run 8 of 43
+# derived standoffs came out 0.00 and 25 under 0.40.
+#
+# So the enclosure is measured on the collider that SHIPS -- the decimated
+# triangles -- with the same oriented ray clip test the fit passes use
+# (`fit_metrics._ClipTester`), and the offset is raised just far enough that no
+# rear body vert sits under it. It starts from the cloth-derived standoff and
+# only ever RAISES it, by the measured depth each step, so the result is the
+# smallest enclosing offset (a close-fitting piece is not inflated past what
+# the chords need). It never exceeds the constant cap either, so a piece that
+# was at 0.6 before is unchanged.
+#
+# BODY OCCLUSION IS REQUIRED, as in Day's `clipping_report`. Without it the
+# inward ray from a vert in the gluteal cleft leaves the body within 0.02-0.5u
+# and meets the OTHER cheek's collider behind it: measured on the UBE body, 7
+# such hits at up to 1.89u, 6 of them still "under" at 0.6 -- so every piece hit
+# the cap. With the far-wall test the deepest real poke-through at standoff
+# 0.12 is 0.31u, the same number the offline measurement gives.
+_ENCLOSE_PAD = 0.01          # u above "just touching"; below any visible gap
+_ENCLOSE_ITERS = 8           # converges in 2-3 on every measured piece
+_ENCLOSE_TMAX = 2.0          # ray reach; the deepest measured sag is 0.42u
+_ENCLOSE_BODY_EPS = 0.05     # = mesh_penetration.BODY_EPS: skip own triangles
+
+
+def _butt_col_enclosing_offset(body_v, body_n, rep_old, col_tris, test_idx,
+                               start: float, cap: float, body_tris=None):
+    """The smallest offset >= `start` (and <= `cap`) at which the decimated
+    collider -- `body_v[rep_old] + body_n[rep_old] * off` over `col_tris` --
+    has no body vert of `test_idx` under it. #butt-col-encloses-body
+
+    `body_tris` turns on body occlusion: an inward hit beyond the body's own
+    far wall (the ray left the body first) is not a poke-through.
+
+    Returns (off, (n_under, max_depth) at `start`, (n_under, max_depth) at
+    `off`). The second pair is (0, 0.0) unless `cap` stopped the raise."""
+    test_idx = np.asarray(test_idx, np.int64)
+    wall = None
+    if body_tris is not None and len(body_tris):
+        # The far wall does not depend on the offset: cast it once, only from
+        # the verts that are tested, and keep it for every step.
+        _bt = fit_metrics._ClipTester(body_v, body_tris, tmax=_ENCLOSE_TMAX)
+        wall = _bt.cast(body_v[test_idx], -np.asarray(body_n)[test_idx],
+                        tmin=_ENCLOSE_BODY_EPS)
+    tester = None
+    off = float(start)
+    first = last = None
+    for step in range(_ENCLOSE_ITERS + 1):
+        pv = body_v[rep_old] + body_n[rep_old] * off
+        if tester is None:
+            tester = fit_metrics._ClipTester(pv, col_tris, tmax=_ENCLOSE_TMAX)
+        else:
+            tester.set_garment(pv)
+        under, depth = tester.clipping(body_v, body_n, test_idx)
+        if wall is not None:
+            under = under & (depth < wall)
+        n_under = int(under.sum())
+        dmax = float(depth[under].max()) if n_under else 0.0
+        last = (n_under, dmax)
+        if first is None:
+            first = last
+        if n_under == 0 or off >= cap - 1e-9 or step == _ENCLOSE_ITERS:
+            break                     # `last` is always measured AT `off`
+        # Every kept vertex moves out along its own normal, so the surface over
+        # the deepest body vert rises by ~the step: step by that depth.
+        off = min(float(cap), off + dmax + _ENCLOSE_PAD)
+    return off, first, last
+
+
 def _add_butt_collider_patch(dst_path) -> int:
     """Add a hidden buttock collider derived from the UBE body. See
     #butt-collider-patch. Returns 1 if a patch was added."""
@@ -705,8 +784,11 @@ def _add_butt_collider_patch(dst_path) -> int:
         # So derive the standoff from where this piece's own cloth rests, and
         # sit just under it. CAPPED at the old constant so this can only ever
         # REDUCE the offset (iron is unchanged, protecting the collapse fix that
-        # was just confirmed in game), and floored at 0 so the collider is never
-        # placed inside the skin, which is the clip it exists to stop.
+        # was just confirmed in game), and floored at 0 so the collider's
+        # VERTICES are never placed inside the skin. The floor alone does not
+        # keep its SURFACE out -- the decimated triangles are chords and sag
+        # under the skin below ~0.3u -- which is what the enclosure step after
+        # this block is for (#butt-col-encloses-body).
         _off = float(_nc()._BUTT_COL_OFFSET)
         try:
             _decl_col = set(re.findall(
@@ -736,6 +818,36 @@ def _add_butt_collider_patch(dst_path) -> int:
         if abs(_off - float(_nc()._BUTT_COL_OFFSET)) > 1e-6:
             print(f"    [butt-col] {p.name}: standoff {_nc()._BUTT_COL_OFFSET} -> "
                   f"{_off:.2f} (derived from this piece's own rear cloth)")
+        # ...then raised until the DECIMATED SURFACE encloses the rear body
+        # verts, not just its kept vertices. #butt-col-encloses-body
+        #
+        # PER FILE, NOT PER PAIR. `_0` and `_1` are converted by separate
+        # workers (`auto_convert._nif_convert_worker`, one NIF per item), so
+        # this pass never sees its weight partner's body or result and the two
+        # weights can derive different offsets. Each one encloses its own body,
+        # and the patch's topology is weight-invariant (#proxy-weight-
+        # invariant), so the blend of two enclosing surfaces stays outside the
+        # blended skin to first order. The log line names the file so the pair
+        # can be compared.
+        if _nc().BUTT_COLLIDER_ENCLOSE:
+            try:
+                _cap = float(_nc()._BUTT_COL_OFFSET)   # never above the constant
+                _raised, _at0, _atN = _butt_col_enclosing_offset(
+                    bv, bn, rep_old, new_tris, sel, _off, _cap, body_tris=bt)
+                if _at0[0]:
+                    _tail = ("body enclosed" if not _atN[0] else
+                             f"CAPPED: {_atN[0]} still under, max "
+                             f"{_atN[1]:.2f}u")
+                    print(f"    [butt-col] {p.name}: standoff {_off:.2f} -> "
+                          f"{_raised:.2f} to enclose the body under the "
+                          f"decimated surface ({_at0[0]}/{len(sel)} rear body "
+                          f"verts under it at {_off:.2f}, max {_at0[1]:.2f}u; "
+                          f"{_tail}; per weight)")
+                    _note_pass_effect("#butt-col-encloses-body",
+                                      f"{_off:.2f} -> {_raised:.2f}", p)
+                _off = _raised
+            except Exception as _ee:
+                _note_pass_failure("_add_butt_collider_patch/enclose", _ee)
         pv = bv[rep_old] + bn[rep_old] * _off
         # back to the body's STORED frame so the new shape shares its space
         pv_stored = _verts_world_to_skin(pv, _shape_global_to_skin(base))

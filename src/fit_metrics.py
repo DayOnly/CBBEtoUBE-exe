@@ -287,7 +287,22 @@ class _ClipTester:
             return np.empty(0, np.int64), np.empty(0, np.int64)
         return np.concatenate(ri), np.concatenate(ti)
 
-    def _cast(self, O, D, ray_i, tri_i, n_rays, want_tri=False):
+    def cast(self, O, D, tmin: float = 1e-4):
+        """Nearest hit along each ray (O + t*D, tmin < t < tmax); inf where none.
+
+        A far-wall cast, the building block of the far-wall rejection in
+        `scripts/analysis/mesh_penetration.clipping_report`: build a tester over
+        the BODY and cast from body verts along -normal with tmin = that report's
+        BODY_EPS, which steps over the origin's own triangles. An inward garment
+        hit beyond the returned wall is on the far side of the body, not a
+        poke-through. `clipping` itself stays gate-free (AUDIT A8; see
+        tests/test_push_region_stays_thick.py) -- a caller applies the wall."""
+        O = np.asarray(O, np.float64)
+        D = np.asarray(D, np.float64)
+        ray_i, tri_i = self._pairs(O)
+        return self._cast(O, D, ray_i, tri_i, len(O), tmin=tmin)
+
+    def _cast(self, O, D, ray_i, tri_i, n_rays, want_tri=False, tmin=1e-4):
         out = np.full(n_rays, np.inf)
         who = np.full(n_rays, -1, np.int64)
         if not len(ray_i):
@@ -345,7 +360,7 @@ class _ClipTester:
         v = np.einsum("ij,ij->i", q, d) * inv
         t = np.einsum("ij,ij->i", q, e2) * inv
         hit = (ok & (u >= -1e-6) & (v >= -1e-6) & (u + v <= 1 + 1e-6)
-               & (t > 1e-4) & (t < self.tmax))
+               & (t > tmin) & (t < self.tmax))
         np.minimum.at(out, ray_i[hit], t[hit])
         if want_tri:
             sel = hit & (t <= out[ray_i] + 1e-12)
