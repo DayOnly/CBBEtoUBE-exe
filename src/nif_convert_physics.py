@@ -3192,6 +3192,235 @@ def _repoint_physics_pointer(dst_path, old: str, new: str) -> bool:
         _note_pass_failure("_finalize_hdt_physics/repoint", _re, p)
         return False
 
+# #hdt-xml-unresolvable-bones (issue #32). A cuirass was converted from a
+# retexture mod's loose mesh -- the load-order winner -- whose author left the
+# SMP mod's physics pointer on it but stripped the SMP mod's front-tasset
+# chain nodes. The pointer resolves through the VFS to the SMP mod's XML,
+# which refers to 130 bones; 48 of them (`SkirtF 4..6` and the constraint
+# bodies hung off them) exist in NO mesh -- not the output, not the source --
+# and not on the actor skeleton. FSMP places
+# a bone it cannot resolve at the origin, so the tassets fell through the
+# floor in game.
+#
+# `_HDT_REGEN_MISSING_BONES` (8) exists for exactly this, and its helper said
+# True (46 missing by its count) -- but nobody asked it on the path that
+# shipped the file. The phases consult it only behind `_find_hdt_xml_for_armor`,
+# a scan of the SOURCE mod's own tree, which finds nothing when the XML lives
+# in another mod; the finalize below, which does resolve the pointer through
+# the VFS, copied the authored file verbatim and carried a note that a re-check
+# had been tried and reverted because the helper counts against the NIF alone,
+# so every skeleton bone a runtime-physics XML drives read as missing and the
+# gate declined authored XMLs pack-wide.
+#
+# This guard classifies against what resolves AT RUNTIME: a bone resolves
+# when it is in the output NIF (skin bones and nodes), in the source NIF (a
+# bone the source carries can come back through the framework re-import
+# below), or on the actor skeleton. Only when a skeleton is loaded -- without
+# one there is nothing to resolve against, and the file ships as it always
+# did.
+#
+# COUNTING EVERY such bone over-fires, measured on the shipped pack (153
+# authored XMLs beside their output NIFs, 2026-09-29): 72 name 8 or more bones
+# that resolve nowhere, one towel names 588. An authored XML is routinely
+# shared across a mod's meshes and declares the union of their rigs -- the
+# SMP mod's own cuirass, converted from its own mesh, has 30 such bones: the
+# sixth link of each of 16 skirt chains (`Skirt 10_05`) whose mesh carries
+# five, and stabiliser groups another mesh uses. FSMP drops a bone it cannot
+# find and every constraint on it; a chain that ends a link early still
+# swings. That is the "common case, in-game-proven" the reverted re-check
+# tripped over, and it must stay shipped.
+#
+# What separates the broken cuirass is not how many bones are missing but
+# that WHOLE CHAINS are: `SkirtF 4` to `SkirtF 7`, six links each, no link
+# anywhere -- a rig the XML was written for that this mesh never had. So the
+# count is over bones of chains (`detect_physics_chains` over every name the
+# XML refers to) with NO resolvable link: 24 on that cuirass; on the pack, 2
+# of 153 reach the threshold (that cuirass, and one other with two whole
+# four-link chains), every other whole-phantom chain is a two- or three-link
+# stub (`SkirtBone02/03`, `WTasset 1`) well under it.
+#
+# At the threshold the authored XML is not shipped: the piece is regenerated
+# on the bones it has (the phases' own path), or, when the generator
+# declines, points at the generator's empty config so the game loads no
+# physics instead of the author's file. Either way the piece converted, so the
+# decline is recorded as an EFFECT under `HDT_XML_DECLINED_TAG`, not a pass
+# failure, and the parent turns it into one run warning per source naming each
+# piece (`auto_convert._report_authored_xml_declines`).
+HDT_XML_DECLINED_TAG = "#hdt-xml-unresolvable-bones"
+
+
+def _hdt_xml_unresolvable_bones(xml_text: str, nif_bone_names,
+                                source_bone_names=()) -> "list[str]":
+    """Bones the XML refers to (declared, text-form or constraint body) that
+    resolve NOWHERE: not in `nif_bone_names`, not in `source_bone_names`, not
+    on the actor skeleton. Sorted. Empty when no skeleton is loaded."""
+    try:
+        skel = _actor_skeleton_bone_names()
+    except Exception:
+        skel = set()
+    if not skel:
+        return []
+    known = {_norm_bone(b) for b in (nif_bone_names or ())}
+    known |= {_norm_bone(b) for b in (source_bone_names or ())}
+    out = []
+    for b in sorted(_xml_referenced_bone_names(xml_text)):
+        if _norm_bone(b) in known or _actor_can_resolve_bone(b):
+            continue
+        out.append(b)
+    return out
+
+
+def _hdt_xml_phantom_chains(xml_text: str, nif_bone_names,
+                            source_bone_names=()) -> "list":
+    """The physics chains the XML drives of which NO link resolves anywhere
+    (see `_hdt_xml_unresolvable_bones`): rigs this mesh never had. A chain
+    missing only its tail links is not one. Empty when no skeleton is loaded."""
+    gone = set(_hdt_xml_unresolvable_bones(xml_text, nif_bone_names, source_bone_names))
+    if not gone:
+        return []
+    from .hdt_xml_gen import detect_physics_chains
+    chains = detect_physics_chains(_xml_referenced_bone_names(xml_text))
+    return [ch for ch in chains if ch.bones and all(b in gone for b in ch.bones)]
+
+
+def _nif_bone_and_node_names(nf) -> "set[str]":
+    names: "set[str]" = set()
+    for s in getattr(nf, "shapes", None) or []:
+        names |= set(getattr(s, "bone_names", None) or [])
+    try:
+        names |= set(nf.nodes.keys())
+    except Exception:
+        pass
+    return names
+
+
+def _authored_hdt_xml_unshippable(src_xml, nf, src_nif_path) -> "dict | None":
+    """The guard. When the authored XML at `src_xml` drives at least
+    `_HDT_REGEN_MISSING_BONES` bones in chains no link of which resolves,
+    returns {"chains": [prefix, ...], "bones": [...], "nowhere": n} (n = every
+    bone that resolves nowhere, for the record); else None."""
+    txt = Path(src_xml).read_text(errors="ignore")
+    src_bones: "set[str]" = set()
+    try:
+        src_bones = _nif_bone_and_node_names(_nc()._open_source_nif(src_nif_path))
+    except Exception:
+        src_bones = set()
+    nif_bones = _nif_bone_and_node_names(nf)
+    chains = _hdt_xml_phantom_chains(txt, nif_bones, src_bones)
+    bones = [b for ch in chains for b in ch.bones]
+    if len(bones) < _nc()._HDT_REGEN_MISSING_BONES:
+        return None
+    return {"chains": [ch.prefix for ch in chains], "bones": bones,
+            "nowhere": len(_hdt_xml_unresolvable_bones(txt, nif_bones, src_bones)),
+            "text": txt}
+
+
+# #declined-xml-keeps-body-collider. A decline throws away the author's whole
+# file, and with it the one thing the regenerated XML cannot make on a piece
+# with no body in it: a BODY COLLIDER. The generator's body block names the
+# NIF's own `VirtualBody`/`BaseShape` (`pick_body_collision_shape_name`); a
+# copy-path cuirass carries neither, so its regenerated cloth collides only
+# with whatever answers the "body" tag at runtime -- and on the in-game test
+# (2026-09-29, UBE, the first piece the guard fires on) the regenerated skirt
+# and tassets passed through the thighs and buttocks.
+#
+# The author HAD one. Both pieces the guard fires on in the pack declare a
+# KINEMATIC per-triangle collider their cloth collides with: a 110-vert
+# hidden `Collision` hull skinned to pelvis/spine/thigh/calf/foot on one, the
+# leg armour itself on the other. Carrying that block into the regenerated
+# XML restores what the author proved in game, with no invented geometry:
+# the finalize's proxy re-import below then brings a collider shape the
+# converter dropped back from the source, warped to the UBE body and hidden,
+# exactly as it does for a shipped authored XML (v1.5 shipped both pieces'
+# colliders this way), and the later passes that read the sibling XML (the
+# collider shrink-wrap, the jiggle graft's collider exemption) see it.
+#
+# KINEMATIC means every bone the shape is skinned to is a standard skeleton
+# bone (`NPC ` naming AND resolvable on the actor skeleton): a chain-driven
+# proxy (`SkirtProxy` on `Skirt N_NN`, a belt collider on tasset chain
+# bones) moves with the chains the decline just removed and is left out --
+# the same donor rule `_add_butt_collider_patch` uses, for the same reason.
+# Only when the regenerated XML has cloth, has a constraint (a collider on
+# unconstrained cloth is the equip-CTD pair, #body-collider-constraint-gate)
+# and declares no body collider of its own. The block keeps the author's
+# margin and penetration; its tag becomes `body`, the tag the generator's
+# cloth collides with, and it names the regenerated cloth's tags back.
+def _authored_kinematic_colliders(authored_text: str, nf, src_nf) -> "list[tuple[str, str]]":
+    """[(shape name, authored block text)] for the authored XML's per-triangle
+    colliders that are kinematic (see the note above) and whose shape exists
+    in the converted NIF or its source. Author order."""
+    have = {s.name: s for s in (getattr(src_nf, "shapes", None) or [])}
+    have.update({s.name: s for s in (getattr(nf, "shapes", None) or [])})
+    out: "list[tuple[str, str]]" = []
+    for m in re.finditer(
+            r'<per-triangle-shape\s+name="([^"]+)"\s*>(.*?)</per-triangle-shape>',
+            authored_text or "", re.S):
+        name, block = m.group(1), m.group(2)
+        sh = have.get(name)
+        if sh is None or _nc()._is_inline_body_name(name):
+            continue
+        if name in {n for n, _b in out}:
+            continue
+        bones = list(getattr(sh, "bone_names", None) or [])
+        if not bones:
+            continue
+        if all(b.startswith("NPC ") and _actor_can_resolve_bone(b) for b in bones):
+            out.append((name, block))
+    return out
+
+
+def _add_authored_colliders_to_regen(xml_path, colliders) -> "list[str]":
+    """Append the `colliders` (from `_authored_kinematic_colliders`) to the
+    regenerated XML at `xml_path` as per-triangle `body` colliders of its
+    cloth. Returns the names added; [] when it declines (see the note)."""
+    if not colliders:
+        return []
+    _rt = _read_xml_roundtrip(xml_path)
+    if _rt is None:
+        return []
+    text, codec = _rt
+    if re.search(r"<per-triangle-shape\b", text) or "</system>" not in text:
+        return []
+    cloth_tags: "list[str]" = []
+    for m in re.finditer(r"<per-vertex-shape\b.*?</per-vertex-shape>", text, re.S):
+        for t in re.findall(r"<tag>([^<]+)</tag>", m.group(0)):
+            if t.strip() and t.strip() not in cloth_tags:
+                cloth_tags.append(t.strip())
+    if not cloth_tags:
+        return []
+    from . import hdt_xml_gen
+    # The same constraint test `_ensure_cloth_body_collider` makes
+    # (#body-collider-constraint-gate); spelled apart so the mutation gate's
+    # anchors there stay unique.
+    kinds = (hdt_xml_gen._CONSTRAINT_TAGS if hdt_xml_gen._constraint_group_scan()
+             else ("generic-constraint",))
+    if not any(re.search(rf"<{re.escape(k)}\b", text) for k in kinds):
+        return []
+    blocks, added = [], []
+    for name, authored in colliders:
+        # The author's contact tuning, element by element (an authored block
+        # may sit on one line; its tags and collide-with lists are replaced).
+        keep = [f"<{k}>{v.strip()}</{k}>" for k, v in re.findall(
+            r"<(margin|penetration|prenetration)>([^<]*)</\1>", authored)]
+        if not keep:
+            keep = [f"<margin>{hdt_xml_gen.DEFAULT_BODY_MARGIN}</margin>",
+                    f"<prenetration>{hdt_xml_gen.DEFAULT_BODY_PRENETRATION}"
+                    f"</prenetration>"]
+        blocks.append(
+            f'\t<!-- the author\'s body collider, kept by the chain guard -->\n'
+            f'\t<per-triangle-shape name="{hdt_xml_gen._xml_escape(name)}">\n'
+            + "".join(f"\t\t{ln}\n" for ln in keep)
+            + "\t\t<shared>private</shared>\n\t\t<tag>body</tag>\n"
+            + "".join(f"\t\t<can-collide-with-tag>{t}</can-collide-with-tag>\n"
+                      for t in cloth_tags)
+            + "\t</per-triangle-shape>\n\n")
+        added.append(name)
+    m = re.search(r"[ \t]*<per-vertex-shape\b", text)
+    at = m.start() if m else text.rindex("</system>")
+    atomic_write_bytes(xml_path, (text[:at] + "".join(blocks) + text[at:]).encode(codec))
+    return added
+
+
 def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
     """FINAL physics pass — runs AFTER every other NIF round-trip (merge,
     VirtualBody-hide, partition-normalize) so the HDT-SMP extra-data can't
@@ -3222,23 +3451,102 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
         # one if present. In soft-body mode we KEEP the generated collision-
         # only XML instead (the authored chain XML is what collapses on UBE).
         src_xml = None if _nc().CHAIN_TO_SOFTBODY else _read_source_hdt_xml_disk(src_nif_path)
-        if src_xml is not None:
-            # KNOWN ISSUE (audit 2026-07-28, left OPEN by design): for the
-            # narrow class where the phases regenerated the XML because the
-            # authored one drives BodySlide-BUILD-injected chain bones, this
-            # copy REVERSES that decision. A re-check of
-            # _source_hdt_needs_missing_chain_bones here was tried and
-            # REVERTED the same day: the helper cannot distinguish truly
-            # missing bones from runtime-resolvable ones (a runtime-physics
-            # mod's authored XML legitimately drives skeleton bones no mesh
-            # NIF carries -- the common case, in-game-proven across four
-            # reconverts), so the gate over-fired, declined the authored XML
-            # pack-wide, and the harness negative controls caught grafts dead
-            # and physics shapes lost. Any future fix must classify the XML's
-            # bones against what actually resolves AT RUNTIME, not against
-            # the NIF/source bone sets available here.
-            pass
+        # Opened here, before the copy, because the guard below reads the
+        # converted NIF's bones; every later step reads and saves this handle.
+        nf = pyn.NifFile(filepath=str(dst_path))
         wrote_sibling = False      # THIS call wrote <stem>.xml from the source
+        if src_xml is not None:
+            # #hdt-xml-unresolvable-bones: an authored XML that drives bones
+            # nothing at runtime can resolve is not shipped. This is the
+            # runtime-resolvable classification the 2026-07-28 audit asked
+            # for (see the note at `_hdt_xml_unresolvable_bones`): a re-check
+            # of `_source_hdt_needs_missing_chain_bones` here over-fired
+            # because that helper counts skeleton bones as missing.
+            _phantom = _authored_hdt_xml_unshippable(src_xml, nf, src_nif_path)
+            if _phantom:
+                _nb, _nc_ = len(_phantom["bones"]), len(_phantom["chains"])
+                _shown = ", ".join(repr(p) for p in _phantom["chains"][:6])
+                _more = f", +{_nc_ - 6} more" if _nc_ > 6 else ""
+                _declined_name = Path(src_xml).name
+                src_xml = None
+                # The phases' own regen path: a soft-body on the chain bones
+                # the piece actually carries. When it declines (no carriers,
+                # chainless, unconstrained pair) the sibling is the generator's
+                # EMPTY config, so the pointer set below names a file that
+                # loads no physics rather than the author's file.
+                #
+                # Everything below that reads the sibling now reads THIS file,
+                # so a decline also leaves out what existed only for the
+                # author's: a framework carrier (a hidden `Stabilizer` holding
+                # the custom bones the authored constraints hang off) is not
+                # re-imported, because no bone of it is named any more. That is
+                # intended -- measured 2026-09-29 on the second cuirass the
+                # guard fires on, the one shape that differs from v1.5 and from
+                # the same lane with the threshold out of reach -- and pinned
+                # by tests/test_hdt_xml_missing_bone_guard.py.
+                _regen = None
+                try:
+                    _regen = _generate_hdt_xml_for_dst(dst_path)
+                except Exception as _ge:
+                    _note_pass_failure("_finalize_hdt_physics/regen", _ge, dst_path)
+                if not _regen:
+                    from . import hdt_xml_gen as _hxg
+                    _hxg.write_armor_hdt_xml(
+                        dst_xml_disk, [], body_collision_shape_name=None,
+                        chains=[])
+                wrote_sibling = True
+                # #declined-xml-keeps-body-collider: the author's kinematic
+                # body collider goes into the regenerated file; the proxy
+                # re-import below brings its shape back if it was dropped.
+                _kept_cols: "list[str]" = []
+                if _regen:
+                    try:
+                        try:
+                            _src_nf = _nc()._open_source_nif(src_nif_path)
+                        except Exception:
+                            _src_nf = None
+                        _kept_cols = _add_authored_colliders_to_regen(
+                            dst_xml_disk, _authored_kinematic_colliders(
+                                _phantom.get("text", ""), nf, _src_nf))
+                    except Exception as _ke:
+                        _note_pass_failure("_finalize_hdt_physics/keep-collider",
+                                           _ke, dst_path)
+                # A decline is the guard DOING ITS JOB, so it is an effect, not
+                # a failure -- the #hdt-xml-sanitise precedent: recorded as a
+                # pass failure it read "PASS FAILED" in the pack summary's "the
+                # pass did not do its job" block and scored the piece broken
+                # (single-piece harness exit 4). The piece converted; what the
+                # user must hear is that the author's physics is not what ships.
+                # `auto_convert._report_authored_xml_declines` turns this into a
+                # run warning with the piece names.
+                _outcome = ("physics regenerated on the chain bones the piece "
+                            "has" if _regen else
+                            "the piece ships with no physics (nothing to "
+                            "regenerate on)")
+                if _kept_cols:
+                    _outcome += (", with the author's body collider "
+                                 + ", ".join(repr(c) for c in _kept_cols))
+                elif _regen and "<per-triangle-shape" not in (
+                        dst_xml_disk.read_text(errors="ignore")
+                        if dst_xml_disk.is_file() else ""):
+                    _outcome += ", with no body collider"
+                # No "; " in the detail: `reason` is joined on it, and the
+                # parent splits on it to find this line.
+                _note_pass_effect(
+                    HDT_XML_DECLINED_TAG,
+                    f"{_declined_name} not shipped: {_nb} bone(s) in {_nc_} "
+                    f"whole chain(s) ({_shown}{_more}) no link of which exists "
+                    f"in the converted NIF, its source or the actor skeleton, "
+                    f"{_phantom['nowhere']} bones resolve nowhere in all -- "
+                    f"{_outcome}",
+                    dst_path)
+                try:
+                    print(f"  authored-xml guard: {dst_path.name} declines "
+                          f"{_declined_name} ({_nb} bones in {_nc_} whole "
+                          f"chain(s) this mesh never had) -> {_outcome}",
+                          file=sys.stderr)
+                except Exception:
+                    pass
         if src_xml is not None:
             # (an authored-XML breast-chain bone remap was an unproven opt-in and was removed -- refuted; see git history. verbatim copy is the long-standing default.)
             try:
@@ -3282,7 +3590,6 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
         if rel is None:
             return False
 
-        nf = pyn.NifFile(filepath=str(dst_path))
         dirty = False
         repoint_from = None
         ptr = next((ed for ed in nf.rootNode.extra_data()
