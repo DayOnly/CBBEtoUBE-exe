@@ -17059,7 +17059,7 @@ PAIRS = (
               '    return False  # MUTATED\n', 1),
          ),
          tests=('tests/test_release_gate.py',),
-         expect=('test_an_api_set_dll_on_one_side_only_is_reported_not_judged',),
+         expect=('test_an_api_set_dll_only_the_runner_has_is_reported_not_judged', 'test_an_api_set_dll_only_the_release_machine_has_is_reported_not_judged',),
     ),
     Pair('RGB-b', 'a differing launcher record fails the program files again',
          edits=(
