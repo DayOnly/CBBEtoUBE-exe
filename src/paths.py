@@ -325,6 +325,38 @@ def export_to_env(lay: Layout) -> None:
             str(d) for d in lay.game_data_dirs)
 
 
+def strip_path_quotes(text) -> str:
+    """A path as typed or pasted, without the quotes Explorer's "Copy as path"
+    wraps round it. Strips surrounding whitespace, then ONE pair of matching
+    double quotes, then whitespace again. A Windows path cannot contain a quote,
+    so this never changes a valid path. #path-field-quotes"""
+    t = str(text).strip()
+    if len(t) >= 2 and t[0] == t[-1] == '"':
+        t = t[1:-1].strip()
+    return t
+
+
+def path_arg(text) -> Path:
+    """argparse `type=` for a path option: the same quote stripping."""
+    return Path(strip_path_quotes(text))
+
+
+def preflight_output_folder(folder) -> "str | None":
+    """None when `folder` can be created and written to, else why not, in words
+    for the person who typed the path. Creates the folder and writes and removes
+    one probe file, so a bad path stops the run before the first mod instead of
+    failing every mod after it. #output-preflight"""
+    try:
+        d = Path(folder)
+        d.mkdir(parents=True, exist_ok=True)
+        probe = d / f".cbbe2ube-write-test-{os.getpid()}"
+        probe.write_bytes(b"ok")
+        probe.unlink()
+    except OSError as e:
+        return f"{type(e).__name__}: {e}"
+    return None
+
+
 def mods_root() -> Path | None:
     """Cheap accessor used by deep code (incl. workers): the resolved mods
     root from the env var, or a fresh discovery if unset."""

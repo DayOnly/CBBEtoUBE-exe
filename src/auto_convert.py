@@ -4255,7 +4255,7 @@ def _build_parser():
              "given, the LAST positional is treated as the output dir "
              "UNLESS --output is provided.")
     convert.add_argument(
-        "-o", "--output", type=Path, default=None,
+        "-o", "--output", type=paths.path_arg, default=None,
         help="Output UBE conversion mod folder (required when more than "
              "one source is given; otherwise inferred from the last "
              "positional, mirroring the legacy `source output` form).")
@@ -4359,7 +4359,7 @@ def _build_parser():
                     "becomes a master of the combined patch.")
     merge.add_argument("patches", type=Path, nargs="+",
                        help="Two or more existing UBE patch ESPs to combine.")
-    merge.add_argument("-o", "--output", type=Path, required=True,
+    merge.add_argument("-o", "--output", type=paths.path_arg, required=True,
                        help="Output path for the combined patch ESP.")
     merge.add_argument("--no-esl-flag", action="store_true",
                        help="Don't set the ESL flag (use if record count "
@@ -4410,7 +4410,7 @@ def _build_parser():
                     "them all into one output mod, merges into a single "
                     "ESL-flagged Combined ESP, and adds vanilla race coverage. "
                     "Run with no arguments for a full conversion.")
-    auto_p.add_argument("-o", "--output", type=Path, default=None,
+    auto_p.add_argument("-o", "--output", type=paths.path_arg, default=None,
                         help="Output mod folder (default: "
                              "<mods>/CBBEtoUBE Auto).")
     auto_p.add_argument("--workers", type=int, default=None,
@@ -12592,6 +12592,18 @@ def _cmd_auto(args):
     if getattr(args, "list_only", False):
         print("\n--list-only: no conversion performed.")
         return 0
+
+    # The output folder must be usable BEFORE the first mod converts: a path that
+    # cannot be written (a stray quote from "Copy as path", a missing drive, a
+    # read-only folder) used to fail every one of the 125 mods and end the run
+    # twenty minutes later. #output-preflight
+    _why_not = paths.preflight_output_folder(output)
+    if _why_not is not None:
+        print(f"error: the output folder cannot be used: {output}\n"
+              f"  {_why_not}\n"
+              "  Nothing was converted. Check the path (no quotes round it) and "
+              "that you can write there, then run again.")
+        return 2
 
     # SkyPatcher-only: the Combined overrides no third-party records, so there is
     # no ARMO winner-rebase step (the whole winner-index build is gone).
