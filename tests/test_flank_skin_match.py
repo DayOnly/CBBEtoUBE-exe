@@ -68,8 +68,10 @@ def _grid_x(x, y0, y1, z0, z1, n=6, flip=False):
 
 def _build(path):
     """BaseShape: a flank-facing patch at x = 0 over z 70-110, skinned to Spine2
-    only. Plate: three groups of rows 1u in front of it -- the flank band (z
-    92-100), below the band (z 74-80), and the flank band carrying a chain bone."""
+    only. Plate: groups of rows 1u in front of it -- the flank band (z 92-100),
+    below the band (z 74-80), the flank band carrying a chain bone, a "sleeve" row
+    that also carries authored UpperArm weight, and a "clean" row with no foreign
+    bone at all."""
     pyn = nc._pynifly()
     nif = pyn.NifFile()
     nif.initialize("SKYRIMSE", str(path))
@@ -91,14 +93,16 @@ def _build(path):
             if pairs:
                 sh.setShapeWeights(b, pairs)
 
-    bv, bt = _grid_x(0.0, -6.0, 6.0, 70.0, 110.0, n=17)
+    bv, bt = _grid_x(0.0, -6.0, 9.0, 70.0, 110.0, n=21)
     add("BaseShape", bv, bt, [SP2, UA], [{SP2: 1.0} for _ in bv])
     groups, verts, tris, weights = {}, [], [], []
     for key, (z0, z1, w) in {
             "band": (92.0, 100.0, {SP2: 0.5, UT2: 0.5}),
             "below": (74.0, 80.0, {SP2: 0.5, UT2: 0.5}),
-            "chain": (92.0, 100.0, {SP2: 0.4, UT2: 0.3, CHAIN: 0.3})}.items():
-        y0 = {"band": -4.0, "below": -4.0, "chain": 0.5}[key]
+            "chain": (92.0, 100.0, {SP2: 0.4, UT2: 0.3, CHAIN: 0.3}),
+            "sleeve": (92.0, 100.0, {SP2: 0.2, UA: 0.5, UT2: 0.3}),
+            "clean": (92.0, 100.0, {SP2: 0.5, UA: 0.5})}.items():
+        y0 = {"band": -4.0, "below": -4.0, "chain": 0.5, "sleeve": 4.0, "clean": 4.0}[key]
         v, t = _grid_x(1.0, y0, y0 + 3.0, z0, z1, n=5, flip=True)
         off = len(verts)
         groups[key] = np.arange(off, off + len(v))
@@ -165,6 +169,38 @@ def test_a_flank_row_with_skeleton_arm_weight_is_matched_to_the_body(tmp_path, m
 
 
 @needs_pynifly
+@needs_pynifly
+def test_a_relaxed_row_keeps_its_authored_arm_chain_weight(tmp_path, monkeypatch):
+    """The point of the second version: a sleeve row's nearest body vertex is torso,
+    so copying the body's whole vector stripped the arm follow it needs (Imperial
+    light cuirass, arms crossed 1.5% -> 3.75%). Only the non-arm bones follow the
+    body; UpperArm stays as authored (0.5 of 1.5 after renormalising) and the
+    skeleton-arm twist weight goes."""
+    p, g = _run(tmp_path, monkeypatch)
+    arm, _ = _weight(p, UA)
+    twist, _ = _weight(p, UT2)
+    spine, _ = _weight(p, SP2)
+    assert np.allclose(arm[g["sleeve"]], 0.5 / 1.5, atol=0.02)
+    assert np.all(twist[g["sleeve"]] < 0.02)
+    assert np.allclose(spine[g["sleeve"]], 1.0 / 1.5, atol=0.02)
+
+
+@needs_pynifly
+def test_a_clean_row_still_takes_the_bodys_whole_vector(tmp_path, monkeypatch):
+    """Rows the plain gate admits are not touched by the second version: the body
+    skins this patch with Spine2 alone, so the arm weight goes, as it always did."""
+    p, g = _run(tmp_path, monkeypatch)
+    arm, _ = _weight(p, UA)
+    assert np.all(arm[g["clean"]] < 0.02)
+
+
+@needs_pynifly
+def test_the_flank_band_row_without_arm_weight_is_the_bodys_row(tmp_path, monkeypatch):
+    p, g = _run(tmp_path, monkeypatch)
+    spine, _ = _weight(p, SP2)
+    assert np.allclose(spine[g["band"]], 1.0, atol=0.02)
+
+
 def test_a_row_below_the_band_keeps_its_authored_weights(tmp_path, monkeypatch):
     p, g = _run(tmp_path, monkeypatch)
     twist, _ = _weight(p, UT2)
@@ -214,3 +250,14 @@ def test_the_relaxation_only_subtracts_skeleton_arm_weight():
     assert "_is_arm_hand_bone(_b)" in branch
     assert "np.maximum(foreign - _skel, 0.0)" in branch
     assert "(_foreign_eff <= 1e-4)" in branch
+
+
+
+def test_only_relaxed_rows_get_their_arm_chain_restored():
+    import inspect
+    src = inspect.getsource(nc._match_limb_motion_to_body)
+    i = src.index("_relaxed = _sel & (foreign > 1e-4)")
+    branch = src[i:i + 900]
+    assert "_is_arm_hand_bone(_b) and _b in ube_bones" in branch
+    assert "NEW[np.ix_(_rr, _keep)] = G[np.ix_(_rr, _keep)]" in branch
+    assert "NEW[_rr[_ok]] /= _tot[_ok, None]" in branch

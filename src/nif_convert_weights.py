@@ -2653,6 +2653,21 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                                             out=np.ones_like(_oth),
                                             where=_oth > 1e-9)
                             NEW[np.ix_(_r, _ocol)] *= _fo[:, None]
+                # #flank-skin-match: a row the relaxation admitted (it carried
+                # skeleton-arm weight the body lacks) takes the body's weight on the
+                # NON-arm bones and keeps its AUTHORED weight on every arm-chain bone
+                # the body skins; the drained skeleton-arm bone stays at the blend's
+                # value. Renormalised. Rows the plain gate admitted are untouched.
+                _relaxed = _sel & (foreign > 1e-4)
+                if _relaxed.any():
+                    _keep = [_j for _j, _b in enumerate(shape_bones)
+                             if _is_arm_hand_bone(_b) and _b in ube_bones]
+                    if _keep:
+                        _rr = np.where(_relaxed)[0]
+                        NEW[np.ix_(_rr, _keep)] = G[np.ix_(_rr, _keep)]
+                        _tot = NEW[_rr].sum(axis=1)
+                        _ok = _tot > 1e-9
+                        NEW[_rr[_ok]] /= _tot[_ok, None]
             else:
                 midx = [shape_bones.index(b) for b in managed]
                 B = np.zeros((n, len(managed)), dtype=np.float64)
