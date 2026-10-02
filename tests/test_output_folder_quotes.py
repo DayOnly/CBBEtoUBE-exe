@@ -52,7 +52,7 @@ class _Var:
 
 # --- 1. quotes ------------------------------------------------------------------
 
-@pytest.mark.parametrize("raw,want", [
+_QUOTE_CASES = [
     ('"mods/Out Folder"', "mods/Out Folder"),
     ('  "out"  ', "out"),
     ('"  out  "', "out"),
@@ -62,10 +62,13 @@ class _Var:
     ('""', ""),
     ('"unbalanced', '"unbalanced'),           # one quote is not a pair: left as typed
     ('unbalanced"', 'unbalanced"'),
-    ('""twice""', '"twice"'),         # ONE pair only, never a loop
-])
-def test_a_pasted_path_loses_exactly_one_pair_of_quotes(raw, want):
-    assert paths.strip_path_quotes(raw) == want
+    ('""twice""', '"twice"'),                 # ONE pair only, never a loop
+]
+
+
+def test_a_pasted_path_loses_exactly_one_pair_of_quotes():
+    got = [(raw, paths.strip_path_quotes(raw), want) for raw, want in _QUOTE_CASES]
+    assert [g for g in got if g[1] != g[2]] == []
 
 
 def test_the_window_reads_the_output_field_without_quotes():
