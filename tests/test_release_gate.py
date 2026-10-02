@@ -657,6 +657,75 @@ def test_interpreter_files_are_the_bundles_cpython_parts_and_nothing_of_ours():
     assert [r for r in theirs if not rg._is_interpreter_file(r)] == []
 
 
+_API = "_internal/api-ms-win-core-fibers-l1-1-1.dll"
+_RECORD = "_internal/numpy-2.2.6.dist-info/RECORD"
+
+
+def _one_sided(chain, tmp_path, side):
+    bundle, fresh = dict(_BUNDLE), dict(_BUNDLE)
+    if side == "extra":
+        fresh[_API] = b"the runner's windows"
+    else:
+        bundle[_API] = b"the release machine's windows"
+    _commit_bundle(chain, bundle)
+    verdicts = rg.rebuild_check("HEAD", _fresh(tmp_path, fresh), chain.repo)
+    got = _status(verdicts)
+    assert got["file set"] == PASS and got["interpreter files"] == NOT_CHECKED
+    assert FAIL not in got.values(), got
+    assert _API in next(d for _, c, d in verdicts if c == "interpreter files")
+
+
+def test_an_api_set_dll_only_the_runner_has_is_reported_not_judged(chain, tmp_path):
+    """GitHub issue #24: the first runner rebuild (v1.5) had 3 Windows API-set
+    DLLs the release machine's bundle does not. They come from the Windows a build
+    runs on, so they are not a file-list failure."""
+    _one_sided(chain, tmp_path, "extra")
+
+
+def test_an_api_set_dll_only_the_release_machine_has_is_reported_not_judged(chain, tmp_path):
+    _one_sided(chain, tmp_path, "missing")
+
+
+def test_a_launcher_record_that_differs_is_reported_not_judged(chain, tmp_path):
+    """pip's console-script launchers embed the venv path, so numpy's dist-info
+    RECORD differs between venvs (docs/RELEASING.md, measured 2026-09-17 and on
+    the v1.5 runner rebuild)."""
+    bundle = {**_BUNDLE, _RECORD: b"launchers built in venv A"}
+    _commit_bundle(chain, bundle)
+    fresh = {**bundle, _RECORD: b"launchers built in venv B"}
+    verdicts = rg.rebuild_check("HEAD", _fresh(tmp_path, fresh), chain.repo)
+    got = _status(verdicts)
+    assert got["program files"] == PASS and got["interpreter files"] == NOT_CHECKED
+    assert FAIL not in got.values(), got
+    assert _RECORD in next(d for _, c, d in verdicts if c == "interpreter files")
+
+
+def test_any_other_dist_info_file_that_differs_still_fails(chain, tmp_path):
+    meta = "_internal/numpy-2.2.6.dist-info/METADATA"
+    bundle = {**_BUNDLE, meta: b"the locked wheel's metadata"}
+    _commit_bundle(chain, bundle)
+    fresh = {**bundle, meta: b"changed"}
+    status, _, detail = next(v for v in rg.rebuild_check("HEAD", _fresh(tmp_path, fresh), chain.repo)
+                             if v[1] == "program files")
+    assert status == FAIL and meta in detail
+
+
+def test_an_exe_that_differs_says_which_machine_dependent_files_it_bundles(chain, tmp_path):
+    _commit_bundle(chain, _BUNDLE)
+    fresh = {**_BUNDLE, "CBBEtoUBE.exe": b"exe, rebuilt", _API: b"the runner's windows"}
+    status, _, detail = next(v for v in rg.rebuild_check("HEAD", _fresh(tmp_path, fresh), chain.repo)
+                             if v[1] == "exe")
+    assert status == FAIL and "1 API-set DLL(s)" in detail
+
+
+def test_an_exe_that_differs_alone_is_still_a_failure_without_that_note(chain, tmp_path):
+    _commit_bundle(chain, _BUNDLE)
+    fresh = {**_BUNDLE, "CBBEtoUBE.exe": b"exe, rebuilt"}
+    status, _, detail = next(v for v in rg.rebuild_check("HEAD", _fresh(tmp_path, fresh), chain.repo)
+                             if v[1] == "exe")
+    assert status == FAIL and "API-set" not in detail
+
+
 def test_the_tracked_bundle_is_a_rebuild_of_itself():
     """Control on real data: the tracked folder against its own commit passes
     every clause, and the interpreter bucket is real, not empty."""

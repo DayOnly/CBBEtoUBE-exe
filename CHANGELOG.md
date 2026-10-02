@@ -55,6 +55,72 @@ so the collider encloses the body. It matters more now that the pieces moved to
 the build above can carry this collider. `CBBE2UBE_NO_BUTT_COLLIDER_ENCLOSE=1`
 (set to 1) gives the old push-out back.
 
+### Fixed — an output folder pasted with quotes round it no longer ruins a whole run
+
+Explorer's "Copy as path" puts double quotes round a path. Pasted into the output
+folder field, they reached the file system, every write failed ("The filename,
+directory name, or volume label syntax is incorrect"), and the run carried on
+through all 125 mods and ended 23 minutes later with 126 failures and nothing
+written. A pasted path now loses one pair of surrounding quotes, in the window's
+fields, the settings tab's path rows and the `-o` option of the command line (a
+Windows path cannot contain a quote, so no valid path changes). And the output
+folder is tried before the first mod converts: the tool creates it, writes one
+small test file and removes it, and a folder that cannot be used ends the run at
+once with one message ("the output folder cannot be used ... Nothing was
+converted") and exit code 2. A dry run writes nothing, so it does not try the
+folder.
+
+### Fixed — the coverage warnings' full lists are written to a file
+
+The coverage step names the armours a warning is about, but only the first 5 (or
+3) of each list, and the rest were written nowhere, so "convert the mod that
+ships the female mesh" could not be acted on. Every entry of every list is now
+written to `coverage_gaps.tsv` in the output mod, one row per armour with the
+list it belongs to, the plugin, the form ID, the EditorID and the detail (the
+reason, or the mod that patches it), and each "... and N more" line says where
+the file is. Three lists that were cut at 5 with no "more" line at all (the
+female armours not covered, and the two hands-and-feet lists) now have one. The
+log itself stays as short as before.
+
+### Fixed — a plugin's masters follow the load order, and an ESL flag alone is not a master
+
+The tool treated a plugin as a master (listed ahead of the regular plugins) when
+its header carried the ESM flag or the ESL flag. The ESL flag alone does not make
+a master: an ESL-flagged `.esp` loads where it sits among the regular plugins. So
+the merged Combined listed such a plugin ahead of ESMs that load before it (29 of
+the 45 masters of one piece moved when xEdit's Sort Masters put them in order, and
+the sort re-pointed five references into ESL masters), the validator warned about
+the wrong plugins, and its postflight passed the real case because it used the
+same rule. Only the ESM flag (or a `.esm` / `.esl` file) makes a master now; the
+Combined's masters are written in the order the game loads them; the postflight
+checks that order and says so when a master is out of it; and a per-source patch
+lists an ESM-flagged master ahead of UBE_AllRace.esp and the regular plugins.
+Where the load order cannot be read, masters sort by the ESM flag alone, as
+before.
+
+### Fixed — an armature's models are written in the Creation Kit's order
+
+One armature of 3,862 in a full run was written with its models as `MOD2, MO2T,
+MOD4, MO4T, MOD3, MOD5`, because a female or first-person model the source lacked
+was made from the converted male one and appended after the others. A tool built
+on Mutagen reads a record in any order but the standard one as missing its male
+world and first-person models, and drops them when it rewrites the plugin. The
+models are now written as `MOD2, MO2T, MO2S, MOD3, MO3T, MO3S, MOD4, MO4T, MO4S,
+MOD5, MO5T, MO5S`; only the model subrecords change places, and a record already
+in order is byte for byte the same.
+
+### Development only — the rebuild check reports the runner's own files without judging them
+
+The first run of the release workflow's rebuild job (v1.5) failed on three
+Windows API-set DLLs the runner's Windows had and the release machine's did not,
+on numpy's `RECORD` file (pip writes the venv's path into it), and on the exe,
+which bundles both. `rebuild-check` now reports an API-set DLL present on one side
+only, and a differing `*.dist-info/RECORD`, with the interpreter files and does
+not judge them; any other missing, extra or differing file still fails, and a
+differing exe still fails, with a note naming the machine-dependent files it
+bundles. Whether the exe then reproduces across machines is still not measured:
+that needs the next tag's runner build.
+
 ### Development only — a mutation pair stays live after the skin-patch rule
 
 The pair that checks an exposed-skin slice is counted as stripped read the

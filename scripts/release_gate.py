@@ -646,6 +646,38 @@ def _is_interpreter_file(rel: str) -> bool:
     return parts[1] in ("_tcl_data", "_tk_data", "tcl8")
 
 
+def _is_api_set_dll(rel: str) -> bool:
+    """A Windows API-set forwarder (`_internal/api-ms-win-*.dll`). PyInstaller
+    collects these from the Windows/UCRT of the machine that builds, so a runner
+    can ship three the release machine does not, or the reverse. They belong to
+    the machine, not to this repository: a rebuild on another Windows reports
+    them without judging the file list or the exe on their account alone.
+    #reproducible-build (GitHub issue #24)"""
+    parts = rel.split("/")
+    return (len(parts) == 2 and parts[0] == "_internal"
+            and parts[1].lower().startswith("api-ms-win-")
+            and parts[1].lower().endswith(".dll"))
+
+
+def _is_launcher_record(rel: str) -> bool:
+    """A `*.dist-info/RECORD` of the bundle. pip lists the console-script
+    launchers it wrote in it, and their bytes embed the path of the venv that
+    ran pip, so the same locked wheels give a different RECORD in another
+    venv: MEASURED 2026-09-17 (docs/RELEASING.md "Rebuilding") and again on the
+    first runner rebuild (v1.5). Reported, not judged. Any other file of a
+    dist-info stays judged. #reproducible-build (GitHub issue #24)"""
+    parts = rel.split("/")
+    return (len(parts) == 3 and parts[0] == "_internal"
+            and parts[1].endswith(".dist-info") and parts[2] == "RECORD")
+
+
+def _is_environment_file(rel: str) -> bool:
+    """What `rebuild-check` reports without judging: files that come from the
+    machine or the venv a build ran on, not from this repository or a locked
+    wheel."""
+    return _is_interpreter_file(rel) or _is_launcher_record(rel)
+
+
 def rebuild_check(ref, folder, repo=REPO) -> list:
     """A fresh build folder against the tracked bundle at `ref`, byte for byte.
     The exe, the file list, the repository's own files and the hash-locked
@@ -666,14 +698,19 @@ def rebuild_check(ref, folder, repo=REPO) -> list:
     have = {r: p for r, p in _files(folder).items()
             if r != MANIFEST and not _is_state_file(r)}
     digests = _blob_sha256(repo, sorted(set(want.values())))
-    missing = sorted(set(want) - set(have))
-    extra = sorted(set(have) - set(want))
+    missing_all = sorted(set(want) - set(have))
+    extra_all = sorted(set(have) - set(want))
+    # An API-set DLL on one side only is the machine's, not ours: reported with
+    # the interpreter files, never a file-list failure.
+    missing = [r for r in missing_all if not _is_api_set_dll(r)]
+    extra = [r for r in extra_all if not _is_api_set_dll(r)]
+    one_sided = [r for r in missing_all + extra_all if _is_api_set_dll(r)]
     differ = sorted(r for r in set(want) & set(have)
                     if _sha256(have[r]) != digests[want[r]])
-    program = [r for r in differ if r != exe_rel and not _is_interpreter_file(r)]
-    interp = [r for r in differ if _is_interpreter_file(r)]
-    n_program = sum(1 for r in want if r != exe_rel and not _is_interpreter_file(r))
-    n_interp = sum(1 for r in want if _is_interpreter_file(r))
+    program = [r for r in differ if r != exe_rel and not _is_environment_file(r)]
+    interp = [r for r in differ if _is_environment_file(r)]
+    n_program = sum(1 for r in want if r != exe_rel and not _is_environment_file(r))
+    n_interp = sum(1 for r in want if _is_environment_file(r))
     verdicts = []
     if exe_rel in differ:
         note = ""
@@ -686,6 +723,11 @@ def rebuild_check(ref, folder, repo=REPO) -> list:
                         f"{fresh.get('git')} epoch {fresh.get('source_date_epoch')}")
         except ArchiveError:
             pass
+        if one_sided or interp:
+            note += (f"; the exe bundles files that differ with the machine it was "
+                     f"built on ({len(one_sided)} API-set DLL(s) on one side only, "
+                     f"{len(interp)} other differing environment file(s)), so it "
+                     "cannot match until those are explained")
         verdicts.append((FAIL, "exe", f"{exe_rel} differs from the tracked exe at {ref}{note}"))
     elif exe_rel in extra:
         verdicts.append((FAIL, "exe", f"no {exe_rel} is tracked at {ref}"))
@@ -704,11 +746,17 @@ def rebuild_check(ref, folder, repo=REPO) -> list:
     else:
         verdicts.append((PASS, "program files",
                          f"all {n_program} repository and locked-library files identical"))
-    if interp:
+    if interp or one_sided:
+        said = []
+        if interp:
+            said.append(f"{len(interp)} of {n_interp} differ ({', '.join(interp[:5])}"
+                        f"{' ...' if len(interp) > 5 else ''})")
+        if one_sided:
+            said.append(f"{len(one_sided)} API-set DLL(s) on one side only "
+                        f"({', '.join(one_sided[:5])}{' ...' if len(one_sided) > 5 else ''})")
         verdicts.append((NOT_CHECKED, "interpreter files",
-                         f"{len(interp)} of {n_interp} differ ({', '.join(interp[:5])}"
-                         f"{' ...' if len(interp) > 5 else ''}): the interpreter this build "
-                         "ran on is not the release machine's build; the clauses above are "
+                         "; ".join(said) + ": the interpreter, Windows and venv this build "
+                         "ran on are not the release machine's; the clauses above are "
                          "what a rebuild proves"))
     else:
         verdicts.append((PASS, "interpreter files", f"all {n_interp} identical"))
