@@ -2254,6 +2254,27 @@ def _model_path_zstring(path: str, as_bytes: bool) -> bytes:
     return path.encode("utf-8", "surrogateescape") + b"\x00"
 
 
+_ARMA_MODEL_ORDER = {sig: i for i, sig in enumerate((
+    b"MOD2", b"MO2T", b"MO2S", b"MOD3", b"MO3T", b"MO3S",
+    b"MOD4", b"MO4T", b"MO4S", b"MOD5", b"MO5T", b"MO5S"))}
+
+
+def _arma_model_order(payload: bytes) -> bytes:
+    """An ARMA payload with its model subrecords in the order the Creation Kit
+    writes them. Only the model subrecords change places, among the places they
+    already occupy; every other subrecord stays put, and a payload already in
+    order comes back unchanged, byte for byte. #arma-model-order"""
+    subs = list(esp.iter_subrecords(payload))
+    slots = [i for i, (sig, _d) in enumerate(subs) if sig in _ARMA_MODEL_ORDER]
+    have = [subs[i] for i in slots]
+    want = sorted(have, key=lambda sd: _ARMA_MODEL_ORDER[sd[0]])    # stable
+    if have == want:
+        return payload
+    for i, sd in zip(slots, want):
+        subs[i] = sd
+    return b"".join(esp.encode_subrecord(sig, d) for sig, d in subs)
+
+
 def rebuild_arma_payload(source_payload: bytes, *,
                          new_primary_rnam: int,
                          new_additional_race_fids: Iterable[int],
@@ -2508,7 +2529,12 @@ def rebuild_arma_payload(source_payload: bytes, *,
     for fid in new_additional_race_fids:
         out += esp.encode_subrecord(ARMA_ADDITIONAL_RACE_SIG, struct.pack("<I", fid))
     out += trailing
-    return out
+    # A synthesised MOD3/MOD5 was appended after MOD4 and its hash block; the CK
+    # and xEdit order is MOD2, MO2T, MO2S, MOD3, ... MOD5, MO5T, MO5S. Mutagen-based
+    # tools read a record in any other order as missing its male world and
+    # first-person models, and drop them when they rewrite the plugin.
+    # #arma-model-order (GitHub issue #27)
+    return _arma_model_order(out)
 
 
 def replace_arma_edid(source_payload: bytes, new_edid: str) -> bytes:
