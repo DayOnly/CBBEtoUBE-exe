@@ -260,4 +260,3 @@ def test_only_relaxed_rows_get_their_arm_chain_restored():
     branch = src[i:i + 900]
     assert "_is_arm_hand_bone(_b) and _b in ube_bones" in branch
     assert "NEW[np.ix_(_rr, _keep)] = G[np.ix_(_rr, _keep)]" in branch
-    assert "NEW[_rr[_ok]] /= _tot[_ok, None]" in branch

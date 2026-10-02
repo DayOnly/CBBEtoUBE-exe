@@ -17169,15 +17169,6 @@ PAIRS = (
          tests=('tests/test_flank_skin_match.py',),
          expect=('test_a_clean_row_still_takes_the_bodys_whole_vector', 'test_only_relaxed_rows_get_their_arm_chain_restored',),
     ),
-    Pair('FSM-i', 'a relaxed row is left unnormalised after its arm chain is restored',
-         edits=(
-             ('src/nif_convert_weights.py',
-              '                        NEW[_rr[_ok]] /= _tot[_ok, None]\n',
-              '                        pass  # MUTATED\n', 1),
-         ),
-         tests=('tests/test_flank_skin_match.py',),
-         expect=('test_a_relaxed_row_keeps_its_authored_arm_chain_weight', 'test_only_relaxed_rows_get_their_arm_chain_restored',),
-    ),
     Pair('FSM-j', 'a relaxed row keeps every arm bone, the foreign skeleton one included',
          edits=(
              ('src/nif_convert_weights.py',

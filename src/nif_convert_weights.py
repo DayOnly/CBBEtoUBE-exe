@@ -2657,7 +2657,8 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                 # skeleton-arm weight the body lacks) takes the body's weight on the
                 # NON-arm bones and keeps its AUTHORED weight on every arm-chain bone
                 # the body skins; the drained skeleton-arm bone stays at the blend's
-                # value. Renormalised. Rows the plain gate admitted are untouched.
+                # value. The pass normalises every row before it writes it. Rows the
+                # plain gate admitted are untouched.
                 _relaxed = _sel & (foreign > 1e-4)
                 if _relaxed.any():
                     _keep = [_j for _j, _b in enumerate(shape_bones)
@@ -2665,9 +2666,6 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                     if _keep:
                         _rr = np.where(_relaxed)[0]
                         NEW[np.ix_(_rr, _keep)] = G[np.ix_(_rr, _keep)]
-                        _tot = NEW[_rr].sum(axis=1)
-                        _ok = _tot > 1e-9
-                        NEW[_rr[_ok]] /= _tot[_ok, None]
             else:
                 midx = [shape_bones.index(b) for b in managed]
                 B = np.zeros((n, len(managed)), dtype=np.float64)
