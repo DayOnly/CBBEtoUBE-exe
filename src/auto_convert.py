@@ -7224,7 +7224,68 @@ def _report_skypatcher_unsafe_names(stats: dict) -> int:
     return len(outs) + len(by_plugin)
 
 
-def _report_coverage_holds(stats: "list[dict]") -> None:
+COVERAGE_GAPS_NAME = "coverage_gaps.tsv"
+
+
+def _coverage_gap_row(name: str, e) -> "dict[str, str]":
+    """One row of the coverage-gaps file for one entry of a coverage list. The
+    lists hold entries of several shapes (`((plugin, form id), edid)`, the same
+    with a reason, a dict, a `plugin|form id` string); every shape becomes the
+    same five columns, and nothing is dropped for being an odd shape.
+    #coverage-gaps-file"""
+    plugin = form_id = edid = detail = ""
+    try:
+        if isinstance(e, dict):
+            detail = "; ".join(f"{k}={v}" for k, v in e.items())
+        elif (isinstance(e, (tuple, list)) and e and isinstance(e[0], (tuple, list))
+              and len(e[0]) == 2):
+            plugin, fid = e[0]
+            form_id = f"{int(fid):06X}"
+            rest = list(e[1:])
+            if rest:
+                if isinstance(rest[0], (tuple, list)):          # (edid, patched by)
+                    edid = str(rest[0][0] or "")
+                    detail = " ".join(f"patched by {x}" for x in rest[0][1:])
+                else:
+                    edid = str(rest[0] or "")
+                if len(rest) > 1:
+                    detail = str(rest[1])
+        else:
+            detail = str(e)
+            head, sep, tail = detail.rpartition("|")
+            if sep and tail and all(c in "0123456789abcdefABCDEF" for c in tail):
+                plugin, form_id = head, tail.upper()
+    except (TypeError, ValueError):
+        detail = str(e)
+    return {"list": name, "plugin": str(plugin), "form_id": form_id,
+            "edid": edid, "detail": detail}
+
+
+def _write_coverage_gaps(out_dir, named_lists) -> "str | None":
+    """Write every entry of every coverage list, untruncated, to
+    `<out_dir>/coverage_gaps.tsv` (one row per entry: list, plugin, form id, EDID,
+    detail). Returns the file name, or None when there is nothing to write or it
+    could not be written. The console lines name only the first few of a long
+    list; this is where the rest lives. #coverage-gaps-file (issue #26)"""
+    rows = [_coverage_gap_row(n, e) for n, entries in named_lists for e in entries]
+    if not rows or out_dir is None:
+        return None
+    cols = ("list", "plugin", "form_id", "edid", "detail")
+
+    def cell(v):
+        return " ".join(str(v).split())             # no tab or line break in a cell
+    try:
+        d = Path(out_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        lines = ["\t".join(cols)] + ["\t".join(cell(r[c]) for c in cols) for r in rows]
+        (d / COVERAGE_GAPS_NAME).write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+    except OSError as _e:
+        print(f"  [unified] could not write {COVERAGE_GAPS_NAME}: {plain_error(_e)}")
+        return None
+    return COVERAGE_GAPS_NAME
+
+
+def _report_coverage_holds(stats: "list[dict]", out_dir=None) -> None:
     """Say what the two coverage passes held back, in counts and a few names:
     armour of an excluded mod left without an armature (#exclude-owned-coverage),
     left to another mod that patches it, or still drawn as a non-body piece
@@ -7237,7 +7298,9 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     (#coverage-body-accessory), armour drawn through an armature whose
     primary race is not DefaultRace (#coverage-human-race-list), and
     armatures whose meshes exist nowhere (#coverage-dead-armature). Silent
-    when there is nothing to say."""
+    when there is nothing to say. Every list prints only its first few entries;
+    with `out_dir` the full lists are written to coverage_gaps.tsv there and the
+    "... and N more" lines say so. #coverage-gaps-file"""
     withheld = [w for s in stats for w in (s.get("withheld") or [])]
     excl_kept = [w for s in stats for w in (s.get("exclusion_nonbody_kept") or [])]
     kept = [k for s in stats for k in (s.get("female_kept") or [])]
@@ -7284,6 +7347,28 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
             if mod is not None:
                 left_to[tuple(armo_abs)] = (edid, mod)
     withheld = [w for w in withheld if tuple(w[0]) not in left_to]
+    # The full lists, before any of them is cut to a few names for the console.
+    # #coverage-gaps-file
+    _gap_file = _write_coverage_gaps(out_dir, (
+        ("withheld", withheld), ("left_to_other_mod", list(left_to.items())),
+        ("excluded_kept", excl_kept), ("female_kept", kept),
+        ("female_not_minted", skipped), ("female_not_covered", dropped),
+        ("female_dead_male", dead), ("female_standin", standin),
+        ("female_male_as_is", as_is), ("female_dead_kept", dead_kept),
+        ("world_mesh_not_minted", wskip), ("world_mesh_not_covered", wdrop),
+        ("world_mesh_no_body_piece", wpart),
+        ("hands_feet_unresolved", [k for k in nskip if k.get("why") == "unresolved"]),
+        ("hands_feet_not_covered", [d for d in ndrop if d[2] == "unresolved"]),
+        ("hand_made_ube_twin", twins), ("hood_or_accessory", accs),
+        ("beast_variant", beasts), ("beast_variant_non_actor", nonactor),
+        ("wig", wigs), ("race_list_mapped", listed),
+        ("drawn_by_another_mod", tp_drawn), ("partly_drawn_by_another_mod", tp_part),
+        ("kept_beside_another_mod", tp_kept),
+        ("dead_armature", sorted({k for s in stats
+                                  for k in (s.get("dead_armature_skipped") or [])})),
+        ("dead_armature_not_covered", [d for s in stats
+                                       for d in (s.get("dead_dropped") or [])])))
+    _gap_ref = f" (full list: {_gap_file})" if _gap_file else ""
     if withheld:
         warn(f"[unified] {len(withheld)} armour(s) of an excluded mod have no UBE "
              "armature from any mod",
@@ -7300,7 +7385,7 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
         for (pl, fid), edid in withheld[:5]:
             print(f"       {edid or '?'}  ({pl}|{fid:06X})")
         if len(withheld) > 5:
-            print(f"       ... and {len(withheld) - 5} more")
+            print(f"       ... and {len(withheld) - 5} more{_gap_ref}")
     if left_to:
         print(f"  [unified] {len(left_to)} armour(s) of an excluded mod are left to "
               "the other mod that patches them (it adds armatures to them; this "
@@ -7308,7 +7393,7 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
         for ((pl, fid), (edid, mod)) in list(left_to.items())[:5]:
             print(f"       {edid or '?'}  ({pl}|{fid:06X})  patched by {mod}")
         if len(left_to) > 5:
-            print(f"       ... and {len(left_to) - 5} more")
+            print(f"       ... and {len(left_to) - 5} more{_gap_ref}")
     if excl_kept:
         # #exclude-body-only: information -- the user's rule, working as meant.
         # A kept piece draws the model its armature names: never a converted
@@ -7325,7 +7410,7 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
         for (pl, fid), edid in excl_kept[:5]:
             print(f"       {edid or '?'}  ({pl}|{fid:06X})")
         if len(excl_kept) > 5:
-            print(f"       ... and {len(excl_kept) - 5} more")
+            print(f"       ... and {len(excl_kept) - 5} more{_gap_ref}")
     if kept or skipped:
         warn(f"[unified] {len(kept)} female model slot(s) kept their own unconverted "
              f"mesh, and {len(skipped)} body armature(s) were not minted "
@@ -7343,9 +7428,11 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
         for k in kept[:5]:
             print(f"       {k['slot']} {k['kept']}  (not {k['male']})")
         if len(kept) > 5:
-            print(f"       ... and {len(kept) - 5} more")
+            print(f"       ... and {len(kept) - 5} more{_gap_ref}")
         for (pl, fid), edid in dropped[:5]:
             print(f"       not covered: {edid or '?'}  ({pl}|{fid:06X})")
+        if len(dropped) > 5:
+            print(f"       ... and {len(dropped) - 5} more{_gap_ref}")
     if dead:
         # A NOTE: this is the behaviour from before the guard, kept on purpose.
         warn(f"[unified] {len(dead)} female model slot(s) name a mesh that exists "
@@ -7356,7 +7443,7 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
         for k in dead[:5]:
             print(f"       {k['slot']} {k['dead']}  (-> {k['male']})")
         if len(dead) > 5:
-            print(f"       ... and {len(dead) - 5} more")
+            print(f"       ... and {len(dead) - 5} more{_gap_ref}")
     if standin:
         print(f"  [unified] {len(standin)} female model slot(s) name a mesh that "
               "exists nowhere and draw the vanilla female counterpart of their "
@@ -7364,14 +7451,14 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
         for k in standin[:5]:
             print(f"       {k['slot']} {k['orig']}  (-> {k['standin']})")
         if len(standin) > 5:
-            print(f"       ... and {len(standin) - 5} more")
+            print(f"       ... and {len(standin) - 5} more{_gap_ref}")
     if as_is:
         print(f"  [unified] {len(as_is)} female model slot(s) of non-body pieces "
               "name a mesh that exists nowhere and draw their own male mesh")
         for k in as_is[:5]:
             print(f"       {k['slot']} {k['orig']}  (-> {k['male_as_is']})")
         if len(as_is) > 5:
-            print(f"       ... and {len(as_is) - 5} more")
+            print(f"       ... and {len(as_is) - 5} more{_gap_ref}")
     if dead_kept:
         warn(f"[unified] {len(dead_kept)} female model slot(s) name a mesh that "
              "exists nowhere and have nothing to draw instead",
@@ -7398,7 +7485,7 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
             for k in group[:3]:
                 print(f"         {k['slot']} {k['dead_kept']}  ({k['arma']})")
             if len(group) > 3:
-                print(f"         ... and {len(group) - 3} more")
+                print(f"         ... and {len(group) - 3} more{_gap_ref}")
     if wskip:
         warn(f"[unified] {len(wskip)} body armature(s) were not minted because their "
              f"female world mesh was not converted ({len(wdrop)} armour(s) left "
@@ -7414,11 +7501,11 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
         for (pl, fid), edid in wdrop[:5]:
             print(f"       not covered: {edid or '?'}  ({pl}|{fid:06X})")
         if len(wdrop) > 5:
-            print(f"       ... and {len(wdrop) - 5} more")
+            print(f"       ... and {len(wdrop) - 5} more{_gap_ref}")
         for (pl, fid), edid in wpart[:5]:
             print(f"       no body piece: {edid or '?'}  ({pl}|{fid:06X})")
         if len(wpart) > 5:
-            print(f"       ... and {len(wpart) - 5} more")
+            print(f"       ... and {len(wpart) - 5} more{_gap_ref}")
     if nred:
         print(f"  [unified] {len(nred)} hand/foot armature(s) that drew the nude CBBE "
               "hands or feet now draw the UBE body's own")
@@ -7440,8 +7527,12 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
                         severity="warning")
         for k in unres[:5]:
             print(f"       {k['arma']}")
+        if len(unres) > 5:
+            print(f"       ... and {len(unres) - 5} more{_gap_ref}")
         for (pl, fid), edid, _why in unres_drop[:5]:
             print(f"       not covered: {edid or '?'}  ({pl}|{fid:06X})")
+        if len(unres_drop) > 5:
+            print(f"       ... and {len(unres_drop) - 5} more{_gap_ref}")
     skins = [k for k in nskip if k.get("why") == "skin"]
     skin_drop = [d for d in ndrop if d[2] == "skin"]
     if skins or skin_drop:
@@ -7456,7 +7547,7 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
         for k in twins[:5]:
             print(f"       {k['slot']} {k['path']}  ({k.get('mod') or '?'})")
         if len(twins) > 5:
-            print(f"       ... and {len(twins) - 5} more")
+            print(f"       ... and {len(twins) - 5} more{_gap_ref}")
     if accs:
         print(f"  [unified] {len(accs)} hood/accessory armature(s) of body armour "
               "drawn on UBE with the body (their own mesh)")
@@ -7503,7 +7594,7 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
         for (pl, fid), edid in wigs[:3]:
             print(f"       {edid or '?'}  ({pl}|{fid:06X})")
         if len(wigs) > 3:
-            print(f"       ... and {len(wigs) - 3} more")
+            print(f"       ... and {len(wigs) - 3} more{_gap_ref}")
     if listed:
         print(f"  [unified] {len(listed)} armour(s) whose only human-drawing "
               "armature has another primary race are now drawn on UBE (race "
@@ -7511,21 +7602,21 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
         for (pl, fid), edid in listed[:5]:
             print(f"       {edid or '?'}  ({pl}|{fid:06X})")
         if len(listed) > 5:
-            print(f"       ... and {len(listed) - 5} more")
+            print(f"       ... and {len(listed) - 5} more{_gap_ref}")
     if tp_drawn:
         print(f"  [unified] {len(tp_drawn)} armour(s) already drawn on UBE by another "
               "mod's armature -- ours not minted")
         for (pl, fid), edid in tp_drawn[:5]:
             print(f"       {edid or '?'}  ({pl}|{fid:06X})")
         if len(tp_drawn) > 5:
-            print(f"       ... and {len(tp_drawn) - 5} more")
+            print(f"       ... and {len(tp_drawn) - 5} more{_gap_ref}")
     if tp_part:
         print(f"  [unified] {len(tp_part)} armour(s) partly drawn on UBE by another "
               "mod's armature -- ours minted only for the pieces or races it leaves out")
         for (pl, fid), edid in tp_part[:5]:
             print(f"       {edid or '?'}  ({pl}|{fid:06X})")
         if len(tp_part) > 5:
-            print(f"       ... and {len(tp_part) - 5} more")
+            print(f"       ... and {len(tp_part) - 5} more{_gap_ref}")
     # #coverage-dead-armature: distinct armatures (one can serve both passes),
     # counted by the plugin that defines them.
     dead_arm = sorted({k for s in stats for k in (s.get("dead_armature_skipped") or [])})
@@ -7545,7 +7636,7 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
         for pl, n in sorted(per.items(), key=lambda t: (-t[1], t[0]))[:8]:
             print(f"       {n:>4}  {pl}")
         if len(per) > 8:
-            print(f"       ... and {len(per) - 8} more plugin(s)")
+            print(f"       ... and {len(per) - 8} more plugin(s){_gap_ref}")
     for (pl, fid), edid, arma in tp_kept:
         # #coverage-keep-better-first-person: one line each (2 on a real order).
         print(f"  [unified] note: {edid or '?'} ({pl}|{fid:06X}) keeps our armature "
@@ -7754,7 +7845,7 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
                   f"src-primary HF via preserved-race mint")
             _print_coverage_warnings("body", bd)
             _held.append(bd)
-        _report_coverage_holds(_held)
+        _report_coverage_holds(_held, out_dir=output)
         if not conv_rel:
             print("  body+hands/feet: SKIPPED -- no converted !UBE meshes "
                   "found, so this coverage carries NO body links")
