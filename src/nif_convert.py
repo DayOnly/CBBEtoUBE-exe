@@ -14474,6 +14474,13 @@ def _fit_shapes_swap(ctx) -> None:
                       else np.asarray(s.verts, dtype=np.float64)),
             "override_skin": override_skin,
             "verts_modified": override is not None,
+            # #coherence-repair-write-hold: the body in THIS shape's own frame
+            # (the chain worked in the offset frame and subtracted the offset
+            # above), for the write-time repair's clearance hold.
+            "repair_body": ((np.asarray(body_verts_for_p2, dtype=np.float64)
+                             - _off_p2, body_norms_for_p2)
+                            if (body_verts_for_p2 is not None
+                                and body_norms_for_p2 is not None) else None),
         })
 
 
@@ -15320,6 +15327,7 @@ def convert_nif_phase2(
                 # on position, for the same reason the groove smooth does. So
                 # skip the repairs here on phase 2, where they have already run.
                 skip_geometry_repair=LAYER_ORDER_LAST,
+                repair_body=j.get("repair_body"),
             )
             copied.append(s.name)
             if first_armor_shape is None:

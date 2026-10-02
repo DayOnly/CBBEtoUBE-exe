@@ -2146,7 +2146,8 @@ def _open_source_nif(src_path):
 def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
                 override_skin=None, skip_alpha=False, override_tris=None,
                 preserve_authored_skin=False, override_normals=None,
-                skip_geometry_repair=False, xml_stem_scan=True):
+                skip_geometry_repair=False, xml_stem_scan=True,
+                repair_body=None):
     """Deep-copy a single shape from src NIF to dst NIF via pynifly.
 
     `xml_stem_scan`: pass `_dst_xml_stem_scan()` when `src_shape` lives in a
@@ -2209,8 +2210,14 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         if _geometry_repair_allowed(src_shape, skip_geometry_repair):
             try:
                 _sv2 = np.asarray(src_shape.verts, dtype=np.float64)
+                # #coherence-repair-write-hold: on a phase-2 piece this is the
+                # SECOND run and the last thing to touch a vertex, so it gets
+                # the same clearance hold the chain's run has. `repair_body` is
+                # (verts, normals) in this shape's frame, None on the copy path.
+                _rb = repair_body if repair_body is not None else (None, None)
                 _cv, _nc_local = _repair_coherence_collapse(
-                    _sv2, ov, src_shape.tris)
+                    _sv2, ov, src_shape.tris,
+                    body_verts=_rb[0], body_normals=_rb[1])
                 if _nc_local:
                     ov = _cv
                     print(f"    [coherence-repair] {src_shape.name}: "
