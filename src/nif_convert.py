@@ -3417,13 +3417,87 @@ _BODY_HEURISTIC_MIN_VERTS = 4000
 # diffuse gate (so cloth is excluded). Vanilla-topology body skins shipped by
 # armour replacers (HDT-SMP Vanilla's forsworn `ForswornFemaleBody` ~1.5k
 # verts) are well under the custom-inline-body count above but ARE bodies.
-# Floor exists only to reject tiny body-textured decals. See #164.
+#
+# This floor used to read "exists only to reject tiny body-textured decals
+# (#164)". #164 was the forsworn double-scale itself; no decal was ever
+# measured, and the class the floor let through is the neck-seam stub of
+# #skin-stub-drop below: a visible, skinned, body-textured patch of 46-870
+# verts. Since that rule, a VISIBLE skinned body-skin shape is a body before
+# these floors are consulted, so they now only govern the shapes that rule
+# declines: hidden, effect-shader, extremity and unskinned ones.
 _BODY_SKIN_MIN_VERTS = 500
 # Bone floor for the same body-skin path. A vanilla-topology body skin is
 # skinned to ~22 bones (no 3BA scale-bone cluster), well under the 40-bone
 # custom-body threshold. Once the body-skin diffuse + full-Z gates pass, this
 # only confirms the shape is skinned to a real skeleton (not a static decal).
 _BODY_SKIN_MIN_BONES = 15
+
+# #skin-stub-drop (issue #30). A small VISIBLE shape textured with the body
+# skin -- a collar or chest patch of 46-870 verts, 3-15 bones, ~15u tall, the
+# author's own neck-seam filler -- passed every branch of
+# `_looks_like_inline_body`: not a body name, and under the Z / bone / vert
+# floors of the skin heuristic. It then took the GARMENT path, kept its CBBE
+# skin textures and UVs (a model-space normal map the UBE body does not share)
+# and landed 0.85u off the UBE neck ring: a visible seam in game on three
+# pieces, and 20 of 72 held-back torso pieces on one modlist carry such a
+# patch. The positive control is the prefix branch: the same kind of stub
+# named `FemaleUnderwearBody:0` is dropped, the UBE body injected, and that
+# piece is fine in game.
+#
+# The rule: a visible, skinned shape whose diffuse is the body skin IS body
+# skin whatever its size, name, bone count or height -- on a UBE actor it
+# cannot be used anyway (CBBE UVs), and the injected body already covers what
+# it covered. Three things are kept out of it, each for a measured reason:
+#   * HIDDEN shapes (NiAVObject flag bit 0): collision clones and proxies the
+#     converter and authors hide on purpose; the renderer never draws them, so
+#     they are not the seam, and dropping one would take a collider with it.
+#   * effect-shader shapes: additive glow overlays (`_shape_has_effect_shader`)
+#     ride their plate and are never skin.
+#   * EXTREMITY skin: bare hands or feet an outfit bundles are body-skin
+#     textured too (vanilla hands and feet share `femalebody_1.dds`), but the
+#     injected body has no hands or feet (the UBE `BaseShape` spans Z 11-114:
+#     no feet, and body meshes never carry hands), so dropping them would
+#     leave the actor without. A shape is an extremity when EVERY bone it is
+#     skinned to is a hand / finger / forearm / foot / toe / calf bone; the
+#     stubs above are skinned to spine, clavicle, upper-arm, neck and head.
+# Shader-less collision proxies have no diffuse and never pass the texture
+# test in the first place.
+_EXTREMITY_BONE_MARKERS = ("hand", "finger", "thumb", "forearm",
+                           "foot", "toe", "calf")
+
+
+def _shape_is_hidden(shape) -> bool:
+    """NiAVObject Hidden bit (flag bit 0), read off the pynifly shape behind a
+    nif_io.Shape or off a raw pynifly shape. Test stand-ins carry no flags
+    and read as visible."""
+    raw = getattr(shape, "_backing", None) or shape
+    try:
+        return bool(int(getattr(raw, "flags", 0) or 0) & 0x1)
+    except Exception:
+        return False
+
+
+def _is_extremity_skin_shape(shape) -> bool:
+    """True when the shape is skinned ONLY to hand / foot bones -- bare hands
+    or feet, which the injected body does not replace. Unskinned shapes are
+    not extremities (nothing places them on a hand)."""
+    bones = [str(b) for b in (getattr(shape, "bone_names", None) or [])]
+    if not bones:
+        return False
+    return all(any(m in b.lower() for m in _EXTREMITY_BONE_MARKERS)
+               for b in bones)
+
+
+def _is_visible_body_skin_shape(shape) -> bool:
+    """#skin-stub-drop: the rule stated above -- visible, skinned, body-skin
+    diffuse, not a glow overlay, not an extremity."""
+    if not _shape_diffuse_is_body_skin(shape):
+        return False
+    if not (getattr(shape, "bone_names", None) or []):
+        return False
+    if _shape_is_hidden(shape) or _shape_has_effect_shader(shape):
+        return False
+    return not _is_extremity_skin_shape(shape)
 
 # Diffuse-texture substrings that identify an actual nude BODY mesh
 # (as opposed to a large full-length CLOTH piece). The generic body
@@ -3479,6 +3553,16 @@ def _looks_like_inline_body(shape: "nif_io.Shape") -> bool:
     for prefix in BODY_SHAPE_NAME_PREFIXES:
         if name_low.startswith(prefix) and _shape_diffuse_is_body_skin(shape):
             return True
+    # #skin-stub-drop: a visible, skinned, body-skin-textured shape is body
+    # skin at ANY size -- the neck-seam stub of issue #30 that the floors of
+    # the general heuristic below let through. The prefix branch above is now
+    # a subset of this one and stays for the census tooling that audits it.
+    # Hidden shapes, glow overlays and bare hands / feet are declined here and
+    # fall through to the size-gated branches, so a hidden full body is still
+    # a body and a hidden collider is still a collider. See the rule's note at
+    # `_EXTREMITY_BONE_MARKERS`.
+    if _is_visible_body_skin_shape(shape):
+        return True
     if shape.name == "BaseShape" and len(shape.verts) >= _UBE_BASESHAPE_MIN_VERTS:
         return True
     if shape.name == "VirtualBody" and len(shape.verts) >= _UBE_VIRTUALBODY_MIN_VERTS:
@@ -9321,6 +9405,14 @@ _BUTT_COL_MARGIN = _knob("CBBE2UBE_BUTT_COLLIDER_MARGIN", 0.1)
 # "Uncovered" = no existing collider vert within this. Also the fire gate.
 _BUTT_COL_GAP = _knob("CBBE2UBE_BUTT_COLLIDER_GAP", 3.0)
 _BUTT_COL_MIN_UNCOVERED = _knob("CBBE2UBE_BUTT_COLLIDER_MIN_UNCOVERED", 150, int)
+# #butt-col-encloses-body: after the derived standoff, raise the offset (never
+# above _BUTT_COL_OFFSET) until the DECIMATED collider surface encloses the rear
+# body verts -- its triangles are chords that sag ~0.3u under a convex skin, so
+# a vertex offset below that left 36-73% of the buttock poking through it on
+# the measured pieces. Mechanism and numbers at `_butt_col_enclosing_offset` in
+# nif_convert_physics.py. Kill switch: CBBE2UBE_NO_BUTT_COLLIDER_ENCLOSE=1 (the
+# cloth-derived vertex offset alone, as before).
+BUTT_COLLIDER_ENCLOSE = not _flag("CBBE2UBE_NO_BUTT_COLLIDER_ENCLOSE", False)
 
 
 # (moved to nif_convert_physics.py, 2026-09-01)

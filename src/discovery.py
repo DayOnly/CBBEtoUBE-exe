@@ -190,12 +190,39 @@ def _has_3ba_body(nif_path: Path) -> bool:
 #   4. today's source and the output agree on whether the piece declares HDT
 #      physics -- a physics change is not this fix's to make -- except, when
 #      opted in, the physics GAIN below (#zeroed-smp-gain);
-#   5. the build has the same shapes, with the same vertex counts, as today's
-#      source at both weights -- only the geometry changes, never the pass chain
-#      (a build that bundles the 3BA body would switch the piece to body-swap).
-#      A physics gain waives this one: its build is another design by nature.
+#   5. the build has the same GARMENT shapes, with the same vertex counts, as
+#      today's source at both weights. A shape the two sides differ in (on one
+#      side only, or with another vertex count) is allowed when it is a body
+#      -- one the converter itself strips or replaces (#zos-body-only-diff,
+#      below); any garment shape that differs keeps today's source. A physics
+#      gain waives this one: its build is another design by nature.
 # CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE=1 (settings window: "Take armour from the
 # zeroed BodySlide build") leaves the tiers alone -- the off-switch control.
+#
+# #zos-body-only-diff (2026-09-29). Rule 5 first read "the same shapes", every
+# one: a build that bundles the 3BA body sends the piece down the body-swap
+# path instead of the copy path -- a different pass chain, measured 2026-09-22
+# on four pieces of one armour overhaul: up to 4.2u moved at a weight whose
+# source geometry barely differed, and 2-10% more of the body exposed in poses.
+# That measurement stands. Measured on the same modlist's 1.5 run, the rule
+# read that way held back 105 planned pieces, 104 of which reached the output
+# from the mod's loose mesh -- and over 72 such torso pieces the loose mesh
+# sits a median 0.54u (breast) / 1.46u (belly) further off the zeroed CBBE body
+# than the build, the author's preset baked in, which the copy path carries
+# straight into the UBE output: inflated in game. 53 of the 105 differed from
+# the build ONLY in body shapes: the source ships a small skin stub (a
+# placeholder underwear body, a *_skin / *Body* / chest patch of 46-870 verts
+# on a body-skin diffuse) that the build replaces with a 3BA or CBBE body cut,
+# or a VirtualBody / VirtualGround proxy differs. For those the build is the
+# mesh the game loads on CBBE, and the body-swap path on the build is the path
+# the pieces that came out right in game took. So a shape that differs is
+# judged by the converter's OWN body classifiers (nif_convert): its canonical
+# body names, the 3BA family, the injected proxies (BODYTRI_CARRIER_EXCLUDE),
+# the body-skin diffuse test on the shape as each side ships it, and, with no
+# diffuse to read, the placeholder-name prefixes. Every differing shape a body
+# -> the build is taken; any garment shape differing -> kept, as before. Every
+# keep is now logged by name with the shapes that differ, and the same lists go
+# into conversion_report.json ("zeroed_output_source").
 #
 # #zeroed-smp-gain (2026-09-25, user decision; OPT-IN since 2026-09-26). Rules
 # 4 and 5 held back every vanilla-armour piece whose SMP loose mesh the
@@ -258,6 +285,9 @@ def _has_3ba_body(nif_path: Path) -> bool:
 # would be a second switch that could silently defeat the opt-in.
 _HDT_MARKER = b"HDT Skinned Mesh Physics Object"
 _ZOS_SAID: "set[str]" = set()
+# What the last #zeroed-output-source pass decided, piece by piece, for
+# conversion_report.json (#zos-body-only-diff). Empty until a pass ran.
+_ZOS_LAST: "dict" = {}
 _SMP_CONSTRAINT_TAGS = frozenset({"generic-constraint", "stiffspring-constraint",
                                   "conetwist-constraint"})
 _SMP_SHAPE_NAME_RE = re.compile(r'<per-(?:triangle|vertex)-shape\s+name="([^"]+)"')
@@ -270,6 +300,77 @@ def _zos_say(msg: str) -> None:
     if msg not in _ZOS_SAID:
         _ZOS_SAID.add(msg)
         print(msg, file=sys.stderr, flush=True)
+
+
+def zeroed_output_source_report() -> "dict":
+    """What the last #zeroed-output-source pass decided, for the report JSON:
+    the provider, the pieces moved (and those moved over body-only shape
+    differences, with the shapes), and the pieces kept, by reason, with the
+    shapes that differed where that was the reason. A copy; {} before a pass."""
+    import copy
+    return copy.deepcopy(_ZOS_LAST)
+
+
+def _zos_shape_diffs(today: "dict[str, dict]", build: "dict[str, dict]"
+                     ) -> "dict[str, tuple[int | None, int | None]]":
+    """The shapes today's source and the build do not agree on, over both
+    weights: name -> (source vertex count, build vertex count), None for a side
+    that lacks the shape. Empty when rule 5 holds as first written."""
+    out: "dict[str, tuple[int | None, int | None]]" = {}
+    for w in sorted(today):
+        a = {n: len(v) for n, v in today[w].items()}
+        b = {n: len(v) for n, v in build[w].items()}
+        for n in sorted(set(a) | set(b)):
+            if a.get(n) != b.get(n) and n not in out:
+                out[n] = (a.get(n), b.get(n))
+    return out
+
+
+def _zos_diff_text(diffs: "dict[str, tuple[int | None, int | None]]") -> str:
+    """`name source/build` per shape, `-` for a side that lacks it."""
+    return ", ".join(f"{n} {'-' if a is None else a}/{'-' if b is None else b}"
+                     for n, (a, b) in diffs.items())
+
+
+def _zos_body_type(name: str, diffuse: "list[str]") -> bool:
+    """#zos-body-only-diff: is a shape the two sides differ in a body, by the
+    converter's own classifiers (nif_convert)? By name: the canonical inline
+    body names, the 3BA family, the injected proxies. Else by what it is
+    textured with, on every side that ships it (`diffuse`: the non-empty
+    diffuse paths read off the source and the build) -- the body-skin test the
+    inline-body heuristic gates on. With no diffuse to read, the placeholder
+    prefixes (`_is_inline_body_name`) decide, as the HDT re-import decides."""
+    from types import SimpleNamespace
+    from . import nif_convert as _nc
+    if (name in _nc.BODY_SHAPE_NAMES or _nc._is_3ba_body_family_name(name)
+            or name in _nc.BODYTRI_CARRIER_EXCLUDE):
+        return True
+    probes = [SimpleNamespace(textures={"Diffuse": d}) for d in diffuse if d]
+    if probes:
+        return all(_nc._shape_diffuse_is_body_skin(p) for p in probes)
+    return _nc._is_inline_body_name(name)
+
+
+def _zos_garment_diffs(diffs: "dict[str, tuple[int | None, int | None]]",
+                       cur: "dict[str, Path]", built: "dict[str, Path]",
+                       read_diffuse) -> "list[str] | None":
+    """The differing shapes that are NOT bodies (rule 5 as first written stands
+    for these); [] when every differing shape is a body; None when a diffuse
+    the decision needs cannot be read."""
+    tex: "dict[str, dict[str, str]]" = {}
+    for side, files in (("src", cur), ("build", built)):
+        for w in sorted(files):
+            try:
+                tex[f"{side}{w}"] = read_diffuse(files[w])
+            except Exception:
+                return None
+    garment = []
+    for n, (a, b) in diffs.items():
+        sides = ([k for k in tex if k.startswith("src")] if a is not None else []) + \
+                ([k for k in tex if k.startswith("build")] if b is not None else [])
+        if not _zos_body_type(n, [tex[k].get(n, "") for k in sides]):
+            garment.append(n)
+    return garment
 
 
 def _declares_physics(path: Path) -> "bool | None":
@@ -615,10 +716,21 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
                 else Path(mods_root) / provider)
     moved: "list[str]" = []
     gained: "list[str]" = []
+    body_only: "dict[str, str]" = {}          # stem -> the body shapes it differs in
     kept: "dict[str, int]" = {}
+    kept_stems: "dict[str, list[str]]" = {}
+    kept_diffs: "dict[str, str]" = {}
+    _ZOS_LAST.clear()
 
-    def keep(reason: str) -> None:
+    def keep(reason: str, stem: str, diffs: str = "") -> None:
+        # Every keep by name (#zos-body-only-diff): the 105 a run held back
+        # were counted and named nowhere.
         kept[reason] = kept.get(reason, 0) + 1
+        kept_stems.setdefault(reason, []).append(stem)
+        if diffs:
+            kept_diffs[stem] = diffs
+        _zos_say(f"[zeroed-output-source] kept meshes/{stem}: {reason}"
+                 + (f" -- {diffs}" if diffs else ""))
 
     for stem in stems:
         keys = {w: f"{stem}{w}.nif" for w in ("_0", "_1")}
@@ -628,50 +740,65 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
             continue                          # the output does not build this piece
         cur = {w: index.get(k) for w, k in keys.items()}
         if any(c is None for c in cur.values()):
-            keep("today's source lacks a weight")
+            keep("today's source lacks a weight", stem)
             continue
         try:
             zg = _zb.zeroed_garment(stem, built, dirs=dirs)
         except _zb.ZeroedBodyError:
-            keep("the output is not a verified zeroed build")
+            keep("the output is not a verified zeroed build", stem)
             continue
         physics = {_declares_physics(p) for p in (*cur.values(), *built.values())}
         gain = False
         if physics != {True} and physics != {False}:
             why = _smp_gain_refusal(cur, built)       # #zeroed-smp-gain
             if why is not None:
-                keep(why)
+                keep(why, stem)
                 continue
             gain = True
         try:
             today = {w: _zb._nif_shapes(cur[w]) for w in keys}
         except Exception:
-            keep("today's source is unreadable")
+            keep("today's source is unreadable", stem)
             continue
-        # Same shapes, same vertex counts, at both weights: only the geometry may
-        # change. A build that bundles the 3BA body (or other shapes) sends the
-        # piece down the body-swap path instead of the copy path -- a different
-        # pass chain, measured 2026-09-22 on four pieces of one armour overhaul:
-        # up to 4.2u moved at a weight whose source geometry barely differed, and
-        # 2-10% more of the body exposed in poses. Not this fix's to make. A
-        # physics gain is another design by nature, body-swap on both sides.
-        if not gain and any({n: len(v) for n, v in today[w].items()}
-                            != {n: len(v) for n, v in zg.build[w].items()} for w in keys):
-            keep("the build's shapes differ from today's source")
-            continue
+        # Same GARMENT shapes, same vertex counts, at both weights. A shape the
+        # sides differ in is allowed when it is a body: the source's skin stub
+        # against the build's 3BA cut, a proxy on one side. A garment shape
+        # differing keeps the source -- that build is another design, and the
+        # 2026-09-22 path-change measurement (up to 4.2u, 2-10% more exposed)
+        # stands for it. #zos-body-only-diff. A physics gain is another design
+        # by nature, body-swap on both sides, and skips the check as before.
+        diffs = {} if gain else _zos_shape_diffs(today, zg.build)
+        if diffs:
+            garment = _zos_garment_diffs(diffs, cur, built, _zb._nif_diffuse)
+            if garment is None:               # no diffuse to judge by: rule 5 as first written
+                garment = list(diffs)
+            if garment:
+                keep("the build's shapes differ from today's source", stem,
+                     _zos_diff_text({n: diffs[n] for n in garment}))
+                continue
         if all(_zb.matches_build(today[w], zg.build[w]) is not None for w in keys):
-            keep("today's source already is that build")
+            keep("today's source already is that build", stem)
             continue
         for w, k in keys.items():
             index[k] = built[w]
         moved.append(stem)
         if gain:
             gained.append(stem)
+        if diffs:
+            body_only[stem] = _zos_diff_text(diffs)
+            _zos_say(f"[zeroed-output-source] moved meshes/{stem}: the build "
+                     f"differs from today's source in body shapes only -- "
+                     f"{body_only[stem]}")
     held = ", ".join(f"{r}: {n}" for r, n in sorted(kept.items()))
     smp = f" ({len(gained)} with its SMP physics)" if gained else ""
+    body = (f" ({len(body_only)} over body-shape differences)" if body_only else "")
     _zos_say(f"[zeroed-output-source] {provider}: {len(moved)} piece(s) now "
-             f"converted from its verified zeroed BodySlide build{smp}; "
+             f"converted from its verified zeroed BodySlide build{smp}{body}; "
              f"{sum(kept.values())} kept today's source" + (f" ({held})" if held else ""))
+    _ZOS_LAST.update(provider=provider, moved=list(moved), gained=list(gained),
+                     moved_over_body_shapes=dict(body_only),
+                     kept={r: list(s) for r, s in sorted(kept_stems.items())},
+                     kept_shape_diffs=dict(kept_diffs))
 
 
 def _walk_nifs(meshes_dir: Path, mod_name: str,
