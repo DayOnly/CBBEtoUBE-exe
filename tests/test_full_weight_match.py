@@ -93,9 +93,14 @@ def test_the_clean_row_gate_is_UNCONDITIONAL_here():
     # still present, which reads as "the invariant is gone" when it is not.
     j = src.index("midx = [shape_bones.index(b)", i)
     branch = src[i:j]
-    assert "foreign <= 1e-4" in branch, (
+    # #flank-skin-match (GitHub issue #41) narrowed this to ONE exception: on a
+    # morph-owning shape, in the flank band, weight on a skeleton ARM bone the body
+    # lacks (the author's UpperarmTwist2) is not an authored chain. The effective
+    # foreign weight starts as the plain one; nothing else is taken off it, and
+    # tests/test_flank_skin_match.py pins that a chain bone still blocks the row.
+    assert "_foreign_eff = foreign" in branch, (
         "the full-vector branch must refuse rows carrying chain/foreign weight")
-    assert "_sel = band & live & _okb & (foreign <= 1e-4)" in branch
+    assert "_sel = band & live & _okb & (_foreign_eff <= 1e-4)" in branch
 
 
 def test_it_never_adds_a_bone():
