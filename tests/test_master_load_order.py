@@ -147,12 +147,15 @@ def test_without_a_load_order_masters_sort_by_tier_alone(tmp_path):
 
 
 def test_a_merge_unions_the_masters_in_load_order(tmp_path):
+    """The union meets B before A (patch order); the load order says A first, and
+    an ESPFE that loads last stays last."""
+    _plugin(tmp_path, "A.esp", 0)
+    _plugin(tmp_path, "B.esp", 0)
     _plugin(tmp_path, "Espfe.esp", ESL)
-    _plugin(tmp_path, "Later.esm", ESM)
-    up.set_load_order(["Skyrim.esm", "Later.esm", "Espfe.esp"])
+    up.set_load_order(["Skyrim.esm", "A.esp", "B.esp", "Espfe.esp"])
     patches = []
-    for name, masters in (("P1.esp", ["Skyrim.esm", "Espfe.esp"]),
-                          ("P2.esp", ["Skyrim.esm", "Later.esm"])):
+    for name, masters in (("P1.esp", ["Skyrim.esm", "Espfe.esp", "B.esp"]),
+                          ("P2.esp", ["Skyrim.esm", "A.esp"])):
         e = esp.ESP(header=esp.TES4Header(masters=masters, next_object_id=0xFFFFFF),
                     groups=[esp.Group(label=b"ARMA", records=[
                         _arma_ref((len(masters) << 24) | 0x900, masters)])])
@@ -160,8 +163,8 @@ def test_a_merge_unions_the_masters_in_load_order(tmp_path):
         patches.append(tmp_path / name)
     out = tmp_path / "Merged.esp"
     up.merge_patches(patches, out, master_data_dirs=[tmp_path])
-    got = esp.ESP.load(out).header.masters
-    assert got.index("Later.esm") < got.index("Espfe.esp")
+    got = [m for m in esp.ESP.load(out).header.masters if m in ("A.esp", "B.esp", "Espfe.esp")]
+    assert got == ["A.esp", "B.esp", "Espfe.esp"]
 
 
 # --- 3. the postflight sees the load order ---------------------------------------

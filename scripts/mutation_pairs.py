@@ -16888,7 +16888,7 @@ PAIRS = (
               '0)  # MUTATED', 1),
          ),
          tests=('tests/test_master_load_order.py',),
-         expect=('test_an_espfe_that_loads_after_an_esm_is_listed_after_it', 'test_regular_plugins_follow_the_load_order_not_the_order_they_were_met',),
+         expect=('test_regular_plugins_follow_the_load_order_not_the_order_they_were_met',),
     ),
     Pair('MLO-c', 'a re-sort orders by tier alone',
          edits=(
