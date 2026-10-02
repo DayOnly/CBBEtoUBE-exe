@@ -22,13 +22,13 @@ def _plugin(path, masters, flags=0):
         path.write_bytes(bytes(b))
 
 
-def test_espfe_master_is_not_reported_as_an_ordering_error(tmp_path):
+def test_an_esm_flagged_esp_master_is_not_reported_as_an_ordering_error(tmp_path):
     data = tmp_path / "Data"
     data.mkdir()
-    _plugin(data / "Light.esp", [], flags=0x200)      # ESPFE: master-tier
+    _plugin(data / "Flagged.esp", [], flags=0x1)      # ESM-flagged .esp: master-tier
     _plugin(data / "Later.esl", [])                   # master-tier by extension
     target = tmp_path / "Combined.esp"
-    _plugin(target, ["Skyrim.esm", "Light.esp", "Later.esl"])
+    _plugin(target, ["Skyrim.esm", "Flagged.esp", "Later.esl"])
 
     ube_patcher.clear_esm_tier_cache()
     blind = [w for w in ube_patcher.validate_patch(target, check_nifs=False)
@@ -41,7 +41,7 @@ def test_espfe_master_is_not_reported_as_an_ordering_error(tmp_path):
     assert blind, ("fixture no longer reproduces the blind-classification "
                    "false positive; rewrite it")
     assert not seeing, (
-        "an ESPFE master was still misreported as an ordering error even with "
+        "an ESM-flagged .esp master was still misreported as an ordering error even with "
         f"search dirs supplied: {seeing}")
 
 

@@ -79,6 +79,13 @@ _PF_ICON = {"ok": "✓", "warn": "!", "fail": "✕"}
 _WALL_OF_KNOBS = 12
 
 
+def _path_text(var) -> str:
+    """A path field's text without surrounding whitespace or the quotes that
+    Explorer's "Copy as path" adds. #path-field-quotes"""
+    from .paths import strip_path_quotes
+    return strip_path_quotes(var.get())
+
+
 def mod_name_matches(name: str, query: str) -> bool:
     """Case-insensitive, multi-token AND match for the checklist Filter box:
     every whitespace-separated token in `query` must appear in `name` (so
@@ -1293,7 +1300,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
 
         def work():
             try:
-                od = out_var.get().strip()
+                od = _path_text(out_var)
                 # Under the saved settings, as the run will be (the vanilla
                 # sweep switch decides whether 'vanilla' is listed).
                 # #settings-everywhere
@@ -1975,8 +1982,9 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                     state["_setting_var_by_key"][s.key] = var
                     ttk.Entry(row, textvariable=var).pack(
                         side="left", fill="x", expand=True, padx=(0, 4))
-                    var.trace_add("write", lambda *a, k=s.key, v=var:
-                                  _settings_set(k, v.get()))
+                    var.trace_add("write", lambda *a, k=s.key, v=var, kd=s.kind:
+                                  _settings_set(k, _path_text(v) if kd == "path"
+                                                else v.get()))   # #path-field-quotes
                     if s.kind == "path":
                         ttk.Button(row, text="Browse", width=8,
                                    command=lambda v=var: _pick_path(v)).pack(
@@ -2378,7 +2386,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         ONE definition, because three separate places used to derive it and a
         drift between them is how a report gets read from a different folder
         than the one the run wrote."""
-        return (state.get("output_dir") or out_var.get().strip() or default_out)
+        return (state.get("output_dir") or _path_text(out_var) or default_out)
 
     def _open_output_folder():
         """File ▸ Open output folder. Unlike the toolbar button (which is only
@@ -2803,7 +2811,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         happened yet, so a missing file must not block the paste.
         """
         import json as _j
-        od = (state.get("output_dir") or out_var.get().strip() or default_out)
+        od = (state.get("output_dir") or _path_text(out_var) or default_out)
         try:
             p = Path(od) / "conversion_report.json"
             if p.is_file():
@@ -2840,7 +2848,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         import json
         import time as _t
         import zipfile
-        out = out_var.get().strip() or default_out
+        out = _path_text(out_var) or default_out
         base = Path(out) if (out and Path(out).parent.exists()) else Path.home()
         zpath = base / f"CBBEtoUBE_diagnostics_{_t.strftime('%Y%m%d-%H%M%S')}.zip"
         status.set("Collecting diagnostics…")
@@ -2856,7 +2864,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                                      diagnostics_zip=zpath.name)
         except Exception:
             cover = ""
-        diag_output_dir = (state.get("output_dir") or out_var.get().strip()
+        diag_output_dir = (state.get("output_dir") or _path_text(out_var)
                            or default_out)
 
         def work():
@@ -3097,8 +3105,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
 
     def _build_argv():
         a = ["auto"]
-        if out_var.get().strip():
-            a += ["-o", out_var.get().strip()]
+        if _path_text(out_var):
+            a += ["-o", _path_text(out_var)]
         _nw = parse_workers(_workers_raw())
         if _nw is None:
             raise ValueError("Worker processes must be a whole number of at "
@@ -3275,7 +3283,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
 
     def _lock_for_run():
         state["running"] = True
-        state["output_dir"] = out_var.get().strip() or default_out
+        state["output_dir"] = _path_text(out_var) or default_out
         run_btn.configure(state="disabled")
         cancel_btn.configure(state="normal")
         open_out_btn.configure(state="disabled")
