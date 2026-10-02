@@ -7588,6 +7588,37 @@ _FULL_WEIGHT_SHOULDER_DIST = _knob("CBBE2UBE_FULL_WEIGHT_SHOULDER_DIST", 2.0)
 # LIMB the matched body point belongs to, which is why this gate is expressed
 # that way and generalises to any limb the same accident could reach.
 _FULL_WEIGHT_LIMB_MAX = _knob("CBBE2UBE_FULL_WEIGHT_LIMB_MAX", 0.5)
+
+# --- #flank-skin-match: the author's arm weight at the bust flank --------------
+# A shape that owns a source morph TRI keeps its AUTHORED skin: the M6 re-skin is
+# skipped for it because rebuilding the skin (new bones, new skin-to-bone
+# transforms) desyncs the TRI and was the equip fly/spike instability. The
+# full-weight match then reaches those shapes weights-only -- but only rows with
+# NO weight on a bone the UBE body's skin lacks. At the flank of the bust, the
+# author's CBBE rows carry weight on NPC L/R UpperarmTwist2, a skeleton arm bone
+# the body's 36-bone skin does not list, so the match left those rows exactly as
+# authored: on one piece 342 of 655 flank rows, arm-chain weight 0.27 against the
+# body's 0.21, and under `arms down` / `bow draw` 9.25% of the covered flank
+# showed skin (0.0% when the same piece came from its loose mesh and was
+# re-skinned, 0.5% with CBBE2UBE_RESKIN_KEEP=1). GitHub issue #41.
+#
+# So, for a TRI-owning shape, in the flank band only, weight on a SKELETON ARM
+# bone the body lacks does not make a row unclean: the row is matched to the
+# body's whole vector like its neighbours, and the twist weight is handed to the
+# bones the body does skin the flank with. Weights only: no bone is added, no
+# skin-to-bone transform changes, so the TRI's key is untouched. An authored
+# chain bone (anything that is not an actor-skeleton arm bone) still blocks a
+# row. The band: z 90-103 (the posed test's `breast_side`), body normal at least
+# partly sideways (|nx| > 0.3, |ny| <= 0.8: 0.5 / 0.3 left the rows nearest the
+# armpit, where the normal tilts front or back, on their authored weights: the
+# Solitude piece read 5.25% worst pose there, 2.0% with this band, and 2.0% with
+# no normal test at all). CBBE2UBE_NO_FLANK_SKIN_MATCH=1 gives the old gate.
+FLANK_SKIN_MATCH = (
+    not _flag("CBBE2UBE_NO_FLANK_SKIN_MATCH", False))
+_FLANK_Z_LO = _knob("CBBE2UBE_FLANK_Z_LO", 90.0)
+_FLANK_Z_HI = _knob("CBBE2UBE_FLANK_Z_HI", 103.0)
+_FLANK_NORMAL_X = _knob("CBBE2UBE_FLANK_NORMAL_X", 0.3)
+_FLANK_NORMAL_Y = _knob("CBBE2UBE_FLANK_NORMAL_Y", 0.8)
 # The copy renormalises whatever share of the body's row its basis captured up
 # to 1.0, so a basis that captures little turns a partial sample into a
 # confident wrong answer. Require it to explain at least half the body's motion
