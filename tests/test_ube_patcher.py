@@ -389,13 +389,14 @@ def test_validate_patch_catches_unmappable_transitive_master(tmp_path):
 
 
 
-def test_is_esm_tier_master_detects_esl_flagged_esp(tmp_path):
-    """Regression: an ESL-flagged .esp (TES4 flag 0x200, WITHOUT the ESM bit
-    0x1 — i.e. an ESPFE, the modern compact-plugin standard) must classify as
-    MASTER-TIER so the merge sorts it before regular .esps. The old code checked
-    only 0x1, so 84 ESPFE armor masters in the modlist sorted
-    AFTER UBE_AllRace.esp and corrupted the Combined's master order, misrouting
-    their overrides (invisible/static armor on UBE)."""
+def test_is_esm_tier_master_reads_the_esm_flag_not_the_esl_flag(tmp_path):
+    """#espfe-is-not-a-master (GitHub issue #27). An ESL-flagged .esp (TES4 flag
+    0x200 WITHOUT the ESM bit 0x1, an ESPFE) loads where it sits among the regular
+    plugins, so it is NOT master-tier; the ESM flag (0x1) is. This used to read
+    0x201 and listed an ESPFE ahead of ESMs that load before it. The masters of
+    the plugins we write are sorted by the real load order now
+    (tests/test_master_load_order.py), which also covers the ESPFEs that load
+    ahead of UBE_AllRace.esp."""
     import struct
     from src.ube_patcher import _is_esm_tier_master, _ESM_TIER_CACHE, \
         clear_master_path_cache
@@ -416,7 +417,7 @@ def test_is_esm_tier_master_detects_esl_flagged_esp(tmp_path):
     for n, f in (("esl_only.esp", 0x200), ("esm_flag.esp", 0x1),
                  ("both.esp", 0x201), ("regular.esp", 0x0)):
         make(n, f)
-    assert _is_esm_tier_master("esl_only.esp", dirs) is True   # ESPFE
+    assert _is_esm_tier_master("esl_only.esp", dirs) is False  # ESPFE: not a master
     assert _is_esm_tier_master("esm_flag.esp", dirs) is True   # USSEP-style
     assert _is_esm_tier_master("both.esp", dirs) is True
     assert _is_esm_tier_master("regular.esp", dirs) is False
@@ -424,7 +425,7 @@ def test_is_esm_tier_master_detects_esl_flagged_esp(tmp_path):
     assert _is_esm_tier_master("x.esm", dirs) is True
     assert _is_esm_tier_master("x.esl", dirs) is True
     _ESM_TIER_CACHE.clear()
-    print("  test_is_esm_tier_master_detects_esl_flagged_esp OK")
+    print("  test_is_esm_tier_master_reads_the_esm_flag_not_the_esl_flag OK")
 
 
 

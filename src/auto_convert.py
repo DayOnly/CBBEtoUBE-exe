@@ -12480,6 +12480,12 @@ def _cmd_auto(args):
     _echo_active_experiment_flags()
     lay = paths.discover_layout()
     paths.export_to_env(lay)
+    # The written plugins' masters are ordered the way the game loads them.
+    # #master-load-order
+    try:
+        ube_patcher.set_load_order(paths.active_plugins_ordered(lay))
+    except Exception:
+        ube_patcher.set_load_order(None)
     mr = paths.mods_root()
     if mr is None or not mr.is_dir():
         print("error: could not locate the MO2 mods folder. Run this from "

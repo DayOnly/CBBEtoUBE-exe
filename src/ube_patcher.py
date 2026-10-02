@@ -2968,6 +2968,11 @@ def generate_ube_patch(
     for plugin_name, _fid, _edid in extra_ube_races:
         _add_master_if_missing(patch_masters, plugin_name)
     _add_master_if_missing(patch_masters, src_filename)
+    # An ESM-flagged source or master goes ahead of UBE_AllRace and the other
+    # regular plugins, as in load order; nothing was sorting this list, so
+    # `[..., BSAssets.esm, UBE_AllRace.esp, BSHeartland.esm]` was written.
+    # Vanilla DLC stay first (stable). #master-load-order
+    patch_masters.sort(key=lambda m: _master_sort_key(m, master_data_dirs))
 
     # Patch's own records use top byte == len(patch_masters).
     own_top_byte = len(patch_masters) << 24
@@ -3665,7 +3670,8 @@ def postflight_validate_combined(combined_path, meshes_root=None, *,
         try:
             warns = validate_patch(piece, meshes_root,
                                    master_data_dirs=master_data_dirs,
-                                   mesh_resolves=mesh_resolves)
+                                   mesh_resolves=mesh_resolves,
+                                   check_load_order=True)
         except Exception as e:
             soft.append((piece.name, f"postflight-load-error: {e!r}"))
             continue
@@ -3682,6 +3688,7 @@ def validate_patch(esp_path: str | Path,
                    check_nifs: bool = True,
                    master_data_dirs: list[Path] | None = None,
                    mesh_resolves: "callable[[str], bool] | None" = None,
+                   check_load_order: bool = False,
                    ) -> list[str]:
     """Walk a generated patch ESP and return a list of warning strings
     for structural problems. Empty list = clean.
@@ -3690,6 +3697,8 @@ def validate_patch(esp_path: str | Path,
       "modl-after-data"        ARMO has MODL after DATA; Skyrim stops reading
                                armatures at DATA, so those are silently ignored.
       "master-ordering"        ESM master appears after a regular ESP; crash.
+      "master-load-order"      (check_load_order=True, the loaded Combined only) the
+                               masters are not listed in load order; xEdit would re-sort.
       "next-object-id"         next_object_id <= max own FormID; engine may
                                collide dynamic FormIDs with patch records.
       "esl-overflow"           ESL flag set but own record count > 2048.
@@ -3742,6 +3751,21 @@ def validate_patch(esp_path: str | Path,
             f"{last_master_tier_idx} comes after a regular plugin at index "
             f"{first_regular_idx} (load-order/FormID resolution crash)"
         )
+
+    # #master-load-order: the masters of a plugin the GAME loads (the Combined)
+    # are in the order xEdit's Sort Masters would give them -- the load order. The
+    # tier test above cannot see an ESPFE listed ahead of an ESM that loads before
+    # it. Only when the run knows the load order, and only when asked: a per-source
+    # patch is never loaded, so its master order is not worth a warning.
+    if check_load_order and _LOAD_ORDER_INDEX:
+        known = [(m, _LOAD_ORDER_INDEX[m.lower()]) for m in e.header.masters
+                 if m.lower() in _LOAD_ORDER_INDEX]
+        bad = [(a, b) for a, b in zip(known, known[1:]) if a[1] > b[1]]
+        if bad:
+            warnings.append(
+                f"master-load-order: {len(bad)} master(s) are listed out of load "
+                f"order, e.g. {bad[0][1][0]} comes after {bad[0][0][0]}, but "
+                f"loads before it (xEdit's Sort Masters would rewrite the plugin)")
 
     # next_object_id sanity + FormID zero.
     own_byte = len(e.header.masters)
@@ -4130,8 +4154,7 @@ def resort_masters(esp_obj: esp.ESP,
             used.add(idx)
     # The rest, STABLE-sorted by tier (master-tier first) -- mirrors merge_patches.
     rest = [i for i in range(n) if i not in used]
-    rest.sort(key=lambda i: 0 if _is_esm_tier_master(masters[i], master_data_dirs)
-              else 1)
+    rest.sort(key=lambda i: _master_sort_key(masters[i], master_data_dirs))
     new_order.extend(rest)
     if new_order == list(range(n)):
         return False  # already correctly ordered
@@ -4464,6 +4487,30 @@ def clear_esm_tier_cache() -> None:
     _ESM_TIER_CACHE.clear()
 
 
+# The active plugins in load order, lowercased name -> position, for sorting a
+# written plugin's masters the way the game and xEdit order them. Set once by the
+# run (`set_load_order`); empty when unknown (then masters sort by tier alone, as
+# before). Kept apart from _ESM_TIER_CACHE: the postflight clears that one to
+# re-read flags, and must not lose the order. #master-load-order
+_LOAD_ORDER_INDEX: dict[str, int] = {}
+
+
+def set_load_order(names) -> None:
+    """Record the active plugins, in load order (first loads first). None or an
+    empty list clears it."""
+    _LOAD_ORDER_INDEX.clear()
+    for i, n in enumerate(names or ()):
+        _LOAD_ORDER_INDEX.setdefault(str(n).lower(), i)
+
+
+def _master_sort_key(name: str, data_dirs: "list[Path] | None") -> "tuple[int, int]":
+    """Where a master goes in a master list: master-tier first, then by its real
+    load-order position. A plugin the load order does not know keeps its place
+    behind the known ones (the sort is stable)."""
+    tier = 0 if _is_esm_tier_master(name, data_dirs) else 1
+    return (tier, _LOAD_ORDER_INDEX.get(name.lower(), len(_LOAD_ORDER_INDEX)))
+
+
 # Per-master TES4-only master-list cache. Parses only the TES4 record, not
 # the whole multi-MB plugin; full ESP.load per master made validate_patch slow.
 _MASTER_LIST_CACHE: dict[str, list[str]] = {}
@@ -4497,9 +4544,12 @@ def _read_master_list_only(path: Path) -> "list[str]":
 
 def _is_esm_tier_master(name: str, data_dirs: "list[Path] | None") -> bool:
     """True if `name` must precede regular ESPs in a master list.
-    Master-tier = TES4 flags 0x1 (ESM) or 0x200 (ESL/light), which includes
-    .esm, .esl, ESM-flagged .esp (USSEP), and ESL-flagged .esp (ESPFE).
-    Checking only 0x1 mislabels ESL-flagged .esp as regular -> order crash.
+    Master-tier = a `.esm` / `.esl` file, or a plugin whose TES4 header carries the
+    ESM flag (0x1): ESM-flagged `.esp` such as USSEP. The ESL flag (0x200) alone
+    does NOT make a master: an ESL-flagged `.esp` ("ESPFE") loads where it sits
+    among the regular plugins, so listing it ahead of the ESMs that load before it
+    puts the master list out of load order (and xEdit's Sort Masters then rewrites
+    it). #espfe-is-not-a-master (GitHub issue #27; this used to read 0x201)
     Falls back to extension if the file can't be located."""
     low = name.lower()
     if low.endswith(".esm") or low.endswith(".esl"):
@@ -4512,7 +4562,7 @@ def _is_esm_tier_master(name: str, data_dirs: "list[Path] | None") -> bool:
         if p is not None:
             flags = _read_tes4_flags(p)
             if flags is not None:
-                result = bool(flags & 0x201)  # 0x1 = ESM, 0x200 = ESL
+                result = bool(flags & 0x1)  # 0x1 = ESM; 0x200 (ESL) alone is not a master
                 _ESM_TIER_CACHE[low] = result  # cache only real on-disk reads
                 return result
     return False  # not cached on failure (see _ESM_TIER_CACHE note above)
@@ -7533,7 +7583,7 @@ def merge_patches(
             if m.lower() not in seen:
                 seen.add(m.lower())
                 rest.append(m)
-    rest.sort(key=lambda m: 0 if _is_esm_tier_master(m, master_data_dirs) else 1)
+    rest.sort(key=lambda m: _master_sort_key(m, master_data_dirs))
     for m in rest:
         _add_master_if_missing(merged_masters, m)
 
