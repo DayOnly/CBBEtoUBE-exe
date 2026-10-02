@@ -567,6 +567,27 @@ def _nif_shapes(path) -> "dict[str, np.ndarray]":
         nif_io.release_nif(nf)
 
 
+def _nif_diffuse(path) -> "dict[str, str]":
+    """Every shape's diffuse texture path from one read ("" where the shape has
+    no lighting shader or the slot cannot be read) -- what
+    nif_convert._shape_diffuse_is_body_skin decides a body-skin shape on. Apart
+    from `_nif_shapes` on purpose: only #zeroed-output-source asks, and only
+    for a piece whose build and source differ in their shapes. Released at
+    once, as `_nif_shapes` is (#postflight-release)."""
+    nf = nif_io.open_nif_retry(str(path))
+    try:
+        out = {}
+        for s in nf.shapes:
+            try:
+                tex = dict(getattr(s, "textures", {}) or {})
+                out[s.name] = str(tex.get("Diffuse") or tex.get("0") or "")
+            except Exception:
+                out[s.name] = ""
+        return out
+    finally:
+        nif_io.release_nif(nf)
+
+
 @functools.lru_cache(maxsize=2)
 def _parse_sets(osp: Path) -> "ET.Element | None":
     """One slider-set file, parsed; None if unreadable. Only the last two are

@@ -2734,6 +2734,75 @@ def _report_writer_pass_failures(source, nif_results) -> None:
                         severity="warning", count=len(drops))
 
 
+def authored_xml_declines(nif_results) -> "list[tuple[str, str]]":
+    """[(piece, what the guard said)] for every piece whose authored physics
+    XML the #hdt-xml-unresolvable-bones guard did not ship, in result order,
+    one entry per piece: the `_0`/`_1` meshes share one XML, so the pair is
+    one piece. Read from `reason`, the only channel that crosses the pool
+    boundary. NEVER RAISES, for the same reason as `count_pass_effects`."""
+    out: "list[tuple[str, str]]" = []
+    seen: set = set()
+    try:
+        from .nif_convert_physics import HDT_XML_DECLINED_TAG as tag
+    except Exception:
+        return out
+    head = f"CHANGED BY {tag} ("
+    for r in nif_results or ():
+        try:
+            stem = Path(str(getattr(r, "dst_path", "") or "")).stem
+        except Exception:
+            stem = ""
+        for suf in ("_0", "_1"):
+            if stem.endswith(suf):
+                stem = stem[:-len(suf)]
+                break
+        for part in (getattr(r, "reason", "") or "").split("; "):
+            part = part.strip()
+            if not part.startswith(head):
+                continue
+            key = stem.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            detail = part[len(head):]
+            if detail.endswith(")"):
+                detail = detail[:-1]
+            out.append((stem or "?", detail))
+    return out
+
+
+def _report_authored_xml_declines(source, nif_results) -> None:
+    """The #hdt-xml-unresolvable-bones guard declined a piece's authored
+    physics XML: the piece CONVERTED, with physics regenerated on the chain
+    bones it has, or none. That is not a failed pass -- it was one until
+    2026-09-29, and the pack summary listed it under "the pass did not do its
+    job" while the single-piece harness scored the piece broken -- but the
+    user must hear it: the author's cloth setup (its colliders among it) is
+    not what ships. One warning per source, every piece named in the log,
+    recorded once with its count. #one-tally"""
+    declines = authored_xml_declines(nif_results)
+    if not declines:
+        return
+    lines = [f"{piece}: {detail}" for piece, detail in declines]
+    names = (", ".join(p for p, _d in declines[:5])
+             + (f" and {len(declines) - 5} more" if len(declines) > 5 else ""))
+    warn(f"{len(declines)} piece(s) did not get their authored physics XML: "
+         f"{names}",
+         where=str(source),
+         consequence="each converted; its XML drives whole bone chains the "
+                     "mesh does not have, which the game would drag to the "
+                     "world origin, so the piece ships with physics "
+                     "regenerated on the bones it has (or none) instead",
+         fix="nothing to do for the conversion; if a piece's cloth passes "
+             "through the body in game, report it with the line below",
+         indent="    ")
+    for ln in lines:
+        print(f"       {ln}")
+    _record_failure("authored physics XML not shipped", source,
+                    f"{len(declines)} piece(s)", _first_few(lines),
+                    severity="warning", count=len(declines))
+
+
 def _record_vc_sweep_failed(why) -> None:
     """The run's entry for a vertex-colour sweep that stopped with an error:
     a CTD-class mesh issue (a failure), or with the switch set the warning it
@@ -4725,6 +4794,15 @@ def write_conversion_report_json(output_dir, results,
             # far, and the sources whose every NIF is in but whose turn to
             # finish (their patch included) had not come. #global-schedule
             rep["nif_phase"] = dict(progress)
+        # Which pieces #zeroed-output-source moved to the verified zeroed
+        # BodySlide build and which it kept on the mod's own mesh, by reason,
+        # with the shapes that differed (#zos-body-only-diff). The run log
+        # has the same lines; this is the durable copy. {} when the pass did
+        # not run in this process.
+        try:
+            rep["zeroed_output_source"] = discovery.zeroed_output_source_report()
+        except Exception as _e:
+            rep["zeroed_output_source"] = {"error": f"{type(_e).__name__}: {_e}"}
         # Attribution: which build, which settings (RESOLVED, not just the
         # env overrides), which settings file. Also written on its own as
         # conversion_settings.json so a pack carries its recipe with it.
@@ -8357,6 +8435,8 @@ def _cmd_convert(args):
                             count=r.nif_partial)
         # What the mesh writer reported from the worker. #one-tally
         _report_writer_pass_failures(src.name, r.nif_results)
+        # Authored physics XMLs the chain guard did not ship. #one-tally
+        _report_authored_xml_declines(src.name, r.nif_results)
         # Validator warnings: surfaced loudly but don't block the merge or fail exit.
         validator_hits = []
         for stats in (r.esp_stats_list or

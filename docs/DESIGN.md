@@ -545,12 +545,29 @@ single pass runs. Three rules encode this:
      skipped -- both as BodySlide builds; anything it cannot check is a refusal);
    - today's source is a tier-0 mod whose meshes are NOT already that build;
    - both sides agree on whether the piece declares an HDT physics XML;
-   - the build has the SAME shapes, with the same vertex counts, as today's source at
-     both weights. A build that bundles the 3BA body sends the piece down the
-     body-swap path instead of the copy path; on four pieces of one armour overhaul
-     that path change moved up to 4.2u at a weight whose source geometry barely
-     differed and exposed 2-10% more of the body in poses. Only the geometry is this
-     rule's to change.
+   - the build has the SAME GARMENT shapes, with the same vertex counts, as today's
+     source at both weights. As first written this read "the same shapes", every
+     one: a build that bundles the 3BA body sends the piece down the body-swap path
+     instead of the copy path; on four pieces of one armour overhaul that path change
+     moved up to 4.2u at a weight whose source geometry barely differed and exposed
+     2-10% more of the body in poses. That measurement stands, and any GARMENT shape
+     that differs still keeps the source. But read over every shape the rule held
+     back 105 planned pieces of one modlist's 1.5 run (104 reached the output from
+     the loose mesh), and over 72 such torso pieces the loose mesh sits a median
+     0.54u (breast) / 1.46u (belly) further off the zeroed CBBE body than the build
+     -- the author's preset, which the copy path carries into the UBE output. 53 of
+     the 105 differed from the build ONLY in body shapes: a small skin stub
+     (placeholder underwear body, `*_skin`, chest patch; 46-870 verts on a body-skin
+     diffuse) the build replaces with a 3BA/CBBE body cut, or a VirtualBody /
+     VirtualGround proxy. For those the build is what the game loads on CBBE, and
+     the body-swap path is the one the pieces that came out right took. So a
+     differing shape is judged by the converter's own body classifiers
+     (`nif_convert`: canonical body names, the 3BA family, the injected proxies, the
+     body-skin diffuse test on the shape as each side ships it, the placeholder
+     prefixes when no diffuse can be read); every differing shape a body -> the
+     build is taken (`#zos-body-only-diff`, 2026-09-29). Every keep is logged by
+     name with the shapes that differ, and `conversion_report.json` carries the
+     lists (`zeroed_output_source`).
    Measured on one real modlist: 289 pieces considered, 118 moved (all as whole weight
    pairs, all to the one verified folder); 171 kept -- 106 other shapes, 25 already
    the build, 21 would change physics, 19 not a verified zeroed build. With the switch

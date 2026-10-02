@@ -63,17 +63,31 @@ def test_smp_skirt_not_misdetected_as_body():
     assert nif_convert._looks_like_inline_body(s) is False
 
 
-def test_tiny_body_textured_decal_not_a_body():
-    # Body diffuse but below the vert floor (a small body-textured patch).
+def test_tiny_body_textured_patch_is_a_body():
+    # #skin-stub-drop (issue #30): a small VISIBLE body-textured patch on
+    # torso bones is body skin -- the neck-seam stub. The 500-vert floor used
+    # to keep it on the garment path, citing a "tiny decal" #164 never
+    # measured; the patch is what that floor actually let through.
     s = _FakeShape("decal", nverts=120, nbones=20, zspan=90.0,
                    diffuse=_BODY_DIFF)
-    assert nif_convert._looks_like_inline_body(s) is False
+    assert nif_convert._looks_like_inline_body(s) is True
 
 
-def test_short_body_textured_patch_not_a_body():
-    # Body diffuse + enough verts/bones, but doesn't span the character.
-    s = _FakeShape("hand_patch", nverts=800, nbones=20, zspan=30.0,
+def test_short_torso_skin_patch_is_a_body():
+    # Body diffuse, torso bones, does not span the character: still body skin
+    # (the injected body covers it), so it is dropped, not refit.
+    s = _FakeShape("chest_patch", nverts=800, nbones=20, zspan=30.0,
                    diffuse=_BODY_DIFF)
+    assert nif_convert._looks_like_inline_body(s) is True
+
+
+def test_bare_hands_on_hand_bones_are_not_a_body():
+    # Hands share the body diffuse, and the injected body has no hands: a
+    # shape skinned ONLY to hand / finger / forearm bones stays.
+    s = _FakeShape("hand_patch", nverts=800, nbones=0, zspan=30.0,
+                   diffuse=_BODY_DIFF)
+    s.bone_names = ["NPC L Hand [LHnd]", "NPC L Forearm [LLar]",
+                    "NPC L Finger00 [LF00]", "NPC L Finger01 [LF01]"]
     assert nif_convert._looks_like_inline_body(s) is False
 
 

@@ -1,5 +1,66 @@
 # Changelog
 
+## Unreleased
+
+### Fixed — armour whose BodySlide build differs from its mod's own mesh only in body pieces is converted from the build
+
+The tool converts an armour from your zeroed BodySlide build when the build has
+the same garment shapes as the mod's own mesh. It used to hold the piece back on
+the mod's mesh when the two differed in ANY shape, including a small body-skin
+patch the build replaces with a body cut, or a hidden collision proxy with a
+different vertex count. Those mod meshes can carry the author's own body preset,
+so the converted armour came out with the breasts and belly 0.5 to 2 units too
+far out. A differing shape that is a body (judged by the converter's own body
+checks) no longer holds the piece back; a differing garment shape still does.
+On the reported modlist 37 more pieces are converted from the build, none fewer,
+and on the 16 checked the bust and belly sit a median 0.22 units from what the
+author intended, down from 0.81. Both weights of a piece now come from the one
+build, so the thin and heavy files no longer expose different amounts of skin
+in a pose (the average gap between them falls from 1.7 to 0.06 points). One
+trade: these pieces keep their author's skin weights, so on a few the flank of
+the bust shows a little more skin when the arms move, which is tracked as an
+open issue. Every piece kept and every piece moved is now named in the run log
+and in `conversion_report.json` under `zeroed_output_source`.
+`CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE=1` (set to 1) leaves the sources as they were.
+
+### Fixed — a small body-skin patch under a collar is replaced by the UBE body
+
+An armour mesh can carry a few dozen vertices of bare skin under the collar or at
+the chest, textured with the CBBE body skin. Only a whole body was treated as a
+body, so the patch went through as cloth, kept its CBBE skin textures and sat
+0.85 units off the UBE neck: a lighter, wrongly lit seam between the armour and
+the head. A visible, skinned shape textured with the body skin is now dropped and
+the UBE body takes its place, at any size. Hidden shapes, glow overlays, unskinned
+shapes and bare hands or feet are left alone.
+
+### Fixed — a physics file that drives chains the mesh does not have is not shipped
+
+When the mesh chosen for an armour was a retexture mod's older model with no
+physics bones, and the physics file came from another mod's own mesh, the file
+named bones the mesh lacked and the game dragged them to the world origin: the
+skirt hung from nothing and poured through the floor. A physics file that drives
+whole chains the converted mesh has no link to is now declined with a warning
+(`did not get their authored physics XML`), and the piece ships with physics
+rebuilt on the chains it has, or none. The author's body collider is kept. Across
+a full pack this reaches 2 of 153 physics files.
+
+### Fixed — the buttock collider no longer sits under the skin
+
+The hidden buttock collider is built from the UBE body's buttocks, pushed out a
+little by how close the piece's own cloth sits, then simplified. A simplified
+copy of a round surface lies slightly inside the real one, so when the push-out
+was near zero the collider ended up under the skin and the cloth could rest
+inside the body. The push-out is now worked out against the simplified surface,
+so the collider encloses the body. It matters more now that the pieces moved to
+the build above can carry this collider. `CBBE2UBE_NO_BUTT_COLLIDER_ENCLOSE=1`
+(set to 1) gives the old push-out back.
+
+### Development only — a mutation pair stays live after the skin-patch rule
+
+The pair that checks an exposed-skin slice is counted as stripped read the
+shape as a visible body-skin patch once the rule above landed, so it no longer
+reached the clause it guards. The test shape is now hidden.
+
 ## 1.5 — 2026-09-27
 
 ### Fixed — plates that stand off the body move as their author made them again

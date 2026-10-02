@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**107** problem warnings and **7** notes.
+**108** problem warnings and **7** notes.
 
 ## src/auto_convert.py
 
@@ -33,6 +33,9 @@ at run time), what it means for the run, and what to do next.
 - `!! re-author dropped a shape on … NIF(s)`
   - means: the fix that re-authors the mesh was not applied; each keeps the complete file written before it
   - fix: convert the mod again; if it repeats, report the NIF(s) named
+- `!! … piece(s) did not get their authored physics XML: … -- …`
+  - means: each converted; its XML drives whole bone chains the mesh does not have, which the game would drag to the world origin, so the piece ships with physics regenerated on the bones it has (or none) instead
+  - fix: nothing to do for the conversion; if a piece's cloth passes through the body in game, report it with the line below
 - `!! alt-texture reconcile: … converted NIF(s) with same-named layers could not be matched to their source mesh: …`
   - means: the colour-variant entries of those layers were dropped, so the layers keep their base colour in every colour variant
   - fix: check that the mod each mesh came from is installed and enabled, then run again
