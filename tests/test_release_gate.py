@@ -661,11 +661,7 @@ _API = "_internal/api-ms-win-core-fibers-l1-1-1.dll"
 _RECORD = "_internal/numpy-2.2.6.dist-info/RECORD"
 
 
-@pytest.mark.parametrize("side", ["extra", "missing"])
-def test_an_api_set_dll_on_one_side_only_is_reported_not_judged(chain, tmp_path, side):
-    """GitHub issue #24: the first runner rebuild (v1.5) had 3 Windows API-set
-    DLLs the release machine's bundle does not. They come from the Windows a build
-    runs on, so they are not a file-list failure."""
+def _one_sided(chain, tmp_path, side):
     bundle, fresh = dict(_BUNDLE), dict(_BUNDLE)
     if side == "extra":
         fresh[_API] = b"the runner's windows"
@@ -677,6 +673,17 @@ def test_an_api_set_dll_on_one_side_only_is_reported_not_judged(chain, tmp_path,
     assert got["file set"] == PASS and got["interpreter files"] == NOT_CHECKED
     assert FAIL not in got.values(), got
     assert _API in next(d for _, c, d in verdicts if c == "interpreter files")
+
+
+def test_an_api_set_dll_only_the_runner_has_is_reported_not_judged(chain, tmp_path):
+    """GitHub issue #24: the first runner rebuild (v1.5) had 3 Windows API-set
+    DLLs the release machine's bundle does not. They come from the Windows a build
+    runs on, so they are not a file-list failure."""
+    _one_sided(chain, tmp_path, "extra")
+
+
+def test_an_api_set_dll_only_the_release_machine_has_is_reported_not_judged(chain, tmp_path):
+    _one_sided(chain, tmp_path, "missing")
 
 
 def test_a_launcher_record_that_differs_is_reported_not_judged(chain, tmp_path):
