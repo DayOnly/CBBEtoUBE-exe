@@ -3778,8 +3778,8 @@ PAIRS = (
     Pair('FSE-s', "the dead slots' 'more' count is a fixed subtraction again",
          edits=(
              ('src/auto_convert.py',
-              '                print(f"         ... and {len(group) - 3} more")\n',
-              '                print(f"         ... and {len(dead_kept) - 5} more")  # MUTATED\n', 1),
+              '                print(f"         ... and {len(group) - 3} more{_gap_ref}")\n',
+              '                print(f"         ... and {len(dead_kept) - 5} more{_gap_ref}")  # MUTATED\n', 1),
          ),
          tests=('tests/test_coverage_female_standin.py',),
          expect=('test_every_dead_slot_is_printed_or_counted[42-1]',
