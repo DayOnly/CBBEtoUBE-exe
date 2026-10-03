@@ -11633,6 +11633,38 @@ COHERENCE_KINK_RATIO = _knob("CBBE2UBE_COHERENCE_KINK_RATIO", 2.0)
 # (moved to nif_convert_writer.py, 2026-09-01)
 
 
+def _source_coincident_labels(src_verts, tol=1e-4):
+    """Cluster vertices that sit at one position: `(labels, counts)`.
+
+    Two vertices are one point when they lie within `tol` of each other
+    (transitively), so a seam is found wherever it sits. #coincident-by-distance
+
+    This replaced `np.round(sv / tol)` as the key. A rounding grid cuts the space
+    into cells of width `tol`, and two twins 2.5e-5 apart land in different cells
+    about a quarter of the time, so the weld and the coherence repair treated a
+    real seam as two unrelated vertices. That happens on a file that has been
+    re-authored once (the twins differ by float noise there) and is how a seam on
+    one piece opened to 0.096u after the conform pass's re-author.
+
+    `labels[i]` is the cluster of vertex i and `counts[c]` its size; a vertex
+    with no twin is a cluster of one.
+    """
+    sv = np.asarray(src_verts, dtype=np.float64)
+    n = len(sv)
+    if n == 0:
+        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
+    from scipy.spatial import cKDTree as _kd
+    pairs = _kd(sv).query_pairs(float(tol), output_type="ndarray")
+    if not len(pairs):
+        return np.arange(n, dtype=np.int64), np.ones(n, dtype=np.int64)
+    from scipy.sparse import coo_matrix as _coo
+    from scipy.sparse.csgraph import connected_components as _cc
+    g = _coo((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(n, n))
+    _n, lab = _cc(g, directed=False)
+    lab = lab.astype(np.int64)
+    return lab, np.bincount(lab, minlength=_n).astype(np.int64)
+
+
 def _weld_source_coincident_verts(src_verts, out_verts, tol=1e-4):
     """Re-close seams the per-vertex passes pulled apart.
 
@@ -11657,9 +11689,7 @@ def _weld_source_coincident_verts(src_verts, out_verts, tol=1e-4):
     ov = np.array(out_verts, dtype=np.float64, copy=True)
     if sv.shape != ov.shape or len(sv) == 0:
         return ov, 0
-    key = np.round(sv / float(tol)).astype(np.int64)
-    _, inv, counts = np.unique(key, axis=0, return_inverse=True,
-                               return_counts=True)
+    inv, counts = _source_coincident_labels(sv, tol)
     multi = counts > 1
     if not multi.any():
         return ov, 0

@@ -360,3 +360,31 @@ def test_groups_split_at_the_welds_tolerance():
                     [20.0, 5.0, 5.0]])
     _gid, members = w._source_coincident_groups(src, TOL)
     assert sorted(sorted(int(x) for x in m) for m in members) == [[0, 1]]
+
+
+def test_twins_straddling_a_rounding_cell_are_still_one_seam():
+    """Twins found by DISTANCE, not by a rounding grid. 4.9e-5 and 5.1e-5 are
+    2e-5 apart but round to different cells at 1e-4, so the old key called them
+    unrelated vertices -- the way a seam on a re-authored file (where twins differ
+    by float noise) was missed and then opened by the repair."""
+    src = np.array([[4.9e-5, 0.0, 0.0], [5.1e-5, 0.0, 0.0],
+                    [10.0, 0.0, 0.0], [20.0, 5.0, 5.0]])
+    _gid, members = w._source_coincident_groups(src, TOL)
+    assert sorted(sorted(int(x) for x in m) for m in members) == [[0, 1]]
+
+
+def test_the_weld_closes_twins_that_straddle_a_rounding_cell():
+    src = np.array([[4.9e-5, 0.0, 0.0], [5.1e-5, 0.0, 0.0], [10.0, 0.0, 0.0]])
+    out = np.array([[1.0, 0.0, 0.0], [1.4, 0.0, 0.0], [10.0, 0.0, 0.0]])
+    welded, moved = nc._weld_source_coincident_verts(src, out, tol=TOL)
+    assert moved == 2
+    assert np.allclose(welded[0], welded[1])
+    assert np.allclose(welded[0], [1.2, 0.0, 0.0])
+    assert np.allclose(welded[2], out[2])
+
+
+def test_a_chain_of_twins_is_one_group():
+    # transitive: a-b and b-c within tolerance make one group of three
+    src = np.array([[0.0, 0.0, 0.0], [8e-5, 0.0, 0.0], [16e-5, 0.0, 0.0]])
+    _gid, members = w._source_coincident_groups(src, TOL)
+    assert [sorted(int(x) for x in m) for m in members] == [[0, 1, 2]]

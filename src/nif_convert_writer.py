@@ -1170,7 +1170,8 @@ def _geometry_repair_allowed(shape, skip_geometry_repair=False) -> bool:
 
 def _source_coincident_groups(src_verts, tol=1e-4):
     """Vertex -> source-coincident group, by `_weld_source_coincident_verts`'s
-    own rule (`np.round(sv / tol)`, unique rows). Returns `(gid, members)`:
+    own rule (`_source_coincident_labels`: within `tol` of each other,
+    transitively). Returns `(gid, members)`:
     `gid[v]` is the group index or -1 for a vertex with no twin, and
     `members[g]` is the int64 array of that group's vertex indices. Only groups
     with two or more members are reported; a mesh without any gives
@@ -1179,10 +1180,7 @@ def _source_coincident_groups(src_verts, tol=1e-4):
     sv = np.asarray(src_verts, dtype=np.float64)
     if sv.ndim != 2 or len(sv) == 0:
         return None, []
-    key = np.round(sv / float(tol)).astype(np.int64)
-    _u, inv, counts = np.unique(key, axis=0, return_inverse=True,
-                                return_counts=True)
-    inv = np.asarray(inv).reshape(-1)
+    inv, counts = _nc()._source_coincident_labels(sv, tol)
     multi = counts > 1
     if not multi.any():
         return None, []
