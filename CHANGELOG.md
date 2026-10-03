@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Fixed — the thin and heavy files of one armour no longer end up with different skeleton nodes (#33)
+
+An armour's thin (`_0`) and heavy (`_1`) mesh are converted separately, and the
+rebuild step kept only bones that still carried weight, so the unweighted skeleton
+nodes in front of the meshes (the root stubs `NPC`, `NPC COM`, `NPC Root`, a chain
+bone one weight had emptied) were dropped from one file and kept in the other.
+Nodes sit before the meshes in the file, so a different node count moved every mesh
+behind them to a different position. The rebuild now keeps the old file's unweighted
+root-level nodes (a node with a real parent is left to the physics-chain code, and
+a zero-weight bone is still never added to a skin), and the jiggle sync pairs
+shapes that an author named per weight (`TorsoF_0` / `TorsoF_1`) by position and
+vertex count instead of leaving them out. On 70 torso pairs from the reported
+modlist the pairs whose nodes differ go from 9 to 1 and the pairs with a mesh at a
+different position from 6 to 0 (the one left is a source whose `_0` and `_1` already
+differ). No node changed parent. One visible difference: about a quarter of the
+files, which lost the three root stubs in both weights before, now keep them as
+the source has them. Whether this removes the in-game geometry break is not
+confirmed. `CBBE2UBE_NO_REAUTHOR_KEEPS_NODES=1` (set to 1) drops the nodes as before.
+
 ### Fixed — armour whose BodySlide build differs from its mod's own mesh only in body pieces is converted from the build
 
 The tool converts an armour from your zeroed BodySlide build when the build has
