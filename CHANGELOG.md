@@ -21,6 +21,10 @@ set). Bone weights
 shift slightly on seven pieces because the later weight passes read the repaired
 geometry. Between the two weights of a piece, one bone appears in one file and not
 the other on one more piece than before (a single vertex at the influence cap).
+The seam weld and the repair also find a seam's twins by distance now: they used
+to round positions onto a grid, so twins a hair apart that straddled a grid line were
+missed (one seam on a re-authored file opened to 0.1 units that way); on the 70-piece
+sample no seam is split any more, for 17 more turned triangles in 4828.
 Reported in #31 and fixed in #35.
 A mesh with no coincident vertices is untouched. `CBBE2UBE_NO_COHERENCE_REPAIR=1`
 (set to 1) turns the whole repair off.
