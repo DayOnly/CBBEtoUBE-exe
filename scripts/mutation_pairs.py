@@ -17286,4 +17286,13 @@ PAIRS = (
          tests=('tests/test_seam_twin_skin.py',),
          expect=('test_twins_in_a_later_shape_are_found_at_the_right_vertex_indices',),
     ),
+    Pair('ST-k', 'the part passes run on a one-shape piece',
+         edits=(
+             ('src/nif_convert_weights.py',
+              '    if len(ents) >= 2 and _nc().RIGID_PART_SKIN_MATCH:\n',
+              '    if _nc().RIGID_PART_SKIN_MATCH:\n', 1),
+         ),
+         tests=('tests/test_seam_twin_skin.py',),
+         expect=('test_a_piece_with_one_shape_does_not_run_the_part_passes',),
+    ),
 )
