@@ -17190,10 +17190,8 @@ PAIRS = (
     Pair('NK-g', 'genital anatomy nodes are kept like any other unweighted node',
          edits=(
              ('src/nif_convert_writer.py',
-              '        if _nc()._is_genital_anatomy_bone(name):
-',
-              '        if False:
-', 1),
+              '        if _nc()._is_genital_anatomy_bone(name):\n',
+              '        if False:\n', 1),
          ),
          tests=('tests/test_reauthor_keeps_nodes.py',),
          expect=('test_genital_anatomy_nodes_are_not_kept',),
