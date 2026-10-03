@@ -348,3 +348,14 @@ def test_the_repair_hands_the_hold_its_groups(monkeypatch):
     assert len(seen) == 2
     assert seen[0] is not None and len(seen[0]) == 14
     assert seen[1] is None
+
+
+def test_groups_split_at_the_welds_tolerance():
+    """Two verts a hair apart are one seam; two verts 5e-4 apart are not. A
+    looser grouping would fold distinct vertices into one node and move them
+    together."""
+    src = np.array([[0.0, 0.0, 0.0], [3e-5, 0.0, 0.0],        # one seam
+                    [10.0, 0.0, 0.0], [10.0 + 5e-4, 0.0, 0.0],  # two vertices
+                    [20.0, 5.0, 5.0]])
+    _gid, members = w._source_coincident_groups(src, TOL)
+    assert sorted(sorted(int(x) for x in m) for m in members) == [[0, 1]]
