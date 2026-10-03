@@ -10059,6 +10059,20 @@ def _has_nif_root_garment_chain(src_nif) -> bool:
 ANCHOR_GLOBAL_FIX = (
     not _flag("CBBE2UBE_NO_ANCHOR_GLOBAL_FIX", False))
 
+# #reauthor-keeps-nodes -- a rebuild may drop a skin BINDING, never a NODE.
+# `_reauthor_nif_fresh` copies each shape through `_install_skin`, which add_bones
+# only bones that still carry weight, and the NiNodes of every other bone went
+# with them. Whether a given file is rebuilt, and which of its bones are empty
+# by then, is decided PER WEIGHT FILE, so `_0` and `_1` of one garment came out
+# with different NiNode sets; nodes sit in front of the shapes in the file, so a
+# different node count moves every mesh behind them to a different position
+# (#33: Dawnguard Heavy `_1` had three root stubs `_0` lost, every shape +3).
+# Unweighted nodes are not in any skin, so keeping them cannot desync a
+# partition palette (the reason a zero-weight BONE must not be added).
+# CBBE2UBE_NO_REAUTHOR_KEEPS_NODES=1 drops them as before.
+REAUTHOR_KEEPS_NODES = (
+    not _flag("CBBE2UBE_NO_REAUTHOR_KEEPS_NODES", False))
+
 # #chain-anchor-recreate. Recreate a MISSING flat anchor node, so the chain that
 # hangs off it can be attached at all -- see `_precreate_custom_bone_chains`'
 # flat branch for the measurement. Default ON: it only ever creates a node that

@@ -4139,6 +4139,41 @@ def _hold_weights_at_smp_boundary(dst_path, src_nif_path=None) -> int:
                           f"held {total} vert(s) toward the author")
     return total
 
+def _pair_weight_partner_shapes(shapes0, shapes1) -> dict:
+    """{shape name in `_0` -> shape name in `_1`}: the same shape at both weights.
+    #weight-partner-shape-pairing
+
+    By NAME first. A shape with no namesake is paired by POSITION and VERTEX
+    COUNT when both files list the same number of shapes: an author who names the
+    shapes per weight (`TorsoF_0` / `TorsoF_1`) ships the same mesh under two
+    names, and pairing by name alone left every such piece out of the jiggle sync
+    (#33 mechanism B2: `NPC Belly`, 81 to 457 vertices, stayed in `_0` only). A
+    pair is made only when the two vertex counts agree, so a different shape that
+    happens to sit at the same index is never matched.
+    """
+    sh0, sh1 = list(shapes0), list(shapes1)
+    by1 = {(x.name or ""): x for x in sh1}
+    partner = {}
+    for x in sh0:
+        n = x.name or ""
+        if n and n in by1:
+            partner[n] = n
+    taken = set(partner.values())
+    if len(sh0) == len(sh1):
+        for x0, x1 in zip(sh0, sh1):
+            n0, n1 = x0.name or "", x1.name or ""
+            if not n0 or not n1 or n0 in partner or n1 in taken:
+                continue
+            try:
+                if len(x0.verts) != len(x1.verts) or not len(x0.verts):
+                    continue
+            except Exception:
+                continue
+            partner[n0] = n1
+            taken.add(n1)
+    return partner
+
+
 def _sync_weight_partner_jiggle(path0, path1) -> int:
     """Give a garment the SAME jiggle bones at both body weights.
 
@@ -4225,10 +4260,12 @@ def _sync_weight_partner_jiggle_loaded(path0, path1, nf) -> int:
         return out
 
     by = {w: {(s.name or ""): s for s in nf[w].shapes} for w in ("0", "1")}
-    # weight-that-is-DEFICIENT -> {shape name: [bones to graft]}
+    # `_0` shape name -> its `_1` namesake or positional twin. #weight-partner-shape-pairing
+    partner = _pair_weight_partner_shapes(nf["0"].shapes, nf["1"].shapes)
+    # weight-that-is-DEFICIENT -> {`_0` shape name: [bones to graft]}
     plan: dict = {"0": {}, "1": {}}
     for name, s0 in by["0"].items():
-        s1 = by["1"].get(name)
+        s1 = by["1"].get(partner.get(name))
         if not name or s1 is None:
             continue
         try:
@@ -4261,7 +4298,9 @@ def _sync_weight_partner_jiggle_loaded(path0, path1, nf) -> int:
         other = "1" if side == "0" else "0"
         dirty = False
         for name, bones in sorted(plan[side].items()):
-            s, src = by[side][name], by[other][name]
+            own = name if side == "0" else partner[name]
+            oth = partner[name] if side == "0" else name
+            s, src = by[side][own], by[other][oth]
             ours, theirs = _rows(s), _rows(src)
             existing = list(s.bone_names or [])
             # The new bones' STBs, from the partner, BEFORE anything is written.
