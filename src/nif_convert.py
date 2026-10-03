@@ -4809,6 +4809,14 @@ def convert_nif(
                 (x for x in ube_ref_nif_for_reskin.shapes
                  if x.name == "BaseShape"), None,
             )
+            # #canonical-skeleton-nodes: same node set at both weights.
+            try:
+                _seed_canonical_skeleton_nodes(
+                    dst_nif_for_fit, src_nif_for_fit,
+                    body_bones=(ube_base_for_reskin.bone_names
+                                if ube_base_for_reskin is not None else ()))
+            except Exception as _pe:
+                _note_pass_failure("_seed_canonical_skeleton_nodes", _pe)
 
             # #phase1-nipple-map: the same nipple-ramped bust clearance the
             # body-swap conform gets, computed ONCE per piece. Empty kwargs
@@ -6272,6 +6280,7 @@ from .nif_convert_physics import (  # noqa: E402
     _read_source_hdt_xml_disk,
     _read_source_hdt_xml_text,
     _read_source_hdt_xml_text_uncached,
+    _seed_canonical_skeleton_nodes,
     _seed_flat_chain_anchors,
     _select_framework_bone_carriers,
     _xml_referenced_bone_names,
@@ -10079,6 +10088,16 @@ ANCHOR_GLOBAL_FIX = (
 # CBBE2UBE_NO_REAUTHOR_KEEPS_NODES=1 drops them as before.
 REAUTHOR_KEEPS_NODES = (
     not _flag("CBBE2UBE_NO_REAUTHOR_KEEPS_NODES", False))
+
+# #canonical-skeleton-nodes -- the node set of an output file is a function of the
+# SOURCE (and the body), not of what each weight's passes happened to add. See
+# `_canonical_skeleton_nodes`. CBBE2UBE_NO_CANONICAL_SKELETON_NODES=1 turns it off;
+# `CBBE2UBE_CANONICAL_NODE_CAP` (default 100, 0 = no cap) is the largest canonical
+# set a piece may have: beyond it (cloak chains that look like skeleton names) none
+# is seeded.
+CANONICAL_SKELETON_NODES = (
+    not _flag("CBBE2UBE_NO_CANONICAL_SKELETON_NODES", False))
+_CANONICAL_NODE_CAP = _knob("CBBE2UBE_CANONICAL_NODE_CAP", 100, int)
 
 # #chain-anchor-recreate. Recreate a MISSING flat anchor node, so the chain that
 # hangs off it can be attached at all -- see `_precreate_custom_bone_chains`'
@@ -14594,6 +14613,15 @@ def convert_nif_phase2(
         _seed_flat_chain_anchors(dst_nif, src_nif)
     except Exception as _pe:
         _note_pass_failure("_seed_flat_chain_anchors", _pe)
+    # The node set is a function of the source and the body, not of this weight's
+    # passes: `_0` and `_1` start from the same skeleton nodes. #canonical-skeleton-nodes
+    try:
+        _ub_p2 = next((x for x in ube_nif.shapes if x.name == "BaseShape"), None)
+        _seed_canonical_skeleton_nodes(
+            dst_nif, src_nif,
+            body_bones=(_ub_p2.bone_names if _ub_p2 is not None else ()))
+    except Exception as _pe:
+        _note_pass_failure("_seed_canonical_skeleton_nodes", _pe)
 
     # BODYTRI path: use a pre-built armor TRI if found (has _ForOutfits slider
     # bridges for RaceMenu), otherwise fall back to the body TRI.

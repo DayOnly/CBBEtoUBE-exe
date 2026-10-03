@@ -1802,6 +1802,94 @@ def _seed_flat_chain_anchors(dst_nif, src_nif, stem_scan: bool = True) -> int:
         _note_pass_failure("_seed_flat_chain_anchors", _e)
         return 0
 
+def _canonical_skeleton_nodes(src_nif, body_bones=()) -> "list[str]":
+    """The skeleton nodes every output weight of this piece should carry, derived
+    from things BOTH weights share: the source file's nodes and the body's bones.
+    #canonical-skeleton-nodes
+
+    nifly writes every NiNode in front of the shapes, so one more node in one
+    weight file moves every mesh behind it to a different position, and which
+    skeleton bones a file ends up with is decided per weight by passes that read
+    that weight's geometry (a jiggle bone grafted on one weight and not the other,
+    a twist bone left on two vertices of one). No per-file gate can be made to
+    agree, so the node set stops depending on them: it is a function of the source.
+
+    Only real skeleton nodes (`_actor_can_resolve_bone`), never genital anatomy
+    (stripped on purpose), the root, a shape, or a node that is an ANCESTOR of a
+    custom chain bone: the chain code builds those with their parent links and
+    skips a node that already exists, so a flat copy made here would flatten an
+    SMP chain. A source with more than `_CANONICAL_NODE_CAP` such nodes (a cloak
+    whose chain nodes pass for skeleton names) gets none: the converter drops
+    those on purpose and the set would resurrect them.
+    """
+    try:
+        src_nodes = dict(src_nif.nodes)
+    except Exception:
+        src_nodes = {}
+    try:
+        shape_names = {sh.name for sh in src_nif.shapes}
+    except Exception:
+        shape_names = set()
+    try:
+        root_name = src_nif.rootNode.name
+    except Exception:
+        root_name = None
+    ancestors: "set[str]" = set()
+    for n, node in src_nodes.items():
+        if n in shape_names or _actor_can_resolve_bone(n):
+            continue
+        cur, seen = getattr(node, "parent", None), set()
+        while cur is not None and cur.name not in seen:
+            seen.add(cur.name)
+            ancestors.add(cur.name)
+            cur = getattr(cur, "parent", None)
+    names = set(src_nodes) | set(body_bones or ())
+    out = []
+    for n in sorted(names):
+        if (not n or n == root_name or n in shape_names or n in ancestors
+                or n.lower().endswith(".nif")):
+            continue
+        if not _actor_can_resolve_bone(n) or _nc()._is_genital_anatomy_bone(n):
+            continue
+        out.append(n)
+    cap = int(_nc()._CANONICAL_NODE_CAP)
+    if cap > 0 and len(out) > cap:
+        return []
+    return out
+
+
+def _seed_canonical_skeleton_nodes(dst_nif, src_nif, body_bones=()) -> int:
+    """Create the piece's canonical skeleton nodes, flat at identity (what
+    `add_bone` makes for a skeleton bone), in a still-EMPTY dst NIF, so `_0` and
+    `_1` start from the same node set whatever each weight's passes add later.
+    A node already there (a seeded chain anchor) is left as it is.
+    #canonical-skeleton-nodes. Returns the number of nodes created."""
+    if not _nc().CANONICAL_SKELETON_NODES:
+        return 0
+    try:
+        names = _canonical_skeleton_nodes(src_nif, body_bones)
+        if not names:
+            return 0
+        pyn = _nc()._pynifly()
+        existing = set(dst_nif.nodes.keys())
+        added = 0
+        for n in names:
+            if n in existing:
+                continue
+            try:
+                xf = pyn.TransformBuf()
+                xf.set_identity()
+                dst_nif.add_node(n, xf, parent=None)
+                existing.add(n)
+                added += 1
+            except Exception:
+                pass
+        return added
+    except Exception as _e:
+        _note_pass_failure("_seed_canonical_skeleton_nodes", _e)
+        return 0
+
+
 def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names,
                                   stem_scan: bool = True) -> int:
     """Recreate, in `dst_nif`, the node sub-trees for any armor-specific
