@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixed — the two sides of a UV seam keep one skin, so a seam no longer tears when a limb moves
+
+A seam is stored as two vertices at one position, and the author skins them alike. The
+fit passes pair each vertex to the body by its own normal, so after conversion the two
+halves could carry different weights and pull apart as soon as the arm or leg moved,
+even though they sat together at rest. On one officer armour 198 of 1346 torso seam
+pairs differed (up to 0.66 in weight, worst at the underarm); the matching pass that
+keeps touching vertices alike only ever joined vertices of different shapes. It now
+also joins the vertices that were at one place in the source within one shape, behind
+the same check that the author skinned them alike, and gives them one averaged row.
+On that armour the differing pairs go from 198 to 0 (torso) and 57 to 0 (pants), no
+vertex moves, and no weight sum changes. `CBBE2UBE_NO_SEAM_TWIN_SKIN=1` turns it off.
+
 ### Fixed — the repair that un-buckles crumpled cloth no longer tears UV seams open again
 
 A seam (a UV or normal split) is stored as two or more vertices at one position, and

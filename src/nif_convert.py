@@ -9033,6 +9033,18 @@ MORPHTRI_KEEP_JIGGLE = (
 # CBBE2UBE_NO_COINCIDENT_SKIN=1 turns it off. #coincident-skin-match
 COINCIDENT_SKIN_MATCH = (
     not _flag("CBBE2UBE_NO_COINCIDENT_SKIN", False))
+# #seam-twin-skin -- two vertices at the same place in the SOURCE, in ONE shape,
+# are one point of the garment cut open for a UV seam, and the author skinned
+# them alike. The weight passes pair each vertex to the body by its own normal,
+# so after conversion the two halves skin differently and the seam tears when the
+# limb moves. The pass above only ever joined vertices of DIFFERENT shapes; this
+# joins the twins of one shape, behind the same author gate. Off with
+# CBBE2UBE_NO_SEAM_TWIN_SKIN=1.
+SEAM_TWIN_SKIN = (
+    not _flag("CBBE2UBE_NO_SEAM_TWIN_SKIN", False))
+# How close two source vertices are to be twins; the same distance the seam weld
+# uses.
+_SEAM_TWIN_TOL = _knob("CBBE2UBE_SEAM_TWIN_TOL", 1e-4)
 # The acceptance test's own coincidence radius -- the repair covers exactly the
 # population the metric judges.
 _COINCIDENT_SKIN_TOL = _knob("CBBE2UBE_COINCIDENT_SKIN_TOL", 0.15)

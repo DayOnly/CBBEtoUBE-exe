@@ -2992,6 +2992,17 @@ def _part_is_bilateral(rows, idx, frac: float, sample: int = 600) -> bool:
     return n_l >= need and n_r >= need
 
 
+def _source_twin_pairs(verts) -> set:
+    """Index pairs of source vertices at one place (the two sides of a UV seam).
+    #seam-twin-skin"""
+    from scipy.spatial import cKDTree
+    pts = np.asarray(verts, dtype=np.float64)
+    if len(pts) < 2:
+        return set()
+    return {(int(a), int(b)) if a < b else (int(b), int(a))
+            for a, b in cKDTree(pts).query_pairs(_nc()._SEAM_TWIN_TOL)}
+
+
 def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     """Give cross-shape coincident verts ONE weight row. Returns verts unified.
 
@@ -3034,7 +3045,7 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
             and (s.name or "") not in collider_names
             and (s.name or "") not in softbody_names
             and getattr(s, "bone_weights", None) and len(s.verts) >= 3]
-    if len(cand) < 2:
+    if len(cand) < (1 if _nc().SEAM_TWIN_SKIN else 2):
         return 0
     want = {s.name or "": len(s.verts) for s in cand}
 
@@ -3045,6 +3056,7 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     # source also carries the author's BODY, and parsing tens of thousands of
     # rows nothing can use is pure cost.
     src_rows: dict = {}
+    src_twins: dict = {}
     try:
         snf = _nc()._open_source_nif(src_nif_path)   # #dup-shape-names
         for ss in snf.shapes:
@@ -3052,6 +3064,8 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
             if (want.get(nm) == len(ss.verts)
                     and getattr(ss, "bone_weights", None)):
                 src_rows[nm] = _rows_of(ss, len(ss.verts))
+                if _nc().SEAM_TWIN_SKIN:
+                    src_twins[nm] = _source_twin_pairs(ss.verts)
     except Exception as _se:
         _note_pass_failure("_match_coincident_cross_shape_skin/source", _se)
         return 0
@@ -3073,8 +3087,9 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
         # snapshotting every row of every shape doubled the pass's memory for
         # the sake of the ~1% it ends up needing.
         ents.append({"s": s, "wv": wv, "rows": rr, "old": {},
-                     "pal": set(s.bone_weights or {}), "src": sr})
-    if len(ents) < 2:
+                     "pal": set(s.bone_weights or {}), "src": sr,
+                     "twins": src_twins.get(s.name or "", ())})
+    if len(ents) < (1 if _nc().SEAM_TWIN_SKIN else 2):
         return 0
 
     owner: list = []
@@ -3086,7 +3101,7 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
                                           output_type="ndarray")
     except Exception:
         return 0
-    if not len(pairs):
+    if not len(pairs) and not any(e["twins"] for e in ents):
         return 0
 
     parent = list(range(len(owner)))
@@ -3115,6 +3130,27 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
         pa, pb = find(a), find(b)
         if pa != pb:
             parent[pa] = pb
+    # #seam-twin-skin: the twins of ONE shape, joined by where they were in the
+    # SOURCE (output distance is not asked: the weld may not have run), behind the
+    # same author gate as the cross-shape edges above.
+    twin_joined: set = set()
+    base = 0
+    for k, e in enumerate(ents):
+        for ia, ib in e["twins"]:
+            ra, rb = e["src"][ia], e["src"][ib]
+            if sum(abs(ra.get(x, 0.0) - rb.get(x, 0.0))
+                   for x in set(ra) | set(rb)) > _nc()._COINCIDENT_SKIN_GATE:
+                n_cut += 1
+                continue
+            a, b = base + ia, base + ib
+            joined.add(a)
+            joined.add(b)
+            twin_joined.add(a)
+            twin_joined.add(b)
+            pa, pb = find(a), find(b)
+            if pa != pb:
+                parent[pa] = pb
+        base += len(e["wv"])
     # ---- A PART THE AUTHOR SKINNED RIGID MUST STAY RIGID --------------------
     #
     # REPORTED IN GAME after the cross-shape fix shipped: "the belts look better
@@ -3480,8 +3516,9 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
             continue
         cluster = [owner[m] for m in mem]
         if len({k for k, _ in cluster}) < 2 and not (
-                _rigid_nodes and any(m in _rigid_nodes for m in mem)):
-            continue   # one shape and not an author-rigid part -- nothing to do
+                _rigid_nodes and any(m in _rigid_nodes for m in mem)) and not (
+                twin_joined and any(m in twin_joined for m in mem)):
+            continue   # one shape, not an author-rigid part, no seam twins
         basis = None
         for k, _i in cluster:
             basis = ents[k]["pal"] if basis is None else (basis & ents[k]["pal"])
