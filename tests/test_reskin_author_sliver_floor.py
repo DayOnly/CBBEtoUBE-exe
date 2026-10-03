@@ -139,7 +139,7 @@ def test_a_sliver_bone_that_also_lives_on_an_author_row_is_kept():
 def test_a_light_body_bone_is_not_an_author_sliver():
     # the body's own minor bone lands ~0.01 on the body-dominated rows: it is
     # body-propagated weight, not an author bone, and the floor leaves it alone
-    wbb = run({"Chain": [(0, 1.0), (1, 1.0)]}, 0.02, minor=0.01, verts=BODY_ROWS)
+    wbb = run(SLIVER_ONLY, 0.02, minor=0.01, verts=BODY_ROWS)
     assert 0 in rows(wbb, "BodyB")
 
 
