@@ -56,6 +56,7 @@ class Node:
     def __init__(self, name, parent=None):
         self.name = name
         self.parent = parent
+        self.transform = ("local", name)
 
 
 class Shape:
@@ -81,11 +82,15 @@ class Dst:
     def __init__(self, have=()):
         self.nodes = {n: object() for n in have}
         self.added = []
+        self.parent_of = {}
+        self.xf_of = {}
 
     def add_node(self, name, xf, parent=None):
-        assert parent is None, "canonical nodes are flat"
+        assert parent is None or parent in self.nodes, "parent first"
         self.nodes[name] = object()
         self.added.append(name)
+        self.parent_of[name] = parent
+        self.xf_of[name] = xf
 
 
 def canon(src, body=()):
@@ -160,6 +165,62 @@ def test_the_seed_creates_missing_nodes_and_skips_existing_ones():
     assert dst.added == sorted([PELVIS, PAULDRON]) and n == 2
 
 
+def test_a_node_is_created_under_its_source_parent_with_its_local_transform():
+    # the first version made these flat and flattened 458 nodes the existing code
+    # had linked on 300 real files (UpperArm under Clavicle, Calf under Thigh)
+    clav, arm = "NPC L Clavicle [LClv]", "NPC L UpperArm [LUar]"
+    src = Src([SPINE], parents={clav: SPINE, arm: clav})
+    dst = Dst()
+    ph._seed_canonical_skeleton_nodes(dst, src)
+    assert dst.parent_of[arm] == clav and dst.parent_of[clav] == SPINE
+    assert dst.parent_of[SPINE] is None
+    assert dst.xf_of[arm] == ("local", arm)
+
+
+def test_a_parent_is_always_created_before_its_child():
+    # sorted order would put the child ("A...") before its parent ("B...")
+    child, parent = "NPC A Child", "NPC B Parent"
+    src = Src([parent], parents={child: parent})
+    dst = Dst()
+    ph._seed_canonical_skeleton_nodes(dst, src)
+    assert dst.added.index(parent) < dst.added.index(child)
+
+
+def test_a_node_whose_parent_is_not_canonical_is_skipped_not_flattened():
+    # the parent hangs a custom chain (an ancestor), so it is the chain code's:
+    # its other child must not be hung flat under the root in its place
+    arm, hand = "NPC L Forearm [LLar]", "NPC L Hand [LHnd]"
+    src = Src([arm], parents={"ArmChain 01": arm, hand: arm})
+    dst = Dst()
+    ph._seed_canonical_skeleton_nodes(dst, src)
+    assert hand not in dst.nodes and arm not in dst.nodes
+
+
+def test_a_child_of_the_root_is_created_without_a_parent():
+    src = Src([SPINE])
+    src.nodes[SPINE].parent = src.nodes["Scene Root"]
+    dst = Dst()
+    ph._seed_canonical_skeleton_nodes(dst, src)
+    assert dst.parent_of[SPINE] is None
+
+
+def test_a_body_bone_the_source_lacks_is_created_flat_at_identity():
+    dst = Dst()
+    ph._seed_canonical_skeleton_nodes(dst, Src([SPINE]), body_bones=[PELVIS])
+    assert dst.parent_of[PELVIS] is None
+    assert not isinstance(dst.xf_of[PELVIS], tuple)      # an identity buffer, not a source transform
+
+
+def test_a_parent_cycle_in_the_source_creates_neither_node():
+    a, b = "NPC A", "NPC B"
+    src = Src([a, b])
+    src.nodes[a].parent = src.nodes[b]
+    src.nodes[b].parent = src.nodes[a]
+    dst = Dst()
+    ph._seed_canonical_skeleton_nodes(dst, src)
+    assert a not in dst.nodes and b not in dst.nodes
+
+
 def test_the_flag_switches_the_seed_off(monkeypatch):
     monkeypatch.setattr(nc, "CANONICAL_SKELETON_NODES", False)
     dst = Dst()
@@ -192,19 +253,26 @@ def test_defaults():
     assert 'not _flag("CBBE2UBE_NO_CANONICAL_SKELETON_NODES", False)' in inspect.getsource(nc)
 
 
-def test_the_real_pynifly_seed_creates_flat_skeleton_nodes():
+def test_the_real_pynifly_seed_keeps_the_source_hierarchy(tmp_path):
     pyn = nc._pynifly()
+    spath, dpath = str(tmp_path / "src.nif"), str(tmp_path / "dst.nif")
     src = pyn.NifFile()
-    src.initialize("SKYRIMSE", "src_canon_test.nif")
+    src.initialize("SKYRIMSE", spath)
     src.createShapeFromData("Armor", [(0, 0, 0), (1, 0, 0), (0, 1, 0)], [(0, 1, 2)],
                             [(0, 0), (1, 0), (0, 1)], [(0, 0, 1)] * 3)
     xf = pyn.TransformBuf()
     xf.set_identity()
-    for n in (SPINE, PAULDRON):
-        src.add_node(n, xf, parent=None)
+    src.add_node(SPINE, xf, parent=None)
+    src.add_node(PAULDRON, xf, parent=SPINE)
+    src.save()
+    src = pyn.NifFile(filepath=spath)            # a real source comes from disk
     dst = pyn.NifFile()
-    dst.initialize("SKYRIMSE", "dst_canon_test.nif")
+    dst.initialize("SKYRIMSE", dpath)
     made = ph._seed_canonical_skeleton_nodes(dst, src, body_bones=[PELVIS])
     assert made == 3
     assert {SPINE, PAULDRON, PELVIS} <= set(dst.nodes)
     assert ph._seed_canonical_skeleton_nodes(dst, src, body_bones=[PELVIS]) == 0
+    dst.save()
+    back = pyn.NifFile(filepath=dpath)
+    assert back.nodes[PAULDRON].parent.name == SPINE, "the source hierarchy is kept"
+    assert back.nodes[PELVIS].parent.name == "Scene Root"

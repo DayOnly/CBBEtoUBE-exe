@@ -1859,11 +1859,20 @@ def _canonical_skeleton_nodes(src_nif, body_bones=()) -> "list[str]":
 
 
 def _seed_canonical_skeleton_nodes(dst_nif, src_nif, body_bones=()) -> int:
-    """Create the piece's canonical skeleton nodes, flat at identity (what
-    `add_bone` makes for a skeleton bone), in a still-EMPTY dst NIF, so `_0` and
-    `_1` start from the same node set whatever each weight's passes add later.
-    A node already there (a seeded chain anchor) is left as it is.
-    #canonical-skeleton-nodes. Returns the number of nodes created."""
+    """Create the piece's canonical skeleton nodes in a still-EMPTY dst NIF, with
+    the SOURCE's hierarchy, so `_0` and `_1` start from the same node set whatever
+    each weight's passes add later. #canonical-skeleton-nodes
+
+    A node is created parent-first, with its source LOCAL transform and its source
+    parent link, exactly as `_precreate_custom_bone_chains` builds an anchor's
+    ancestors. A first version made them all flat under the root, and on 300 real
+    files that flattened 458 nodes whose parents the existing code had linked
+    (`UpperArm` under `Clavicle`, `Calf` under `Thigh`, ...): the chain code skips a
+    node that already exists, so whoever creates it first decides its parent. A node
+    whose source parent cannot be created is skipped, never flattened; a body bone
+    the source does not have is created flat at identity, which is what `add_bone`
+    makes for one. A node already there (a seeded chain anchor) is left as it is.
+    Returns the number of nodes created."""
     if not _nc().CANONICAL_SKELETON_NODES:
         return 0
     try:
@@ -1871,20 +1880,52 @@ def _seed_canonical_skeleton_nodes(dst_nif, src_nif, body_bones=()) -> int:
         if not names:
             return 0
         pyn = _nc()._pynifly()
+        try:
+            src_nodes = dict(src_nif.nodes)
+        except Exception:
+            src_nodes = {}
+        try:
+            root_name = src_nif.rootNode.name
+        except Exception:
+            root_name = None
+        wanted = set(names)
         existing = set(dst_nif.nodes.keys())
-        added = 0
-        for n in names:
-            if n in existing:
-                continue
+        added = [0]
+        visiting: "set[str]" = set()
+
+        def _make(name) -> bool:
+            if name in existing:
+                return True
+            if name in visiting:
+                return False                      # a cycle: leave it out
+            visiting.add(name)
             try:
-                xf = pyn.TransformBuf()
-                xf.set_identity()
-                dst_nif.add_node(n, xf, parent=None)
-                existing.add(n)
-                added += 1
+                node = src_nodes.get(name)
+                if node is None:
+                    xf = pyn.TransformBuf()
+                    xf.set_identity()
+                    par = None                    # a body bone the source lacks
+                else:
+                    xf = node.transform
+                    pnode = getattr(node, "parent", None)
+                    par = pnode.name if pnode is not None else None
+                    if par == root_name:
+                        par = None
+                if par is not None:
+                    if par not in wanted or not _make(par):
+                        return False              # never flatten what has a parent
+                dst_nif.add_node(name, xf, parent=par)
+                existing.add(name)
+                added[0] += 1
+                return True
             except Exception:
-                pass
-        return added
+                return False
+            finally:
+                visiting.discard(name)
+
+        for n in names:
+            _make(n)
+        return added[0]
     except Exception as _e:
         _note_pass_failure("_seed_canonical_skeleton_nodes", _e)
         return 0
