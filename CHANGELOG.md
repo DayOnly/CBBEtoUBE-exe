@@ -11,10 +11,13 @@ the seam opened again: in the author's census 78 of 94 torso pieces shipped with
 split seams. The repair now treats the vertices of a seam as one point, so it cannot
 re-open what the weld closed. On the 15 reference pieces, six had split seams
 (169 groups, worst gap 3.3 units) and none have any now; the other nine are unchanged
-in that respect. Bone weights shift slightly on seven pieces because the later weight
-passes read the repaired geometry; on one piece (a cuirass welded to its skirt) the
-skin where two shapes meet agrees a little less than before. On one piece the thin
-and heavy files now differ by one near-zero bone. Reported in #31 and fixed in #35.
+in that respect. The repair also runs a second time when a body-swap piece is
+written, and that run had no clearance hold, so on one cuirass a vertex could end
+2 units under the skin; it now gets the same hold as the first run. Bone weights
+shift slightly on seven pieces because the later weight passes read the repaired
+geometry. Between the two weights of a piece, one bone appears in one file and not
+the other on one more piece than before (a single vertex at the influence cap).
+Reported in #31 and fixed in #35.
 A mesh with no coincident vertices is untouched. `CBBE2UBE_NO_COHERENCE_REPAIR=1`
 (set to 1) turns the whole repair off.
 
