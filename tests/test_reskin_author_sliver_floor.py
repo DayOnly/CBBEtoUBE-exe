@@ -15,18 +15,16 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 
-"""#reskin-author-sliver-floor -- a bone that exists only as a sliver is not a skin bone (#33).
+"""#reskin-author-sliver-floor -- a sliver of an author bone is not a skin bone (#33).
 
 `compute_body_blend_skinning` scales the author's weights by (1 - blend), so a
 row just past `near_dist` keeps a sliver of every author bone: 0.004 on a skirt
 chain bone, 0.007 on an upper-arm twist, measured. The only floor afterwards was
 1e-4, so the sliver became a skin bone, and whether a row lands a hair either
 side of the edge is decided per weight FILE: the thin file had `SkirtFBone01` on
-0 vertices and the heavy file on 6, and its NiNode with it. An author bone whose
-every weight is under the floor, and that has no weight on a row the author
-still owns (blend < 0.5), is dropped whole. A bone with real weight anywhere is
-untouched, small weights included: a first version dropped every small weight
-and changed 39% of the rows of one vanilla cuirass.
+0 vertices and the heavy file on 6, and its NiNode with it. Author-bone weights
+under the floor on a row the BODY dominates (blend >= 0.5) are dropped; rows the
+author still owns are not touched.
 
 Geometry: a flat body at z=0 (normals +z, one bone), garment vertices straight
 above grid points at chosen heights, near_dist=1 and far_dist=3, so the blend at
@@ -69,14 +67,14 @@ class Armor:
 VERTS = np.array([[2.0, 2.0, 1.008], [1.0, 1.0, 2.0], [4.0, 4.0, 2.99], [3.0, 3.0, 3.5]])
 
 
-def run(weights, floor, minor=0.0, verts=None):
+def run(weights, floor, minor=0.0):
     nc_floor = nc._RESKIN_AUTHOR_SLIVER_FLOOR
     try:
         nc._RESKIN_AUTHOR_SLIVER_FLOOR = floor
         nc.COVERED_SKIN_TARGET, keep = False, nc.COVERED_SKIN_TARGET
         try:
             _b, _x, wbb = ww.compute_body_blend_skinning(
-                VERTS if verts is None else verts, Armor(weights), Body(minor), near_dist=1.0, far_dist=3.0, k=3)
+                VERTS, Armor(weights), Body(minor), near_dist=1.0, far_dist=3.0, k=3)
         finally:
             nc.COVERED_SKIN_TARGET = keep
     finally:
@@ -89,62 +87,50 @@ def rows(wbb, bone):
 
 
 CHAIN = {"Chain": [(0, 1.0), (1, 1.0), (2, 1.0), (3, 1.0)]}
-SLIVER_ONLY = {"Chain": [(0, 1.0)]}
-BODY_ROWS = VERTS[:2]
 
 
 def test_the_sliver_exists_without_the_floor():
     # the fixture reproduces the defect: row 0 keeps ~0.4% of the chain bone
-    wbb = run(SLIVER_ONLY, 0.0)
+    wbb = run(CHAIN, 0.0)
     assert 0 in rows(wbb, "Chain")
     w0 = dict(wbb["Chain"])[0]
     assert 0.001 < w0 < 0.01
 
 
-def test_a_bone_that_is_only_a_sliver_is_dropped_whole():
-    assert "Chain" not in run(SLIVER_ONLY, 0.02)
+def test_a_sliver_on_a_body_dominated_row_is_dropped():
+    assert 0 not in rows(run(CHAIN, 0.02), "Chain")
 
 
-def test_a_bone_with_real_weight_elsewhere_keeps_every_row_it_has():
-    # row 1 (blend 0.5) keeps half the author weight, row 0 keeps the 0.4% sliver:
-    # the bone has real weight, so the sliver stays with it
-    weights = {"Chain": [(0, 1.0), (1, 1.0)]}
-    got = rows(run(weights, 0.02, verts=BODY_ROWS), "Chain")
-    assert got == {0, 1}
+def test_a_row_the_author_still_owns_keeps_its_weight():
+    got = rows(run(CHAIN, 0.02), "Chain")
+    assert {1, 2, 3} <= got
 
 
 def test_the_rows_stay_normalised_after_the_drop():
-    wbb = run({"Chain": [(0, 1.0), (1, 1.0)]}, 0.02, verts=BODY_ROWS)
-    assert "Chain" in wbb               # row 1 gives it real weight: kept
-    wbb = run(SLIVER_ONLY, 0.02, verts=BODY_ROWS)
-    assert "Chain" not in wbb
-    tot = np.zeros(len(BODY_ROWS))
+    wbb = run(CHAIN, 0.02)
+    tot = np.zeros(len(VERTS))
     for pairs in wbb.values():
         for i, w in pairs:
             tot[i] += w
     assert np.allclose(tot, 1.0, atol=1e-6)
 
 
-def test_a_light_weight_on_a_row_the_author_owns_is_kept():
+def test_a_light_secondary_weight_the_author_owns_is_not_touched():
     # row 3 is far from the body (blend 0): its 1.5% second bone is authored skin
     weights = {"Chain": [(3, 0.985)], "Chain2": [(3, 0.015)]}
-    assert 3 in rows(run(weights, 0.02), "Chain2")
-
-
-def test_a_sliver_bone_that_also_lives_on_an_author_row_is_kept():
-    weights = {"Chain": [(0, 1.0), (3, 0.015)], "Chain3": [(3, 0.985)]}
-    assert rows(run(weights, 0.02), "Chain") >= {0, 3}
+    got = rows(run(weights, 0.02), "Chain2")
+    assert 3 in got
 
 
 def test_a_light_body_bone_is_not_an_author_sliver():
-    # the body's own minor bone lands ~0.01 on the body-dominated rows: it is
-    # body-propagated weight, not an author bone, and the floor leaves it alone
-    wbb = run(SLIVER_ONLY, 0.02, minor=0.01, verts=BODY_ROWS)
+    # the body's own minor bone lands ~0.01 on the body-dominated row 0: it is
+    # body-propagated weight, not an author sliver, and the floor leaves it alone
+    wbb = run(CHAIN, 0.02, minor=0.01)
     assert 0 in rows(wbb, "BodyB")
 
 
 def test_zero_switches_it_off():
-    assert 0 in rows(run(SLIVER_ONLY, 0.0), "Chain")
+    assert 0 in rows(run(CHAIN, 0.0), "Chain")
 
 
 def test_the_default_floor_is_two_percent():

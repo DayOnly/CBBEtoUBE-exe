@@ -5026,12 +5026,8 @@ def compute_body_blend_skinning(
         else:
             final_dense[bn] = propagated
 
-    # #reskin-author-sliver-floor: an author bone that survives the blend ONLY as a
-    # sliver on rows the body dominates is noise, and noise decides per weight file
-    # whether the bone exists (0.004 on a skirt chain bone: absent from the thin
-    # file, on 6 rows of the heavy one). The WHOLE bone goes, not just its small
-    # weights: a bone with real weight anywhere keeps every row it has, so no row
-    # the author's skin still drives changes.
+    # #reskin-author-sliver-floor: a sliver of an author bone on a row the body
+    # dominates is noise that decides, per weight file, whether the bone exists.
     _sliver = float(_nc()._RESKIN_AUTHOR_SLIVER_FLOOR)
     if _sliver > 0.0 and final_dense:
         _row_sum = np.zeros(armor_n, dtype=np.float64)
@@ -5042,16 +5038,10 @@ def compute_body_blend_skinning(
             arr = final_dense.get(bn)
             if arr is None:
                 continue
-            _top = float(arr.max())
-            if not (0.0 < _top < _sliver):
-                continue                       # real weight somewhere: leave the bone
-            if (arr[~_body_rows] > 0.0).any():
-                continue                       # lives on a row the author still owns
-            _rows = arr > 0.0
-            if not np.all((_row_sum[_rows] - arr[_rows]) >= 0.5):
-                continue
-            _row_sum[_rows] -= arr[_rows]
-            arr[_rows] = 0.0
+            _s = (arr > 0.0) & (arr < _sliver) & _body_rows & ((_row_sum - arr) >= 0.5)
+            if _s.any():
+                _row_sum[_s] -= arr[_s]
+                arr[_s] = 0.0
 
     # Normalize per-vert weight sum to 1.0 (defends against any drift).
     if final_dense:
