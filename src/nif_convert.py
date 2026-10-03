@@ -9185,9 +9185,10 @@ _WP_JIGGLE_PRESENT_MIN = _knob("CBBE2UBE_WP_JIGGLE_PRESENT_MIN", 4, int)
 # floor after that was 1e-4, so the sliver became a skin bone, and whether a row
 # lands a hair either side of the edge is decided per weight FILE: the thin file
 # had the bone on 0 vertices and the heavy file on 6, and its NiNode with it (#33).
-# Author-bone weights under this floor on a row the BODY dominates (blend >= 0.5)
-# are dropped before the row is normalised. Rows the author still owns (blend < 0.5)
-# are untouched. 0 turns it off.
+# An author bone whose every weight is under this floor, and that has no weight on
+# a row the author still owns (blend < 0.5), is dropped whole. A bone with real
+# weight anywhere is untouched. (A first version dropped every small weight; on one
+# vanilla cuirass that changed 39% of the rows.) 0 turns it off.
 _RESKIN_AUTHOR_SLIVER_FLOOR = _knob("CBBE2UBE_RESKIN_AUTHOR_SLIVER_FLOOR", 0.02)
 _WP_JIGGLE_ABSENT_MAX = _knob("CBBE2UBE_WP_JIGGLE_ABSENT_MAX", 1, int)
 _WP_JIGGLE_PEAK_MIN = _knob("CBBE2UBE_WP_JIGGLE_PEAK_MIN", 0.10)
