@@ -17196,4 +17196,13 @@ PAIRS = (
          tests=('tests/test_reauthor_keeps_nodes.py',),
          expect=('test_genital_anatomy_nodes_are_not_kept',),
     ),
+    Pair('DZ-a', 'the sync minimum is back at the graft gate (8): the dead zone returns',
+         edits=(
+             ('src/nif_convert.py',
+              '_WP_JIGGLE_PRESENT_MIN = _knob("CBBE2UBE_WP_JIGGLE_PRESENT_MIN", 4, int)',
+              '_WP_JIGGLE_PRESENT_MIN = _knob("CBBE2UBE_WP_JIGGLE_PRESENT_MIN", 8, int)', 1),
+         ),
+         tests=('tests/test_weight_partner_jiggle_sync.py',),
+         expect=('test_a_bone_in_the_old_dead_zone_is_given_to_the_partner','test_the_minimum_is_four_vertices'),
+    ),
 )

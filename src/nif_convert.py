@@ -9170,7 +9170,14 @@ SMP_BOUNDARY_HOLD = not _flag("CBBE2UBE_NO_SMP_BOUNDARY_HOLD", False)
 # (moved to nif_convert_weights.py, 2026-09-01)
 
 
-_WP_JIGGLE_PRESENT_MIN = _knob("CBBE2UBE_WP_JIGGLE_PRESENT_MIN", 8, int)
+# #weight-partner-dead-zone -- 4, not the graft gate's 8. The graft that puts a jiggle
+# bone on a garment (`_transfer_body_jiggle_to_fitted`) is gated per file and can land
+# on 4 to 7 vertices of one weight and none of the other. With the sync's minimum at
+# the same 8 that case matched neither side, so the bone, and its node, stayed in one
+# file only and every mesh behind the node sat at a different position (#33: a cuirass
+# with `NPC L/R Butt` on 7 vertices of `_0`). Over 150 pairs the minimum of 4 does
+# what the old one did plus that case.
+_WP_JIGGLE_PRESENT_MIN = _knob("CBBE2UBE_WP_JIGGLE_PRESENT_MIN", 4, int)
 _WP_JIGGLE_ABSENT_MAX = _knob("CBBE2UBE_WP_JIGGLE_ABSENT_MAX", 1, int)
 _WP_JIGGLE_PEAK_MIN = _knob("CBBE2UBE_WP_JIGGLE_PEAK_MIN", 0.10)
 _WP_JIGGLE_MAX_SHARE = _knob("CBBE2UBE_WP_JIGGLE_MAX_SHARE", 0.9)

@@ -4192,8 +4192,10 @@ def _sync_weight_partner_jiggle(path0, path1) -> int:
 
     **WE add the bone to one weight; the author has it in NEITHER**, and the
     direction FLIPS between the heavy and light cuirass -- a straddled
-    threshold, not a bias. `_CONFORM_MIN_JIGGLE_VERTS` (8) is exactly the
-    detector's `present_min`: the two constants describe the same edge.
+    threshold, not a bias. `_CONFORM_MIN_JIGGLE_VERTS` (8) is the graft's own
+    gate and was once also the detector's `present_min`; the sync's minimum is
+    now 4, because the graft can land on 4 to 7 vertices of one weight and the
+    old shared edge left that case in neither camp (#weight-partner-dead-zone).
 
     UNION, NOT INTERSECTION. Removing the bone from the side that has it would
     throw away the anti-poke the graft exists for, so the deficient side gets it
