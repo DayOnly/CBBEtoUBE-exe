@@ -9178,17 +9178,6 @@ SMP_BOUNDARY_HOLD = not _flag("CBBE2UBE_NO_SMP_BOUNDARY_HOLD", False)
 # with `NPC L/R Butt` on 7 vertices of `_0`). Over 150 pairs the minimum of 4 does
 # what the old one did plus that case.
 _WP_JIGGLE_PRESENT_MIN = _knob("CBBE2UBE_WP_JIGGLE_PRESENT_MIN", 4, int)
-
-# #reskin-author-sliver-floor -- the body blend scales the author's weights by
-# (1 - blend), so a row just past `near_dist` keeps a sliver of every author bone
-# (0.004 on a skirt chain bone, 0.007 on an upper-arm twist: measured). The only
-# floor after that was 1e-4, so the sliver became a skin bone, and whether a row
-# lands a hair either side of the edge is decided per weight FILE: the thin file
-# had the bone on 0 vertices and the heavy file on 6, and its NiNode with it (#33).
-# Author-bone weights under this floor on a row the BODY dominates (blend >= 0.5)
-# are dropped before the row is normalised. Rows the author still owns (blend < 0.5)
-# are untouched. 0 turns it off.
-_RESKIN_AUTHOR_SLIVER_FLOOR = _knob("CBBE2UBE_RESKIN_AUTHOR_SLIVER_FLOOR", 0.02)
 _WP_JIGGLE_ABSENT_MAX = _knob("CBBE2UBE_WP_JIGGLE_ABSENT_MAX", 1, int)
 _WP_JIGGLE_PEAK_MIN = _knob("CBBE2UBE_WP_JIGGLE_PEAK_MIN", 0.10)
 _WP_JIGGLE_MAX_SHARE = _knob("CBBE2UBE_WP_JIGGLE_MAX_SHARE", 0.9)
