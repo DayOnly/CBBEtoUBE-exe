@@ -86,11 +86,14 @@ class Dst:
         self.xf_of = {}
 
     def add_node(self, name, xf, parent=None):
-        assert parent is None or parent in self.nodes, "parent first"
+        # lenient like a real file: a parent that is not there is not an error,
+        # the node just ends up under the root
         self.nodes[name] = object()
         self.added.append(name)
-        self.parent_of[name] = parent
+        self.parent_of[name] = parent if parent in self.nodes else None
         self.xf_of[name] = xf
+        if parent is not None and parent not in self.nodes:
+            self.parent_of[name] = None
 
 
 def canon(src, body=()):

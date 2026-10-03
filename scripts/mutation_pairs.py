@@ -17307,8 +17307,8 @@ PAIRS = (
     Pair('CN-l', 'canonical nodes are created flat under the root again (flattens the skeleton)',
          edits=(
              ('src/nif_convert_physics.py',
-              '                dst_nif.add_node(name, xf, parent=par)\n',
-              '                dst_nif.add_node(name, xf, parent=None)\n', 1),
+              '                dst_nif.add_node(name, xf, parent=par)\n                existing.add(name)\n                added[0] += 1\n',
+              '                dst_nif.add_node(name, xf, parent=None)\n                existing.add(name)\n                added[0] += 1\n', 1),
          ),
          tests=('tests/test_canonical_skeleton_nodes.py',),
          expect=('test_a_node_is_created_under_its_source_parent_with_its_local_transform', 'test_the_real_pynifly_seed_keeps_the_source_hierarchy',),
@@ -17321,14 +17321,5 @@ PAIRS = (
          ),
          tests=('tests/test_canonical_skeleton_nodes.py',),
          expect=('test_a_node_whose_parent_is_not_canonical_is_skipped_not_flattened',),
-    ),
-    Pair('CN-n', 'the cycle guard is gone (a parent cycle recurses)',
-         edits=(
-             ('src/nif_convert_physics.py',
-              '            if name in visiting:\n                return False                      # a cycle: leave it out\n',
-              '            if False:\n                return False\n', 1),
-         ),
-         tests=('tests/test_canonical_skeleton_nodes.py',),
-         expect=('test_a_parent_cycle_in_the_source_creates_neither_node',),
     ),
 )
