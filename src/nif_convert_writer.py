@@ -1242,7 +1242,9 @@ def _hold_repair_outside_body(before, after, body_verts, body_normals, *,
         n_at = BN[j]
         s0 = np.einsum('ij,ij->i', b4[moved] - B[j], n_at)
         s1 = np.einsum('ij,ij->i', af[moved] - B[j], n_at)
-        floor = np.minimum(s0, 0.0)          # never worse, and never past zero
+        # never worse than where it was, and never closer than the margin
+        # (0 = the old rule: never past the skin). #coherence-hold-margin
+        floor = np.minimum(s0, float(_nc().COHERENCE_HOLD_MARGIN))
         short = np.clip(floor - s1, 0.0, None)
         if not np.any(short > 0):
             return after

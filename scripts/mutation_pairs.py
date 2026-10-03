@@ -17178,4 +17178,22 @@ PAIRS = (
          tests=('tests/test_coherence_repair_group_aware.py',),
          expect=('test_groups_split_at_the_welds_tolerance',),
     ),
+    Pair('HM-a', 'the hold floor ignores the margin and is zero again',
+         edits=(
+             ('src/nif_convert_writer.py',
+              '        floor = np.minimum(s0, float(_nc().COHERENCE_HOLD_MARGIN))\n',
+              '        floor = np.minimum(s0, 0.0)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coherence_hold_margin.py',),
+         expect=('test_a_vert_that_started_clear_is_not_smoothed_onto_the_skin', 'test_a_vert_that_started_closer_than_the_margin_is_held_to_where_it_was',),
+    ),
+    Pair('HM-b', 'the margin defaults to 0 again',
+         edits=(
+             ('src/nif_convert.py',
+              'COHERENCE_HOLD_MARGIN = _knob("CBBE2UBE_COHERENCE_HOLD_MARGIN", 0.2)\n',
+              'COHERENCE_HOLD_MARGIN = _knob("CBBE2UBE_COHERENCE_HOLD_MARGIN", 0.0)\n', 1),
+         ),
+         tests=('tests/test_coherence_hold_margin.py',),
+         expect=('test_the_default_margin_is_a_fifth_of_a_unit',),
+    ),
 )

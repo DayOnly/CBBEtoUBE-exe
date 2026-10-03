@@ -13,7 +13,11 @@ re-open what the weld closed. On the 15 reference pieces, six had split seams
 (169 groups, worst gap 3.3 units) and none have any now; the other nine are unchanged
 in that respect. The repair also runs a second time when a body-swap piece is
 written, and that run had no clearance hold, so on one cuirass a vertex could end
-2 units under the skin; it now gets the same hold as the first run. Bone weights
+2 units under the skin; it now gets the same hold as the first run, and the
+hold keeps 0.2 units of clearance (`CBBE2UBE_COHERENCE_HOLD_MARGIN`, 0 restores the old
+rule) so a vertex is not smoothed onto the skin surface: on 70 torso pieces the
+vertices within 0.05 of the skin go from 3798 to 3051 (3109 before this change
+set). Bone weights
 shift slightly on seven pieces because the later weight passes read the repaired
 geometry. Between the two weights of a piece, one bone appears in one file and not
 the other on one more piece than before (a single vertex at the influence cap).

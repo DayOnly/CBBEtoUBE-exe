@@ -11554,6 +11554,17 @@ COHERENCE_REPAIR = (
 # Kill switch: CBBE2UBE_NO_COHERENCE_REPAIR_OUTSIDE_BODY=1
 COHERENCE_REPAIR_OUTSIDE_BODY = (not _flag(
     "CBBE2UBE_NO_COHERENCE_REPAIR_OUTSIDE_BODY", False))
+# #coherence-hold-margin -- how much clearance the hold above preserves. The hold
+# used to forbid only "past the skin" (floor 0), so a vertex that had 0.15 to 0.64
+# of clearance could be smoothed onto the surface and ship exactly on it. The floor
+# is now min(the vertex's own clearance before the repair, this margin): a vertex
+# that started at least this far out stays at least this far out; one that started
+# closer is held to where it was. Measured on 70 torso pieces with the seam-aware
+# repair: vertices within 0.05 of the skin 3798 -> 3051 (plain testing: 3109), vertices
+# under it unchanged (1026 -> 1032), turned triangles 4818 -> 4828. 0.1 gave 3102 but
+# opened two new seam groups on one piece. 0 is the old behaviour.
+# CBBE2UBE_COHERENCE_HOLD_MARGIN=0 restores it.
+COHERENCE_HOLD_MARGIN = _knob("CBBE2UBE_COHERENCE_HOLD_MARGIN", 0.2)
 COHERENCE_MIN_AREA = _knob("CBBE2UBE_COHERENCE_MIN_AREA", 4.0)
 COHERENCE_SRC_MIN = _knob("CBBE2UBE_COHERENCE_SRC_MIN", 0.70)
 COHERENCE_OUT_MAX = _knob("CBBE2UBE_COHERENCE_OUT_MAX", 0.30)

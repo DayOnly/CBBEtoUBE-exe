@@ -57,7 +57,8 @@ def _defaults(monkeypatch):
                       ("COHERENCE_ITERS", 12), ("COHERENCE_DILATE", 2),
                       ("COHERENCE_THIN", 3.0), ("COHERENCE_THIN_AREA_SCALE", 1.0),
                       ("COHERENCE_THIN_DROP", 0.30), ("COHERENCE_KINK", True),
-                      ("COHERENCE_REPAIR_OUTSIDE_BODY", True)):
+                      ("COHERENCE_REPAIR_OUTSIDE_BODY", True),
+                      ("COHERENCE_HOLD_MARGIN", 0.0)):
         monkeypatch.setattr(nc, name, val)
 
 
