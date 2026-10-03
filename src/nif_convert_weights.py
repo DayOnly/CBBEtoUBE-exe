@@ -4145,7 +4145,8 @@ def _pair_weight_partner_shapes(shapes0, shapes1) -> dict:
 
     By NAME first. A shape with no namesake is paired by POSITION and VERTEX
     COUNT when both files list the same number of shapes: an author who names the
-    shapes per weight (`TorsoF_0` / `TorsoF_1`) ships the same mesh under two
+    shapes per weight (a `_0` suffix in one file, `_1` in the other) ships the same
+    mesh under two
     names, and pairing by name alone left every such piece out of the jiggle sync
     (#33 mechanism B2: `NPC Belly`, 81 to 457 vertices, stayed in `_0` only). A
     pair is made only when the two vertex counts agree, so a different shape that
