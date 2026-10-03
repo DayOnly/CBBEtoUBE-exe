@@ -2439,8 +2439,9 @@ def _keep_unweighted_nodes(new, old) -> int:
     every shape behind the difference sat at a different position. A bone that is
     weighted in `old` is left to `add_bone` as before, so no transform it would
     have created changes, and only direct children of the root are re-created (a
-    node with a real parent belongs to a hierarchy the chain code owns). Returns
-    the number of nodes re-created.
+    node with a real parent belongs to a hierarchy the chain code owns). Genital
+    anatomy nodes are not kept: the converter strips those weights on purpose.
+    Returns the number of nodes re-created.
     """
     try:
         old_nodes = old.nodes
@@ -2469,6 +2470,8 @@ def _keep_unweighted_nodes(new, old) -> int:
         if (name in existing or name in shape_names or name in weighted
                 or name == root_name or name.lower().endswith(".nif")):
             continue
+        if _nc()._is_genital_anatomy_bone(name):
+            continue                            # stripped on purpose, node and all
         node = old_nodes[name]
         par = getattr(node, "parent", None)
         # Flat stubs only: a direct child of the root. A node with a real parent

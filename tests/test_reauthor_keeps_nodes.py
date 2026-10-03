@@ -111,6 +111,17 @@ def test_shapes_the_root_and_file_name_nodes_are_not_kept():
         assert skip not in names
 
 
+def test_genital_anatomy_nodes_are_not_kept():
+    root = Node("Scene Root")
+    extra = [Node("NPC Anus Deep2", root), Node("Clitoral1", root)]
+    old = old_file(extra=extra)
+    old.nodes["NPC Anus Deep2"].parent = old.nodes["Scene Root"]
+    old.nodes["Clitoral1"].parent = old.nodes["Scene Root"]
+    _n, names = kept(old)
+    assert "NPC Anus Deep2" not in names and "Clitoral1" not in names
+    assert "NPC" in names
+
+
 def test_a_node_already_in_the_new_file_is_not_added_twice():
     _n, names = kept(old_file(), New(have=("NPC",)))
     assert "NPC" not in names
