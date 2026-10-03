@@ -3183,7 +3183,9 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     _rigid_nodes: set = set()
     _soft_parts: list = []          # (ent, vert idx, the AUTHOR's own spread)
     _all_parts: list = []           # (ent, vert idx) -- every welded part
-    if _nc().RIGID_PART_SKIN_MATCH:
+    # A one-shape piece reaches this pass only for its seam twins; the part passes
+    # below were written for several shapes and never ran on it.
+    if len(ents) >= 2 and _nc().RIGID_PART_SKIN_MATCH:
         try:
             from scipy.sparse import coo_matrix as _coo
             from scipy.sparse.csgraph import connected_components as _cc

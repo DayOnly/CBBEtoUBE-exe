@@ -183,3 +183,37 @@ def test_twins_in_a_later_shape_are_found_at_the_right_vertex_indices():
     _run(dst, src)
     assert dst[1].row(0) == dst[1].row(1)
     assert all(dst[0].row(i) == {PELV: 1.0} for i in range(3))
+
+
+class _Spy:
+    """A switch that records when it is read."""
+    read = False
+
+    def __bool__(self):
+        _Spy.read = True
+        return True
+
+
+def test_a_piece_with_one_shape_does_not_run_the_part_passes(monkeypatch):
+    # the part passes (rigid parts, part alignment, author deviation) were written
+    # for several shapes and never ran on a one-shape piece; letting it through
+    # for its twins must not start them
+    _Spy.read = False
+    monkeypatch.setattr(nc, "RIGID_PART_SKIN_MATCH", _Spy())
+    a = {SPINE: 0.9, PELV: 0.1}
+    b = {SPINE: 0.3, PELV: 0.7}
+    dst, src = _torso([a, b], [SEAM, SEAM], [SEAM, SEAM], [_alike(), _alike()])
+    _run(dst, src)
+    assert _Spy.read is False
+    assert dst[0].row(0) == dst[0].row(1)
+
+
+def test_a_piece_with_several_shapes_still_runs_the_part_passes(monkeypatch):
+    _Spy.read = False
+    monkeypatch.setattr(nc, "RIGID_PART_SKIN_MATCH", _Spy())
+    dst = [_shape("Torso", [SEAM, SEAM], [{SPINE: 0.9, PELV: 0.1}, {SPINE: 0.3, PELV: 0.7}]),
+           _shape("Pants", [(40.0, 0.0, 10.0), (41.0, 0.0, 10.0)], [{PELV: 1.0}, {PELV: 1.0}])]
+    src = [_shape("Torso", [SEAM, SEAM], [_alike(), _alike()]),
+           _shape("Pants", [(40.0, 0.0, 10.0), (41.0, 0.0, 10.0)], [{PELV: 1.0}, {PELV: 1.0}])]
+    _run(dst, src)
+    assert _Spy.read is True
