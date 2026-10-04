@@ -2881,14 +2881,15 @@ def _hdt_shape_prune(lines, shape_names):
     for line in lines:
         m = _HDT_SHAPE_OPEN_RE.search(line)
         opened = None
-        if m and m.group(1) in spell:
-            line = (line[:m.start(1)] + spell[m.group(1)] + line[m.end(1):])
-            m = _HDT_SHAPE_OPEN_RE.search(line)
+        name = m.group(1) if m else None
+        if name in spell:                       # #xml-shape-name-case
+            line = line[:m.start(1)] + spell[name] + line[m.end(1):]
+            name = spell[name]
         if m:
-            drop_block = m.group(1) not in shape_names
+            drop_block = name not in shape_names
             if drop_block:
                 opened = ("cloth" if "per-vertex-shape" in line else "collider",
-                          m.group(1))
+                          name)
         if drop_block:
             if _HDT_SHAPE_CLOSE_RE.search(line):
                 drop_block = False

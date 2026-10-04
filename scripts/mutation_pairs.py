@@ -17136,7 +17136,7 @@ PAIRS = (
     Pair('XC-e', "the prune stops rewriting the reference to the mesh's spelling",
          edits=(
              ('src/nif_convert_physics.py',
-              '        if m and m.group(1) in spell:\n',
+              '        if name in spell:                       # #xml-shape-name-case\n',
               '        if False:  # MUTATED\n', 1),
          ),
          tests=('tests/test_xml_shape_name_case.py',),
