@@ -2066,7 +2066,8 @@ def _match_full_weights_to_body(dst_path, biped_slots: int = 0,
         max_dist=_nc()._FULL_WEIGHT_MAX_DIST, strength=_nc()._FULL_WEIGHT_STRENGTH,
         smp_row_gate=True, ignore_morph_tri=True, pair_by_ray=True,
         full_vector=True,
-        shoulder_z=ARMHOLE_Z[0], shoulder_max_dist=_nc()._FULL_WEIGHT_SHOULDER_DIST)
+        shoulder_z=ARMHOLE_Z[0], shoulder_max_dist=_nc()._FULL_WEIGHT_SHOULDER_DIST,
+        flank_skeleton_ok=_nc().FLANK_SKIN_MATCH)
 
 def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                                family: str = "leg", bones=(),
@@ -2082,6 +2083,7 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                                shoulder_max_dist: float = 0.0,
                                keep_draping_skip: bool = False,
                                tri_hug: tuple = (),
+                               flank_skeleton_ok: bool = False,
                                src_nif_path=None) -> int:
     """Raise a garment's LIMB-BONE share toward the body's so it travels WITH the
     limb instead of being left behind. Returns the number of verts matched.
@@ -2149,6 +2151,10 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
         (`#morphtri-hug-feather`, see MORPHTRI_HUG_FEATHER). Only on the
         TRI-owning shapes the opt-out admitted. Rows the full-vector instance
         reaches afterwards (z >= 72) are rewritten by it.
+      * `flank_skeleton_ok` (full-vector instance only): on a shape that owns a source
+        morph TRI, in the flank band, weight on a SKELETON ARM bone the body's skin
+        lacks no longer makes a row "unclean", so the row is matched like its
+        neighbours (#flank-skin-match, FLANK_SKIN_MATCH). Weights only.
       * skips colliders / soft-body / HDT-SMP-rigged shapes, per the standing rule
         that every skin pass leaves authored physics geometry alone.
     """
@@ -2175,6 +2181,13 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                                            ignore_morph_tri, keep_draping_skip)
     _tri_admitted = _limb_tri_admitted(src_nif_path, ignore_morph_tri, tri_hug,
                                        morph_tri_names)
+    # #flank-skin-match: the shapes whose authored skin the TRI is keyed to.
+    _tri_owned: "set[str]" = set()
+    if flank_skeleton_ok and full_vector and src_nif_path:
+        try:
+            _tri_owned = set(_source_morph_tri_shape_names(Path(src_nif_path)))
+        except Exception as _fe:
+            _note_pass_failure("_match_limb_motion_to_body/flank-tri", _fe)
     _lay = None              # the piece's visible layers, built on first need
     # Does a physics XML exist for this piece at all? Drives the inert-chain
     # allowance below. Stem is per-armor (weight suffix stripped), matching where
@@ -2579,7 +2592,29 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                     _garm_arm = G[:, _arm_cols].sum(axis=1)
                     _limb_ok = ((_body_arm <= _nc()._FULL_WEIGHT_LIMB_MAX)
                                 | (_garm_arm > _nc()._FULL_WEIGHT_LIMB_MAX))
-                _sel = band & live & _okb & (foreign <= 1e-4) & _limb_ok
+                # #flank-skin-match: on a TRI-owning shape, in the flank band, weight
+                # on an actor-skeleton ARM bone the body's skin lacks (the author's
+                # UpperarmTwist2) is not an authored chain: it does not block the row.
+                _foreign_eff = foreign
+                if s.name in _tri_owned and body_tris is not None and len(body_tris):
+                    try:
+                        _nbf = _nc()._vertex_normals_from_tris(Vb, body_tris)
+                        _nn = _nbf[np.asarray(near, dtype=np.int64)]
+                        _flank = ((wv[:, 2] >= _nc()._FLANK_Z_LO)
+                                  & (wv[:, 2] <= _nc()._FLANK_Z_HI)
+                                  & (np.abs(_nn[:, 0]) > _nc()._FLANK_NORMAL_X)
+                                  & (np.abs(_nn[:, 1]) <= _nc()._FLANK_NORMAL_Y))
+                        _skel = np.zeros(n, dtype=np.float64)
+                        for _j, _b in enumerate(shape_bones):
+                            if (_b not in ube_bones and _is_skeleton_bone(_b)
+                                    and _is_arm_hand_bone(_b)):
+                                _skel += G[:, _j]
+                        _foreign_eff = np.where(_flank, np.maximum(foreign - _skel, 0.0),
+                                                foreign)
+                    except Exception as _fx:
+                        _note_pass_failure("_match_limb_motion_to_body/flank-gate", _fx)
+                        _foreign_eff = foreign
+                _sel = band & live & _okb & (_foreign_eff <= 1e-4) & _limb_ok
                 rows = np.where(_sel)[0]
                 if len(rows) == 0:
                     continue
@@ -2618,6 +2653,19 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                                             out=np.ones_like(_oth),
                                             where=_oth > 1e-9)
                             NEW[np.ix_(_r, _ocol)] *= _fo[:, None]
+                # #flank-skin-match: a row the relaxation admitted (it carried
+                # skeleton-arm weight the body lacks) takes the body's weight on the
+                # NON-arm bones and keeps its AUTHORED weight on every arm-chain bone
+                # the body skins; the drained skeleton-arm bone stays at the blend's
+                # value. The pass normalises every row before it writes it. Rows the
+                # plain gate admitted are untouched.
+                _relaxed = _sel & (foreign > 1e-4)
+                if _relaxed.any():
+                    _keep = [_j for _j, _b in enumerate(shape_bones)
+                             if _is_arm_hand_bone(_b) and _b in ube_bones]
+                    if _keep:
+                        _rr = np.where(_relaxed)[0]
+                        NEW[np.ix_(_rr, _keep)] = G[np.ix_(_rr, _keep)]
             else:
                 midx = [shape_bones.index(b) for b in managed]
                 B = np.zeros((n, len(managed)), dtype=np.float64)
@@ -2992,6 +3040,17 @@ def _part_is_bilateral(rows, idx, frac: float, sample: int = 600) -> bool:
     return n_l >= need and n_r >= need
 
 
+def _source_twin_pairs(verts) -> set:
+    """Index pairs of source vertices at one place (the two sides of a UV seam).
+    #seam-twin-skin"""
+    from scipy.spatial import cKDTree
+    pts = np.asarray(verts, dtype=np.float64)
+    if len(pts) < 2:
+        return set()
+    return {(int(a), int(b)) if a < b else (int(b), int(a))
+            for a, b in cKDTree(pts).query_pairs(_nc()._SEAM_TWIN_TOL)}
+
+
 def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     """Give cross-shape coincident verts ONE weight row. Returns verts unified.
 
@@ -3034,7 +3093,7 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
             and (s.name or "") not in collider_names
             and (s.name or "") not in softbody_names
             and getattr(s, "bone_weights", None) and len(s.verts) >= 3]
-    if len(cand) < 2:
+    if len(cand) < (1 if _nc().SEAM_TWIN_SKIN else 2):
         return 0
     want = {s.name or "": len(s.verts) for s in cand}
 
@@ -3045,6 +3104,7 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     # source also carries the author's BODY, and parsing tens of thousands of
     # rows nothing can use is pure cost.
     src_rows: dict = {}
+    src_twins: dict = {}
     try:
         snf = _nc()._open_source_nif(src_nif_path)   # #dup-shape-names
         for ss in snf.shapes:
@@ -3052,6 +3112,8 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
             if (want.get(nm) == len(ss.verts)
                     and getattr(ss, "bone_weights", None)):
                 src_rows[nm] = _rows_of(ss, len(ss.verts))
+                if _nc().SEAM_TWIN_SKIN:
+                    src_twins[nm] = _source_twin_pairs(ss.verts)
     except Exception as _se:
         _note_pass_failure("_match_coincident_cross_shape_skin/source", _se)
         return 0
@@ -3073,8 +3135,9 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
         # snapshotting every row of every shape doubled the pass's memory for
         # the sake of the ~1% it ends up needing.
         ents.append({"s": s, "wv": wv, "rows": rr, "old": {},
-                     "pal": set(s.bone_weights or {}), "src": sr})
-    if len(ents) < 2:
+                     "pal": set(s.bone_weights or {}), "src": sr,
+                     "twins": src_twins.get(s.name or "", ())})
+    if len(ents) < (1 if _nc().SEAM_TWIN_SKIN else 2):
         return 0
 
     owner: list = []
@@ -3086,7 +3149,7 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
                                           output_type="ndarray")
     except Exception:
         return 0
-    if not len(pairs):
+    if not len(pairs) and not any(e["twins"] for e in ents):
         return 0
 
     parent = list(range(len(owner)))
@@ -3115,6 +3178,27 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
         pa, pb = find(a), find(b)
         if pa != pb:
             parent[pa] = pb
+    # #seam-twin-skin: the twins of ONE shape, joined by where they were in the
+    # SOURCE (output distance is not asked: the weld may not have run), behind the
+    # same author gate as the cross-shape edges above.
+    twin_joined: set = set()
+    base = 0
+    for k, e in enumerate(ents):
+        for ia, ib in e["twins"]:
+            ra, rb = e["src"][ia], e["src"][ib]
+            if sum(abs(ra.get(x, 0.0) - rb.get(x, 0.0))
+                   for x in set(ra) | set(rb)) > _nc()._COINCIDENT_SKIN_GATE:
+                n_cut += 1
+                continue
+            a, b = base + ia, base + ib
+            joined.add(a)
+            joined.add(b)
+            twin_joined.add(a)
+            twin_joined.add(b)
+            pa, pb = find(a), find(b)
+            if pa != pb:
+                parent[pa] = pb
+        base += len(e["wv"])
     # ---- A PART THE AUTHOR SKINNED RIGID MUST STAY RIGID --------------------
     #
     # REPORTED IN GAME after the cross-shape fix shipped: "the belts look better
@@ -3147,7 +3231,9 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     _rigid_nodes: set = set()
     _soft_parts: list = []          # (ent, vert idx, the AUTHOR's own spread)
     _all_parts: list = []           # (ent, vert idx) -- every welded part
-    if _nc().RIGID_PART_SKIN_MATCH:
+    # A one-shape piece reaches this pass only for its seam twins; the part passes
+    # below were written for several shapes and never ran on it.
+    if len(ents) >= 2 and _nc().RIGID_PART_SKIN_MATCH:
         try:
             from scipy.sparse import coo_matrix as _coo
             from scipy.sparse.csgraph import connected_components as _cc
@@ -3480,8 +3566,9 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
             continue
         cluster = [owner[m] for m in mem]
         if len({k for k, _ in cluster}) < 2 and not (
-                _rigid_nodes and any(m in _rigid_nodes for m in mem)):
-            continue   # one shape and not an author-rigid part -- nothing to do
+                _rigid_nodes and any(m in _rigid_nodes for m in mem)) and not (
+                twin_joined and any(m in twin_joined for m in mem)):
+            continue   # one shape, not an author-rigid part, no seam twins
         basis = None
         for k, _i in cluster:
             basis = ents[k]["pal"] if basis is None else (basis & ents[k]["pal"])

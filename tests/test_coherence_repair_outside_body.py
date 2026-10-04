@@ -45,6 +45,9 @@ BODY_N = np.tile(np.array([0.0, 0.0, 1.0]), (len(BODY), 1))
 @pytest.fixture(autouse=True)
 def _armed(monkeypatch):
     monkeypatch.setattr(nc, "COHERENCE_REPAIR_OUTSIDE_BODY", True)
+    # These tests pin the rule "never past the skin" (floor 0). The margin that
+    # raises that floor has its own file, test_coherence_hold_margin.py.
+    monkeypatch.setattr(nc, "COHERENCE_HOLD_MARGIN", 0.0)
 
 
 def _pair(before_z, after_z):
