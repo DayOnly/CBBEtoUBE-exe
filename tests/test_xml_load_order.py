@@ -54,6 +54,8 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(nc._paths, "mods_root", lambda: mods)
     monkeypatch.setattr(nc, "_LOAD_ORDER_DIRS", {})
     monkeypatch.setattr(nc, "_VFS_DATA_REL_MEMO", {})
+    monkeypatch.setattr(nc, "_LOAD_ORDER_FILE_MEMO", {})
+    monkeypatch.setattr(nc, "_LOAD_ORDER_CHILDREN", {})
     return SimpleNamespace(mods=mods, mp=monkeypatch)
 
 
@@ -168,3 +170,78 @@ def test_a_failing_discovery_gives_no_load_order_instead_of_an_error(world):
         raise RuntimeError("no ini")
     world.mp.setattr(nc._paths, "discover_layout", boom)
     assert nc._load_order_dirs() is None
+
+
+# --- the converter's own output, and the cost of a lookup ---------------------
+
+UBE_REL = "Meshes\\!UBE\\Maker\\Skirt\\Skirt.xml"
+FWD = REL.replace("\\", "/")
+
+
+def test_the_converters_own_output_is_read_beside_the_nif_not_from_the_order(world, tmp_path):
+    """A run writing to a scratch folder must read the XML it just wrote, not the
+    live pack's copy from an earlier run that wins the load order."""
+    _file(world.mods, "Live Output", rel=UBE_REL, text="<old run/>")
+    out = tmp_path / "scratch out"
+    mine = _file(out.parent, out.name, rel=UBE_REL, text="<this run/>")
+    nif = out / "meshes" / "!UBE" / "Maker" / "Skirt" / "Skirt_1.nif"
+    nif.write_bytes(b"\x00")
+    _order(world, "Live Output")
+    assert nc._resolve_data_rel_in_vfs(UBE_REL, nif) == mine
+
+
+def test_the_output_namespace_is_recognised_in_either_slash_and_case():
+    assert nc._is_converter_output_rel("meshes/!ube/a/b.xml")
+    assert nc._is_converter_output_rel("Meshes\\!UBE\\b.xml")
+    assert not nc._is_converter_output_rel("Meshes/UBE/b.xml")
+    assert not nc._is_converter_output_rel("Meshes/Maker/!UBE/b.xml")
+
+
+def test_a_lookup_is_answered_once_per_run(world):
+    addon = _file(world.mods, "Base Skirt - SMP")
+    _order(world, "Base Skirt - SMP")
+    calls = []
+    real = nc._load_order_children
+    world.mp.setattr(nc, "_load_order_children",
+                     lambda top: calls.append(top) or real(top))
+    assert nc._load_order_file(FWD) == addon
+    n = len(calls)
+    assert n >= 1
+    assert nc._load_order_file(FWD) == addon
+    assert len(calls) == n
+
+
+def test_a_miss_is_remembered_too(world):
+    _file(world.mods, "Other")
+    _order(world, "Other")
+    seen = []
+    world.mp.setattr(nc, "_load_order_children",
+                     lambda top: seen.append(top) or frozenset({"maker"}))
+    assert nc._load_order_file("Meshes/Maker/Nope.xml") is None
+    n = len(seen)
+    assert n >= 1
+    assert nc._load_order_file("Meshes/Maker/Nope.xml") is None
+    assert len(seen) == n
+
+
+def test_a_remembered_file_that_vanished_is_looked_up_again(world):
+    first = _file(world.mods, "First")
+    second = _file(world.mods, "Second")
+    _order(world, "First", "Second")
+    assert nc._load_order_file(FWD) == first
+    first.unlink()
+    assert nc._load_order_file(FWD) == second
+
+
+def test_a_folder_without_the_paths_first_folders_is_never_asked_for_the_file(world):
+    """The listing prefilter: a mod whose meshes folder has no `Maker` is not
+    asked for the file; the mod that has it still answers."""
+    _file(world.mods, "Unrelated", rel="Meshes\\Other\\x.xml")
+    hit = _file(world.mods, "Owner")
+    _order(world, "Unrelated", "Owner")
+    asked = []
+    real_is_file = Path.is_file
+    world.mp.setattr(Path, "is_file",
+                     lambda self: asked.append(str(self)) or real_is_file(self))
+    assert nc._load_order_file(FWD) == hit
+    assert not any("Unrelated" in a for a in asked)

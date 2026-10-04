@@ -14,9 +14,14 @@ against 18 KB with the whole rig from the copy the game uses. The tool now asks 
 order first (the overwrite folder, then your mods by priority, then the game's Data folders)
 and only falls back to the mesh's own mod when nothing in the order has the file, or when no
 profile can be read. `CBBE2UBE_XML_OWN_MOD_FIRST=1` restores the old order.
+The converter's own output (`meshes\!UBE\...`) is never looked up this way: a run reads
+the physics file it wrote beside the mesh, not a copy an earlier run left in your pack.
+Each path is looked up once per run, and only in the mods that have its folder (160
+lookups on a 3,345-folder order: 18 s by a plain walk, 1.4 s this way, same answers).
 The run summary also names the pieces behind each swallowed pass failure (six, with
 the full list in `conversion_report.json`), where it listed only counts, so a dropped
-physics shape is no longer anonymous.
+physics shape is no longer anonymous. A piece is named by its path below `meshes\!UBE`
+(`armor/iron/armorf_1.nif`), since many mods share a file name like `armorf_1.nif`.
 When a build is taken over (or held back from) a source that carries a different physics
 rig (an SMP rebuild of a plain skirt), the log and `conversion_report.json` now say so by
 piece, under `rig_differs`; which file is converted is unchanged.

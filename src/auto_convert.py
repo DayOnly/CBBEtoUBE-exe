@@ -1454,6 +1454,29 @@ def count_pass_failures(nif_results) -> dict:
     return out
 
 
+def _piece_label(dst_path) -> str:
+    """A piece as the pack names it: its path under `meshes/!UBE/` (else under
+    `meshes/`), forward slashes, so `armorf_1.nif` from two mods reads as two
+    pieces. The bare file name when neither folder is in the path; "" when it
+    cannot be read. Never raises. #pass-failure-names"""
+    try:
+        parts = Path(str(dst_path or "")).parts
+    except Exception:
+        return ""
+    if not parts:
+        return ""
+    low = [x.lower() for x in parts]
+    for i in range(len(low) - 1, -1, -1):
+        if low[i] == "meshes":
+            rest = parts[i + 1:]
+            if rest and rest[0].lower() == "!ube":
+                rest = rest[1:]
+            if rest:
+                return "/".join(rest)
+            break
+    return parts[-1]
+
+
 def count_pass_failure_pieces(nif_results) -> dict:
     """{pass name -> [pieces it failed on]}. The counts' missing half.
 
@@ -1474,10 +1497,7 @@ def count_pass_failure_pieces(nif_results) -> dict:
     """
     out: dict = {}
     for r in nif_results or ():
-        try:
-            name = Path(str(getattr(r, "dst_path", "") or "")).name
-        except Exception:
-            name = ""
+        name = _piece_label(getattr(r, "dst_path", "") or "")
         for part in (getattr(r, "reason", "") or "").split("; "):
             part = part.strip()
             if not part.startswith("PASS FAILED "):

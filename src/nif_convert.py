@@ -12015,20 +12015,73 @@ def _load_order_dirs() -> "list[Path] | None":
     return dirs
 
 
+# Answers of `_load_order_file`, found or not, keyed on (mods root, path): the
+# folders of the order do not change during a run, and one lookup walks up to a few
+# thousand of them (measured 80-190 ms on a 3345-folder order). A found file is
+# re-checked with one stat before it is reused. #xml-load-order
+_LOAD_ORDER_FILE_MEMO: "dict[tuple[str, str], Path | None]" = {}
+# Lowercased names directly inside `<folder>/<first segment>` (for an XML path,
+# a mod's `meshes` folder), listed once per folder: a lookup stats only the
+# folders whose listing holds the path's second segment. #xml-load-order
+_LOAD_ORDER_CHILDREN: "dict[str, frozenset]" = {}
+
+
+def _load_order_children(top: Path) -> frozenset:
+    key = str(top)
+    got = _LOAD_ORDER_CHILDREN.get(key)
+    if got is None:
+        try:
+            got = frozenset(n.lower() for n in os.listdir(top))
+        except OSError:
+            got = frozenset()
+        _LOAD_ORDER_CHILDREN[key] = got
+    return got
+
+
+def _is_converter_output_rel(norm: str) -> bool:
+    """Is `norm` (a checked Data-relative path) in the converter's own output
+    namespace, `meshes/!UBE/`? The game's copy of such a file is whatever an
+    EARLIER run left in the pack; this run's copy sits beside the NIF that names
+    it, so the load order must not answer for it (a scratch run would read the
+    live pack's file). #xml-load-order"""
+    parts = [p for p in norm.replace("\\", "/").split("/") if p]
+    return (len(parts) >= 2 and parts[0].lower() == "meshes"
+            and parts[1].lower() == "!ube")
+
+
 def _load_order_file(norm: str) -> "Path | None":
     """The first folder of the load order that ships `norm` (a Data-relative path
-    that has already passed `_safe_data_rel`), or None. #xml-load-order"""
+    that has already passed `_safe_data_rel`), or None. Never answers for the
+    converter's own output namespace (`_is_converter_output_rel`). #xml-load-order"""
+    if _is_converter_output_rel(norm):
+        return None
     dirs = _load_order_dirs()
     if not dirs:
         return None
     try:
+        mkey = str(_paths.mods_root() or "")
+    except Exception:
+        mkey = ""
+    key = (mkey, norm.replace("\\", "/").lower())
+    if key in _LOAD_ORDER_FILE_MEMO:
+        hit = _LOAD_ORDER_FILE_MEMO[key]
+        if hit is None or hit.is_file():
+            return hit
+    parts = [p for p in norm.replace("\\", "/").split("/") if p]
+    found = None
+    try:
         for d in dirs:
+            if len(parts) >= 2 and parts[1].lower() not in _load_order_children(
+                    d / parts[0]):
+                continue
             cand = d / norm
             if cand.is_file():
-                return cand
+                found = cand
+                break
     except OSError:
         return None
-    return None
+    _LOAD_ORDER_FILE_MEMO[key] = found
+    return found
 
 
 def _physics_data_prefix() -> bool:

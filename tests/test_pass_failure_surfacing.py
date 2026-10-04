@@ -198,3 +198,46 @@ def test_the_json_is_still_written_when_nothing_failed(tmp_path):
     out = write_conversion_report_json(tmp_path, [(d, acr, None)])
     assert out is not None
     assert json.loads(out.read_text())["pass_failures"] == {}
+
+
+
+# --- pieces are named by their path, not their file name ---------------------
+# #pass-failure-names. `armorf_1.nif` is a file name a dozen mods share; a list of
+# bare names in the report named nothing anyone could go and open.
+
+def _out(rel):
+    return ConvertResult(src_path=Path("src.nif"),
+                         dst_path=Path("Out", *rel.split("/")),
+                         status="converted (copy)",
+                         reason=_pf("hdt_xml_shape_dropped"))
+
+
+def test_two_pieces_with_one_file_name_are_two_names(tmp_path):
+    from src.auto_convert import count_pass_failure_pieces
+    got = count_pass_failure_pieces([
+        _out("meshes/!UBE/armor/iron/armorf_1.nif"),
+        _out("meshes/!UBE/armor/steel/armorf_1.nif")])
+    assert got == {"hdt_xml_shape_dropped": ["armor/iron/armorf_1.nif",
+                                             "armor/steel/armorf_1.nif"]}
+
+
+def test_a_piece_is_named_from_below_the_output_namespace():
+    from src.auto_convert import _piece_label
+    assert _piece_label(Path("D:/x/Out/meshes/!UBE/a/b_1.nif")) == "a/b_1.nif"
+    assert _piece_label(Path("D:/x/Mod/Meshes/a/b_1.nif")) == "a/b_1.nif"
+    assert _piece_label(Path("b_1.nif")) == "b_1.nif"
+    assert _piece_label("") == ""
+
+
+def test_the_json_names_pieces_by_path(tmp_path):
+    import json
+    from src.auto_convert import write_conversion_report_json
+    d = tmp_path / "ModA"
+    d.mkdir()
+    acr = AutoConvertResult(
+        source_dir=d, output_dir=tmp_path,
+        nif_results=[_out("meshes/!UBE/armor/iron/armorf_1.nif")])
+    out = write_conversion_report_json(tmp_path, [(d, acr, None)])
+    rep = json.loads(out.read_text())
+    assert rep["pass_failure_pieces"] == {
+        "hdt_xml_shape_dropped": ["armor/iron/armorf_1.nif"]}
