@@ -12089,6 +12089,19 @@ STATIC_CHAINS = (
     _flag("CBBE2UBE_STATIC_CHAINS", False)
 )
 
+# #xml-shape-name-case -- an XML shape reference that differs from ONE mesh shape
+# only in letter case names that shape. Authors ship such pairs (a skirt mod's
+# XML names its cloth `Skirt`, its own mesh calls the shape `skirt`; two cuirass
+# XMLs name a `Torso` collider for a `torso` shape), and the converter compared
+# names case for case: the prune deleted the block, so the skirt shipped with no
+# cloth, and the soft-body / collider sets missed the shape, so its authored skin
+# was not protected. The reference resolves only when exactly one mesh shape
+# matches and no other reference already names that shape. Assumes the game
+# resolves these names without regard to case, as the author's own pairing
+# implies. CBBE2UBE_NO_XML_SHAPE_CASE=1 restores the exact comparison.
+XML_SHAPE_NAME_CASE = (
+    not _flag("CBBE2UBE_NO_XML_SHAPE_CASE", False))
+
 
 # (moved to nif_convert_physics.py, 2026-09-01)
 
@@ -12118,6 +12131,9 @@ STATIC_CHAINS = (
 
 
 _HDT_XML_TEXT_CACHE: "dict" = {}
+# Shape names of a NIF the soft-body / collider sets were asked about, keyed by
+# path with (mtime, size), for #xml-shape-name-case. Cleared with the XML memo.
+_HDT_MESH_SHAPE_NAMES_CACHE: "dict" = {}
 # This piece's authored physics XML text, captured from the SOURCE nif at the
 # top of `convert_nif`. See `_hdt_xml_bind_piece_source`. #xml-source-of-truth
 _PIECE_HDT_XML_TEXT: "str | None" = None
