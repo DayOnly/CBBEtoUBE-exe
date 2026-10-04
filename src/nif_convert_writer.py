@@ -1146,13 +1146,71 @@ def _geometry_repair_allowed(shape, skip_geometry_repair=False) -> bool:
 # The flag itself lives in nif_convert.py with every other one and is read
 # through `_nc()`, so `importlib.reload(nc)` keeps reaching it.
 
+# A SEAM IS ONE VERTEX. #coherence-repair-seam-groups
+#
+# A UV/normal seam is stored as several vertex indices at one authored
+# position. `#seam-weld-self` restores that coincidence after the fit chain --
+# and then `_repair_coherence_collapse` runs AFTER the weld, at both sites, and
+# smooths the displacement field PER INDEX. The two halves of a seam have
+# different neighbours, so they receive different smoothed displacements and
+# the seam the weld just closed re-opens. Measured by A/B with
+# CBBE2UBE_NO_COHERENCE_REPAIR=1 (0 split seam groups on every shape) against
+# the defaults: a gown's `top` 23 split groups (worst 0.43u), its `underpants`
+# 44 (0.91u); a cuirass 142 (1.84u). Census over 94 real torso pieces: 78 ship
+# with re-opened seams.
+#
+# The design rule forbids a second weld after the repair (a pass that cleans up
+# after another pass), so the repair itself treats every source-coincident
+# group as ONE vertex: one neighbour set (the union of the members' neighbours),
+# one displacement per iteration, one rigid/pinned/region membership. The
+# grouping is the weld's own rule -- same tolerance, same rounding -- so the two
+# passes agree on what a seam is. `_hold_repair_outside_body` gets the same map
+# so its per-vertex clearance hold cannot split a group either.
 
-def _hold_repair_outside_body(before, after, body_verts, body_normals):
+
+def _source_coincident_groups(src_verts, tol=1e-4):
+    """Vertex -> source-coincident group, by `_weld_source_coincident_verts`'s
+    own rule (`_source_coincident_labels`: within `tol` of each other,
+    transitively). Returns `(gid, members)`:
+    `gid[v]` is the group index or -1 for a vertex with no twin, and
+    `members[g]` is the int64 array of that group's vertex indices. Only groups
+    with two or more members are reported; a mesh without any gives
+    `(None, [])`.
+    """
+    sv = np.asarray(src_verts, dtype=np.float64)
+    if sv.ndim != 2 or len(sv) == 0:
+        return None, []
+    inv, counts = _nc()._source_coincident_labels(sv, tol)
+    multi = counts > 1
+    if not multi.any():
+        return None, []
+    # Renumber the multi-member groups 0..G-1 and leave singletons at -1.
+    new_id = np.full(len(counts), -1, dtype=np.int64)
+    new_id[multi] = np.arange(int(multi.sum()), dtype=np.int64)
+    gid = new_id[inv]
+    order = np.argsort(gid, kind="stable")
+    gi = gid[order]
+    start = int(np.searchsorted(gi, 0))          # skip the -1 block
+    order, gi = order[start:], gi[start:]
+    bounds = np.flatnonzero(np.diff(gi)) + 1
+    members = [np.asarray(m, dtype=np.int64) for m in np.split(order, bounds)]
+    return gid, members
+
+
+def _hold_repair_outside_body(before, after, body_verts, body_normals, *,
+                              groups=None):
     """Clamp a repair so it cannot reduce a vertex's clearance past the skin.
 
     `before`/`after` are the pass's own input and output. Only vertices the
     repair actually MOVED are tested, so a shape it did not touch costs one
     array comparison and no tree query.
+
+    `groups` (optional) is the `members` list from `_source_coincident_groups`.
+    When the repair moved several members of one group, they all receive the
+    group's LARGEST outward hold, so a seam the repair kept closed is not
+    re-opened by a per-vertex clamp (#coherence-repair-seam-groups). Members
+    the repair did not move stay untouched, as before. Members that entered
+    coincident get identical holds anyway, so this changes nothing there.
 
     Returns `after` unchanged when disabled, when no body was supplied, or on
     any failure -- never worse than not running.
@@ -1182,12 +1240,27 @@ def _hold_repair_outside_body(before, after, body_verts, body_normals):
         n_at = BN[j]
         s0 = np.einsum('ij,ij->i', b4[moved] - B[j], n_at)
         s1 = np.einsum('ij,ij->i', af[moved] - B[j], n_at)
-        floor = np.minimum(s0, 0.0)          # never worse, and never past zero
+        # never worse than where it was, and never closer than the margin
+        # (0 = the old rule: never past the skin). #coherence-hold-margin
+        floor = np.minimum(s0, float(_nc().COHERENCE_HOLD_MARGIN))
         short = np.clip(floor - s1, 0.0, None)
         if not np.any(short > 0):
             return after
+        shift = n_at * short[:, None]
+        if groups:
+            # One hold per group: every moved member takes the member's shift
+            # that is largest along its own normal. Outward only, so the
+            # one-sided contract holds for the members it is copied onto.
+            pos = {int(v): i for i, v in enumerate(moved)}
+            for m in groups:
+                idx = [pos[int(v)] for v in m if int(v) in pos]
+                if len(idx) < 2:
+                    continue
+                k = idx[int(np.argmax(short[idx]))]
+                if short[k] > 0:
+                    shift[idx] = shift[k]
         out = af.copy()
-        out[moved] = af[moved] + n_at * short[:, None]
+        out[moved] = af[moved] + shift
         return out
     except Exception as _e:
         _note_pass_failure("_hold_repair_outside_body", _e)
@@ -1223,6 +1296,15 @@ def _repair_coherence_collapse(src_verts, out_verts, tris, *,
     only the vert-to-vert differential that buckles a thin feature is removed.
     That is deliberately NOT damping the warp -- damping the warp globally is
     what once left every garment CBBE-shaped.
+
+    SEAMS ARE ONE VERTEX (#coherence-repair-seam-groups). Vertices coincident
+    in the SOURCE -- the halves of a UV/normal seam, grouped by the seam weld's
+    own rule -- are smoothed as a single node: one neighbour set, one
+    displacement, and they enter the patch core, the dilated region and the
+    pinned ring together. Without that the pass re-opened every seam the weld
+    had just closed (a gown's `top`: 23 split groups, worst 0.43u; a cuirass:
+    142, worst 1.84u; 0 with the pass off). A mesh with no coincident vertices
+    takes exactly the per-vertex path it always did.
     """
     if not _nc().COHERENCE_REPAIR:
         return out_verts, 0
@@ -1260,6 +1342,23 @@ def _repair_coherence_collapse(src_verts, out_verts, tris, *,
         repaired = 0
         _adj_full = None          # built lazily, only if a patch qualifies
         _v2t = None               # vert -> triangles, for the kink test
+        _gid = None               # vert -> source-coincident group, lazily
+        _members = []             # group -> member indices
+
+        def _closed(vs):
+            """`vs` (a set of vertex ints) plus every twin of every member in
+            it, so a seam group is always wholly in or wholly out of a set."""
+            if _gid is None or not vs:
+                return vs
+            g = _gid[np.fromiter(vs, dtype=np.int64)]
+            g = np.unique(g[g >= 0])
+            if not len(g):
+                return vs
+            out = set(vs)
+            for gi_ in g:
+                out.update(int(x) for x in _members[gi_])
+            return out
+
         for ti in turned:
             if ti in seen:
                 continue
@@ -1383,13 +1482,24 @@ def _repair_coherence_collapse(src_verts, out_verts, tris, *,
                     _adj_full[int(a)].update((int(b), int(c)))
                     _adj_full[int(b)].update((int(a), int(c)))
                     _adj_full[int(c)].update((int(a), int(b)))
-            region = set(int(v) for v in core)
+                # #coherence-repair-seam-groups: the seam weld's grouping,
+                # computed once per shape, only when a patch qualifies.
+                _gid, _members = _source_coincident_groups(sv)
+            # A seam group enters the core, each dilation ring and the pinned
+            # boundary TOGETHER: `_closed` adds every twin of a vertex the ring
+            # reached, so the walk crosses a seam the way the authored surface
+            # does, and no group is left half pinned or half outside the
+            # region (the mean restore below shifts the whole region, so a
+            # half-outside group would split by exactly that shift).
+            region = _closed(set(int(v) for v in core))
             frontier = set(region)
             for _r in range(_nc().COHERENCE_DILATE):
                 nxt = set()
                 for v in frontier:
                     nxt |= _adj_full[v]
                 nxt -= region
+                if _gid is not None:
+                    nxt = _closed(nxt) - region
                 region |= nxt
                 frontier = nxt
             # the LAST ring added is the pinned boundary
@@ -1412,17 +1522,73 @@ def _repair_coherence_collapse(src_verts, out_verts, tris, *,
             # Still mean-preserving, so the fit is untouched. #coherence-rigid
             core_set = set(int(x) for x in core)
             if thin_extent < _nc().COHERENCE_THIN and not kink:
-                d[core] = disp[core].mean(axis=0)
-                blend = np.fromiter((v for v in free if int(v) not in core_set),
+                # A seam group is rigid only when it lies ENTIRELY in the
+                # strip. A group on the strip's EDGE (one half in the strip,
+                # the other in the panel it is sewn to) is a smoothing node
+                # shared by both sides instead, so the strip's rigid move and
+                # the panel's field meet halfway rather than the panel's edge
+                # row being dragged the whole way. Measured on a cuirass with
+                # 42% seam vertices: dragging it added flipped triangles
+                # (72 -> 90 against the input's own count). #coherence-rigid
+                rigid = core_set
+                if _gid is not None:
+                    for gi_ in np.unique(_gid[core]):
+                        if gi_ >= 0 and not all(int(x) in core_set
+                                                for x in _members[gi_]):
+                            rigid = rigid - set(int(x) for x in _members[gi_])
+                # Sorted, so the rigid mean is summed in the same order as
+                # before when no group touched the strip.
+                core_c = (core if rigid is core_set
+                          else np.array(sorted(rigid), dtype=np.int64))
+                d[core_c] = disp[core_c].mean(axis=0)
+                blend = np.fromiter((v for v in free if int(v) not in rigid),
                                     dtype=np.int64)
             else:
                 blend = free
-            for _ in range(_nc().COHERENCE_ITERS):
-                upd = d.copy()
+            # The smoothing nodes. Without seam groups in the region this is
+            # exactly one node per free vertex with its region neighbours, in
+            # the same order as always. With them, a group is ONE node: its
+            # neighbours are the union of its members' neighbours with every
+            # twin collapsed to one representative, and every member takes the
+            # same update. #coherence-repair-seam-groups
+            nodes = []
+            if _gid is None or not np.any(_gid[vin] >= 0):
                 for v in blend:
                     nb = adj[int(v)]
                     if nb:
-                        upd[v] = d[nb].mean(axis=0)
+                        nodes.append((v, nb))
+            else:
+                rep = {}
+                for gi_ in np.unique(_gid[vin]):
+                    if gi_ >= 0:
+                        for x in _members[gi_]:
+                            rep[int(x)] = int(_members[gi_][0])
+                done_g = set()
+                for v in blend:
+                    gi_ = int(_gid[v])
+                    if gi_ < 0:
+                        own, mem = {int(v)}, [int(v)]
+                    else:
+                        if gi_ in done_g:
+                            continue
+                        done_g.add(gi_)
+                        mem = [int(x) for x in _members[gi_]]
+                        own = set(mem)
+                    nb, seen_nb = [], set()
+                    for m in mem:
+                        for n in adj[m]:
+                            r = rep.get(n, n)
+                            if r in own or r in seen_nb:
+                                continue
+                            seen_nb.add(r)
+                            nb.append(r)
+                    if nb:
+                        nodes.append((np.asarray(mem, dtype=np.int64)
+                                      if len(mem) > 1 else v, nb))
+            for _ in range(_nc().COHERENCE_ITERS):
+                upd = d.copy()
+                for v, nb in nodes:
+                    upd[v] = d[nb].mean(axis=0)
                 d = upd
             # Restore the patch's MEAN displacement: the repair must not move the
             # garment as a whole, only even out the differential.
@@ -1433,7 +1599,8 @@ def _repair_coherence_collapse(src_verts, out_verts, tris, *,
         if repaired == 0:
             return out_verts, 0
         return _hold_repair_outside_body(
-            ov, sv + disp, body_verts, body_normals), repaired
+            ov, sv + disp, body_verts, body_normals,
+            groups=_members if _members else None), repaired
     except Exception as _e:
         # REPORTED, not swallowed. A silent return here is indistinguishable
         # from "no patch qualified", and that is exactly how this pass spent a
@@ -1979,7 +2146,8 @@ def _open_source_nif(src_path):
 def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
                 override_skin=None, skip_alpha=False, override_tris=None,
                 preserve_authored_skin=False, override_normals=None,
-                skip_geometry_repair=False, xml_stem_scan=True):
+                skip_geometry_repair=False, xml_stem_scan=True,
+                repair_body=None):
     """Deep-copy a single shape from src NIF to dst NIF via pynifly.
 
     `xml_stem_scan`: pass `_dst_xml_stem_scan()` when `src_shape` lives in a
@@ -2042,8 +2210,14 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         if _geometry_repair_allowed(src_shape, skip_geometry_repair):
             try:
                 _sv2 = np.asarray(src_shape.verts, dtype=np.float64)
+                # #coherence-repair-write-hold: on a phase-2 piece this is the
+                # SECOND run and the last thing to touch a vertex, so it gets
+                # the same clearance hold the chain's run has. `repair_body` is
+                # (verts, normals) in this shape's frame, None on the copy path.
+                _rb = repair_body if repair_body is not None else (None, None)
                 _cv, _nc_local = _repair_coherence_collapse(
-                    _sv2, ov, src_shape.tris)
+                    _sv2, ov, src_shape.tris,
+                    body_verts=_rb[0], body_normals=_rb[1])
                 if _nc_local:
                     ov = _cv
                     print(f"    [coherence-repair] {src_shape.name}: "

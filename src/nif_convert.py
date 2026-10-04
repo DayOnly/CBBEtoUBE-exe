@@ -11554,6 +11554,17 @@ COHERENCE_REPAIR = (
 # Kill switch: CBBE2UBE_NO_COHERENCE_REPAIR_OUTSIDE_BODY=1
 COHERENCE_REPAIR_OUTSIDE_BODY = (not _flag(
     "CBBE2UBE_NO_COHERENCE_REPAIR_OUTSIDE_BODY", False))
+# #coherence-hold-margin -- how much clearance the hold above preserves. The hold
+# used to forbid only "past the skin" (floor 0), so a vertex that had 0.15 to 0.64
+# of clearance could be smoothed onto the surface and ship exactly on it. The floor
+# is now min(the vertex's own clearance before the repair, this margin): a vertex
+# that started at least this far out stays at least this far out; one that started
+# closer is held to where it was. Measured on 70 torso pieces with the seam-aware
+# repair: vertices within 0.05 of the skin 3798 -> 3051 (plain testing: 3109), vertices
+# under it unchanged (1026 -> 1032), turned triangles 4818 -> 4828. 0.1 gave 3102 but
+# opened two new seam groups on one piece. 0 is the old behaviour.
+# CBBE2UBE_COHERENCE_HOLD_MARGIN=0 restores it.
+COHERENCE_HOLD_MARGIN = _knob("CBBE2UBE_COHERENCE_HOLD_MARGIN", 0.2)
 COHERENCE_MIN_AREA = _knob("CBBE2UBE_COHERENCE_MIN_AREA", 4.0)
 COHERENCE_SRC_MIN = _knob("CBBE2UBE_COHERENCE_SRC_MIN", 0.70)
 COHERENCE_OUT_MAX = _knob("CBBE2UBE_COHERENCE_OUT_MAX", 0.30)
@@ -11622,6 +11633,38 @@ COHERENCE_KINK_RATIO = _knob("CBBE2UBE_COHERENCE_KINK_RATIO", 2.0)
 # (moved to nif_convert_writer.py, 2026-09-01)
 
 
+def _source_coincident_labels(src_verts, tol=1e-4):
+    """Cluster vertices that sit at one position: `(labels, counts)`.
+
+    Two vertices are one point when they lie within `tol` of each other
+    (transitively), so a seam is found wherever it sits. #coincident-by-distance
+
+    This replaced `np.round(sv / tol)` as the key. A rounding grid cuts the space
+    into cells of width `tol`, and two twins 2.5e-5 apart land in different cells
+    about a quarter of the time, so the weld and the coherence repair treated a
+    real seam as two unrelated vertices. That happens on a file that has been
+    re-authored once (the twins differ by float noise there) and is how a seam on
+    one piece opened to 0.096u after the conform pass's re-author.
+
+    `labels[i]` is the cluster of vertex i and `counts[c]` its size; a vertex
+    with no twin is a cluster of one.
+    """
+    sv = np.asarray(src_verts, dtype=np.float64)
+    n = len(sv)
+    if n == 0:
+        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
+    from scipy.spatial import cKDTree as _kd
+    pairs = _kd(sv).query_pairs(float(tol), output_type="ndarray")
+    if not len(pairs):
+        return np.arange(n, dtype=np.int64), np.ones(n, dtype=np.int64)
+    from scipy.sparse import coo_matrix as _coo
+    from scipy.sparse.csgraph import connected_components as _cc
+    g = _coo((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(n, n))
+    _n, lab = _cc(g, directed=False)
+    lab = lab.astype(np.int64)
+    return lab, np.bincount(lab, minlength=_n).astype(np.int64)
+
+
 def _weld_source_coincident_verts(src_verts, out_verts, tol=1e-4):
     """Re-close seams the per-vertex passes pulled apart.
 
@@ -11646,9 +11689,7 @@ def _weld_source_coincident_verts(src_verts, out_verts, tol=1e-4):
     ov = np.array(out_verts, dtype=np.float64, copy=True)
     if sv.shape != ov.shape or len(sv) == 0:
         return ov, 0
-    key = np.round(sv / float(tol)).astype(np.int64)
-    _, inv, counts = np.unique(key, axis=0, return_inverse=True,
-                               return_counts=True)
+    inv, counts = _source_coincident_labels(sv, tol)
     multi = counts > 1
     if not multi.any():
         return ov, 0
@@ -14474,6 +14515,13 @@ def _fit_shapes_swap(ctx) -> None:
                       else np.asarray(s.verts, dtype=np.float64)),
             "override_skin": override_skin,
             "verts_modified": override is not None,
+            # #coherence-repair-write-hold: the body in THIS shape's own frame
+            # (the chain worked in the offset frame and subtracted the offset
+            # above), for the write-time repair's clearance hold.
+            "repair_body": ((np.asarray(body_verts_for_p2, dtype=np.float64)
+                             - _off_p2, body_norms_for_p2)
+                            if (body_verts_for_p2 is not None
+                                and body_norms_for_p2 is not None) else None),
         })
 
 
@@ -15320,6 +15368,7 @@ def convert_nif_phase2(
                 # on position, for the same reason the groove smooth does. So
                 # skip the repairs here on phase 2, where they have already run.
                 skip_geometry_repair=LAYER_ORDER_LAST,
+                repair_body=j.get("repair_body"),
             )
             copied.append(s.name)
             if first_armor_shape is None:
