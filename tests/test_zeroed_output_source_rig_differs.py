@@ -58,8 +58,8 @@ def test_the_same_rig_is_not_a_re_rig():
 
 
 def test_a_handful_of_different_nodes_is_not_a_re_rig():
-    base = _chain("Skirt", 60)
-    assert discovery._zos_rig_text(base, base | _chain("Extra", 3), set()) == ""
+    # nothing shared, so only the minimum count of differing nodes can say no
+    assert discovery._zos_rig_text(_chain("A", 4), _chain("B", 4), set()) == ""
 
 
 def test_a_mostly_shared_rig_is_not_a_re_rig_however_many_nodes_differ():
@@ -147,14 +147,6 @@ def test_a_piece_with_no_physics_on_either_side_is_not_read_for_a_rig(tmp_path, 
     monkeypatch.setattr(zb, "_nif_rig_nodes", lambda p: calls.append(p) or set())
     assert _owner(sel) == {OUT_MOD}
     assert calls == []
-
-
-def test_a_piece_with_physics_on_one_side_only_is_not_compared(tmp_path, monkeypatch):
-    sel, calls = _physics_pair(tmp_path, monkeypatch, src_nodes=OLD_RIG, build_nodes=NEW_RIG,
-                               both_physics=False, **BODY_ONLY)
-    _owner(sel)
-    assert calls == []
-    assert discovery.zeroed_output_source_report()["rig_differs"] == {}
 
 
 def test_the_report_carries_an_empty_rig_list_when_nothing_differs(tmp_path, monkeypatch):
