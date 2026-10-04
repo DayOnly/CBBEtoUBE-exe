@@ -1527,6 +1527,11 @@ def count_pass_effects(nif_results) -> dict:
     return out
 
 
+# How many piece names the run summary lists under each failed pass; the full list
+# is in conversion_report.json.
+_PASS_FAIL_NAMES_SHOWN = 6
+
+
 def _pack_pass_failures(ok) -> dict:
     """`count_pass_failures` rolled up across `[(source_dir, AutoConvertResult)]`.
 
@@ -4679,9 +4684,18 @@ def write_conversion_summary(output_dir: Path, results: list) -> Path | None:
                      f"across {len(pack_fails)} pass(es) and {len(ok)} mod(s).")
             L.append("   These pieces still CONVERTED, so they are in no error "
                      "count above -- but the pass did not do its job.")
+            pack_pieces = _pack_pass_failure_pieces(ok)
             for _label, _n in sorted(pack_fails.items(),
                                      key=lambda kv: (-kv[1], kv[0])):
                 L.append(f"     {_n:>6} x  {_label}")
+                # Name the pieces: a count says a pass failed, not on what.
+                _names = sorted(pack_pieces.get(_label) or [])
+                if _names:
+                    _more = (f" (+{len(_names) - _PASS_FAIL_NAMES_SHOWN} more, "
+                             "all in conversion_report.json)"
+                             if len(_names) > _PASS_FAIL_NAMES_SHOWN else "")
+                    L.append("            "
+                             + ", ".join(_names[:_PASS_FAIL_NAMES_SHOWN]) + _more)
             L.append("")
 
         L.append("per-mod detail")

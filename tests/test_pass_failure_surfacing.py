@@ -131,6 +131,28 @@ def test_the_pack_wide_summary_rolls_up_every_mod(tmp_path):
     assert "4 x  _cap_weights_map" in txt
 
 
+def _summary(tmp_path, names):
+    from src.auto_convert import write_conversion_summary
+    d = tmp_path / "ModA"
+    d.mkdir()
+    acr = AutoConvertResult(
+        source_dir=d, output_dir=tmp_path,
+        nif_results=[_cr(n, _pf("hdt_xml_shape_dropped")) for n in names])
+    return write_conversion_summary(tmp_path, [(d, acr, None)]).read_text()
+
+
+def test_the_summary_names_the_pieces_behind_a_failed_pass(tmp_path):
+    txt = _summary(tmp_path, ["skirt_1.nif", "cuirass_1.nif"])
+    import re
+    assert re.search(r"cuirass_1\.nif\S*, skirt_1\.nif", txt), txt
+
+
+def test_the_summary_lists_six_names_and_points_to_the_json_for_the_rest(tmp_path):
+    txt = _summary(tmp_path, [f"piece{i}_1.nif" for i in range(9)])
+    assert "piece5_1.nif" in txt and "piece6_1.nif" not in txt
+    assert "(+3 more, all in conversion_report.json)" in txt
+
+
 def test_the_summary_is_still_written_when_nothing_failed(tmp_path):
     """GUARD THE BLANKET EXCEPT. `write_conversion_summary` wraps everything in
     `except Exception: return None`, so a throw in the new section would not

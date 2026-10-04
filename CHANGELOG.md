@@ -14,6 +14,9 @@ against 18 KB with the whole rig from the copy the game uses. The tool now asks 
 order first (the overwrite folder, then your mods by priority, then the game's Data folders)
 and only falls back to the mesh's own mod when nothing in the order has the file, or when no
 profile can be read. `CBBE2UBE_XML_OWN_MOD_FIRST=1` restores the old order.
+The run summary also names the pieces behind each swallowed pass failure (six, with
+the full list in `conversion_report.json`), where it listed only counts, so a dropped
+physics shape is no longer anonymous.
 
 ### Fixed — armour whose BodySlide build differs from its mod's own mesh only in body pieces is converted from the build
 
