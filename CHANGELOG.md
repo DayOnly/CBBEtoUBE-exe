@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed — a piece converted from its BodySlide build no longer shows skin at the side of the bust when the arms move
+
+A piece converted from its zeroed BodySlide build keeps the author's skin weights, and on some
+pieces the author's rows at the side of the bust carry weight on an arm bone the UBE body's skin
+does not list. The match that brings a row to the body's weights skipped any row with weight on
+such a bone, so the flank followed the arm further than the body under it and skin showed with
+the arms down or the bow drawn (9.25% of the covered flank on one cuirass). On a shape that owns a
+morph file, in the flank band, that arm weight no longer blocks the row: the non-arm bones follow
+the body and the row keeps its authored weight on the arm bones the body does list. Weights only:
+no bone is added, so the morph file stays in step with the shape. Worst-pose exposure at the side
+of the bust on real conversions: one cuirass 9.25% to 2.00%, a heavy variant 3.00% to 1.25%, a
+robe 4.75% to 0.50%, others 0.75-1.75% to 0.50-1.00%. Over 26 third-person vanilla files that
+changed, none got worse by more than 0.5 points; no zero-weight bone appears in 444 files.
+Not yet seen in game. `CBBE2UBE_NO_FLANK_SKIN_MATCH=1` turns it off.
+
 ### Fixed — armour whose BodySlide build differs from its mod's own mesh only in body pieces is converted from the build
 
 The tool converts an armour from your zeroed BodySlide build when the build has
