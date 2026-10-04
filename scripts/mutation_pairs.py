@@ -17149,7 +17149,7 @@ PAIRS = (
               '    if not dropped:\n', 1),
          ),
          tests=('tests/test_xml_shape_name_case.py',),
-         expect=('test_the_replayed_prune_renames_too', ),
+         expect=('test_the_replayed_prune_returns_a_rename_alone', ),
     ),
     Pair('XC-g', 'a rename alone does not mark the XML changed',
          edits=(

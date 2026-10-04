@@ -195,3 +195,11 @@ def test_the_mesh_names_are_read_once_per_file_state(monkeypatch, tmp_path):
 def test_the_switch_is_on_by_default():
     import inspect
     assert 'not _flag("CBBE2UBE_NO_XML_SHAPE_CASE", False)' in inspect.getsource(nc)
+
+
+def test_the_replayed_prune_returns_a_rename_alone():
+    """No block goes, one is renamed: the replay must return the renamed bytes,
+    not the raw file."""
+    raw = _XML.replace('name="Gone"', 'name="wst"').encode("utf-8")
+    out = ph._hdt_xml_shape_pruned(raw, {"skirt", "feet", "wst"})
+    assert _refs(out) == ["feet", "skirt", "wst"]
