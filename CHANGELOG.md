@@ -17,6 +17,9 @@ profile can be read. `CBBE2UBE_XML_OWN_MOD_FIRST=1` restores the old order.
 The run summary also names the pieces behind each swallowed pass failure (six, with
 the full list in `conversion_report.json`), where it listed only counts, so a dropped
 physics shape is no longer anonymous.
+When a build is taken over (or held back from) a source that carries a different physics
+rig (an SMP rebuild of a plain skirt), the log and `conversion_report.json` now say so by
+piece, under `rig_differs`; which file is converted is unchanged.
 
 ### Fixed — armour whose BodySlide build differs from its mod's own mesh only in body pieces is converted from the build
 
