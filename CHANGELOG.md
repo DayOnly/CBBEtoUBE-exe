@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixed — a physics file is read from the copy the game loads, not from the mod the mesh happens to live in
+
+An armour mesh names its physics file by a path, and the game opens whichever copy of that
+path wins your load order. The tool looked in the mesh's own mod first, and then walked the
+mod folders in alphabetical order, so an add-on mod that overrides a base mod's physics file
+(a skirt rig over a plain one) lost to the base mod's older file. On the reported skirt the
+output kept the old chains, the winning rig's chains were gone, and its collider was dropped
+for a shape the mesh does not have: the converted file was 7 KB with no skirt chains at all,
+against 18 KB with the whole rig from the copy the game uses. The tool now asks your load
+order first (the overwrite folder, then your mods by priority, then the game's Data folders)
+and only falls back to the mesh's own mod when nothing in the order has the file, or when no
+profile can be read. `CBBE2UBE_XML_OWN_MOD_FIRST=1` restores the old order.
+
 ### Fixed — armour whose BodySlide build differs from its mod's own mesh only in body pieces is converted from the build
 
 The tool converts an armour from your zeroed BodySlide build when the build has

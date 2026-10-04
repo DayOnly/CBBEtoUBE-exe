@@ -11974,6 +11974,63 @@ def _resolve_data_rel_in_vfs(rel: str, src_nif_path: Path) -> "Path | None":
     return _resolve_safe_rel_in_vfs(stripped, src_nif_path)
 
 
+# #xml-load-order (GitHub #28) -- DEFAULT ON. A physics XML is named by a path in
+# the mesh, and the game opens the copy that wins the load order. The lookup tried
+# the mesh's own mod first and then walked the mod folders in ALPHABETICAL order,
+# so an add-on mod that overrides a base mod's XML (an SMP rig over a plain one) was
+# passed over for the base mod's older file: the skirt came out with the wrong
+# chains, and its colliders were pruned for shapes the mesh does not have. The
+# lookup now asks the load order first, the way the zeroed-body resolver does, and
+# keeps the old order for when no profile can be read or nothing in the order
+# ships the file. CBBE2UBE_XML_OWN_MOD_FIRST=1 restores the old order.
+XML_LOAD_ORDER = not _flag("CBBE2UBE_XML_OWN_MOD_FIRST", False)
+_LOAD_ORDER_DIRS: "dict[str, list | None]" = {}      # keyed on the mods root
+
+
+def _load_order_dirs() -> "list[Path] | None":
+    """The folders of the discovered MO2 instance, highest priority first
+    (overwrite, enabled mods in order, the game Data folders), read once per mods
+    root; None when no profile can be read, or when the profile belongs to another
+    mods folder than the one this process was given. #xml-load-order"""
+    try:
+        mroot = _paths.mods_root()
+    except Exception:
+        mroot = None
+    key = str(mroot or "")
+    if key in _LOAD_ORDER_DIRS:
+        return _LOAD_ORDER_DIRS[key]
+    dirs = None
+    try:
+        lay = _paths.discover_layout()
+        order = _paths.enabled_mods_ordered(lay)
+        if (lay.mods_root is not None and order is not None
+                and (mroot is None or Path(lay.mods_root) == Path(mroot))):
+            ow = _paths.overwrite_dir(lay)
+            dirs = [Path(ow)] if ow is not None and Path(ow).is_dir() else []
+            dirs += [Path(lay.mods_root) / m for m in order]
+            dirs += [Path(d) for d in lay.game_data_dirs]
+    except Exception:
+        dirs = None
+    _LOAD_ORDER_DIRS[key] = dirs
+    return dirs
+
+
+def _load_order_file(norm: str) -> "Path | None":
+    """The first folder of the load order that ships `norm` (a Data-relative path
+    that has already passed `_safe_data_rel`), or None. #xml-load-order"""
+    dirs = _load_order_dirs()
+    if not dirs:
+        return None
+    try:
+        for d in dirs:
+            cand = d / norm
+            if cand.is_file():
+                return cand
+    except OSError:
+        return None
+    return None
+
+
 def _physics_data_prefix() -> bool:
     r"""#physics-data-prefix (2026-09-25): may a physics-XML pointer written as
     "Data\meshes\...\x.xml" resolve with its leading "Data" segment removed?
@@ -11993,6 +12050,13 @@ def _physics_data_prefix() -> bool:
 def _resolve_safe_rel_in_vfs(norm: str, src_nif_path: Path) -> "Path | None":
     """The lookup half of `_resolve_data_rel_in_vfs`: `norm` has ALREADY
     passed `_safe_data_rel`. Never call it with an unchecked path."""
+    # 0) The copy the GAME loads: the first provider in MO2 priority order
+    #    (#xml-load-order). Only when no profile can be read, or nothing in the
+    #    order ships the file, do the lookups below decide.
+    if XML_LOAD_ORDER:
+        won = _load_order_file(norm)
+        if won is not None:
+            return won
     # 1) Local: the source NIF's own mod root (dir that contains 'meshes').
     local_root = None
     for parent in [src_nif_path, *src_nif_path.parents]:
