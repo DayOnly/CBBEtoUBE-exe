@@ -1384,6 +1384,19 @@ feature is removed. A strip thinner than `COHERENCE_THIN` is moved **rigidly**
 rather than smoothed, and gates on how far coherence *fell* rather than its
 absolute value, because a rim that reorients coherently is still a defect.
 
+**A seam is one vertex** (`#coherence-repair-seam-groups`). The repair runs
+*after* the seam weld at both sites, and smoothing the displacement per vertex
+*index* gave the two halves of every UV seam different displacements, re-opening
+what the weld had just closed — measured by A/B against
+`CBBE2UBE_NO_COHERENCE_REPAIR=1`: a gown's `top` 23 split seam groups (worst
+0.43u) and `underpants` 44 (0.91u), a cuirass 142 (1.84u), 0 with the pass off;
+78 of 94 torso pieces shipped that way. Under the governing rule a second weld
+afterwards is not a fix, so the repair itself treats each source-coincident
+group (the weld's own grouping) as a single node: one neighbour set, one
+displacement per iteration, and the group enters the core, each dilation ring
+and the pinned boundary together. The clearance hold below takes the same map.
+A mesh with no coincident vertices takes the per-vertex path unchanged.
+
 `CBBE2UBE_NO_COHERENCE_REPAIR=1` is the hatch; the gates are the
 `CBBE2UBE_COHERENCE_*` knobs.
 

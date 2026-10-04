@@ -16,6 +16,61 @@ log says which names were resolved this way. Assumes the game matches these name
 regard to case, as the author's own files imply; not yet seen in game.
 `CBBE2UBE_NO_XML_SHAPE_CASE=1` restores the exact comparison.
 
+### Fixed — a piece converted from its BodySlide build no longer shows skin at the side of the bust when the arms move
+
+A piece converted from its zeroed BodySlide build keeps the author's skin weights, and on some
+pieces the author's rows at the side of the bust carry weight on an arm bone the UBE body's skin
+does not list. The match that brings a row to the body's weights skipped any row with weight on
+such a bone, so the flank followed the arm further than the body under it and skin showed with
+the arms down or the bow drawn (9.25% of the covered flank on one cuirass). On a shape that owns a
+morph file, in the flank band, that arm weight no longer blocks the row: the non-arm bones follow
+the body and the row keeps its authored weight on the arm bones the body does list. Weights only:
+no bone is added, so the morph file stays in step with the shape. Worst-pose exposure at the side
+of the bust on real conversions: one cuirass 9.25% to 2.00%, a heavy variant 3.00% to 1.25%, a
+robe 4.75% to 0.50%, others 0.75-1.75% to 0.50-1.00%. Over 26 third-person vanilla files that
+changed, none got worse by more than 0.5 points; no zero-weight bone appears in 444 files.
+Not yet seen in game. `CBBE2UBE_NO_FLANK_SKIN_MATCH=1` turns it off.
+
+### Fixed — the two sides of a UV seam keep one skin, so a seam no longer tears when a limb moves
+
+A seam is stored as two vertices at one position, and the author skins them alike. The
+fit passes pair each vertex to the body by its own normal, so after conversion the two
+halves could carry different weights and pull apart as soon as the arm or leg moved,
+even though they sat together at rest. On one officer armour 198 of 1346 torso seam
+pairs differed (up to 0.66 in weight, worst at the underarm); the matching pass that
+keeps touching vertices alike only ever joined vertices of different shapes. It now
+also joins the vertices that were at one place in the source within one shape, behind
+the same check that the author skinned them alike, and gives them one averaged row.
+On that armour the differing pairs go from 198 to 0 (torso) and 57 to 0 (pants), no
+vertex moves, and no weight sum changes. `CBBE2UBE_NO_SEAM_TWIN_SKIN=1` turns it off.
+
+### Fixed — the repair that un-buckles crumpled cloth no longer tears UV seams open again
+
+A seam (a UV or normal split) is stored as two or more vertices at one position, and
+the seam weld closes them after the fit. The cloth repair that runs after the weld
+smoothed each vertex on its own, so the two halves of a seam got different moves and
+the seam opened again: in the author's census 78 of 94 torso pieces shipped with
+split seams. The repair now treats the vertices of a seam as one point, so it cannot
+re-open what the weld closed. On the 15 reference pieces, six had split seams
+(169 groups, worst gap 3.3 units) and none have any now; the other nine are unchanged
+in that respect. The repair also runs a second time when a body-swap piece is
+written, and that run had no clearance hold, so on one cuirass a vertex could end
+2 units under the skin; it now gets the same hold as the first run, and the
+hold keeps 0.2 units of clearance (`CBBE2UBE_COHERENCE_HOLD_MARGIN`, 0 restores the old
+rule) so a vertex is not smoothed onto the skin surface: on 70 torso pieces the
+vertices within 0.05 of the skin go from 3798 to 3051 (3109 before this change
+set). Bone weights
+shift slightly on seven pieces because the later weight passes read the repaired
+geometry. Between the two weights of a piece, one bone appears in one file and not
+the other on one more piece than before (a single vertex at the influence cap).
+The seam weld and the repair also find a seam's twins by distance now: they used
+to round positions onto a grid, so twins a hair apart that straddled a grid line were
+missed (one seam on a re-authored file opened to 0.1 units that way); on the 70-piece
+sample no seam is split any more, for 17 more turned triangles in 4828.
+Reported in #31 and fixed in #35.
+A mesh with no coincident vertices is untouched. `CBBE2UBE_NO_COHERENCE_REPAIR=1`
+(set to 1) turns the whole repair off.
+
 ### Fixed — armour whose BodySlide build differs from its mod's own mesh only in body pieces is converted from the build
 
 The tool converts an armour from your zeroed BodySlide build when the build has
