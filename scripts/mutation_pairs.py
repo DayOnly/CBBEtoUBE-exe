@@ -17109,8 +17109,8 @@ PAIRS = (
     Pair('XL-b', 'the load order is walked lowest priority first',
          edits=(
              ('src/nif_convert.py',
-              '        for d in dirs:\n            cand = d / norm\n',
-              '        for d in reversed(dirs):\n            cand = d / norm\n', 1),
+              '        for d in dirs:\n            if len(parts) >= 2',
+              '        for d in reversed(dirs):\n            if len(parts) >= 2', 1),
          ),
          tests=('tests/test_xml_load_order.py',),
          expect=('test_an_add_on_that_wins_the_order_beats_the_base_mod_the_mesh_lives_in', 'test_priority_decides_not_the_alphabet', 'test_the_base_mod_still_wins_when_it_is_the_winner', 'test_the_overwrite_folder_beats_every_mod',),
@@ -17154,8 +17154,8 @@ PAIRS = (
     Pair('XL-g', 'a file the order does not ship is reported as found',
          edits=(
              ('src/nif_convert.py',
-              '        for d in dirs:\n            cand = d / norm\n            if cand.is_file():\n                return cand\n',
-              '        for d in dirs:\n            cand = d / norm\n            if True:\n                return cand\n', 1),
+              '            cand = d / norm\n            if cand.is_file():\n                found = cand\n',
+              '            cand = d / norm\n            if True:\n                found = cand\n', 1),
          ),
          tests=('tests/test_xml_load_order.py',),
          expect=('test_a_file_the_order_does_not_ship_is_found_in_the_meshs_own_mod',),
