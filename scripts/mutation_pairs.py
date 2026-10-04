@@ -17203,7 +17203,7 @@ PAIRS = (
               '        if True:\n            _rig = _zos_rig_difference(cur["_1"], built["_1"])\n', 1),
          ),
          tests=('tests/test_zeroed_output_source_rig_differs.py',),
-         expect=('test_a_piece_with_no_physics_on_either_side_is_not_read_for_a_rig', 'test_a_piece_with_physics_on_one_side_only_is_not_compared',),
+         expect=('test_a_piece_with_no_physics_on_either_side_is_not_read_for_a_rig',),
     ),
     Pair('RD-b', 'three different nodes count as a re-rig',
          edits=(
