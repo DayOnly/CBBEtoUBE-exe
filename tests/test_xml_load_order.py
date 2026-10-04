@@ -245,3 +245,14 @@ def test_a_folder_without_the_paths_first_folders_is_never_asked_for_the_file(wo
                      lambda self: asked.append(str(self)) or real_is_file(self))
     assert nc._load_order_file(FWD) == hit
     assert not any("Unrelated" in a for a in asked)
+
+
+
+def test_a_mod_with_the_folder_but_not_the_file_does_not_answer(world):
+    """The listing only says the mod has `meshes/Maker`; the file itself must
+    still be there for that mod to win."""
+    _file(world.mods, "Sibling", rel="Meshes\\Maker\\Skirt\\Other.xml")
+    own = _file(world.mods, "Base Skirt")
+    nif = _nif(world.mods, "Base Skirt")
+    _order(world, "Sibling")
+    assert nc._resolve_data_rel_in_vfs(REL, nif) == own

@@ -17158,7 +17158,7 @@ PAIRS = (
               '            cand = d / norm\n            if True:\n                found = cand\n', 1),
          ),
          tests=('tests/test_xml_load_order.py',),
-         expect=('test_a_file_the_order_does_not_ship_is_found_in_the_meshs_own_mod',),
+         expect=('test_a_mod_with_the_folder_but_not_the_file_does_not_answer',),
     ),
     Pair('XL-h', 'a failing discovery is not caught',
          edits=(
