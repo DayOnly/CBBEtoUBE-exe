@@ -9738,6 +9738,18 @@ def _proxy_encloses_chain_nodes(verts, tris, nodes) -> list:
 _SKIRT_PROXY_TARGET = _knob("CBBE2UBE_SKIRT_PROXY_TARGET", 500, int)
 # A vert is "cloth" when the SIM drives it: weight on bones the body does not have.
 _SKIRT_PROXY_CHAIN_MIN = _knob("CBBE2UBE_SKIRT_PROXY_CHAIN_MIN", 0.5)
+# #skirt-proxy-below-hip (GitHub #34) -- the proxy's SOURCE is the shape with the
+# most simulated cloth AT OR BELOW THE HIP TOP (body_zones.HIP_Z), when one has at
+# least the 40 such verts the rule needs; only when none does is it the shape with
+# the most simulated cloth anywhere, as before. Counting everywhere let shoulder
+# pauldrons outvote the skirt (reported: 474 chain-weighted pauldron verts at
+# z 105-117 against the skirt's 306), so the "skirt" proxy was built at the
+# shoulders. On the live pack, 1 of 10 pieces with a generated proxy changes
+# source (a chest cloth at z 93-99 over a skirt at z 53-70); pieces whose only
+# cloth hangs at the chest keep theirs. CBBE2UBE_NO_SKIRT_PROXY_BELOW_HIP=1
+# restores the old rule.
+SKIRT_PROXY_BELOW_HIP = (
+    not _flag("CBBE2UBE_NO_SKIRT_PROXY_BELOW_HIP", False))
 _SKIRT_PROXY_GAP = _knob("CBBE2UBE_SKIRT_PROXY_GAP", 3.0)
 # #collider-declared-bones on this proxy: how much of its weight may be moved
 # onto kinematic XML-declared ancestors before the proxy is DECLINED instead.
