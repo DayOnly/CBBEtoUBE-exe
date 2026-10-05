@@ -217,3 +217,51 @@ def test_a_piece_with_several_shapes_still_runs_the_part_passes(monkeypatch):
            _shape("Pants", [(40.0, 0.0, 10.0), (41.0, 0.0, 10.0)], [{PELV: 1.0}, {PELV: 1.0}])]
     _run(dst, src)
     assert _Spy.read is True
+
+
+
+# --- #coincident-skin-unique-names -----------------------------------------
+# The pass maps a written shape to its source shape by name and vert count. A
+# name the physics XML refers to is kept as authored when it repeats, so two
+# written shapes can share one name: both then took the one source shape's twin
+# pairs, and the second shape had verts joined that are not twins in it.
+
+def _two_of_one_name():
+    a = {SPINE: 0.9, PELV: 0.1}
+    b = {SPINE: 0.3, PELV: 0.7}
+    first = _shape("Torso", [SEAM, SEAM], [dict(a), dict(b)])
+    # same name, same size, but its two verts are 30 units apart: not twins
+    second = _shape("Torso", [(0.0, 0.0, 60.0), (30.0, 0.0, 60.0)], [dict(a), dict(b)])
+    src = [_shape("Torso", [SEAM, SEAM], [_alike(), _alike()])]
+    return [first, second], src, a, b
+
+
+def test_a_name_two_written_shapes_share_is_not_a_key(monkeypatch):
+    monkeypatch.setattr(nc, "COINCIDENT_SKIN_UNIQUE_NAMES", True)
+    dst, src, a, b = _two_of_one_name()
+    _run(dst, src)
+    assert dst[1].row(0) == a and dst[1].row(1) == b, "joined verts that are not twins"
+    assert dst[0].row(0) == a and dst[0].row(1) == b
+
+
+def test_the_old_lookup_joined_the_wrong_shapes_verts(monkeypatch):
+    """The control: with the switch off, the second shape's distant verts are
+    given one row -- the defect the switch prevents."""
+    monkeypatch.setattr(nc, "COINCIDENT_SKIN_UNIQUE_NAMES", False)
+    dst, src, a, b = _two_of_one_name()
+    _run(dst, src)
+    assert dst[1].row(0) == dst[1].row(1)
+
+
+def test_a_unique_name_is_still_a_key(monkeypatch):
+    monkeypatch.setattr(nc, "COINCIDENT_SKIN_UNIQUE_NAMES", True)
+    a = {SPINE: 0.9, PELV: 0.1}
+    b = {SPINE: 0.3, PELV: 0.7}
+    dst, src = _torso([a, b], [SEAM, SEAM], [SEAM, SEAM], [_alike(), _alike()])
+    _run(dst, src)
+    assert dst[0].row(0) == dst[0].row(1)
+
+
+def test_the_unique_name_rule_is_on_by_default():
+    import inspect
+    assert 'not _flag("CBBE2UBE_NO_COINCIDENT_SKIN_UNIQUE_NAMES", False)' in inspect.getsource(nc)

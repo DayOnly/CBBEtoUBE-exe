@@ -3107,8 +3107,24 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     src_twins: dict = {}
     try:
         snf = _nc()._open_source_nif(src_nif_path)   # #dup-shape-names
+        # #coincident-skin-unique-names: a name is only a key when it names ONE
+        # shape on each side. The source's duplicates are renamed, but a name the
+        # physics XML refers to is kept as authored, so the written file can
+        # carry several shapes of one name: each of them then took the rows (and,
+        # with #seam-twin-skin, the twin pairs) of whichever source shape of that
+        # name and size came last, and twins were joined between verts that are
+        # not twins in that shape. No authored answer, no gate: leave them alone.
+        _amb: "set[str]" = set()
+        if _nc().COINCIDENT_SKIN_UNIQUE_NAMES:
+            from collections import Counter as _Ctr
+            _nd = _Ctr(s.name or "" for s in cand)
+            _ns = _Ctr(ss.name or "" for ss in snf.shapes)
+            _amb = {n for n in set(_nd) | set(_ns)
+                    if _nd.get(n, 0) > 1 or _ns.get(n, 0) > 1}
         for ss in snf.shapes:
             nm = ss.name or ""
+            if nm in _amb:
+                continue
             if (want.get(nm) == len(ss.verts)
                     and getattr(ss, "bone_weights", None)):
                 src_rows[nm] = _rows_of(ss, len(ss.verts))
