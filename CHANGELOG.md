@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed — the cloth repair keeps its skin clearance when a later pass rebuilds the file
+
+The repair that un-buckles crumpled cloth is held off the skin: it may not move a vertex
+closer to the body than it was, or nearer than 0.2 units. When a later pass gives a garment
+new vertices and rebuilds the file (relaxing a self-intersection, fitting a collider), the
+repair runs once more, and that run had no body to hold it against, so it could smooth a
+vertex into the skin. It now gets the piece's own body, in the garment's frame, as the earlier
+runs do. A piece converted without a body (the copy path) is unchanged.
+
 ### Fixed — a piece converted from its BodySlide build no longer shows skin at the side of the bust when the arms move
 
 A piece converted from its zeroed BodySlide build keeps the author's skin weights, and on some
