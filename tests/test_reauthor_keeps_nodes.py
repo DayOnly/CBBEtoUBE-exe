@@ -32,6 +32,7 @@ The stand-ins below are only as deep as the helper reads: `.nodes`, `.shapes`,
 import inspect
 
 from src import nif_convert as nc
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 from src import nif_convert_writer as w
 
 
@@ -177,8 +178,8 @@ def test_the_flag_defaults_on_and_has_an_off_switch():
 
 def _skeleton_world(monkeypatch, on=True):
     monkeypatch.setattr(nc, "CANONICAL_SKELETON_NODES", on)
-    monkeypatch.setattr(nc, "_actor_can_resolve_bone",
-                        lambda n: n.startswith("NPC "))
+    _cs.patch(monkeypatch, "_actor_can_resolve_bone",
+              lambda n: n.startswith("NPC "))
     root = Node("Scene Root")
     clav = Node("NPC L Clavicle [LClv]", root)
     uarm = Node("NPC L UpperArm [LUar]", clav)
