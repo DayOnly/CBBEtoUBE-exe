@@ -28,6 +28,7 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from src import nif_convert as nc
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 from src import nif_convert_physics as ph
 
 _XML = (
@@ -193,8 +194,7 @@ def test_the_mesh_names_are_read_once_per_file_state(monkeypatch, tmp_path):
 
 
 def test_the_switch_is_on_by_default():
-    import inspect
-    assert 'not _flag("CBBE2UBE_NO_XML_SHAPE_CASE", False)' in inspect.getsource(nc)
+    assert 'not _flag("CBBE2UBE_NO_XML_SHAPE_CASE", False)' in _cs.whole_text()
 
 
 def test_the_replayed_prune_returns_a_rename_alone():
