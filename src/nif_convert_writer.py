@@ -2612,8 +2612,10 @@ def _keep_unweighted_nodes(new, old) -> int:
     depended on the weight file. `_0` and `_1` then had different node counts and
     every shape behind the difference sat at a different position. A bone that is
     weighted in `old` is left to `add_bone` as before, so no transform it would
-    have created changes, and only direct children of the root are re-created (a
-    node with a real parent belongs to a hierarchy the chain code owns). Genital
+    have created changes. Direct children of the root are re-created, and, with
+    CANONICAL_SKELETON_NODES, unweighted actor-skeleton nodes that have a parent
+    (flat, at their global transform) unless a custom chain hangs below them: a
+    chain's hierarchy belongs to the chain code. Genital
     anatomy nodes are not kept: the converter strips those weights on purpose.
     Returns the number of nodes re-created.
     """
@@ -2638,6 +2640,19 @@ def _keep_unweighted_nodes(new, old) -> int:
         root_name = old.rootNode.name
     except Exception:
         root_name = None
+    # #reauthor-keeps-skeleton-nodes: the ancestors of every custom (chain) node.
+    # Those belong to the chain code, which builds them with their parent links.
+    chain_ancestors: "set[str]" = set()
+    keep_skeleton = bool(_nc().CANONICAL_SKELETON_NODES)
+    if keep_skeleton:
+        for n, nd in old_nodes.items():
+            if n in shape_names or _nc()._actor_can_resolve_bone(n):
+                continue
+            cur, seen = getattr(nd, "parent", None), set()
+            while cur is not None and cur.name not in seen:
+                seen.add(cur.name)
+                chain_ancestors.add(cur.name)
+                cur = getattr(cur, "parent", None)
     existing = set(new.nodes.keys())
     kept = 0
     for name in sorted(old_nodes):             # sorted: deterministic order
@@ -2648,12 +2663,20 @@ def _keep_unweighted_nodes(new, old) -> int:
             continue                            # stripped on purpose, node and all
         node = old_nodes[name]
         par = getattr(node, "parent", None)
-        # Flat stubs only: a direct child of the root. A node with a real parent
-        # is part of a hierarchy the chain code rebuilds with its parent links
-        # (it skips a node that already exists), and a flat copy made here would
-        # win that race and flatten an SMP chain.
+        # A direct child of the root is a flat stub and is always kept. A node
+        # with a real parent is kept, flat at its global transform, only when it
+        # is an actor-SKELETON node no custom chain hangs below: the canonical
+        # set seeds such nodes at the first write with their parents, a rebuild
+        # re-adds the weighted skeleton bones flat anyway, and dropping the
+        # unweighted ones is what made a rebuilt weight carry fewer nodes than
+        # its partner (#reauthor-keeps-skeleton-nodes). A chain node, or a
+        # skeleton node a chain hangs below, belongs to the chain code (it skips
+        # a node that already exists, so a flat copy made here would win that
+        # race and flatten an SMP chain).
         if par is None or par.name != root_name:
-            continue
+            if not (keep_skeleton and _nc()._actor_can_resolve_bone(name)
+                    and name not in chain_ancestors):
+                continue
         try:
             new.add_node(name, node.global_transform, parent=None)
             existing.add(name)

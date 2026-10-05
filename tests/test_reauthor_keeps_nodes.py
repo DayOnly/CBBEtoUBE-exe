@@ -166,3 +166,49 @@ def test_the_flag_defaults_on_and_has_an_off_switch():
     assert nc.REAUTHOR_KEEPS_NODES is True
     src = inspect.getsource(nc)
     assert 'not _flag("CBBE2UBE_NO_REAUTHOR_KEEPS_NODES", False)' in src
+
+
+
+# --- #reauthor-keeps-skeleton-nodes ----------------------------------------
+# The canonical set seeds actor-skeleton nodes at the first write WITH their
+# parents (UpperArm under Clavicle). A rebuild kept only the root's children, so
+# an unweighted skeleton node with a parent survived in a weight that was not
+# rebuilt and vanished from one that was: the node counts differed again.
+
+def _skeleton_world(monkeypatch, on=True):
+    monkeypatch.setattr(nc, "CANONICAL_SKELETON_NODES", on)
+    monkeypatch.setattr(nc, "_actor_can_resolve_bone",
+                        lambda n: n.startswith("NPC "))
+    root = Node("Scene Root")
+    clav = Node("NPC L Clavicle [LClv]", root)
+    uarm = Node("NPC L UpperArm [LUar]", clav)
+    pelv = Node("NPC Pelvis [Pelv]", root)
+    thigh = Node("NPC L Thigh [LThg]", pelv)
+    skirt = Node("SkirtBone01", thigh)          # a custom chain below the thigh
+    nodes = [root, clav, uarm, pelv, thigh, skirt, Node("Piece", root)]
+    return Old(nodes, [Shape("Piece", {"NPC L Clavicle [LClv]": [(0, 1.0)]})])
+
+
+def test_an_unweighted_skeleton_node_with_a_parent_is_kept_flat(monkeypatch):
+    _n, names = kept(_skeleton_world(monkeypatch))
+    assert "NPC L UpperArm [LUar]" in names
+
+
+def test_a_skeleton_node_a_chain_hangs_below_is_left_to_the_chain_code(monkeypatch):
+    _n, names = kept(_skeleton_world(monkeypatch))
+    assert "NPC L Thigh [LThg]" not in names
+
+
+def test_a_custom_chain_node_with_a_parent_is_still_not_kept(monkeypatch):
+    _n, names = kept(_skeleton_world(monkeypatch))
+    assert "SkirtBone01" not in names
+
+
+def test_a_weighted_skeleton_bone_is_still_left_to_add_bone(monkeypatch):
+    _n, names = kept(_skeleton_world(monkeypatch))
+    assert "NPC L Clavicle [LClv]" not in names
+
+
+def test_without_the_canonical_set_only_root_children_are_kept(monkeypatch):
+    _n, names = kept(_skeleton_world(monkeypatch, on=False))
+    assert "NPC L UpperArm [LUar]" not in names

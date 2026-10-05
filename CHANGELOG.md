@@ -20,6 +20,13 @@ differ). No node changed parent. One visible difference: about a quarter of the
 files, which lost the three root stubs in both weights before, now keep them as
 the source has them. Whether this removes the in-game geometry break is not
 confirmed. `CBBE2UBE_NO_REAUTHOR_KEEPS_NODES=1` (set to 1) drops the nodes as before.
+Both weights also start from the same skeleton nodes: at the first write the tool creates
+the source's actor-skeleton nodes (and the body's bones), with their source parents and
+transforms, so which nodes a file ends up with no longer depends on what each weight's
+passes added (median 3 more nodes per file, at most 52; capped at 100 per piece). A rebuild
+keeps the unweighted ones of those too, flat, unless a physics chain hangs below them, so a
+weight that is rebuilt keeps the same nodes as one that is not.
+`CBBE2UBE_NO_CANONICAL_SKELETON_NODES=1` turns both off.
 
 ### Fixed — a piece converted from its BodySlide build no longer shows skin at the side of the bust when the arms move
 
