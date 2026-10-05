@@ -33,6 +33,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import src.nif_convert as nc  # noqa: E402
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 import src.nif_convert_weights as nw  # noqa: E402
 from tests.test_coincident_skin_match import (  # noqa: E402
     BELLY, LTHIGH, PELV, SPINE, SPINE1, _run, _shape)
@@ -263,5 +264,4 @@ def test_a_unique_name_is_still_a_key(monkeypatch):
 
 
 def test_the_unique_name_rule_is_on_by_default():
-    import inspect
-    assert 'not _flag("CBBE2UBE_NO_COINCIDENT_SKIN_UNIQUE_NAMES", False)' in inspect.getsource(nc)
+    assert 'not _flag("CBBE2UBE_NO_COINCIDENT_SKIN_UNIQUE_NAMES", False)' in _cs.whole_text()
