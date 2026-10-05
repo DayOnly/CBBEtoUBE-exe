@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed — the generated skirt collider is built from the skirt, not from the shoulder pieces
+
+When a piece's own physics colliders do not cover its simulated skirt, the tool adds a hidden
+skirt collider built from the piece's simulated cloth. It took the shape with the most simulated
+vertices anywhere, so on one robe the shoulder pauldrons (474 vertices) won over the skirt (306)
+and the "skirt" collider sat at the shoulders. It now prefers the shape with the most simulated
+cloth at or below the hips, measured in body space (a shape can store its vertices in its own
+frame), and never a hidden physics stabiliser. A piece whose only simulated cloth hangs at the
+chest keeps its old choice. Of the 10 pieces with this collider in one live pack, 1 changes
+(a chest cloth gave way to the skirt). `CBBE2UBE_NO_SKIRT_PROXY_BELOW_HIP=1` restores the old
+choice. Reported in #34 (its other half, the buttock collider under the skin, was fixed in #39).
+
 ### Fixed — a piece converted from its BodySlide build no longer shows skin at the side of the bust when the arms move
 
 A piece converted from its zeroed BodySlide build keeps the author's skin weights, and on some

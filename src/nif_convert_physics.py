@@ -1101,6 +1101,54 @@ class _ColliderDeclined(Exception):
     reported as broken teaches you to ignore the one channel that matters.
     Caught separately, logged as a decline, no failure recorded."""
 
+# The fewest simulated verts a proxy source may have.
+_SKIRT_PROXY_SOURCE_MIN = 40
+
+
+def _skirt_proxy_source(shapes, decls, chain_mass, body_z=None):
+    """(shape, simulated vert count) the skirt proxy is built from, or (None, -1).
+
+    Candidates are rendered shapes (not hidden, not an XML collider, not an
+    injected body);
+    a vert is simulated when `chain_mass` (its weight on bones the body lacks)
+    reaches `_SKIRT_PROXY_CHAIN_MIN`. The shape with the most simulated verts at
+    or below the hip top (`body_zones.HIP_Z`) wins when it has at least
+    `_SKIRT_PROXY_SOURCE_MIN` of them; otherwise the shape with the most simulated
+    verts anywhere, as before (#skirt-proxy-below-hip, GitHub #34: shoulder
+    pauldrons outvoted the skirt). Ties keep the first shape in file order.
+
+    `body_z(shape)` gives each vert's height in BODY space. A shape may store its
+    verts in its own frame (the reported pauldrons sit at z -6..5 with a +112
+    transform), so a raw height would call them hip-level. Without `body_z` the
+    stored heights are used."""
+    from .body_zones import HIP_Z
+    src_sh, best = None, -1
+    low_sh, low_best = None, -1
+    for s in shapes:
+        if s.name in decls or s.name in _nc().UBE_BODY_INJECT_NAMES:
+            continue
+        # Rendered only: a hidden shape is a physics stabiliser or a proxy (the
+        # reported robe's hidden `Stabilizer` carries 396 chain verts at the hip).
+        if _nc()._shape_is_hidden(s):
+            continue
+        try:
+            is_cloth = chain_mass(s) >= _nc()._SKIRT_PROXY_CHAIN_MIN
+            n_cloth = int(is_cloth.sum())
+            z = (np.asarray(body_z(s), dtype=np.float64) if body_z is not None
+                 else np.asarray(s.verts, dtype=np.float64)[:, 2])
+            n_low = int((is_cloth & (z <= HIP_Z[1])).sum()) if n_cloth else 0
+        except Exception:
+            continue
+        if n_cloth > best:
+            src_sh, best = s, n_cloth
+        if n_low > low_best:
+            low_sh, low_best = s, n_low
+    if (_nc().SKIRT_PROXY_BELOW_HIP and low_sh is not None
+            and low_best >= _SKIRT_PROXY_SOURCE_MIN):
+        return low_sh, low_best
+    return src_sh, best
+
+
 def _add_skirt_collider_proxy(dst_path) -> int:
     """Add a Fabric collision proxy built from the VISIBLE cloth.
     See #skirt-proxy-rebuild. Returns 1 if a proxy was added."""
@@ -1193,19 +1241,17 @@ def _add_skirt_collider_proxy(dst_path) -> int:
     if donor is None:
         return 0
 
-    # SOURCE: the largest rendered shape that is actually simulated.
-    src_sh, best = None, -1
-    for s in nf.shapes:
-        if s.name in decls or s.name in _nc().UBE_BODY_INJECT_NAMES:
-            continue
-        try:
-            cm = _chain_mass(s)
-            n_cloth = int((cm >= _nc()._SKIRT_PROXY_CHAIN_MIN).sum())
-        except Exception:
-            continue
-        if n_cloth > best:
-            src_sh, best = s, n_cloth
-    if src_sh is None or best < 40:
+    # SOURCE: the largest rendered shape that is actually simulated, counted
+    # below the hip first (#skirt-proxy-below-hip).
+    _base_v = np.asarray(base.verts, dtype=np.float64)
+
+    def _body_z(sh_):
+        v = np.asarray(sh_.verts, dtype=np.float64)
+        return (v + _nc().shape_body_offset(sh_, body_verts=_base_v))[:, 2]
+
+    src_sh, best = _skirt_proxy_source(nf.shapes, set(decls), _chain_mass,
+                                       body_z=_body_z)
+    if src_sh is None or best < _SKIRT_PROXY_SOURCE_MIN:
         return 0
 
     try:
