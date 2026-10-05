@@ -28,6 +28,7 @@ import numpy as np
 import pytest
 
 from src import nif_convert as nc
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 from src import nif_convert_physics as ph
 
 
@@ -97,7 +98,7 @@ def test_no_candidate_gives_none():
 
 
 def test_the_switch_is_on_by_default():
-    assert 'not _flag("CBBE2UBE_NO_SKIRT_PROXY_BELOW_HIP", False)' in inspect.getsource(nc)
+    assert 'not _flag("CBBE2UBE_NO_SKIRT_PROXY_BELOW_HIP", False)' in _cs.whole_text()
 
 
 def test_the_proxy_builder_takes_its_source_from_this_rule():
