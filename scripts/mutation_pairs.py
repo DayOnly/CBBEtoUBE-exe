@@ -10558,8 +10558,8 @@ PAIRS = (
     Pair('DXS-k', 'the re-author copies shapes with the fallback',
          edits=(
              ('src/nif_convert_writer.py',
-              '                            xml_stem_scan=_dss)',
-              '                            )  # MUTATED', 1),
+              '                            xml_stem_scan=_dss, repair_body=_rb)',
+              '                            repair_body=_rb)  # MUTATED', 1),
          ),
          tests=('tests/test_dst_xml_no_stem_scan.py',),
          expect=('test_a_reauthor_reads_the_chain_bones_of_its_own_nif_without_the_fallback',),
