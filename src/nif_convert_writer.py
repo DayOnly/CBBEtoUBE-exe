@@ -2601,6 +2601,39 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
 
     return new_shape
 
+def _rebuild_repair_body(nif):
+    """(verts, normals) of the piece's own UBE body in body space, for the
+    coherence repair's clearance hold during a rebuild; None when the piece
+    carries no body (the copy path) or it cannot be read. #coherence-repair-rebuild-hold"""
+    if not _nc().COHERENCE_REPAIR_OUTSIDE_BODY:
+        return None
+    try:
+        b = _nc().ube_body_shape(nif)
+        if b is None:
+            return None
+        bv = np.asarray(b.verts, dtype=np.float64)
+        bt = np.asarray(b.tris, dtype=np.int64)
+        if not len(bv) or not len(bt):
+            return None
+        return bv, _nc()._vertex_normals_from_tris(bv, bt)
+    except Exception as _be:
+        _note_pass_failure("_rebuild_repair_body", _be)
+        return None
+
+
+def _repair_body_in_shape_frame(body, shape):
+    """`body` (verts, normals) moved into `shape`'s stored frame: the body minus
+    the shape's checked body offset (`shape_body_offset`), the frame the
+    write-time hold uses. Normals are unchanged (a translation). None on failure."""
+    try:
+        bv, bn = body
+        off = _nc().shape_body_offset(shape, body_verts=bv)
+        return bv - np.asarray(off, dtype=np.float64), bn
+    except Exception as _fe:
+        _note_pass_failure("_repair_body_in_shape_frame", _fe)
+        return None
+
+
 def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
                         exclude_shapes=None, nif=None, shape_order=None) -> bool:
     """Re-author a NIF from scratch into a fresh NifFile — copy every shape
@@ -2751,14 +2784,23 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
                         f"geometry"), dst_path)
                 _ov = {n: v for n, v in _ov.items() if n not in _amb}
         _excl = exclude_shapes or set()
+        # #coherence-repair-rebuild-hold: a shape given new verts here runs the
+        # coherence repair again inside `_copy_shape` -- the third run on a piece
+        # whose conform relaxed a self-intersection -- and that run had no body,
+        # so no clearance hold. Hand it the piece's own UBE body in the shape's
+        # frame, as the write-time run gets it (#coherence-repair-write-hold).
+        _rbody = _rebuild_repair_body(old) if _ov else None
         for s in shapes:
             if s.name in _excl:
                 continue                 # drop this shape from the re-author
             try:
+                _rb = None
+                if _rbody is not None and s.name in _ov:
+                    _rb = _repair_body_in_shape_frame(_rbody, s)
                 _copy_shape(s, new, override_verts=_ov.get(s.name),
                             preserve_authored_skin=(s.name in _preserve),
                             skip_geometry_repair=(s.name in _colliders),
-                            xml_stem_scan=_dss)
+                            xml_stem_scan=_dss, repair_body=_rb)
             except Exception as _ce:
                 copy_failed.append((s.name, repr(_ce)))
         if copy_failed:
