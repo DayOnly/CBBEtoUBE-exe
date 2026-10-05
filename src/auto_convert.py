@@ -1454,6 +1454,29 @@ def count_pass_failures(nif_results) -> dict:
     return out
 
 
+def _piece_label(dst_path) -> str:
+    """A piece as the pack names it: its path under `meshes/!UBE/` (else under
+    `meshes/`), forward slashes, so `armorf_1.nif` from two mods reads as two
+    pieces. The bare file name when neither folder is in the path; "" when it
+    cannot be read. Never raises. #pass-failure-names"""
+    try:
+        parts = Path(str(dst_path or "")).parts
+    except Exception:
+        return ""
+    if not parts:
+        return ""
+    low = [x.lower() for x in parts]
+    for i in range(len(low) - 1, -1, -1):
+        if low[i] == "meshes":
+            rest = parts[i + 1:]
+            if rest and rest[0].lower() == "!ube":
+                rest = rest[1:]
+            if rest:
+                return "/".join(rest)
+            break
+    return parts[-1]
+
+
 def count_pass_failure_pieces(nif_results) -> dict:
     """{pass name -> [pieces it failed on]}. The counts' missing half.
 
@@ -1474,10 +1497,7 @@ def count_pass_failure_pieces(nif_results) -> dict:
     """
     out: dict = {}
     for r in nif_results or ():
-        try:
-            name = Path(str(getattr(r, "dst_path", "") or "")).name
-        except Exception:
-            name = ""
+        name = _piece_label(getattr(r, "dst_path", "") or "")
         for part in (getattr(r, "reason", "") or "").split("; "):
             part = part.strip()
             if not part.startswith("PASS FAILED "):
@@ -1525,6 +1545,11 @@ def count_pass_effects(nif_results) -> dict:
                 if name and name not in out[tag]:
                     out[tag].append(name)
     return out
+
+
+# How many piece names the run summary lists under each failed pass; the full list
+# is in conversion_report.json.
+_PASS_FAIL_NAMES_SHOWN = 6
 
 
 def _pack_pass_failures(ok) -> dict:
@@ -4679,9 +4704,18 @@ def write_conversion_summary(output_dir: Path, results: list) -> Path | None:
                      f"across {len(pack_fails)} pass(es) and {len(ok)} mod(s).")
             L.append("   These pieces still CONVERTED, so they are in no error "
                      "count above -- but the pass did not do its job.")
+            pack_pieces = _pack_pass_failure_pieces(ok)
             for _label, _n in sorted(pack_fails.items(),
                                      key=lambda kv: (-kv[1], kv[0])):
                 L.append(f"     {_n:>6} x  {_label}")
+                # Name the pieces: a count says a pass failed, not on what.
+                _names = sorted(pack_pieces.get(_label) or [])
+                if _names:
+                    _more = (f" (+{len(_names) - _PASS_FAIL_NAMES_SHOWN} more, "
+                             "all in conversion_report.json)"
+                             if len(_names) > _PASS_FAIL_NAMES_SHOWN else "")
+                    L.append("            "
+                             + ", ".join(_names[:_PASS_FAIL_NAMES_SHOWN]) + _more)
             L.append("")
 
         L.append("per-mod detail")

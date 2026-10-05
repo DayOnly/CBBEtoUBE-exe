@@ -567,6 +567,18 @@ def _nif_shapes(path) -> "dict[str, np.ndarray]":
         nif_io.release_nif(nf)
 
 
+def _nif_rig_nodes(path) -> "set[str]":
+    """The names of a file's nodes that are not shapes: its bones and chain nodes,
+    one read, released at once (#postflight-release). What
+    #zos-rig-differs compares between today's source and the build."""
+    nf = nif_io.open_nif_retry(str(path))
+    try:
+        shapes = {s.name for s in nf.shapes}
+        return {n for n in nf.nodes if n not in shapes}
+    finally:
+        nif_io.release_nif(nf)
+
+
 def _nif_diffuse(path) -> "dict[str, str]":
     """Every shape's diffuse texture path from one read ("" where the shape has
     no lighting shader or the slot cannot be read) -- what
