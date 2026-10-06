@@ -17637,4 +17637,22 @@ PAIRS = (
          tests=('tests/test_hdt_xml_absent.py',),
          expect=('test_without_a_load_order_nobody_can_say_it_is_absent', ),
     ),
+    Pair('PMS-a', "a failure message keeps its '; ' and is cut in the report",
+         edits=(
+             ('src/nif_convert_telemetry.py',
+              '                 f"{str(exc).replace(\'; \', \', \')})")\n',
+              '                 f"{str(exc)})")\n', 1),
+         ),
+         tests=('tests/test_pass_failure_surfacing.py',),
+         expect=('test_a_message_with_several_parts_reaches_the_report_whole', ),
+    ),
+    Pair('PMS-b', "an effect detail keeps its '; '",
+         edits=(
+             ('src/nif_convert_telemetry.py',
+              '            f" ({str(detail).replace(\'; \', \', \')})" if detail else "")  # #pass-message-separator\n',
+              '            f" ({str(detail)})" if detail else "")  # #pass-message-separator\n', 1),
+         ),
+         tests=('tests/test_pass_failure_surfacing.py',),
+         expect=('test_an_effect_detail_with_several_parts_stays_one_entry', ),
+    ),
 )

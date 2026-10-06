@@ -26,6 +26,8 @@ A piece whose mesh names a physics file that no mod in your load order ships (an
 leftover pointer to another mod's file) is no longer counted as a failed pass or flagged as
 "dropped by a rebuild": the game loads no physics for it either, and the log says that
 plainly. In one full run this was all 12 such "failures".
+A failure or change note that lists several things (a physics file that lost four blocks)
+now reaches the report whole; it used to stop after the first one.
 When a build is taken over (or held back from) a source that carries a different physics
 rig (an SMP rebuild of a plain skirt), the log and `conversion_report.json` now say so by
 piece, under `rig_differs`; which file is converted is unchanged.

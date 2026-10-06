@@ -41,7 +41,11 @@ def _note_pass_failure(label: str, exc: BaseException, dst=None) -> None:
     try:
         key = f"{label}: {type(exc).__name__}"
         _PASS_FAILURES[key] = _PASS_FAILURES.get(key, 0) + 1
-        entry = f"PASS FAILED {label} ({type(exc).__name__}: {exc})"
+        # The piece's `reason` is joined on "; " and split on it again by the
+        # parent, so a message that carries "; " (a prune naming several shapes)
+        # was cut after its first part. #pass-message-separator
+        entry = (f"PASS FAILED {label} ({type(exc).__name__}: "
+                 f"{str(exc).replace('; ', ', ')})")
         if entry not in _PASS_FAILURES_THIS_PIECE:
             _PASS_FAILURES_THIS_PIECE.append(entry)
         if _PASS_FAILURES[key] <= 3:      # once per kind, not per piece
@@ -78,7 +82,8 @@ def _note_pass_effect(tag: str, detail: str = "", dst=None) -> None:
     """
     try:
         _PASS_EFFECTS[tag] = _PASS_EFFECTS.get(tag, 0) + 1
-        entry = f"CHANGED BY {tag}" + (f" ({detail})" if detail else "")
+        entry = f"CHANGED BY {tag}" + (
+            f" ({str(detail).replace('; ', ', ')})" if detail else "")  # #pass-message-separator
         if entry not in _PASS_EFFECTS_THIS_PIECE:
             _PASS_EFFECTS_THIS_PIECE.append(entry)
     except Exception:

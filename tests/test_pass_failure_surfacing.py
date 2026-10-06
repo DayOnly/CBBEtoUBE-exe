@@ -241,3 +241,29 @@ def test_the_json_names_pieces_by_path(tmp_path):
     rep = json.loads(out.read_text())
     assert rep["pass_failure_pieces"] == {
         "hdt_xml_shape_dropped": ["armor/iron/armorf_1.nif"]}
+
+
+# --- #pass-message-separator -------------------------------------------------
+# A piece's `reason` is joined on "; " and split on it again. A failure message
+# that itself carried "; " (a physics prune naming four shapes) reached the report
+# as its first part only.
+
+def test_a_message_with_several_parts_reaches_the_report_whole(tmp_path):
+    from src import nif_convert as nc
+    from src.auto_convert import count_pass_failures
+    nc._begin_piece_pass_log()
+    nc._note_pass_failure("hdt_xml_shape_dropped", RuntimeError(
+        "x.xml: 2 shape block(s) pruned -- collider 'A'; collider 'B'"))
+    reason = "; ".join(nc._piece_pass_failures())
+    parts = reason.split("; ")
+    assert len(parts) == 1 and "collider 'B'" in parts[0]
+    assert count_pass_failures([_cr("a.nif", reason)]) == {"hdt_xml_shape_dropped": 1}
+    nc._begin_piece_pass_log()
+
+
+def test_an_effect_detail_with_several_parts_stays_one_entry():
+    from src import nif_convert as nc
+    nc._begin_piece_pass_log()
+    nc._note_pass_effect("#x", "first; second")
+    assert nc._piece_pass_effects() == ["CHANGED BY #x (first, second)"]
+    nc._begin_piece_pass_log()
