@@ -18141,4 +18141,13 @@ PAIRS = (
          tests=('tests/test_canonical_skeleton_nodes.py',),
          expect=('test_the_partner_union_is_on_by_default', ),
     ),
+    Pair('PBN-a', 'a bone list exactly as long as the buffer is not read again',
+         edits=(
+             ('.pynifly/pyn/pynifly.py',
+              '            if actualsize >= bufsize:\n',
+              '            if actualsize > bufsize:\n', 1),
+         ),
+         tests=('tests/test_pynifly_bone_names_buffer.py',),
+         expect=('test_a_bone_list_exactly_300_long_is_read_whole', 'test_the_reported_calf_bone_keeps_its_bracket', ),
+    ),
 )
