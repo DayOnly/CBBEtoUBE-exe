@@ -10155,6 +10155,15 @@ REAUTHOR_KEEPS_NODES = (
 CANONICAL_SKELETON_NODES = (
     not _flag("CBBE2UBE_NO_CANONICAL_SKELETON_NODES", False))
 _CANONICAL_NODE_CAP = _knob("CBBE2UBE_CANONICAL_NODE_CAP", 100, int)
+# #canonical-partner-union -- the canonical set is taken from BOTH weights' source
+# files (this one and its `_0`/`_1` partner beside it), not this weight's alone. An
+# author's two files can carry different unweighted skeleton nodes (a gauntlet
+# whose `_1` has `NPC L/R Foot` and whose `_0` does not; a cuirass whose `_0` has
+# pauldron bones), and copying each weight's own set reproduced that difference:
+# the shapes behind it sat at different positions in the two files.
+# CBBE2UBE_NO_CANONICAL_PARTNER_UNION=1 takes this weight's source alone.
+CANONICAL_PARTNER_UNION = (
+    not _flag("CBBE2UBE_NO_CANONICAL_PARTNER_UNION", False))
 
 # #chain-anchor-recreate. Recreate a MISSING flat anchor node, so the chain that
 # hangs off it can be attached at all -- see `_precreate_custom_bone_chains`'

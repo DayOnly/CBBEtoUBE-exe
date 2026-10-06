@@ -34,6 +34,7 @@ import pytest
 
 from src import nif_convert as nc
 from src import nif_convert_physics as ph
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 SPINE = "NPC Spine [Spn0]"
 PELVIS = "NPC Pelvis [Pelv]"
@@ -279,3 +280,82 @@ def test_the_real_pynifly_seed_keeps_the_source_hierarchy(tmp_path):
     back = pyn.NifFile(filepath=dpath)
     assert back.nodes[PAULDRON].parent.name == SPINE, "the source hierarchy is kept"
     assert back.nodes[PELVIS].parent.name == "Scene Root"
+
+
+
+# --- #canonical-partner-union ----------------------------------------------
+# An author's two weight files can carry different unweighted skeleton nodes:
+# a gauntlet whose `_1` has `NPC L/R Foot` and whose `_0` does not, a cuirass
+# whose `_0` has pauldron bones. The canonical set copied each weight's own
+# source, so the difference survived and the shapes behind it sat at different
+# positions in the two files. The set is now the union of both sources.
+
+def _pyn_file(tmp_path, name, node_names):
+    """A real pynifly NIF with flat skeleton nodes under the root."""
+    pyn = nc._pynifly()
+    p = tmp_path / name
+    nf = pyn.NifFile()
+    nf.initialize("SKYRIMSE", str(p))
+    nf.createShapeFromData("Armor", [(0, 0, 0), (1, 0, 0), (0, 1, 0)], [(0, 1, 2)],
+                           [(0, 0), (1, 0), (0, 1)], [(0, 0, 1)] * 3)
+    idt = pyn.TransformBuf()
+    idt.set_identity()
+    for n in node_names:
+        nf.add_node(n, idt, parent=None)
+    nf.save()
+    return pyn.NifFile(filepath=str(p))
+
+
+def _seed_names(tmp_path, src):
+    pyn = nc._pynifly()
+    d = pyn.NifFile()
+    d.initialize("SKYRIMSE", str(tmp_path / "dst.nif"))
+    ph._seed_canonical_skeleton_nodes(d, src, body_bones=())
+    return set(d.nodes)
+
+
+HAND = ["NPC L Hand [LHnd]", "NPC R Hand [RHnd]"]
+FEET = ["NPC L Foot [Lft ]", "NPC R Foot [Rft ]"]
+
+
+def test_both_weights_get_the_nodes_only_one_source_has(tmp_path, monkeypatch):
+    monkeypatch.setattr(nc, "CANONICAL_PARTNER_UNION", True)
+    s0 = _pyn_file(tmp_path, "gauntlets_0.nif", HAND)
+    s1 = _pyn_file(tmp_path, "gauntlets_1.nif", HAND + FEET)
+    a = _seed_names(tmp_path, s0)
+    b = _seed_names(tmp_path, s1)
+    assert set(FEET) <= a, "the weight whose source lacks the feet still gets them"
+    assert a == b
+
+
+def test_without_the_union_each_weight_copies_its_own_source(tmp_path, monkeypatch):
+    """The control: the defect the union removes."""
+    monkeypatch.setattr(nc, "CANONICAL_PARTNER_UNION", False)
+    s0 = _pyn_file(tmp_path, "gauntlets_0.nif", HAND)
+    s1 = _pyn_file(tmp_path, "gauntlets_1.nif", HAND + FEET)
+    assert _seed_names(tmp_path, s0) != _seed_names(tmp_path, s1)
+
+
+def test_the_partner_is_the_other_weight_beside_the_source(tmp_path, monkeypatch):
+    monkeypatch.setattr(nc, "CANONICAL_PARTNER_UNION", True)
+    s1 = _pyn_file(tmp_path, "cuirass_1.nif", HAND)
+    _pyn_file(tmp_path, "cuirass_0.nif", FEET)
+    other = ph._weight_partner_source(s1)
+    assert other is not None and set(FEET) <= set(other.nodes)
+
+
+def test_a_file_with_no_weight_suffix_has_no_partner(tmp_path, monkeypatch):
+    monkeypatch.setattr(nc, "CANONICAL_PARTNER_UNION", True)
+    s = _pyn_file(tmp_path, "helmet.nif", HAND)
+    assert ph._weight_partner_source(s) is None
+
+
+def test_a_missing_partner_leaves_the_source_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(nc, "CANONICAL_PARTNER_UNION", True)
+    s1 = _pyn_file(tmp_path, "boots_1.nif", HAND)
+    assert ph._weight_partner_source(s1) is None
+    assert set(HAND) <= _seed_names(tmp_path, s1)
+
+
+def test_the_partner_union_is_on_by_default():
+    assert 'not _flag("CBBE2UBE_NO_CANONICAL_PARTNER_UNION", False)' in _cs.whole_text()

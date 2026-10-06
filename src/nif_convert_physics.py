@@ -1802,7 +1802,27 @@ def _seed_flat_chain_anchors(dst_nif, src_nif, stem_scan: bool = True) -> int:
         _note_pass_failure("_seed_flat_chain_anchors", _e)
         return 0
 
-def _canonical_skeleton_nodes(src_nif, body_bones=()) -> "list[str]":
+def _weight_partner_source(src_nif):
+    """The OTHER weight's source file beside `src_nif` (`x_0.nif` <-> `x_1.nif`,
+    either case), loaded, or None when there is none, it cannot be read, or
+    CANONICAL_PARTNER_UNION is off. #canonical-partner-union"""
+    if not _nc().CANONICAL_PARTNER_UNION:
+        return None
+    try:
+        p = Path(str(getattr(src_nif, "filepath", "") or ""))
+        stem = p.stem
+        if len(stem) < 2 or stem[-2] != "_" or stem[-1] not in "01":
+            return None
+        other = p.with_name(stem[:-1] + ("1" if stem[-1] == "0" else "0") + p.suffix)
+        if not other.is_file():
+            return None
+        return _nc()._pynifly().NifFile(filepath=str(other))
+    except Exception as _pe:
+        _note_pass_failure("_weight_partner_source", _pe)
+        return None
+
+
+def _canonical_skeleton_nodes(src_nif, body_bones=(), partner_nif=None) -> "list[str]":
     """The skeleton nodes every output weight of this piece should carry, derived
     from things BOTH weights share: the source file's nodes and the body's bones.
     #canonical-skeleton-nodes
@@ -1821,32 +1841,43 @@ def _canonical_skeleton_nodes(src_nif, body_bones=()) -> "list[str]":
     SMP chain. A source with more than `_CANONICAL_NODE_CAP` such nodes (a cloak
     whose chain nodes pass for skeleton names) gets none: the converter drops
     those on purpose and the set would resurrect them.
+
+    `partner_nif` (the other weight's source, #canonical-partner-union) is read the
+    same way and its nodes join the set, so both weights get the same nodes even
+    when the author's two files differ.
     """
-    try:
-        src_nodes = dict(src_nif.nodes)
-    except Exception:
-        src_nodes = {}
-    try:
-        shape_names = {sh.name for sh in src_nif.shapes}
-    except Exception:
-        shape_names = set()
-    try:
-        root_name = src_nif.rootNode.name
-    except Exception:
-        root_name = None
+    names = set(body_bones or ())
+    shape_names: "set[str]" = set()
+    root_names: "set[str]" = set()
     ancestors: "set[str]" = set()
-    for n, node in src_nodes.items():
-        if n in shape_names or _actor_can_resolve_bone(n):
+    for nif in (src_nif, partner_nif):
+        if nif is None:
             continue
-        cur, seen = getattr(node, "parent", None), set()
-        while cur is not None and cur.name not in seen:
-            seen.add(cur.name)
-            ancestors.add(cur.name)
-            cur = getattr(cur, "parent", None)
-    names = set(src_nodes) | set(body_bones or ())
+        try:
+            nodes = dict(nif.nodes)
+        except Exception:
+            nodes = {}
+        try:
+            shapes = {sh.name for sh in nif.shapes}
+        except Exception:
+            shapes = set()
+        try:
+            root_names.add(nif.rootNode.name)
+        except Exception:
+            pass
+        shape_names |= shapes
+        names |= set(nodes)
+        for n, node in nodes.items():
+            if n in shapes or _actor_can_resolve_bone(n):
+                continue
+            cur, seen = getattr(node, "parent", None), set()
+            while cur is not None and cur.name not in seen:
+                seen.add(cur.name)
+                ancestors.add(cur.name)
+                cur = getattr(cur, "parent", None)
     out = []
     for n in sorted(names):
-        if (not n or n == root_name or n in shape_names or n in ancestors
+        if (not n or n in root_names or n in shape_names or n in ancestors
                 or n.lower().endswith(".nif")):
             continue
         if not _actor_can_resolve_bone(n) or _nc()._is_genital_anatomy_bone(n):
@@ -1876,18 +1907,26 @@ def _seed_canonical_skeleton_nodes(dst_nif, src_nif, body_bones=()) -> int:
     if not _nc().CANONICAL_SKELETON_NODES:
         return 0
     try:
-        names = _canonical_skeleton_nodes(src_nif, body_bones)
+        partner = _weight_partner_source(src_nif)   # #canonical-partner-union
+        names = _canonical_skeleton_nodes(src_nif, body_bones, partner_nif=partner)
         if not names:
             return 0
         pyn = _nc()._pynifly()
-        try:
-            src_nodes = dict(src_nif.nodes)
-        except Exception:
-            src_nodes = {}
-        try:
-            root_name = src_nif.rootNode.name
-        except Exception:
-            root_name = None
+        # This weight's own node first; a node only the partner has comes with
+        # the partner's transform and parent.
+        src_nodes: dict = {}
+        root_names: "set[str]" = set()
+        for nif in (partner, src_nif):
+            if nif is None:
+                continue
+            try:
+                src_nodes.update(dict(nif.nodes))
+            except Exception:
+                pass
+            try:
+                root_names.add(nif.rootNode.name)
+            except Exception:
+                pass
         wanted = set(names)
         existing = set(dst_nif.nodes.keys())
         added = [0]
@@ -1909,7 +1948,7 @@ def _seed_canonical_skeleton_nodes(dst_nif, src_nif, body_bones=()) -> int:
                     xf = node.transform
                     pnode = getattr(node, "parent", None)
                     par = pnode.name if pnode is not None else None
-                    if par == root_name:
+                    if par in root_names:
                         par = None
                 if par is not None:
                     if par not in wanted or not _make(par):

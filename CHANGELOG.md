@@ -27,6 +27,12 @@ passes added (median 3 more nodes per file, at most 52; capped at 100 per piece)
 keeps the unweighted ones of those too, flat, unless a physics chain hangs below them, so a
 weight that is rebuilt keeps the same nodes as one that is not.
 `CBBE2UBE_NO_CANONICAL_SKELETON_NODES=1` turns both off.
+Those nodes come from both weights' source files together: an author's two files can carry
+different unused skeleton nodes (a gauntlet's heavy file has foot nodes its thin one lacks, a
+cuirass's thin file has pauldron bones), and copying each file's own set kept that difference.
+In a full scratch conversion, the pairs whose node counts differ went from 47 to 7, and this
+closes 3 of those 7; the other 4 come from later passes.
+`CBBE2UBE_NO_CANONICAL_PARTNER_UNION=1` reads each weight's source alone.
 
 ### Fixed — a piece converted from its BodySlide build no longer shows skin at the side of the bust when the arms move
 
