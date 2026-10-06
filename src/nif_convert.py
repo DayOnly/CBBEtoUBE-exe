@@ -6248,6 +6248,7 @@ def _finalize_physics_and_motion_match(dst_path, src_path, biped_slots) -> None:
 # since 2026-09-01. Imported BY NAME so `nc.<name>` keeps working everywhere.
 from .nif_convert_physics import (  # noqa: E402
     _ColliderDeclined,
+    _hdt_xml_pointer_absent,
     _actor_can_resolve_bone,
     _actor_skeleton_bone_names,
     simulated_vert_mask,
@@ -12072,6 +12073,116 @@ def _resolve_data_rel_in_vfs(rel: str, src_nif_path: Path) -> "Path | None":
     return _resolve_safe_rel_in_vfs(stripped, src_nif_path)
 
 
+# #xml-load-order (GitHub #28) -- DEFAULT ON. A physics XML is named by a path in
+# the mesh, and the game opens the copy that wins the load order. The lookup tried
+# the mesh's own mod first and then walked the mod folders in ALPHABETICAL order,
+# so an add-on mod that overrides a base mod's XML (an SMP rig over a plain one) was
+# passed over for the base mod's older file: the skirt came out with the wrong
+# chains, and its colliders were pruned for shapes the mesh does not have. The
+# lookup now asks the load order first, the way the zeroed-body resolver does, and
+# keeps the old order for when no profile can be read or nothing in the order
+# ships the file. CBBE2UBE_XML_OWN_MOD_FIRST=1 restores the old order.
+XML_LOAD_ORDER = not _flag("CBBE2UBE_XML_OWN_MOD_FIRST", False)
+_LOAD_ORDER_DIRS: "dict[str, list | None]" = {}      # keyed on the mods root
+
+
+def _load_order_dirs() -> "list[Path] | None":
+    """The folders of the discovered MO2 instance, highest priority first
+    (overwrite, enabled mods in order, the game Data folders), read once per mods
+    root; None when no profile can be read, or when the profile belongs to another
+    mods folder than the one this process was given. #xml-load-order"""
+    try:
+        mroot = _paths.mods_root()
+    except Exception:
+        mroot = None
+    key = str(mroot or "")
+    if key in _LOAD_ORDER_DIRS:
+        return _LOAD_ORDER_DIRS[key]
+    dirs = None
+    try:
+        lay = _paths.discover_layout()
+        order = _paths.enabled_mods_ordered(lay)
+        if (lay.mods_root is not None and order is not None
+                and (mroot is None or Path(lay.mods_root) == Path(mroot))):
+            ow = _paths.overwrite_dir(lay)
+            dirs = [Path(ow)] if ow is not None and Path(ow).is_dir() else []
+            dirs += [Path(lay.mods_root) / m for m in order]
+            dirs += [Path(d) for d in lay.game_data_dirs]
+    except Exception:
+        dirs = None
+    _LOAD_ORDER_DIRS[key] = dirs
+    return dirs
+
+
+# Answers of `_load_order_file`, found or not, keyed on (mods root, path): the
+# folders of the order do not change during a run, and one lookup walks up to a few
+# thousand of them (measured 80-190 ms on a 3345-folder order). A found file is
+# re-checked with one stat before it is reused. #xml-load-order
+_LOAD_ORDER_FILE_MEMO: "dict[tuple[str, str], Path | None]" = {}
+# Lowercased names directly inside `<folder>/<first segment>` (for an XML path,
+# a mod's `meshes` folder), listed once per folder: a lookup stats only the
+# folders whose listing holds the path's second segment. #xml-load-order
+_LOAD_ORDER_CHILDREN: "dict[str, frozenset]" = {}
+
+
+def _load_order_children(top: Path) -> frozenset:
+    key = str(top)
+    got = _LOAD_ORDER_CHILDREN.get(key)
+    if got is None:
+        try:
+            got = frozenset(n.lower() for n in os.listdir(top))
+        except OSError:
+            got = frozenset()
+        _LOAD_ORDER_CHILDREN[key] = got
+    return got
+
+
+def _is_converter_output_rel(norm: str) -> bool:
+    """Is `norm` (a checked Data-relative path) in the converter's own output
+    namespace, `meshes/!UBE/`? The game's copy of such a file is whatever an
+    EARLIER run left in the pack; this run's copy sits beside the NIF that names
+    it, so the load order must not answer for it (a scratch run would read the
+    live pack's file). #xml-load-order"""
+    parts = [p for p in norm.replace("\\", "/").split("/") if p]
+    return (len(parts) >= 2 and parts[0].lower() == "meshes"
+            and parts[1].lower() == "!ube")
+
+
+def _load_order_file(norm: str) -> "Path | None":
+    """The first folder of the load order that ships `norm` (a Data-relative path
+    that has already passed `_safe_data_rel`), or None. Never answers for the
+    converter's own output namespace (`_is_converter_output_rel`). #xml-load-order"""
+    if _is_converter_output_rel(norm):
+        return None
+    dirs = _load_order_dirs()
+    if not dirs:
+        return None
+    try:
+        mkey = str(_paths.mods_root() or "")
+    except Exception:
+        mkey = ""
+    key = (mkey, norm.replace("\\", "/").lower())
+    if key in _LOAD_ORDER_FILE_MEMO:
+        hit = _LOAD_ORDER_FILE_MEMO[key]
+        if hit is None or hit.is_file():
+            return hit
+    parts = [p for p in norm.replace("\\", "/").split("/") if p]
+    found = None
+    try:
+        for d in dirs:
+            if len(parts) >= 2 and parts[1].lower() not in _load_order_children(
+                    d / parts[0]):
+                continue
+            cand = d / norm
+            if cand.is_file():
+                found = cand
+                break
+    except OSError:
+        return None
+    _LOAD_ORDER_FILE_MEMO[key] = found
+    return found
+
+
 def _physics_data_prefix() -> bool:
     r"""#physics-data-prefix (2026-09-25): may a physics-XML pointer written as
     "Data\meshes\...\x.xml" resolve with its leading "Data" segment removed?
@@ -12091,6 +12202,13 @@ def _physics_data_prefix() -> bool:
 def _resolve_safe_rel_in_vfs(norm: str, src_nif_path: Path) -> "Path | None":
     """The lookup half of `_resolve_data_rel_in_vfs`: `norm` has ALREADY
     passed `_safe_data_rel`. Never call it with an unchecked path."""
+    # 0) The copy the GAME loads: the first provider in MO2 priority order
+    #    (#xml-load-order). Only when no profile can be read, or nothing in the
+    #    order ships the file, do the lookups below decide.
+    if XML_LOAD_ORDER:
+        won = _load_order_file(norm)
+        if won is not None:
+            return won
     # 1) Local: the source NIF's own mod root (dir that contains 'meshes').
     local_root = None
     for parent in [src_nif_path, *src_nif_path.parents]:
@@ -15827,6 +15945,7 @@ __all__ = [
     "_fill_zero_weight_verts",
     "_find_ube_shapedata",
     "_harden_hdt_xml_for_fsmp",
+    "_hdt_xml_pointer_absent",
     "_hdt_sanitise",
     "_install_skin",
     "_is_arm_hand_bone",

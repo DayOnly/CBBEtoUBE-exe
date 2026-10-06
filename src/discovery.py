@@ -383,6 +383,52 @@ def _declares_physics(path: Path) -> "bool | None":
         return None
 
 
+# #zos-rig-differs (GitHub #28). The physics check above is a presence test: a
+# source and its build that both name an XML read as "physics unchanged", even when
+# the build carries another rig (an SMP rebuild of a plain skirt: 81 custom nodes
+# against 302 on the reported piece). The decision is NOT changed by this: the build
+# is the file the game loads, and across the 38 pieces moved over body shapes only
+# that one piece had such a rig and it converts correctly from the build once its XML
+# is read from the load order. What was missing is the saying: a piece that moves or
+# stays across a re-rig is named in the log and in the report.
+_ZOS_RIG_MIN_DIFF = 10        # custom nodes that differ, at the least
+_ZOS_RIG_MAX_SHARED = 0.5     # and the shared share of all custom nodes, at most
+
+
+def _zos_skeleton_names() -> "set[str]":
+    """Lowercased node names of the actor skeleton, empty when none is found."""
+    try:
+        from . import nif_convert as _nc
+        return {n.lower() for n in _nc._actor_skeleton_bone_names()}
+    except Exception:
+        return set()
+
+
+def _zos_rig_text(src_nodes, build_nodes, skeleton) -> str:
+    """A one-line account of a re-rig, or "" when the two rigs are the same piece
+    of work. The custom nodes are those the actor skeleton does not provide, and
+    a re-rig changes most of them."""
+    a = {n for n in src_nodes if n.lower() not in skeleton and not n.lower().endswith(".nif")}
+    b = {n for n in build_nodes if n.lower() not in skeleton and not n.lower().endswith(".nif")}
+    union = a | b
+    if not union:
+        return ""
+    shared = len(a & b)
+    if len(union) - shared < _ZOS_RIG_MIN_DIFF or shared / len(union) > _ZOS_RIG_MAX_SHARED:
+        return ""
+    return f"{len(a)} custom node(s) in today's source, {len(b)} in the build, {shared} shared"
+
+
+def _zos_rig_difference(cur, built) -> str:
+    """`_zos_rig_text` for two files, or "" when either cannot be read."""
+    from . import zeroed_body as _zb
+    try:
+        return _zos_rig_text(_zb._nif_rig_nodes(cur), _zb._nif_rig_nodes(built),
+                             _zos_skeleton_names())
+    except Exception:
+        return ""
+
+
 def _zeroed_smp_gain() -> bool:
     """#zeroed-smp-gain: may a verified zeroed build bring SMP physics to a piece
     whose source has none? Only when asked: CBBE2UBE_ZEROED_SMP_GAIN=1. Off by
@@ -720,6 +766,7 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
     kept: "dict[str, int]" = {}
     kept_stems: "dict[str, list[str]]" = {}
     kept_diffs: "dict[str, str]" = {}
+    rig_changed: "dict[str, str]" = {}        # stem -> the re-rig, when both declare physics
     _ZOS_LAST.clear()
 
     def keep(reason: str, stem: str, diffs: str = "") -> None:
@@ -755,6 +802,10 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
                 keep(why, stem)
                 continue
             gain = True
+        if physics == {True}:
+            _rig = _zos_rig_difference(cur["_1"], built["_1"])
+            if _rig:
+                rig_changed[stem] = _rig
         try:
             today = {w: _zb._nif_shapes(cur[w]) for w in keys}
         except Exception:
@@ -795,10 +846,16 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
     _zos_say(f"[zeroed-output-source] {provider}: {len(moved)} piece(s) now "
              f"converted from its verified zeroed BodySlide build{smp}{body}; "
              f"{sum(kept.values())} kept today's source" + (f" ({held})" if held else ""))
+    _moved = set(moved)
+    rig_differs = {s: f"{'moved' if s in _moved else 'kept'}: {t}"
+                   for s, t in sorted(rig_changed.items())}
+    for s, t in rig_differs.items():
+        _zos_say(f"[zeroed-output-source] rig differs on meshes/{s} ({t})")
     _ZOS_LAST.update(provider=provider, moved=list(moved), gained=list(gained),
                      moved_over_body_shapes=dict(body_only),
                      kept={r: list(s) for r, s in sorted(kept_stems.items())},
-                     kept_shape_diffs=dict(kept_diffs))
+                     kept_shape_diffs=dict(kept_diffs),
+                     rig_differs=rig_differs)
 
 
 def _walk_nifs(meshes_dir: Path, mod_name: str,

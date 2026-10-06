@@ -131,6 +131,28 @@ def test_the_pack_wide_summary_rolls_up_every_mod(tmp_path):
     assert "4 x  _cap_weights_map" in txt
 
 
+def _summary(tmp_path, names):
+    from src.auto_convert import write_conversion_summary
+    d = tmp_path / "ModA"
+    d.mkdir()
+    acr = AutoConvertResult(
+        source_dir=d, output_dir=tmp_path,
+        nif_results=[_cr(n, _pf("hdt_xml_shape_dropped")) for n in names])
+    return write_conversion_summary(tmp_path, [(d, acr, None)]).read_text()
+
+
+def test_the_summary_names_the_pieces_behind_a_failed_pass(tmp_path):
+    txt = _summary(tmp_path, ["skirt_1.nif", "cuirass_1.nif"])
+    import re
+    assert re.search(r"cuirass_1\.nif\S*, skirt_1\.nif", txt), txt
+
+
+def test_the_summary_lists_six_names_and_points_to_the_json_for_the_rest(tmp_path):
+    txt = _summary(tmp_path, [f"piece{i}_1.nif" for i in range(9)])
+    assert "piece5_1.nif" in txt and "piece6_1.nif" not in txt
+    assert "(+3 more, all in conversion_report.json)" in txt
+
+
 def test_the_summary_is_still_written_when_nothing_failed(tmp_path):
     """GUARD THE BLANKET EXCEPT. `write_conversion_summary` wraps everything in
     `except Exception: return None`, so a throw in the new section would not
@@ -176,3 +198,72 @@ def test_the_json_is_still_written_when_nothing_failed(tmp_path):
     out = write_conversion_report_json(tmp_path, [(d, acr, None)])
     assert out is not None
     assert json.loads(out.read_text())["pass_failures"] == {}
+
+
+
+# --- pieces are named by their path, not their file name ---------------------
+# #pass-failure-names. `armorf_1.nif` is a file name a dozen mods share; a list of
+# bare names in the report named nothing anyone could go and open.
+
+def _out(rel):
+    return ConvertResult(src_path=Path("src.nif"),
+                         dst_path=Path("Out", *rel.split("/")),
+                         status="converted (copy)",
+                         reason=_pf("hdt_xml_shape_dropped"))
+
+
+def test_two_pieces_with_one_file_name_are_two_names(tmp_path):
+    from src.auto_convert import count_pass_failure_pieces
+    got = count_pass_failure_pieces([
+        _out("meshes/!UBE/armor/iron/armorf_1.nif"),
+        _out("meshes/!UBE/armor/steel/armorf_1.nif")])
+    assert got == {"hdt_xml_shape_dropped": ["armor/iron/armorf_1.nif",
+                                             "armor/steel/armorf_1.nif"]}
+
+
+def test_a_piece_is_named_from_below_the_output_namespace():
+    from src.auto_convert import _piece_label
+    assert _piece_label(Path("D:/x/Out/meshes/!UBE/a/b_1.nif")) == "a/b_1.nif"
+    assert _piece_label(Path("D:/x/Mod/Meshes/a/b_1.nif")) == "a/b_1.nif"
+    assert _piece_label(Path("b_1.nif")) == "b_1.nif"
+    assert _piece_label("") == ""
+
+
+def test_the_json_names_pieces_by_path(tmp_path):
+    import json
+    from src.auto_convert import write_conversion_report_json
+    d = tmp_path / "ModA"
+    d.mkdir()
+    acr = AutoConvertResult(
+        source_dir=d, output_dir=tmp_path,
+        nif_results=[_out("meshes/!UBE/armor/iron/armorf_1.nif")])
+    out = write_conversion_report_json(tmp_path, [(d, acr, None)])
+    rep = json.loads(out.read_text())
+    assert rep["pass_failure_pieces"] == {
+        "hdt_xml_shape_dropped": ["armor/iron/armorf_1.nif"]}
+
+
+# --- #pass-message-separator -------------------------------------------------
+# A piece's `reason` is joined on "; " and split on it again. A failure message
+# that itself carried "; " (a physics prune naming four shapes) reached the report
+# as its first part only.
+
+def test_a_message_with_several_parts_reaches_the_report_whole(tmp_path):
+    from src import nif_convert as nc
+    from src.auto_convert import count_pass_failures
+    nc._begin_piece_pass_log()
+    nc._note_pass_failure("hdt_xml_shape_dropped", RuntimeError(
+        "x.xml: 2 shape block(s) pruned -- collider 'A'; collider 'B'"))
+    reason = "; ".join(nc._piece_pass_failures())
+    parts = reason.split("; ")
+    assert len(parts) == 1 and "collider 'B'" in parts[0]
+    assert count_pass_failures([_cr("a.nif", reason)]) == {"hdt_xml_shape_dropped": 1}
+    nc._begin_piece_pass_log()
+
+
+def test_an_effect_detail_with_several_parts_stays_one_entry():
+    from src import nif_convert as nc
+    nc._begin_piece_pass_log()
+    nc._note_pass_effect("#x", "first; second")
+    assert nc._piece_pass_effects() == ["CHANGED BY #x (first, second)"]
+    nc._begin_piece_pass_log()

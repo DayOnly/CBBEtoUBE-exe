@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Fixed — a physics file is read from the copy the game loads, not from the mod the mesh happens to live in
+
+An armour mesh names its physics file by a path, and the game opens whichever copy of that
+path wins your load order. The tool looked in the mesh's own mod first, and then walked the
+mod folders in alphabetical order, so an add-on mod that overrides a base mod's physics file
+(a skirt rig over a plain one) lost to the base mod's older file. On the reported skirt the
+output kept the old chains, the winning rig's chains were gone, and its collider was dropped
+for a shape the mesh does not have: the converted file was 7 KB with no skirt chains at all,
+against 18 KB with the whole rig from the copy the game uses. The tool now asks your load
+order first (the overwrite folder, then your mods by priority, then the game's Data folders)
+and only falls back to the mesh's own mod when nothing in the order has the file, or when no
+profile can be read. `CBBE2UBE_XML_OWN_MOD_FIRST=1` restores the old order.
+The converter's own output (`meshes\!UBE\...`) is never looked up this way: a run reads
+the physics file it wrote beside the mesh, not a copy an earlier run left in your pack.
+Each path is looked up once per run, and only in the mods that have its folder (160
+lookups on a 3,345-folder order: 18 s by a plain walk, 1.4 s this way, same answers).
+The run summary also names the pieces behind each swallowed pass failure (six, with
+the full list in `conversion_report.json`), where it listed only counts, so a dropped
+physics shape is no longer anonymous. A piece is named by its path below `meshes\!UBE`
+(`armor/iron/armorf_1.nif`), since many mods share a file name like `armorf_1.nif`.
+A piece whose mesh names a physics file that no mod in your load order ships (an author's
+leftover pointer to another mod's file) is no longer counted as a failed pass or flagged as
+"dropped by a rebuild": the game loads no physics for it either, and the log says that
+plainly. In one full run this was all 12 such "failures".
+A failure or change note that lists several things (a physics file that lost four blocks)
+now reaches the report whole; it used to stop after the first one.
+When a build is taken over (or held back from) a source that carries a different physics
+rig (an SMP rebuild of a plain skirt), the log and `conversion_report.json` now say so by
+piece, under `rig_differs`; which file is converted is unchanged.
+
 ### Fixed — a piece converted from its BodySlide build no longer shows skin at the side of the bust when the arms move
 
 A piece converted from its zeroed BodySlide build keeps the author's skin weights, and on some

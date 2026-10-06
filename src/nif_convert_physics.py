@@ -2673,6 +2673,35 @@ def _generate_hdt_xml_for_dst(dst_path: "Path", only_loose: bool = False) -> "st
             return "\\".join(parts[i:])
     return None
 
+def _hdt_xml_pointer_absent(src_nif_path, nif=None) -> "str | None":
+    """The physics-XML pointer `src_nif_path` declares, when NO folder of the load
+    order ships that file (#hdt-xml-absent); None when it declares none, the file
+    exists somewhere, or there is no load order to ask (then nobody can say it is
+    absent). Archives are not searched: the converter reads physics XMLs from
+    loose folders only."""
+    try:
+        snf = nif if nif is not None else _nc()._pynifly().NifFile(filepath=str(src_nif_path))
+        rel = None
+        for ed in snf.rootNode.extra_data():
+            if (getattr(ed, "name", None) == "HDT Skinned Mesh Physics Object"
+                    and getattr(ed, "string_data", None)):
+                rel = ed.string_data
+                break
+        if not rel or _nc()._load_order_dirs() is None:
+            return None
+        if _nc()._resolve_data_rel_in_vfs(rel, Path(src_nif_path)) is not None:
+            return None
+        norm = _nc()._safe_data_rel(rel)
+        if norm is None:
+            return None
+        stripped = norm.split("/", 1)[1] if norm.lower().startswith("data/") else norm
+        if _nc()._load_order_file(stripped) is not None:
+            return None
+        return rel
+    except Exception:
+        return None
+
+
 def _read_source_hdt_xml_disk(src_nif_path: Path, nif=None) -> "Path | None":
     """Resolve the source armor NIF's OWN `HDT Skinned Mesh Physics Object`
     extra-data string to a file on disk.
@@ -4149,6 +4178,21 @@ def _read_source_hdt_xml_text_uncached(src_nif_path: Path, nif=None,
             # frozen exe discards ([[feedback_worker_prints_invisible]]), so the
             # one condition that silently disarms every physics protection was
             # unobservable in the runs that mattered.
+            #
+            # #hdt-xml-absent: when the pointer names a file NO folder of the load
+            # order ships, there is nothing to resolve -- the game loads no physics
+            # for this piece either (an author left a pointer to another mod's
+            # file). That is an outcome to report, not a pass that failed: in one
+            # full run all 12 `hdt_xml_unresolved` were this. Same return value,
+            # so every protection still fails closed.
+            _absent = _hdt_xml_pointer_absent(src_nif_path, nif=nif)
+            if _absent:
+                _note_pass_effect(
+                    "#hdt-xml-absent",
+                    f"{Path(src_nif_path).name} names {_absent}, which no mod "
+                    f"folder in the load order ships -- converted without "
+                    f"physics, as the game loads it", src_nif_path)
+                return None
             _note_pass_failure(
                 "hdt_xml_unresolved", RuntimeError(
                     f"{Path(src_nif_path).name} declares an HDT physics XML "
