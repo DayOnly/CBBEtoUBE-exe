@@ -2830,6 +2830,34 @@ def _decode_xml_roundtrip(raw: bytes) -> "tuple[str, str]":
 _HDT_SHAPE_OPEN_RE = re.compile(r'<per-(?:triangle|vertex)-shape\s+name="([^"]+)"')
 _HDT_SHAPE_CLOSE_RE = re.compile(r'</per-(?:triangle|vertex)-shape>')
 
+def _xml_shape_spellings(xml_names, mesh_names) -> "dict[str, str]":
+    """{XML shape reference: the mesh shape it names} for references that match
+    no shape exactly but exactly ONE shape when letter case is ignored.
+    #xml-shape-name-case
+
+    Left out (so the caller treats them as before): a reference two shapes match
+    that way, and a reference whose shape another reference already names, by
+    its exact spelling or by another case-only one, so two blocks never land on
+    one shape. Empty when XML_SHAPE_NAME_CASE is off."""
+    if not _nc().XML_SHAPE_NAME_CASE:
+        return {}
+    mesh = {m for m in mesh_names if m}
+    by_fold: "dict[str, list[str]]" = {}
+    for m in sorted(mesh):
+        by_fold.setdefault(m.casefold(), []).append(m)
+    refs = {n for n in xml_names if n}
+    cand: "dict[str, str]" = {}
+    for n in sorted(refs):
+        if n in mesh:
+            continue
+        hits = by_fold.get(n.casefold(), [])
+        if len(hits) == 1 and hits[0] not in refs:
+            cand[n] = hits[0]
+    taken: "dict[str, int]" = {}
+    for t in cand.values():
+        taken[t] = taken.get(t, 0) + 1
+    return {n: t for n, t in cand.items() if taken[t] == 1}
+
 def _hdt_shape_prune(lines, shape_names):
     """Walk an HDT-SMP XML's lines as `_harden_hdt_xml_for_fsmp` prunes shape
     blocks, yielding (line, dropped, opened) for each: `dropped` when the line
@@ -2837,21 +2865,31 @@ def _hdt_shape_prune(lines, shape_names):
 
     LINE-BASED, deliberately the one definition: a line's first
     `<per-*-shape name=...>` decides it, a block whose name is not in
-    `shape_names` (case for case) is dropped from that line to the line holding
-    a closing tag, and each line is dropped or kept WHOLE -- so a kept block, a
-    bone or a constraint that shares a line with a dropped block goes with it.
+    `shape_names` is dropped from that line to the line holding a closing tag,
+    and each line is dropped or kept WHOLE -- so a kept block, a bone or a
+    constraint that shares a line with a dropped block goes with it. A name that
+    differs from one shape only in letter case (`_xml_shape_spellings`) is kept,
+    and its line is yielded with the mesh's spelling (#xml-shape-name-case).
     #zeroed-smp-gain rule e (discovery._smp_gain_verdict) replays the same walk
     through `_hdt_xml_shape_pruned` so its model and the conversion cannot
     disagree about what survives."""
+    lines = list(lines)
+    spell = _xml_shape_spellings(
+        {m.group(1) for m in (_HDT_SHAPE_OPEN_RE.search(x) for x in lines) if m},
+        shape_names)
     drop_block = False
     for line in lines:
         m = _HDT_SHAPE_OPEN_RE.search(line)
         opened = None
+        name = m.group(1) if m else None
+        if name in spell:                       # #xml-shape-name-case
+            line = line[:m.start(1)] + spell[name] + line[m.end(1):]
+            name = spell[name]
         if m:
-            drop_block = m.group(1) not in shape_names
+            drop_block = name not in shape_names
             if drop_block:
                 opened = ("cloth" if "per-vertex-shape" in line else "collider",
-                          m.group(1))
+                          name)
         if drop_block:
             if _HDT_SHAPE_CLOSE_RE.search(line):
                 drop_block = False
@@ -2866,13 +2904,16 @@ def _hdt_xml_shape_pruned(raw: bytes, shape_names) -> bytes:
     `raw` itself when no block goes, else the kept lines re-joined and encoded
     exactly as that pass writes them."""
     text, codec = _decode_xml_roundtrip(raw)
+    src_lines = text.splitlines()
     kept, dropped = [], False
-    for line, gone, _opened in _hdt_shape_prune(text.splitlines(), shape_names):
+    for line, gone, _opened in _hdt_shape_prune(src_lines, shape_names):
         if gone:
             dropped = True
         else:
             kept.append(line)
-    if not dropped:
+    # A case-only reference rewritten to the mesh's spelling changes a kept line
+    # without dropping one. #xml-shape-name-case
+    if not dropped and kept == src_lines:
         return raw
     return ("\n".join(kept) + "\n").encode(codec)
 
@@ -3054,7 +3095,20 @@ def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
     changed = False
     dropped_shapes: "list[tuple[str, str]]" = []   # (kind, name)
     dropped_bones = 0
-    for line, gone, opened in _hdt_shape_prune(text.splitlines(), nif_shapes):
+    src_lines = text.splitlines()
+    # #xml-shape-name-case: the references the prune keeps under the mesh's
+    # spelling (it rewrites the line); said per piece, like a drop.
+    renamed = _xml_shape_spellings(
+        {m.group(1) for m in (_HDT_SHAPE_OPEN_RE.search(x) for x in src_lines)
+         if m}, nif_shapes)
+    if renamed:
+        changed = True
+        _note_pass_effect(
+            "#xml-shape-name-case",
+            f"{xml_path.name}: " + ", ".join(
+                f"{a!r} -> {b!r}" for a, b in sorted(renamed.items())),
+            xml_path)
+    for line, gone, opened in _hdt_shape_prune(src_lines, nif_shapes):
         if opened:
             dropped_shapes.append(opened)
         if gone:
@@ -3085,7 +3139,13 @@ def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
     # or a trailing plural is almost certainly the same part under a re-export,
     # and separating those from genuinely-absent shapes is what tells anyone
     # whether a remap is worth building. Remapping without that measurement
-    # would be attaching physics to a guess.
+    # would be attaching physics to a guess. The measurement came for CASE alone
+    # (2026-10-04): 6 of 34 dropped blocks in one run differed from a mesh shape
+    # only in case, and on the one checked (a skirt's cloth) the author's own
+    # XML and mesh carry that same pair, so case-only references now resolve
+    # before the prune
+    # (#xml-shape-name-case). A NEAR-MATCH left here is a plural or punctuation
+    # difference, or a case match that is not unique.
     if dropped_shapes:
         def _norm(s: str) -> str:
             return re.sub(r"[^a-z0-9]", "", s.lower()).rstrip("s")
@@ -3900,7 +3960,43 @@ def _hdt_softbody_shape_names(src_nif_path: Path, nif=None,
     txt = _read_source_hdt_xml_text(src_nif_path, nif=nif, stem_scan=stem_scan)
     if not txt:
         return _hdt_protect_all_or_none(src_nif_path, nif=nif)
-    return set(re.findall(r'<per-vertex-shape\s+name="([^"]+)"', txt))
+    return _with_mesh_spellings(
+        set(re.findall(r'<per-vertex-shape\s+name="([^"]+)"', txt)),
+        src_nif_path, nif)
+
+def _mesh_shape_names(nif_path, nif=None) -> "set[str]":
+    """The shape names of `nif` (when given) or of the NIF at `nif_path`, read
+    once per file state (mtime, size) until the XML memo is cleared. Empty when
+    it cannot be read. #xml-shape-name-case"""
+    if nif is not None:
+        try:
+            return {s.name for s in nif.shapes if s.name}
+        except Exception:
+            return set()
+    try:
+        st = os.stat(nif_path)
+        key = (str(nif_path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return set()
+    cache = _nc()._HDT_MESH_SHAPE_NAMES_CACHE
+    got = cache.get(key)
+    if got is None:
+        try:
+            nf = _nc()._pynifly().NifFile(filepath=str(nif_path))
+            got = frozenset(s.name for s in nf.shapes if s.name)
+        except Exception:
+            got = frozenset()
+        cache[key] = got
+    return set(got)
+
+def _with_mesh_spellings(xml_names: set, nif_path, nif=None) -> set:
+    """`xml_names` plus, for each case-only reference, the mesh's spelling of the
+    shape it names (`_xml_shape_spellings`), so a membership test on a shape's
+    own name finds it. The XML spelling is kept too. #xml-shape-name-case"""
+    if not xml_names or not _nc().XML_SHAPE_NAME_CASE:
+        return xml_names
+    spell = _xml_shape_spellings(xml_names, _mesh_shape_names(nif_path, nif))
+    return xml_names | set(spell.values())
 
 def _hdt_protect_all_or_none(src_nif_path: Path, nif=None) -> set:
     """The FAIL-CLOSED answer when a piece's physics XML cannot be read.
@@ -3931,6 +4027,7 @@ def _hdt_protect_all_or_none(src_nif_path: Path, nif=None) -> set:
 def _hdt_xml_cache_clear() -> None:
     """Drop the per-armor HDT-XML memo. Called at the top of every `convert_nif`."""
     _nc()._HDT_XML_TEXT_CACHE.clear()
+    _nc()._HDT_MESH_SHAPE_NAMES_CACHE.clear()
 
 def _nif_declares_hdt_xml(src_nif_path: Path, nif=None) -> bool:
     """Does this NIF carry an `HDT Skinned Mesh Physics Object` extra-data
@@ -4194,4 +4291,6 @@ def _hdt_collider_shape_names(src_nif_path: Path, nif=None,
     txt = _read_source_hdt_xml_text(src_nif_path, nif=nif, stem_scan=stem_scan)
     if not txt:
         return _hdt_protect_all_or_none(src_nif_path, nif=nif)
-    return set(re.findall(r'<per-triangle-shape\s+name="([^"]+)"', txt))
+    return _with_mesh_spellings(
+        set(re.findall(r'<per-triangle-shape\s+name="([^"]+)"', txt)),
+        src_nif_path, nif)

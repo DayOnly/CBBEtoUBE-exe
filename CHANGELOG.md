@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed — a physics block whose shape name differs from the mesh only in letter case is kept
+
+A physics file names each simulated cloth and collider by its shape name, and authors ship
+files whose names differ from their own mesh only in case (a skirt's file names its cloth
+`Skirt`, the mesh calls the shape `skirt`). The tool compared names letter for letter, so it
+deleted that block from the converted file and the skirt shipped with no cloth physics at all;
+6 of 34 dropped blocks in one run were case-only. A reference that matches exactly one shape
+when case is ignored now names that shape: the block is kept under the mesh's spelling, and the
+shape's authored skin is protected like any other cloth or collider. A reference that two shapes
+match that way, or whose shape another reference already names, is treated as before. The run
+log says which names were resolved this way. Assumes the game matches these names without
+regard to case, as the author's own files imply; not yet seen in game.
+`CBBE2UBE_NO_XML_SHAPE_CASE=1` restores the exact comparison.
+
 ### Fixed — a piece converted from its BodySlide build no longer shows skin at the side of the bust when the arms move
 
 A piece converted from its zeroed BodySlide build keeps the author's skin weights, and on some
