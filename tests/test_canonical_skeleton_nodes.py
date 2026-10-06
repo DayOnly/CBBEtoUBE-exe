@@ -348,6 +348,10 @@ def test_a_file_with_no_weight_suffix_has_no_partner(tmp_path, monkeypatch):
     monkeypatch.setattr(nc, "CANONICAL_PARTNER_UNION", True)
     s = _pyn_file(tmp_path, "helmet.nif", HAND)
     assert ph._weight_partner_source(s) is None
+    # `_2` is not a weight suffix, even with a `_0` beside it
+    _pyn_file(tmp_path, "gloves_0.nif", FEET)
+    s2 = _pyn_file(tmp_path, "gloves_2.nif", HAND)
+    assert ph._weight_partner_source(s2) is None
 
 
 def test_a_missing_partner_leaves_the_source_alone(tmp_path, monkeypatch):
