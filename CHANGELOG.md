@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Fixed — a piece is no longer converted from an older model of it when the game loads another
+
+When a mod higher in the load order ships an older model of a piece at the same path as the
+mod whose design your BodySlide build is (a retexture with the armour's old mesh above an SMP
+mod), the converter took that older model: its shapes differ from the build, and a difference
+in garment shapes was read as "the build is another design". UBE wearers then got another
+armour than CBBE wearers, and the SMP mod's physics file still drove chains the old mesh never
+had: one cuirass's tassets fell through the floor. Now, before a garment difference keeps the
+loose mesh, the other mods that ship the piece loose are asked the same question against the
+build; when one of them matches the build at both weights, the build is taken, and the log and
+`conversion_report.json` (`zeroed_output_source.moved_over_other_design`) name both mods. A
+build that matches no loose mesh still keeps the loose mesh, and a physics change is still
+refused first. On the reported modlist this moves 11 pieces (the cuirass, which now ships with
+its author's physics file; six first-person outfit meshes; two pairs of gloves; two first-person
+cuirasses) and nothing else. Off with `CBBE2UBE_NO_ZOS_OTHER_DESIGN=1`. (#32)
+
 ### Fixed — seams on armour with a glow or effect shader no longer tear when the body moves
 
 The two sides of a UV seam are one point of the garment, and the author skins them alike. The

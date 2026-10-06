@@ -224,6 +224,27 @@ def _has_3ba_body(nif_path: Path) -> bool:
 # keep is now logged by name with the shapes that differ, and the same lists go
 # into conversion_report.json ("zeroed_output_source").
 #
+# #zos-other-design (2026-10-06, GitHub issue #32). Rule 5 reads a garment shape
+# that differs as "the build is another design". It cannot tell that from "today's
+# source is another design": a retexture mod above the SMP mod in the load order
+# ships an OLDER model of a cuirass (no tasset or stabiliser chains, a 536-vert
+# Greaves against 3729) at the same path, while the user's zeroed build -- the mesh
+# the game loads on CBBE -- is the SMP mod's design shape for shape. Rule 5 kept the
+# retexture, so UBE wearers got another armour than CBBE wearers, and the SMP mod's
+# physics XML (still named by the retexture's pointer) drove chains that mesh never
+# had: the tassets fell through the floor in game. So before a garment difference
+# keeps today's source, the other mods that ship the piece loose, below it in the
+# load order, are asked the same rule-5 question against the build: when one of them
+# matches the build at both weights (garment shapes and vertex counts; bodies may
+# differ, as for today's source), the build IS a zeroed build of a design the load
+# order ships, and it is taken. A build that matches no loose mesh keeps today's
+# source as before -- that is the case the 2026-09-22 measurement stands for.
+# Measured on the shipped modlist: 8 of the 69 pieces rule 5 held back have such a
+# mod (the cuirass; six first-person meshes and a pair of gloves whose base mod ships
+# the build's design under a replacer that ships another), 61 do not. Rule 4 is
+# still asked of today's source first, so a physics change is still refused.
+# CBBE2UBE_NO_ZOS_OTHER_DESIGN=1 restores rule 5 as it was.
+#
 # #zeroed-smp-gain (2026-09-25, user decision; OPT-IN since 2026-09-26). Rules
 # 4 and 5 held back every vanilla-armour piece whose SMP loose mesh the
 # within-tier body match had swapped for a static prebuilt one (its loose mesh
@@ -517,6 +538,51 @@ def _gain_xml(path: Path) -> "bytes | None":
     return raw
 
 
+def _zos_other_design_on() -> bool:
+    """#zos-other-design: may a garment difference be answered by another mod
+    that ships the build's design? On by default; CBBE2UBE_NO_ZOS_OTHER_DESIGN=1
+    keeps rule 5 as it was."""
+    return not _flag("CBBE2UBE_NO_ZOS_OTHER_DESIGN", False)
+
+
+def _zos_other_design(keys: "dict[str, str]",
+                      alternates: "dict[str, list[tuple[str, Path]]]",
+                      cur: "dict[str, Path]", build: "dict[str, dict]",
+                      built: "dict[str, Path]", read_shapes, read_diffuse
+                      ) -> "str | None":
+    """#zos-other-design: the first mod, in load order, that ships BOTH weights of
+    the piece loose (not today's source) and whose garment shapes match the build at
+    both weights by rule 5's own test -- its name; None when none does.
+    `alternates`: index key -> [(mod, file)] of the lower-priority non-output
+    providers, in priority order (build_mesh_index)."""
+    files: "dict[str, dict[str, Path]]" = {}
+    order: "list[str]" = []
+    for w, k in keys.items():
+        for mod, path in alternates.get(k, ()):
+            if path == cur.get(w):
+                continue
+            if mod not in files:
+                files[mod] = {}
+                order.append(mod)
+            files[mod].setdefault(w, path)
+    for mod in order:
+        alt = files[mod]
+        if set(alt) != set(keys):
+            continue                          # one weight only: not that piece
+        paths = [(w, alt[w]) for w in keys]
+        try:
+            shapes = {w: read_shapes(p) for w, p in paths}
+        except Exception:
+            continue                          # unreadable: it cannot answer
+        diffs = _zos_shape_diffs(shapes, build)
+        if diffs:
+            garment = _zos_garment_diffs(diffs, alt, built, read_diffuse)
+            if garment is None or garment:
+                continue
+        return mod
+    return None
+
+
 def _smp_gain_verdict(today: list, build: list, xml: "bytes | None") -> "str | None":
     """#zeroed-smp-gain rules a-e for ONE weight: None when the build's physics
     may come with it, else why not. `today`/`build` are the shapes of today's
@@ -678,22 +744,25 @@ def _zeroed_output_provider(mods_root: Path, enabled_mods: "list[str]",
 
 def _prefer_zeroed_outputs(index: "dict[str, Path]", win_tier: "dict[str, int]",
                            mods_root: Path, enabled_mods: "list[str]",
-                           skip: "set[str]", overwrite: "Path | None" = None
+                           skip: "set[str]", overwrite: "Path | None" = None,
+                           alternates: "dict[str, list[tuple[str, Path]]] | None" = None
                            ) -> None:
     """Re-point pieces at the verified zeroed BodySlide build, in place.
     See the #zeroed-output-source block above for the rules. The loose-file
     answers it needs are remembered for this call only (#zeroed-probe-memo).
     `overwrite`: MO2's overwrite folder, which may hold that build
-    (#overwrite-mesh-index)."""
+    (#overwrite-mesh-index). `alternates`: the lower-priority loose providers
+    of each key (#zos-other-design)."""
     from . import zeroed_body as _zb
     with _zb.probe_memo():
         _prefer_zeroed_outputs_in(index, win_tier, mods_root, enabled_mods, skip,
-                                  overwrite)
+                                  overwrite, alternates)
 
 
 def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int]",
                               mods_root: Path, enabled_mods: "list[str]",
-                              skip: "set[str]", overwrite: "Path | None" = None
+                              skip: "set[str]", overwrite: "Path | None" = None,
+                              alternates: "dict[str, list[tuple[str, Path]]] | None" = None
                               ) -> None:
     if _flag("CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE", False):
         return
@@ -720,6 +789,7 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
     kept: "dict[str, int]" = {}
     kept_stems: "dict[str, list[str]]" = {}
     kept_diffs: "dict[str, str]" = {}
+    other_design: "dict[str, str]" = {}       # stem -> whose design the build is
     _ZOS_LAST.clear()
 
     def keep(reason: str, stem: str, diffs: str = "") -> None:
@@ -773,9 +843,18 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
             if garment is None:               # no diffuse to judge by: rule 5 as first written
                 garment = list(diffs)
             if garment:
-                keep("the build's shapes differ from today's source", stem,
-                     _zos_diff_text({n: diffs[n] for n in garment}))
-                continue
+                # #zos-other-design: is it today's source that is the other design?
+                other = (_zos_other_design(keys, alternates or {}, cur, zg.build,
+                                           built, _zb._nif_shapes, _zb._nif_diffuse)
+                         if _zos_other_design_on() else None)
+                if other is None:
+                    keep("the build's shapes differ from today's source", stem,
+                         _zos_diff_text({n: diffs[n] for n in garment}))
+                    continue
+                other_design[stem] = (
+                    f"{_zos_mod_of(cur['_1'], mods_root)} ships another design "
+                    f"({_zos_diff_text({n: diffs[n] for n in garment})}); the build "
+                    f"is {other}'s")
         if all(_zb.matches_build(today[w], zg.build[w]) is not None for w in keys):
             keep("today's source already is that build", stem)
             continue
@@ -784,7 +863,10 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
         moved.append(stem)
         if gain:
             gained.append(stem)
-        if diffs:
+        if stem in other_design:
+            _zos_say(f"[zeroed-output-source] moved meshes/{stem}: today's source "
+                     f"is another design -- {other_design[stem]}")
+        elif diffs:
             body_only[stem] = _zos_diff_text(diffs)
             _zos_say(f"[zeroed-output-source] moved meshes/{stem}: the build "
                      f"differs from today's source in body shapes only -- "
@@ -792,13 +874,25 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
     held = ", ".join(f"{r}: {n}" for r, n in sorted(kept.items()))
     smp = f" ({len(gained)} with its SMP physics)" if gained else ""
     body = (f" ({len(body_only)} over body-shape differences)" if body_only else "")
+    if other_design:
+        body += f" ({len(other_design)} where today's source is another design)"
     _zos_say(f"[zeroed-output-source] {provider}: {len(moved)} piece(s) now "
              f"converted from its verified zeroed BodySlide build{smp}{body}; "
              f"{sum(kept.values())} kept today's source" + (f" ({held})" if held else ""))
     _ZOS_LAST.update(provider=provider, moved=list(moved), gained=list(gained),
                      moved_over_body_shapes=dict(body_only),
+                     moved_over_other_design=dict(other_design),
                      kept={r: list(s) for r, s in sorted(kept_stems.items())},
                      kept_shape_diffs=dict(kept_diffs))
+
+
+def _zos_mod_of(path: Path, mods_root: Path) -> str:
+    """The mod folder a source file lives in, for the log; the path itself when
+    it is not under `mods_root`."""
+    try:
+        return Path(path).relative_to(mods_root).parts[0]
+    except (ValueError, IndexError):
+        return str(path)
 
 
 def _walk_nifs(meshes_dir: Path, mod_name: str,
@@ -941,6 +1035,10 @@ def build_mesh_index(
         return result
 
     found_max_tier = -1
+    # #zos-other-design: every lower-priority non-output provider of a key, in
+    # priority order -- what the zeroed-source rule asks when the winner is another
+    # design than the build.
+    alternates: "dict[str, list[tuple[str, Path]]]" = {}
     # (label, folder, tier). MO2's overwrite is the top of the game's VFS and
     # where BodySlide run through MO2 writes, so it is indexed like a BodySlide
     # output of an unnamed body: tier 2, ahead of every other output -- it wins
@@ -983,7 +1081,11 @@ def build_mesh_index(
                     found_max_tier = mtier
                 if remaining is not None:
                     remaining.discard(rel)
-            elif _bodymatch and win_tier.get(rel) == mtier:
+            else:
+                if mtier == 0 and win_tier.get(rel) == 0:     # #zos-other-design
+                    alternates.setdefault(rel, []).append((mod_name, nif))
+                if not (_bodymatch and win_tier.get(rel) == mtier):
+                    continue
                 # Same tier. Swap ONLY when the incumbent bundles a BESPOKE (mismatched-
                 # preset) body but the challenger bundles the CANONICAL 3BA body: the
                 # challenger converts flush where the incumbent's body mismatch leaves
@@ -994,7 +1096,11 @@ def build_mesh_index(
                 if (inc is not None and chal is not None
                         and inc == (False, True)     # incumbent: bespoke body, no canonical
                         and chal[0]):                # challenger: has canonical body
+                    if mtier == 0:         # the displaced incumbent ships it too
+                        alternates.setdefault(rel, []).insert(
+                            0, (_zos_mod_of(index[rel], mods_root), index[rel]))
                     index[rel] = nif       # tier unchanged; priority already lost, body wins
     _prefer_zeroed_outputs(index, win_tier, mods_root, enabled_mods, skip,
-                           overwrite if _overwrite_mesh_index_on() else None)
+                           overwrite if _overwrite_mesh_index_on() else None,
+                           alternates)
     return index
