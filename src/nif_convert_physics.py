@@ -3406,6 +3406,55 @@ def _nif_bone_and_node_names(nf) -> "set[str]":
     return names
 
 
+# #authored-xml-own-mesh (2026-10-06). The guard's second piece on the shipped
+# pack is the SMP mod's heavy chitin cuirass converted from the user's zeroed
+# build: the build is, shape for shape and vertex for vertex, the mesh the SMP mod
+# itself ships at that path beside the XML. Its two "phantom" chains
+# (`SkirtFR  5`/`6`, two spaces, constraint bodies only) are in that mod's own
+# mesh no more than in the build -- the author published this XML with this mesh,
+# and CBBE wearers load exactly that pairing. Declining it shipped a regenerated
+# rig in place of the author's. The #32 cuirass is the other kind: the SMP mod
+# ships ANOTHER mesh at that path (Greaves 3729 against the converted 536), the
+# pointer came along on a mesh the XML was never written for. So the decline is
+# skipped when the mod that ships the XML also ships, at the source's path, a mesh
+# with the source's shapes and vertex counts: the author's own pairing ships as
+# authored, as it did before the guard. CBBE2UBE_NO_AUTHORED_XML_OWN_MESH=1 judges
+# it like any other.
+AUTHORED_XML_OWN_MESH = not _flag("CBBE2UBE_NO_AUTHORED_XML_OWN_MESH", False)
+
+
+def _meshes_split(path) -> "tuple[Path, list[str]] | None":
+    """(the folder holding `meshes`, the parts below it) for a file under a
+    `meshes` folder (any case, the LAST one); None when there is none."""
+    parts = list(Path(path).parts)
+    idx = [i for i, s in enumerate(parts) if s.lower() == "meshes"]
+    if not idx:
+        return None
+    i = idx[-1]
+    return Path(*parts[:i]), parts[i + 1:]
+
+
+def _xml_ships_with_this_mesh(src_xml, src_nif_path) -> bool:
+    """#authored-xml-own-mesh: does the mod (folder) that ships `src_xml` also
+    ship, at the source NIF's path below `meshes`, a mesh with the source's
+    shapes and vertex counts?"""
+    from . import zeroed_body as _zb
+    x, s = _meshes_split(src_xml), _meshes_split(src_nif_path)
+    if x is None or s is None:
+        return False
+    peer = _zb._ci_join(x[0], ["meshes", *s[1]])
+    if peer is None:
+        return False
+    try:
+        if Path(peer).resolve() == Path(src_nif_path).resolve():
+            return True
+        a = _zb._nif_shapes(peer)
+        b = _zb._nif_shapes(src_nif_path)
+    except Exception:
+        return False
+    return {n: len(v) for n, v in a.items()} == {n: len(v) for n, v in b.items()}
+
+
 def _authored_hdt_xml_unshippable(src_xml, nf, src_nif_path) -> "dict | None":
     """The guard. When the authored XML at `src_xml` drives at least
     `_HDT_REGEN_MISSING_BONES` bones in chains no link of which resolves,
@@ -3421,6 +3470,13 @@ def _authored_hdt_xml_unshippable(src_xml, nf, src_nif_path) -> "dict | None":
     chains = _hdt_xml_phantom_chains(txt, nif_bones, src_bones)
     bones = [b for ch in chains for b in ch.bones]
     if len(bones) < _nc()._HDT_REGEN_MISSING_BONES:
+        return None
+    if AUTHORED_XML_OWN_MESH and _xml_ships_with_this_mesh(src_xml, src_nif_path):
+        _note_pass_effect(
+            "#authored-xml-own-mesh",
+            f"{Path(src_xml).name} names {len(bones)} bone(s) of chains this mesh "
+            f"lacks, but its mod ships this very mesh with it -- shipped as authored",
+            src_nif_path)
         return None
     return {"chains": [ch.prefix for ch in chains], "bones": bones,
             "nowhere": len(_hdt_xml_unresolvable_bones(txt, nif_bones, src_bones)),

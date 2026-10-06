@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed — an SMP armour converted from its own mesh keeps its author's physics file
+
+The guard that stops a physics file being shipped with a mesh it was never written for (the
+falling tassets of #32) also fired on the SMP mod's heavy chitin cuirass converted from your
+BodySlide build: its file ties two chains to stabilisers that the author's own mesh does not have
+either. The build is, shape for shape, the mesh the SMP mod ships with that file -- the pairing
+CBBE wearers load -- yet a regenerated rig shipped in place of the author's. The guard now ships
+the author's file when the mod that ships it also ships a mesh with the source's shapes and vertex
+counts at the same path, and records `#authored-xml-own-mesh`. A mesh the file came along on
+without its author (the #32 cuirass) is still declined. Off with
+`CBBE2UBE_NO_AUTHORED_XML_OWN_MESH=1`.
+
 ### Fixed — a piece whose BodySlide build only renames its shapes is converted from the build
 
 The same check compared shapes by name, and a BodySlide project often names a shape otherwise
