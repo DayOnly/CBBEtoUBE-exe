@@ -166,3 +166,78 @@ def test_a_build_output_is_never_an_alternate(tmp_path, monkeypatch):
     discovery.build_mesh_index(sel.mods, [OUT_MOD, RETEX, BASE_MOD])
     assert seen, "the index handed over no alternates at all"
     assert all(m != OUT_MOD for v in seen.values() for m, _p in v)
+
+
+# --- #zos-renamed-shapes: one mesh, two labels ---------------------------------------
+
+RENAMED = {"Cuirass": 4, "Pants": 4, "TassetsOld": 6}     # Tassets under another name
+
+
+def _tris_by_count(monkeypatch, differ=()):
+    """Triangle lists follow the vertex count, so a renamed shape matches -- unless
+    its name is in `differ`, whose triangles are another mesh's."""
+    def read(p):
+        sh = zb._nif_shapes(p)
+        return {n: (len(v), np.array([[0, 1, 2]] if n in differ else [[0, 2, 1]]))
+                for n, v in sh.items()}
+    monkeypatch.setattr(zb, "_nif_tris", read)
+
+
+def test_a_shape_the_build_only_names_otherwise_is_not_a_difference(tmp_path, monkeypatch, capsys):
+    sel = _setup(tmp_path, monkeypatch, retex=RENAMED, base=OLD_MODEL)
+    _tris_by_count(monkeypatch)
+    assert _owner(sel) == {OUT_MOD}
+    err = capsys.readouterr().err
+    assert (f"[zeroed-output-source] moved meshes/{STEM}: the build names the same "
+            f"meshes otherwise -- Tassets -/6, TassetsOld 6/-") in err
+    rep = discovery.zeroed_output_source_report()
+    assert rep["moved_over_renamed_shapes"] == {STEM: "Tassets -/6, TassetsOld 6/-"}
+    assert rep["moved_over_other_design"] == {}
+    assert "(1 over renamed shapes)" in err
+
+
+def test_a_renamed_shape_with_other_triangles_is_another_mesh(tmp_path, monkeypatch):
+    sel = _setup(tmp_path, monkeypatch, retex=RENAMED, base=OLD_MODEL)
+    _tris_by_count(monkeypatch, differ=("TassetsOld",))
+    assert _owner(sel) == {RETEX}
+
+
+def test_a_rename_is_not_matched_on_a_build_with_physics(tmp_path, monkeypatch):
+    sel = _setup(tmp_path, monkeypatch, retex=RENAMED, base=OLD_MODEL,
+                 physics={RETEX: True, BASE_MOD: True, OUT_MOD: True})
+    _tris_by_count(monkeypatch)
+    assert _owner(sel) == {RETEX}
+
+
+def test_the_rename_switch_compares_by_name_alone(tmp_path, monkeypatch):
+    sel = _setup(tmp_path, monkeypatch, retex=RENAMED, base=OLD_MODEL)
+    _tris_by_count(monkeypatch)
+    monkeypatch.setenv("CBBE2UBE_NO_ZOS_RENAMED_SHAPES", "1")
+    assert _owner(sel) == {RETEX}
+
+
+def test_a_lower_mod_that_only_renames_the_builds_shapes_ships_its_design(tmp_path, monkeypatch):
+    sel = _setup(tmp_path, monkeypatch, base=RENAMED)       # today's source: old model
+    _tris_by_count(monkeypatch)
+    assert _owner(sel) == {OUT_MOD}
+    assert STEM in discovery.zeroed_output_source_report()["moved_over_other_design"]
+
+
+def test_a_weight_suffix_on_one_weight_is_a_rename():
+    """`CloakF_1` in the _1 file and `CloakF_0` in the build's: at _0 the names
+    agree, at _1 they are one mesh under two labels."""
+    tri = np.array([[0, 1, 2]])
+    files = {"src_0": {"CloakF_0": (3, tri)}, "src_1": {"CloakF_1": (3, tri)},
+             "b_0": {"CloakF_0": (3, tri)}, "b_1": {"CloakF_0": (3, tri)}}
+    got = discovery._zos_renamed({"_0": "src_0", "_1": "src_1"},
+                                 {"_0": "b_0", "_1": "b_1"}, files.__getitem__)
+    assert got == {"CloakF_0", "CloakF_1"}
+
+
+def test_a_shape_paired_at_one_weight_only_is_not_a_rename():
+    tri, other = np.array([[0, 1, 2]]), np.array([[0, 2, 1]])
+    files = {"src_0": {"A": (3, tri)}, "src_1": {"A": (3, other)},
+             "b_0": {"B": (3, tri)}, "b_1": {"B": (3, tri)}}
+    got = discovery._zos_renamed({"_0": "src_0", "_1": "src_1"},
+                                 {"_0": "b_0", "_1": "b_1"}, files.__getitem__)
+    assert got == set()

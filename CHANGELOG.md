@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed — a piece whose BodySlide build only renames its shapes is converted from the build
+
+The same check compared shapes by name, and a BodySlide project often names a shape otherwise
+than the mod's loose mesh (`CloakF_1` and `CloakF_0`, `MiraakBoots` and `Shoes`), so 31 pieces on
+the reported modlist kept their loose mesh over a build that differs in nothing but names. A shape
+on one side only now matches a shape on the other side only when it has the same vertex count and
+an identical triangle list at that weight: one mesh under two names. Only for builds without
+physics, whose files name shapes. On the reported modlist: 32 more pieces from the build (mostly
+Sons of Skyrim armour). The log and `conversion_report.json`
+(`zeroed_output_source.moved_over_renamed_shapes`) name the renamed shapes. Off with
+`CBBE2UBE_NO_ZOS_RENAMED_SHAPES=1`.
+
 ### Fixed — a piece is no longer converted from an older model of it when the game loads another
 
 When a mod higher in the load order ships an older model of a piece at the same path as the

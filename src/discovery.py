@@ -245,6 +245,20 @@ def _has_3ba_body(nif_path: Path) -> bool:
 # still asked of today's source first, so a physics change is still refused.
 # CBBE2UBE_NO_ZOS_OTHER_DESIGN=1 restores rule 5 as it was.
 #
+# #zos-renamed-shapes (2026-10-06). Rule 5 compares shapes by NAME, and a BodySlide
+# project often names a shape otherwise than the mod's loose mesh does: one weight's
+# suffix on both weights (`CloakF_1` / `CloakF_0`), a project's own label
+# (`MiraakBoots` / `Shoes`, `neck_f` / `FemaleHead`). Measured on the shipped
+# modlist: 31 of the 83 pieces held back after #zos-other-design differ from the
+# build in nothing but such names, and in all 31 every renamed shape has the same
+# vertex count AND the same triangle list as its partner -- one mesh, two labels.
+# So at each weight a shape on one side only is paired with a shape on the other
+# side only that has the same vertex count and an identical triangle list; a
+# garment shape so paired is not a difference. Only when the build declares no
+# physics: an SMP XML names its shapes, and a rename there is the XML's business
+# (none of the 31 declares physics). CBBE2UBE_NO_ZOS_RENAMED_SHAPES=1 compares by
+# name alone.
+#
 # #zeroed-smp-gain (2026-09-25, user decision; OPT-IN since 2026-09-26). Rules
 # 4 and 5 held back every vanilla-armour piece whose SMP loose mesh the
 # within-tier body match had swapped for a static prebuilt one (its loose mesh
@@ -545,11 +559,61 @@ def _zos_other_design_on() -> bool:
     return not _flag("CBBE2UBE_NO_ZOS_OTHER_DESIGN", False)
 
 
+def _zos_renamed_shapes_on() -> bool:
+    """#zos-renamed-shapes: may a renamed but identical shape match? On by
+    default; CBBE2UBE_NO_ZOS_RENAMED_SHAPES=1 compares by name alone."""
+    return not _flag("CBBE2UBE_NO_ZOS_RENAMED_SHAPES", False)
+
+
+def _zos_renamed(side: "dict[str, Path]", built: "dict[str, Path]",
+                 read_tris) -> "set[str]":
+    """#zos-renamed-shapes: the shape names (either spelling) that are only a
+    rename between `side` and the build. At each weight, a shape `side` has and
+    the build lacks is paired with one the build has and `side` lacks of the same
+    vertex count and an identical triangle list (first such, in name order). A
+    name counts when it was paired at every weight it is unmatched at."""
+    import numpy as np
+    paired: "dict[str, int]" = {}
+    unmatched: "dict[str, int]" = {}
+    for w in sorted(built):
+        a, b = read_tris(side[w]), read_tris(built[w])
+        a_only = sorted(set(a) - set(b))
+        b_only = sorted(set(b) - set(a))
+        for n in a_only + b_only:
+            unmatched[n] = unmatched.get(n, 0) + 1
+        left = list(b_only)
+        for n in a_only:
+            hit = next((m for m in left if b[m][0] == a[n][0]
+                        and np.array_equal(b[m][1], a[n][1])), None)
+            if hit is not None:
+                left.remove(hit)
+                paired[n] = paired.get(n, 0) + 1
+                paired[hit] = paired.get(hit, 0) + 1
+    return {n for n, k in unmatched.items() if paired.get(n, 0) == k}
+
+
+def _zos_garment_left(diffs, side: "dict[str, Path]", built: "dict[str, Path]",
+                      read_diffuse, read_tris) -> "tuple[list[str] | None, set[str]]":
+    """Rule 5's garment differences between `side` and the build, less those
+    #zos-renamed-shapes explains: (garment names left or None when a diffuse
+    cannot be read, the renamed names)."""
+    garment = _zos_garment_diffs(diffs, side, built, read_diffuse)
+    if not garment or not _zos_renamed_shapes_on():
+        return garment, set()
+    if _declares_physics(built["_1"]):
+        return garment, set()             # an SMP XML names its shapes
+    try:
+        renamed = _zos_renamed(side, built, read_tris) & set(diffs)
+    except Exception:
+        return garment, set()
+    return [n for n in garment if n not in renamed], renamed
+
+
 def _zos_other_design(keys: "dict[str, str]",
                       alternates: "dict[str, list[tuple[str, Path]]]",
                       cur: "dict[str, Path]", build: "dict[str, dict]",
-                      built: "dict[str, Path]", read_shapes, read_diffuse
-                      ) -> "str | None":
+                      built: "dict[str, Path]", read_shapes, read_diffuse,
+                      read_tris=None) -> "str | None":
     """#zos-other-design: the first mod, in load order, that ships BOTH weights of
     the piece loose (not today's source) and whose garment shapes match the build at
     both weights by rule 5's own test -- its name; None when none does.
@@ -576,7 +640,8 @@ def _zos_other_design(keys: "dict[str, str]",
             continue                          # unreadable: it cannot answer
         diffs = _zos_shape_diffs(shapes, build)
         if diffs:
-            garment = _zos_garment_diffs(diffs, alt, built, read_diffuse)
+            garment, _ren = _zos_garment_left(diffs, alt, built, read_diffuse,
+                                              read_tris)
             if garment is None or garment:
                 continue
         return mod
@@ -790,6 +855,7 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
     kept_stems: "dict[str, list[str]]" = {}
     kept_diffs: "dict[str, str]" = {}
     other_design: "dict[str, str]" = {}       # stem -> whose design the build is
+    renamed_only: "dict[str, str]" = {}       # stem -> the renamed shapes
     _ZOS_LAST.clear()
 
     def keep(reason: str, stem: str, diffs: str = "") -> None:
@@ -839,13 +905,18 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
         # by nature, body-swap on both sides, and skips the check as before.
         diffs = {} if gain else _zos_shape_diffs(today, zg.build)
         if diffs:
-            garment = _zos_garment_diffs(diffs, cur, built, _zb._nif_diffuse)
+            garment, renamed = _zos_garment_left(diffs, cur, built,
+                                                 _zb._nif_diffuse, _zb._nif_tris)
             if garment is None:               # no diffuse to judge by: rule 5 as first written
                 garment = list(diffs)
+            elif renamed and not garment:
+                renamed_only[stem] = _zos_diff_text(
+                    {n: diffs[n] for n in sorted(renamed)})
             if garment:
                 # #zos-other-design: is it today's source that is the other design?
                 other = (_zos_other_design(keys, alternates or {}, cur, zg.build,
-                                           built, _zb._nif_shapes, _zb._nif_diffuse)
+                                           built, _zb._nif_shapes, _zb._nif_diffuse,
+                                           _zb._nif_tris)
                          if _zos_other_design_on() else None)
                 if other is None:
                     keep("the build's shapes differ from today's source", stem,
@@ -866,6 +937,9 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
         if stem in other_design:
             _zos_say(f"[zeroed-output-source] moved meshes/{stem}: today's source "
                      f"is another design -- {other_design[stem]}")
+        elif stem in renamed_only:
+            _zos_say(f"[zeroed-output-source] moved meshes/{stem}: the build names "
+                     f"the same meshes otherwise -- {renamed_only[stem]}")
         elif diffs:
             body_only[stem] = _zos_diff_text(diffs)
             _zos_say(f"[zeroed-output-source] moved meshes/{stem}: the build "
@@ -876,12 +950,15 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
     body = (f" ({len(body_only)} over body-shape differences)" if body_only else "")
     if other_design:
         body += f" ({len(other_design)} where today's source is another design)"
+    if renamed_only:
+        body += f" ({len(renamed_only)} over renamed shapes)"
     _zos_say(f"[zeroed-output-source] {provider}: {len(moved)} piece(s) now "
              f"converted from its verified zeroed BodySlide build{smp}{body}; "
              f"{sum(kept.values())} kept today's source" + (f" ({held})" if held else ""))
     _ZOS_LAST.update(provider=provider, moved=list(moved), gained=list(gained),
                      moved_over_body_shapes=dict(body_only),
                      moved_over_other_design=dict(other_design),
+                     moved_over_renamed_shapes=dict(renamed_only),
                      kept={r: list(s) for r, s in sorted(kept_stems.items())},
                      kept_shape_diffs=dict(kept_diffs))
 
