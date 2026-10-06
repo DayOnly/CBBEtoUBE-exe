@@ -579,6 +579,19 @@ def _nif_rig_nodes(path) -> "set[str]":
         nif_io.release_nif(nf)
 
 
+def _nif_tris(path) -> "dict[str, tuple[int, np.ndarray]]":
+    """Every shape's (vertex count, triangle list) from one read, for
+    #zos-renamed-shapes. Released at once, as `_nif_shapes` is
+    (#postflight-release)."""
+    nf = nif_io.open_nif_retry(str(path))
+    try:
+        return {s.name: (len(s.verts),
+                         np.asarray(s.tris, dtype=np.int64).reshape(-1, 3))
+                for s in nf.shapes}
+    finally:
+        nif_io.release_nif(nf)
+
+
 def _nif_diffuse(path) -> "dict[str, str]":
     """Every shape's diffuse texture path from one read ("" where the shape has
     no lighting shader or the slot cannot be read) -- what

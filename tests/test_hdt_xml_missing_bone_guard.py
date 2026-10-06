@@ -544,3 +544,59 @@ def test_without_an_authored_collider_the_line_says_so(tmp_path, monkeypatch):
     assert ph._finalize_hdt_physics(dst, src) is True
     assert "<per-triangle-shape" not in sibling.read_text(encoding="utf-8")
     assert _recorded(ph.HDT_XML_DECLINED_TAG)[0].endswith("with no body collider)")
+
+
+# ------------------------------------------------- #authored-xml-own-mesh
+
+from src import zeroed_body as _zb                 # noqa: E402
+
+_OWN_PHANTOM = _chain("SkirtF 4", 6) + _chain("SkirtF 5", 6)
+
+
+def _own_pairing(tmp_path, monkeypatch, *, peer_shapes, src_shapes=None, peer=True):
+    """The SMP mod ships the XML and (when `peer`) a mesh at the source's path;
+    the source is the user's build in another mod folder."""
+    smp, build = tmp_path / "SMP Mod", tmp_path / "BodySlide Output"
+    xml = smp / "meshes" / "xml" / "chain.xml"
+    xml.parent.mkdir(parents=True)
+    xml.write_text(_xml(NIF_BONES + _OWN_PHANTOM), encoding="utf-8")
+    src = build / "meshes" / "armor" / "test" / "cuirass_1.nif"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"nif")
+    shapes = {str(src): src_shapes or {"Cuirass": 5, "Greaves": 9}}
+    if peer:
+        p = smp / "meshes" / "armor" / "test" / "cuirass_1.nif"
+        p.parent.mkdir(parents=True)
+        p.write_bytes(b"nif")
+        shapes[str(p)] = peer_shapes
+    monkeypatch.setattr(_zb, "_nif_shapes", lambda path: {
+        n: [(0.0, 0.0, 0.0)] * k for n, k in shapes[str(path)].items()})
+    _cs.patch(monkeypatch, "_open_source_nif", lambda *_a, **_k: _Nif(NIF_BONES))
+    return ph._authored_hdt_xml_unshippable(xml, _Nif(NIF_BONES), src)
+
+
+def test_the_authors_own_mesh_ships_its_xml(tmp_path, monkeypatch):
+    got = _own_pairing(tmp_path, monkeypatch, peer_shapes={"Cuirass": 5, "Greaves": 9})
+    assert got is None
+    assert _recorded("#authored-xml-own-mesh")
+
+
+def test_another_mesh_from_the_xmls_mod_is_still_declined(tmp_path, monkeypatch):
+    got = _own_pairing(tmp_path, monkeypatch, peer_shapes={"Cuirass": 5, "Greaves": 3729})
+    assert got is not None and got["chains"] == ["SkirtF 4", "SkirtF 5"]
+
+
+def test_no_mesh_beside_the_xml_is_still_declined(tmp_path, monkeypatch):
+    assert _own_pairing(tmp_path, monkeypatch, peer_shapes=None, peer=False) is not None
+
+
+def test_the_own_mesh_switch_judges_it_like_any_other(tmp_path, monkeypatch):
+    monkeypatch.setattr(ph, "AUTHORED_XML_OWN_MESH", False)
+    got = _own_pairing(tmp_path, monkeypatch, peer_shapes={"Cuirass": 5, "Greaves": 9})
+    assert got is not None
+
+
+def test_a_path_splits_at_its_last_meshes_folder():
+    root, parts = ph._meshes_split(Path("D:/mods/A/Meshes/x/meshes/armor/b_1.nif"))
+    assert root == Path("D:/mods/A/Meshes/x") and parts == ["armor", "b_1.nif"]
+    assert ph._meshes_split(Path("D:/mods/A/armor/b_1.nif")) is None
