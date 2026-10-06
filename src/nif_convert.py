@@ -10164,6 +10164,11 @@ _CANONICAL_NODE_CAP = _knob("CBBE2UBE_CANONICAL_NODE_CAP", 100, int)
 # CBBE2UBE_NO_CANONICAL_PARTNER_UNION=1 takes this weight's source alone.
 CANONICAL_PARTNER_UNION = (
     not _flag("CBBE2UBE_NO_CANONICAL_PARTNER_UNION", False))
+# #chain-source-root -- see `_chain_source_root`: a source root named after its
+# file is the written file's root to the chain code, not a node to recreate.
+# CBBE2UBE_NO_CHAIN_SOURCE_ROOT=1 recreates it as before.
+CHAIN_SOURCE_ROOT = (
+    not _flag("CBBE2UBE_NO_CHAIN_SOURCE_ROOT", False))
 
 # #chain-anchor-recreate. Recreate a MISSING flat anchor node, so the chain that
 # hangs off it can be attached at all -- see `_precreate_custom_bone_chains`'

@@ -1970,6 +1970,31 @@ def _seed_canonical_skeleton_nodes(dst_nif, src_nif, body_bones=()) -> int:
         return 0
 
 
+def _chain_source_root(src_nif, dst_nif) -> "str | None":
+    """The name of `src_nif`'s root when the chain code should treat it as the
+    written file's root (#chain-source-root): CHAIN_SOURCE_ROOT on, the root
+    named something `dst_nif` does not already have (a file-named root such as
+    `BodyM_0.nif`), and an identity transform. None otherwise."""
+    if not _nc().CHAIN_SOURCE_ROOT:
+        return None
+    try:
+        r = src_nif.rootNode
+        name = r.name
+        if not name or name in set(dst_nif.nodes.keys()):
+            return None
+        xf = r.transform
+        t = xf.translation
+        R = xf.rotation
+        if any(abs(float(c)) > 1e-4 for c in t) or abs(float(xf.scale) - 1.0) > 1e-4:
+            return None
+        if any(abs(float(R[i][j]) - (1.0 if i == j else 0.0)) > 1e-4
+               for i in range(3) for j in range(3)):
+            return None
+        return name
+    except Exception:
+        return None
+
+
 def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names,
                                   stem_scan: bool = True) -> int:
     """Recreate, in `dst_nif`, the node sub-trees for any armor-specific
@@ -2106,6 +2131,22 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names,
             _nc()._reanchor_nif_root_chains(chain, anchors, src_nodes)
         except Exception:
             pass
+    # #chain-source-root: a source whose ROOT node is named after its file
+    # (`BodyM_0.nif`) had that root recreated as an ordinary node by the walks
+    # below, one per weight under two different names, so `_0` and `_1` carried
+    # different node sets (#33). The source root IS the written file's root:
+    # after the pelvis re-anchor above (which needs to see bones hung on it),
+    # what still hangs on it hangs on the written root, and the root itself is
+    # never created. Only for a root the written file does not already have
+    # (a `Scene Root` source is unchanged) and with an identity transform (the
+    # children's local transforms then stay exact).
+    _src_root = _chain_source_root(src_nif, dst_nif)
+    if _src_root is not None:
+        chain.pop(_src_root, None)
+        anchors.discard(_src_root)
+        for _b, (_bxf, _bpar) in list(chain.items()):
+            if _bpar == _src_root:
+                chain[_b] = (_bxf, None)
     # AFTER the re-anchor, so it adds to whatever local transform that left --
     # the two compose, and running first would have the re-anchor overwrite it.
     if _nc().CHAIN_REST_LIFT:
@@ -2177,7 +2218,7 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names,
             # bones required by accessory chains (bag/book off Spine) are present.
             cur = a
             seen2: set[str] = set()
-            while cur and cur not in seen2:
+            while cur and cur not in seen2 and cur != _src_root:
                 seen2.add(cur)
                 src_c = src_nodes.get(cur)
                 if src_c is None:
@@ -2234,13 +2275,15 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names,
         anc: list[tuple] = []  # [(name, local_xform, parent_name)] leaf -> root
         cur = a
         seen2: set[str] = set()
-        while cur and cur not in seen2:
+        while cur and cur not in seen2 and cur != _src_root:
             seen2.add(cur)
             n = src_nodes.get(cur)
             if n is None:
                 break
             p = n.parent
             pn = p.name if p is not None else None
+            if pn is not None and pn == _src_root:
+                pn = None
             anc.append((cur, n.transform, pn))
             if pn is None:
                 break

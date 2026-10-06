@@ -31,8 +31,13 @@ Those nodes come from both weights' source files together: an author's two files
 different unused skeleton nodes (a gauntlet's heavy file has foot nodes its thin one lacks, a
 cuirass's thin file has pauldron bones), and copying each file's own set kept that difference.
 In a full scratch conversion, the pairs whose node counts differ went from 47 to 7, and this
-closes 3 of those 7; the other 4 come from later passes.
-`CBBE2UBE_NO_CANONICAL_PARTNER_UNION=1` reads each weight's source alone.
+closes 3 of those 7. Of the other 4, two came from a bone name cut short by one letter in one
+weight (fixed separately) and one from a source whose root node is named after its file
+(`BodyM_0.nif`, `BodyM_1.nif`): the physics-chain code recreated that root as an ordinary node,
+under a different name in each weight. It is now treated as the written file's root, so the
+chain keeps every position and parent and the stray node is gone.
+`CBBE2UBE_NO_CANONICAL_PARTNER_UNION=1` reads each weight's source alone;
+`CBBE2UBE_NO_CHAIN_SOURCE_ROOT=1` recreates a file-named root as before.
 
 ### Fixed — a piece converted from its BodySlide build no longer shows skin at the side of the bust when the arms move
 
