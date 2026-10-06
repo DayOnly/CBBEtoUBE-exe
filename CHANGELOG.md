@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed — the touching-vertex skin match no longer guesses between shapes that share a name
+
+The pass that gives touching vertices one skin row (and, since the seam fix, the two sides of a
+seam one row) finds each piece's original shape by its name and vertex count. Shape names that
+the physics file refers to are kept as the author wrote them even when they repeat, so a piece
+can carry several shapes of one name, and every one of them took the original rows and seam
+pairs of a single shape, joining vertices that are not seam twins in the others. A name that
+belongs to more than one shape is now left out of the match. In one live pack 1 of 3,262 files
+has repeated names, and the old lookup happened to miss there, so no current output changes.
+`CBBE2UBE_NO_COINCIDENT_SKIN_UNIQUE_NAMES=1` restores the old lookup.
+
 ### Fixed — a piece converted from its BodySlide build no longer shows skin at the side of the bust when the arms move
 
 A piece converted from its zeroed BodySlide build keeps the author's skin weights, and on some
