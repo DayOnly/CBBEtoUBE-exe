@@ -2506,6 +2506,18 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         if _is_effect_shape:   # scale bones on an effect-shader overlay CTD the render
             bone_names, xforms_map, weights_map = _drop_scale_bones_from_skin(
                 bone_names, xforms_map, weights_map)
+        # The seam twins of a NIF no post-write pass may re-save, joined in
+        # the reskin before its one write. #fx-seam-twin-prewrite
+        if not preserve_authored_skin:
+            try:
+                _n_tw, weights_map = _nc()._unify_seam_twins_in_skin(
+                    src_shape, weights_map)
+                if _n_tw:
+                    import sys as _sys
+                    print(f"  seam twins (effect NIF): joined {_n_tw} vert(s) "
+                          f"on {src_shape.name}", file=_sys.stderr)
+            except Exception as _te:
+                _nc()._note_pass_failure("_unify_seam_twins_in_skin", _te)
         _install_skin(new_shape, dst_nif, src_shape, bone_names,
                       xforms_map, weights_map, use_verts, _bake_T,
                       preserve_authored_skin=preserve_authored_skin,

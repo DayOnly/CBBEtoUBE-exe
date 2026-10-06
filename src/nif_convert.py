@@ -1261,6 +1261,7 @@ from .nif_convert_weights import (  # noqa: E402
     _match_full_weights_to_body,
     _match_rigid_leg_bend_to_body,
     _match_coincident_cross_shape_skin,
+    _unify_seam_twins_in_skin,
     _match_seam_skinning,
     _cap_weight_roughness_to_author,
     _hold_weights_at_smp_boundary,
@@ -9087,6 +9088,14 @@ COINCIDENT_SKIN_MATCH = (
 # CBBE2UBE_NO_SEAM_TWIN_SKIN=1.
 SEAM_TWIN_SKIN = (
     not _flag("CBBE2UBE_NO_SEAM_TWIN_SKIN", False))
+# #fx-seam-twin-prewrite -- the pass above reloads and re-saves the written NIF,
+# which a NIF with an effect shader cannot survive (the effect controller is
+# corrupted -> CTD), so it skips one; every reskinned shape of such a NIF shipped
+# its UV seams skinned apart. Its seam twins are joined in the skin before the
+# NIF's one write instead (`_unify_seam_twins_in_skin`, same author gate). Off
+# with CBBE2UBE_NO_FX_SEAM_TWIN_PREWRITE=1.
+FX_SEAM_TWIN_PREWRITE = (
+    not _flag("CBBE2UBE_NO_FX_SEAM_TWIN_PREWRITE", False))
 # #coincident-skin-unique-names -- the pass above maps a written shape to its
 # source shape by NAME and vert count. A name the physics XML refers to is kept
 # as authored when it repeats, so several written shapes can share one name and
@@ -15868,6 +15877,7 @@ __all__ = [
     "_strip_jiggle_weights_map",
     "_surface_deficit",
     "_sync_weight_partner_jiggle",
+    "_unify_seam_twins_in_skin",
     "_weights_from_index",
     "_weights_to_index",
     "_xml_referenced_bone_names",
