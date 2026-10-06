@@ -9096,6 +9096,14 @@ SEAM_TWIN_SKIN = (
 # with CBBE2UBE_NO_FX_SEAM_TWIN_PREWRITE=1.
 FX_SEAM_TWIN_PREWRITE = (
     not _flag("CBBE2UBE_NO_FX_SEAM_TWIN_PREWRITE", False))
+# #coincident-skin-unique-names -- the pass above maps a written shape to its
+# source shape by NAME and vert count. A name the physics XML refers to is kept
+# as authored when it repeats, so several written shapes can share one name and
+# all of them took one source shape's rows (and twin pairs). Only a name that
+# names one shape on each side is used. CBBE2UBE_NO_COINCIDENT_SKIN_UNIQUE_NAMES=1
+# restores the old lookup.
+COINCIDENT_SKIN_UNIQUE_NAMES = (
+    not _flag("CBBE2UBE_NO_COINCIDENT_SKIN_UNIQUE_NAMES", False))
 # How close two source vertices are to be twins; the same distance the seam weld
 # uses.
 _SEAM_TWIN_TOL = _knob("CBBE2UBE_SEAM_TWIN_TOL", 1e-4)
