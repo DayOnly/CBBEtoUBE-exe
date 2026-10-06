@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed — a bone name is no longer cut short by one letter
+
+The NIF library the tool uses reads a shape's bone names into a fixed-size buffer, and when
+the names added up to exactly that size it dropped the last letter of the last one:
+`NPC L Calf [LClf]` came back as `NPC L Calf [LClf`. The tool then wrote that name out, so the
+vertices on it were skinned to a bone no skeleton has and did not move with the body there.
+In one full conversion 6 files were affected: a dress's calf (665 vertices in both weights), a
+cuirass's upper arm (18 vertices), and two pieces where a breast or rear-thigh bone the tool
+added to a few vertices was cut short in one weight only, so that weight's file also carried a
+node the other did not. The library is fixed in the copy the tool ships
+(`.pynifly/patches/pynifly.py.diff`).
+
 ### Fixed — a piece converted from its BodySlide build no longer shows skin at the side of the bust when the arms move
 
 A piece converted from its zeroed BodySlide build keeps the author's skin weights, and on some

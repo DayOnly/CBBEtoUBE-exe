@@ -17376,4 +17376,13 @@ PAIRS = (
          tests=('tests/test_seam_twin_skin.py',),
          expect=('test_a_piece_with_one_shape_does_not_run_the_part_passes',),
     ),
+    Pair('PBN-a', 'a bone list exactly as long as the buffer is not read again',
+         edits=(
+             ('.pynifly/pyn/pynifly.py',
+              '            if actualsize >= bufsize:\n',
+              '            if actualsize > bufsize:\n', 1),
+         ),
+         tests=('tests/test_pynifly_bone_names_buffer.py',),
+         expect=('test_a_bone_list_exactly_300_long_is_read_whole', 'test_the_reported_calf_bone_keeps_its_bracket', ),
+    ),
 )

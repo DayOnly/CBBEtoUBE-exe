@@ -4206,7 +4206,10 @@ class NiShape(NiNode):
             bufsize = 300
             buf = create_string_buffer(bufsize+1)
             actualsize = nifly.getShapeBoneNames(self.file._handle, self._handle, buf, bufsize)
-            if actualsize > bufsize:
+            # >=, not >: the DLL writes at most bufsize-1 characters plus the
+            # terminator, so a list exactly bufsize long came back with its last
+            # bone name one character short (CBBEtoUBE local change).
+            if actualsize >= bufsize:
                 buf = create_string_buffer(actualsize+1)
                 nifly.getShapeBoneNames(self.file._handle, self._handle, buf, actualsize+1)
             bn = buf.value.decode('utf-8').split('\n')
