@@ -2601,6 +2601,91 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
 
     return new_shape
 
+def _keep_unweighted_nodes(new, old) -> int:
+    """Re-create, in the fresh NIF `new`, every node of `old` that carries no
+    skin weight, at its global transform, flat, BEFORE any shape is copied.
+    #reauthor-keeps-nodes
+
+    The rebuild only add_bones weighted bones, so the NiNodes of everything else
+    (a chain anchor's unweighted ancestors, the root stubs `NPC` / `NPC COM` /
+    `NPC Root`, a bone one weight emptied) vanished, and which of them vanished
+    depended on the weight file. `_0` and `_1` then had different node counts and
+    every shape behind the difference sat at a different position. A bone that is
+    weighted in `old` is left to `add_bone` as before, so no transform it would
+    have created changes. Direct children of the root are re-created, and, with
+    CANONICAL_SKELETON_NODES, unweighted actor-skeleton nodes that have a parent
+    (flat, at their global transform) unless a custom chain hangs below them: a
+    chain's hierarchy belongs to the chain code. Genital
+    anatomy nodes are not kept: the converter strips those weights on purpose.
+    Returns the number of nodes re-created.
+    """
+    try:
+        old_nodes = old.nodes
+    except Exception:
+        return 0
+    if not old_nodes:
+        return 0
+    shape_names = set()
+    weighted = set()
+    for sh in old.shapes:
+        shape_names.add(sh.name)
+        for bn in (sh.bone_names or []):
+            try:
+                live = any(wt > 0.0 for _i, wt in sh.bone_weights[bn])
+            except Exception:
+                live = True            # unreadable -> add_bone's business
+            if live:
+                weighted.add(bn)
+    try:
+        root_name = old.rootNode.name
+    except Exception:
+        root_name = None
+    # #reauthor-keeps-skeleton-nodes: the ancestors of every custom (chain) node.
+    # Those belong to the chain code, which builds them with their parent links.
+    chain_ancestors: "set[str]" = set()
+    keep_skeleton = bool(_nc().CANONICAL_SKELETON_NODES)
+    if keep_skeleton:
+        for n, nd in old_nodes.items():
+            if n in shape_names or _nc()._actor_can_resolve_bone(n):
+                continue
+            cur, seen = getattr(nd, "parent", None), set()
+            while cur is not None and cur.name not in seen:
+                seen.add(cur.name)
+                chain_ancestors.add(cur.name)
+                cur = getattr(cur, "parent", None)
+    existing = set(new.nodes.keys())
+    kept = 0
+    for name in sorted(old_nodes):             # sorted: deterministic order
+        if (name in existing or name in shape_names or name in weighted
+                or name == root_name or name.lower().endswith(".nif")):
+            continue
+        if _nc()._is_genital_anatomy_bone(name):
+            continue                            # stripped on purpose, node and all
+        node = old_nodes[name]
+        par = getattr(node, "parent", None)
+        # A direct child of the root is a flat stub and is always kept. A node
+        # with a real parent is kept, flat at its global transform, only when it
+        # is an actor-SKELETON node no custom chain hangs below: the canonical
+        # set seeds such nodes at the first write with their parents, a rebuild
+        # re-adds the weighted skeleton bones flat anyway, and dropping the
+        # unweighted ones is what made a rebuilt weight carry fewer nodes than
+        # its partner (#reauthor-keeps-skeleton-nodes). A chain node, or a
+        # skeleton node a chain hangs below, belongs to the chain code (it skips
+        # a node that already exists, so a flat copy made here would win that
+        # race and flatten an SMP chain).
+        if par is None or par.name != root_name:
+            if not (keep_skeleton and _nc()._actor_can_resolve_bone(name)
+                    and name not in chain_ancestors):
+                continue
+        try:
+            new.add_node(name, node.global_transform, parent=None)
+            existing.add(name)
+            kept += 1
+        except Exception:
+            pass
+    return kept
+
+
 def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
                         exclude_shapes=None, nif=None, shape_order=None) -> bool:
     """Re-author a NIF from scratch into a fresh NifFile — copy every shape
@@ -2734,6 +2819,12 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
             # swallowed. A dropped seed here is what left `_1` 68.91u low, so a
             # silent failure is the one outcome that must not be possible.
             _note_pass_failure("_seed_flat_chain_anchors", _se)
+        # A rebuild may drop a skin binding, never a node. #reauthor-keeps-nodes
+        if _nc().REAUTHOR_KEEPS_NODES:
+            try:
+                _keep_unweighted_nodes(new, old)
+            except Exception as _ke:
+                _note_pass_failure("_keep_unweighted_nodes", _ke)
         copy_failed = []
         _ov = override_verts_by_name or {}
         if _ov and _override_contract_on():

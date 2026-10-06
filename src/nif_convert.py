@@ -4809,6 +4809,14 @@ def convert_nif(
                 (x for x in ube_ref_nif_for_reskin.shapes
                  if x.name == "BaseShape"), None,
             )
+            # #canonical-skeleton-nodes: same node set at both weights.
+            try:
+                _seed_canonical_skeleton_nodes(
+                    dst_nif_for_fit, src_nif_for_fit,
+                    body_bones=(ube_base_for_reskin.bone_names
+                                if ube_base_for_reskin is not None else ()))
+            except Exception as _pe:
+                _note_pass_failure("_seed_canonical_skeleton_nodes", _pe)
 
             # #phase1-nipple-map: the same nipple-ramped bust clearance the
             # body-swap conform gets, computed ONCE per piece. Empty kwargs
@@ -6272,6 +6280,7 @@ from .nif_convert_physics import (  # noqa: E402
     _read_source_hdt_xml_disk,
     _read_source_hdt_xml_text,
     _read_source_hdt_xml_text_uncached,
+    _seed_canonical_skeleton_nodes,
     _seed_flat_chain_anchors,
     _select_framework_bone_carriers,
     _xml_referenced_bone_names,
@@ -9227,7 +9236,14 @@ SMP_BOUNDARY_HOLD = not _flag("CBBE2UBE_NO_SMP_BOUNDARY_HOLD", False)
 # (moved to nif_convert_weights.py, 2026-09-01)
 
 
-_WP_JIGGLE_PRESENT_MIN = _knob("CBBE2UBE_WP_JIGGLE_PRESENT_MIN", 8, int)
+# #weight-partner-dead-zone -- 4, not the graft gate's 8. The graft that puts a jiggle
+# bone on a garment (`_transfer_body_jiggle_to_fitted`) is gated per file and can land
+# on 4 to 7 vertices of one weight and none of the other. With the sync's minimum at
+# the same 8 that case matched neither side, so the bone, and its node, stayed in one
+# file only and every mesh behind the node sat at a different position (#33: a cuirass
+# with `NPC L/R Butt` on 7 vertices of `_0`). Over 150 pairs the minimum of 4 does
+# what the old one did plus that case.
+_WP_JIGGLE_PRESENT_MIN = _knob("CBBE2UBE_WP_JIGGLE_PRESENT_MIN", 4, int)
 _WP_JIGGLE_ABSENT_MAX = _knob("CBBE2UBE_WP_JIGGLE_ABSENT_MAX", 1, int)
 _WP_JIGGLE_PEAK_MIN = _knob("CBBE2UBE_WP_JIGGLE_PEAK_MIN", 0.10)
 _WP_JIGGLE_MAX_SHARE = _knob("CBBE2UBE_WP_JIGGLE_MAX_SHARE", 0.9)
@@ -10115,6 +10131,44 @@ def _has_nif_root_garment_chain(src_nif) -> bool:
 # on anything already correct. CBBE2UBE_NO_ANCHOR_GLOBAL_FIX=1 is the hatch.
 ANCHOR_GLOBAL_FIX = (
     not _flag("CBBE2UBE_NO_ANCHOR_GLOBAL_FIX", False))
+
+# #reauthor-keeps-nodes -- a rebuild may drop a skin BINDING, never a NODE.
+# `_reauthor_nif_fresh` copies each shape through `_install_skin`, which add_bones
+# only bones that still carry weight, and the NiNodes of every other bone went
+# with them. Whether a given file is rebuilt, and which of its bones are empty
+# by then, is decided PER WEIGHT FILE, so `_0` and `_1` of one garment came out
+# with different NiNode sets; nodes sit in front of the shapes in the file, so a
+# different node count moves every mesh behind them to a different position
+# (#33: Dawnguard Heavy `_1` had three root stubs `_0` lost, every shape +3).
+# Unweighted nodes are not in any skin, so keeping them cannot desync a
+# partition palette (the reason a zero-weight BONE must not be added).
+# CBBE2UBE_NO_REAUTHOR_KEEPS_NODES=1 drops them as before.
+REAUTHOR_KEEPS_NODES = (
+    not _flag("CBBE2UBE_NO_REAUTHOR_KEEPS_NODES", False))
+
+# #canonical-skeleton-nodes -- the node set of an output file is a function of the
+# SOURCE (and the body), not of what each weight's passes happened to add. See
+# `_canonical_skeleton_nodes`. CBBE2UBE_NO_CANONICAL_SKELETON_NODES=1 turns it off;
+# `CBBE2UBE_CANONICAL_NODE_CAP` (default 100, 0 = no cap) is the largest canonical
+# set a piece may have: beyond it (cloak chains that look like skeleton names) none
+# is seeded.
+CANONICAL_SKELETON_NODES = (
+    not _flag("CBBE2UBE_NO_CANONICAL_SKELETON_NODES", False))
+_CANONICAL_NODE_CAP = _knob("CBBE2UBE_CANONICAL_NODE_CAP", 100, int)
+# #canonical-partner-union -- the canonical set is taken from BOTH weights' source
+# files (this one and its `_0`/`_1` partner beside it), not this weight's alone. An
+# author's two files can carry different unweighted skeleton nodes (a gauntlet
+# whose `_1` has `NPC L/R Foot` and whose `_0` does not; a cuirass whose `_0` has
+# pauldron bones), and copying each weight's own set reproduced that difference:
+# the shapes behind it sat at different positions in the two files.
+# CBBE2UBE_NO_CANONICAL_PARTNER_UNION=1 takes this weight's source alone.
+CANONICAL_PARTNER_UNION = (
+    not _flag("CBBE2UBE_NO_CANONICAL_PARTNER_UNION", False))
+# #chain-source-root -- see `_chain_source_root`: a source root named after its
+# file is the written file's root to the chain code, not a node to recreate.
+# CBBE2UBE_NO_CHAIN_SOURCE_ROOT=1 recreates it as before.
+CHAIN_SOURCE_ROOT = (
+    not _flag("CBBE2UBE_NO_CHAIN_SOURCE_ROOT", False))
 
 # #chain-anchor-recreate. Recreate a MISSING flat anchor node, so the chain that
 # hangs off it can be attached at all -- see `_precreate_custom_bone_chains`'
@@ -14678,6 +14732,15 @@ def convert_nif_phase2(
         _seed_flat_chain_anchors(dst_nif, src_nif)
     except Exception as _pe:
         _note_pass_failure("_seed_flat_chain_anchors", _pe)
+    # The node set is a function of the source and the body, not of this weight's
+    # passes: `_0` and `_1` start from the same skeleton nodes. #canonical-skeleton-nodes
+    try:
+        _ub_p2 = next((x for x in ube_nif.shapes if x.name == "BaseShape"), None)
+        _seed_canonical_skeleton_nodes(
+            dst_nif, src_nif,
+            body_bones=(_ub_p2.bone_names if _ub_p2 is not None else ()))
+    except Exception as _pe:
+        _note_pass_failure("_seed_canonical_skeleton_nodes", _pe)
 
     # BODYTRI path: use a pre-built armor TRI if found (has _ForOutfits slider
     # bridges for RaceMenu), otherwise fall back to the body TRI.

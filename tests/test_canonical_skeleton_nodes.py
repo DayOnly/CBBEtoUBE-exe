@@ -1,0 +1,365 @@
+# CBBEtoUBE - CBBE/3BA to UBE armor converter
+# Copyright (C) 2026 DayOnly
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+"""#canonical-skeleton-nodes -- the node set of an output file is a function of the source (#33).
+
+nifly writes every NiNode in front of the shapes, so one more node in one weight
+file moves every mesh behind it. Which skeleton bones a file ends up with is
+decided per weight by passes that read that weight's geometry (a jiggle bone
+grafted on one weight, a twist bone left on two vertices of one), and no per-file
+gate can be made to agree. The node set therefore stops depending on them:
+`_canonical_skeleton_nodes` derives it from the SOURCE and the body, and
+`_seed_canonical_skeleton_nodes` creates it in the still-empty output.
+
+The stand-ins are only as deep as the helpers read: `.nodes` (name -> node with
+`.parent`), `.shapes`, `.rootNode`, `add_node`.
+"""
+import inspect
+
+import pytest
+
+from src import nif_convert as nc
+from src import nif_convert_physics as ph
+from tests import _converter_sources as _cs  # patch on every module that binds a name
+
+SPINE = "NPC Spine [Spn0]"
+PELVIS = "NPC Pelvis [Pelv]"
+PAULDRON = "NPC L Pauldron"
+FOREARM = "NPC L Forearm [LLar]"
+
+
+@pytest.fixture(autouse=True)
+def _skeleton(monkeypatch):
+    """Whether the actor skeleton is loadable here changes what the predicate
+    says (it falls back to a name heuristic without one), so pin it: `NPC ...`
+    names are the actor's, `Clitoral1` too (so the genital filter has work to do),
+    everything else is a custom bone."""
+    monkeypatch.setattr(
+        ph, "_actor_can_resolve_bone",
+        lambda n: n.startswith("NPC ") or n == "Clitoral1")
+
+
+class Node:
+    def __init__(self, name, parent=None):
+        self.name = name
+        self.parent = parent
+        self.transform = ("local", name)
+
+
+class Shape:
+    def __init__(self, name):
+        self.name = name
+
+
+class Src:
+    def __init__(self, names, parents=None, shapes=("Armor",), root="Scene Root"):
+        parents = parents or {}
+        self.nodes = {}
+        self.nodes[root] = Node(root)
+        for n in names:
+            self.nodes[n] = Node(n)
+        for child, par in parents.items():
+            self.nodes[child] = self.nodes.get(child) or Node(child)
+            self.nodes[child].parent = self.nodes[par]
+        self.shapes = [Shape(s) for s in shapes]
+        self.rootNode = self.nodes[root]
+
+
+class Dst:
+    def __init__(self, have=()):
+        self.nodes = {n: object() for n in have}
+        self.added = []
+        self.parent_of = {}
+        self.xf_of = {}
+
+    def add_node(self, name, xf, parent=None):
+        # lenient like a real file: a parent that is not there is not an error,
+        # the node just ends up under the root
+        self.nodes[name] = object()
+        self.added.append(name)
+        self.parent_of[name] = parent if parent in self.nodes else None
+        self.xf_of[name] = xf
+        if parent is not None and parent not in self.nodes:
+            self.parent_of[name] = None
+
+
+def canon(src, body=()):
+    return ph._canonical_skeleton_nodes(src, body)
+
+
+def test_the_skeleton_nodes_of_the_source_are_canonical():
+    assert canon(Src([SPINE, PELVIS, PAULDRON])) == sorted([SPINE, PELVIS, PAULDRON])
+
+
+def test_the_bodys_bones_are_canonical_too():
+    assert canon(Src([SPINE]), body=[PELVIS]) == sorted([SPINE, PELVIS])
+
+
+def test_a_custom_chain_node_is_not_a_skeleton_node():
+    assert "SkirtFBone01" not in canon(Src([SPINE, "SkirtFBone01"]))
+
+
+def test_genital_anatomy_is_never_canonical():
+    got = canon(Src([SPINE, "NPC Anus Deep2", "Clitoral1"]))
+    assert got == [SPINE]
+
+
+def test_the_root_shapes_and_file_name_nodes_are_not_canonical():
+    src = Src([SPINE, "Armor", "Piece_0.nif"], shapes=("Armor",))
+    assert canon(src) == [SPINE]
+
+
+def test_an_ancestor_of_a_custom_chain_is_left_to_the_chain_code():
+    # `NPC L Forearm` anchors a custom chain: the chain code builds it with its
+    # parent links and skips a node that already exists, so it must not be seeded
+    src = Src([SPINE, FOREARM], parents={"ArmChain 01": FOREARM})
+    got = canon(src)
+    assert FOREARM not in got and SPINE in got
+
+
+def test_ancestry_is_followed_all_the_way_up():
+    src = Src([SPINE, PELVIS, FOREARM],
+              parents={FOREARM: PELVIS, "Cape 01": FOREARM})
+    got = canon(src)
+    assert FOREARM not in got and PELVIS not in got and SPINE in got
+
+
+def test_a_source_over_the_cap_gets_no_canonical_set(monkeypatch):
+    monkeypatch.setattr(nc, "_CANONICAL_NODE_CAP", 2)
+    assert canon(Src([SPINE, PELVIS, PAULDRON])) == []
+    monkeypatch.setattr(nc, "_CANONICAL_NODE_CAP", 3)
+    assert len(canon(Src([SPINE, PELVIS, PAULDRON]))) == 3
+
+
+def test_a_cap_of_zero_means_no_cap(monkeypatch):
+    monkeypatch.setattr(nc, "_CANONICAL_NODE_CAP", 0)
+    assert len(canon(Src([SPINE, PELVIS, PAULDRON]))) == 3
+
+
+def test_the_order_is_deterministic():
+    names = canon(Src([PAULDRON, SPINE, PELVIS]))
+    assert names == sorted(names)
+
+
+def test_an_unreadable_source_gives_an_empty_set():
+    class Broken:
+        @property
+        def nodes(self):
+            raise RuntimeError("x")
+    assert ph._canonical_skeleton_nodes(Broken()) == []
+
+
+def test_the_seed_creates_missing_nodes_and_skips_existing_ones():
+    dst = Dst(have=[SPINE])
+    n = ph._seed_canonical_skeleton_nodes(dst, Src([SPINE, PELVIS, PAULDRON]))
+    assert dst.added == sorted([PELVIS, PAULDRON]) and n == 2
+
+
+def test_a_node_is_created_under_its_source_parent_with_its_local_transform():
+    # the first version made these flat and flattened 458 nodes the existing code
+    # had linked on 300 real files (UpperArm under Clavicle, Calf under Thigh)
+    clav, arm = "NPC L Clavicle [LClv]", "NPC L UpperArm [LUar]"
+    src = Src([SPINE], parents={clav: SPINE, arm: clav})
+    dst = Dst()
+    ph._seed_canonical_skeleton_nodes(dst, src)
+    assert dst.parent_of[arm] == clav and dst.parent_of[clav] == SPINE
+    assert dst.parent_of[SPINE] is None
+    assert dst.xf_of[arm] == ("local", arm)
+
+
+def test_a_parent_is_always_created_before_its_child():
+    # sorted order would put the child ("A...") before its parent ("B...")
+    child, parent = "NPC A Child", "NPC B Parent"
+    src = Src([parent], parents={child: parent})
+    dst = Dst()
+    ph._seed_canonical_skeleton_nodes(dst, src)
+    assert dst.added.index(parent) < dst.added.index(child)
+
+
+def test_a_node_whose_parent_is_not_canonical_is_skipped_not_flattened():
+    # the parent hangs a custom chain (an ancestor), so it is the chain code's:
+    # its other child must not be hung flat under the root in its place
+    arm, hand = "NPC L Forearm [LLar]", "NPC L Hand [LHnd]"
+    src = Src([arm], parents={"ArmChain 01": arm, hand: arm})
+    dst = Dst()
+    ph._seed_canonical_skeleton_nodes(dst, src)
+    assert hand not in dst.nodes and arm not in dst.nodes
+
+
+def test_a_child_of_the_root_is_created_without_a_parent():
+    src = Src([SPINE])
+    src.nodes[SPINE].parent = src.nodes["Scene Root"]
+    dst = Dst()
+    ph._seed_canonical_skeleton_nodes(dst, src)
+    assert dst.parent_of[SPINE] is None
+
+
+def test_a_body_bone_the_source_lacks_is_created_flat_at_identity():
+    dst = Dst()
+    ph._seed_canonical_skeleton_nodes(dst, Src([SPINE]), body_bones=[PELVIS])
+    assert dst.parent_of[PELVIS] is None
+    assert not isinstance(dst.xf_of[PELVIS], tuple)      # an identity buffer, not a source transform
+
+
+def test_a_parent_cycle_in_the_source_creates_neither_node():
+    a, b = "NPC A", "NPC B"
+    src = Src([a, b])
+    src.nodes[a].parent = src.nodes[b]
+    src.nodes[b].parent = src.nodes[a]
+    dst = Dst()
+    ph._seed_canonical_skeleton_nodes(dst, src)
+    assert a not in dst.nodes and b not in dst.nodes
+
+
+def test_the_flag_switches_the_seed_off(monkeypatch):
+    monkeypatch.setattr(nc, "CANONICAL_SKELETON_NODES", False)
+    dst = Dst()
+    assert ph._seed_canonical_skeleton_nodes(dst, Src([SPINE])) == 0 and not dst.added
+
+
+def test_a_failing_seed_is_reported_not_raised():
+    class Boom(Dst):
+        def add_node(self, *a, **k):
+            raise RuntimeError("no")
+    assert ph._seed_canonical_skeleton_nodes(Boom(), Src([SPINE])) == 0
+
+
+def test_both_first_write_sites_seed_the_set():
+    p2 = inspect.getsource(nc.convert_nif_phase2)
+    assert "_seed_canonical_skeleton_nodes(\n            dst_nif, src_nif," in p2
+    p1 = inspect.getsource(nc.convert_nif)
+    assert "_seed_canonical_skeleton_nodes(\n                    dst_nif_for_fit, src_nif_for_fit," in p1
+
+
+def test_the_seed_comes_after_the_chain_anchors_in_phase_two():
+    src = inspect.getsource(nc.convert_nif_phase2)
+    assert src.index("_seed_flat_chain_anchors(dst_nif, src_nif)") < src.index(
+        "_seed_canonical_skeleton_nodes(")
+
+
+def test_defaults():
+    assert nc.CANONICAL_SKELETON_NODES is True
+    assert nc._CANONICAL_NODE_CAP == 100
+    assert 'not _flag("CBBE2UBE_NO_CANONICAL_SKELETON_NODES", False)' in inspect.getsource(nc)
+
+
+def test_the_real_pynifly_seed_keeps_the_source_hierarchy(tmp_path):
+    pyn = nc._pynifly()
+    spath, dpath = str(tmp_path / "src.nif"), str(tmp_path / "dst.nif")
+    src = pyn.NifFile()
+    src.initialize("SKYRIMSE", spath)
+    src.createShapeFromData("Armor", [(0, 0, 0), (1, 0, 0), (0, 1, 0)], [(0, 1, 2)],
+                            [(0, 0), (1, 0), (0, 1)], [(0, 0, 1)] * 3)
+    xf = pyn.TransformBuf()
+    xf.set_identity()
+    src.add_node(SPINE, xf, parent=None)
+    src.add_node(PAULDRON, xf, parent=SPINE)
+    src.save()
+    src = pyn.NifFile(filepath=spath)            # a real source comes from disk
+    dst = pyn.NifFile()
+    dst.initialize("SKYRIMSE", dpath)
+    made = ph._seed_canonical_skeleton_nodes(dst, src, body_bones=[PELVIS])
+    assert made == 3
+    assert {SPINE, PAULDRON, PELVIS} <= set(dst.nodes)
+    assert ph._seed_canonical_skeleton_nodes(dst, src, body_bones=[PELVIS]) == 0
+    dst.save()
+    back = pyn.NifFile(filepath=dpath)
+    assert back.nodes[PAULDRON].parent.name == SPINE, "the source hierarchy is kept"
+    assert back.nodes[PELVIS].parent.name == "Scene Root"
+
+
+
+# --- #canonical-partner-union ----------------------------------------------
+# An author's two weight files can carry different unweighted skeleton nodes:
+# a gauntlet whose `_1` has `NPC L/R Foot` and whose `_0` does not, a cuirass
+# whose `_0` has pauldron bones. The canonical set copied each weight's own
+# source, so the difference survived and the shapes behind it sat at different
+# positions in the two files. The set is now the union of both sources.
+
+def _pyn_file(tmp_path, name, node_names):
+    """A real pynifly NIF with flat skeleton nodes under the root."""
+    pyn = nc._pynifly()
+    p = tmp_path / name
+    nf = pyn.NifFile()
+    nf.initialize("SKYRIMSE", str(p))
+    nf.createShapeFromData("Armor", [(0, 0, 0), (1, 0, 0), (0, 1, 0)], [(0, 1, 2)],
+                           [(0, 0), (1, 0), (0, 1)], [(0, 0, 1)] * 3)
+    idt = pyn.TransformBuf()
+    idt.set_identity()
+    for n in node_names:
+        nf.add_node(n, idt, parent=None)
+    nf.save()
+    return pyn.NifFile(filepath=str(p))
+
+
+def _seed_names(tmp_path, src):
+    pyn = nc._pynifly()
+    d = pyn.NifFile()
+    d.initialize("SKYRIMSE", str(tmp_path / "dst.nif"))
+    ph._seed_canonical_skeleton_nodes(d, src, body_bones=())
+    return set(d.nodes)
+
+
+HAND = ["NPC L Hand [LHnd]", "NPC R Hand [RHnd]"]
+FEET = ["NPC L Foot [Lft ]", "NPC R Foot [Rft ]"]
+
+
+def test_both_weights_get_the_nodes_only_one_source_has(tmp_path, monkeypatch):
+    monkeypatch.setattr(nc, "CANONICAL_PARTNER_UNION", True)
+    s0 = _pyn_file(tmp_path, "gauntlets_0.nif", HAND)
+    s1 = _pyn_file(tmp_path, "gauntlets_1.nif", HAND + FEET)
+    a = _seed_names(tmp_path, s0)
+    b = _seed_names(tmp_path, s1)
+    assert set(FEET) <= a, "the weight whose source lacks the feet still gets them"
+    assert a == b
+
+
+def test_without_the_union_each_weight_copies_its_own_source(tmp_path, monkeypatch):
+    """The control: the defect the union removes."""
+    monkeypatch.setattr(nc, "CANONICAL_PARTNER_UNION", False)
+    s0 = _pyn_file(tmp_path, "gauntlets_0.nif", HAND)
+    s1 = _pyn_file(tmp_path, "gauntlets_1.nif", HAND + FEET)
+    assert _seed_names(tmp_path, s0) != _seed_names(tmp_path, s1)
+
+
+def test_the_partner_is_the_other_weight_beside_the_source(tmp_path, monkeypatch):
+    monkeypatch.setattr(nc, "CANONICAL_PARTNER_UNION", True)
+    s1 = _pyn_file(tmp_path, "cuirass_1.nif", HAND)
+    _pyn_file(tmp_path, "cuirass_0.nif", FEET)
+    other = ph._weight_partner_source(s1)
+    assert other is not None and set(FEET) <= set(other.nodes)
+
+
+def test_a_file_with_no_weight_suffix_has_no_partner(tmp_path, monkeypatch):
+    monkeypatch.setattr(nc, "CANONICAL_PARTNER_UNION", True)
+    s = _pyn_file(tmp_path, "helmet.nif", HAND)
+    assert ph._weight_partner_source(s) is None
+    # `_2` is not a weight suffix, even with a `_0` beside it
+    _pyn_file(tmp_path, "gloves_0.nif", FEET)
+    s2 = _pyn_file(tmp_path, "gloves_2.nif", HAND)
+    assert ph._weight_partner_source(s2) is None
+
+
+def test_a_missing_partner_leaves_the_source_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(nc, "CANONICAL_PARTNER_UNION", True)
+    s1 = _pyn_file(tmp_path, "boots_1.nif", HAND)
+    assert ph._weight_partner_source(s1) is None
+    assert set(HAND) <= _seed_names(tmp_path, s1)
+
+
+def test_the_partner_union_is_on_by_default():
+    assert 'not _flag("CBBE2UBE_NO_CANONICAL_PARTNER_UNION", False)' in _cs.whole_text()

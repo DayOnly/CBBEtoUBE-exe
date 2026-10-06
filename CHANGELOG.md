@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### Fixed — the thin and heavy files of one armour no longer end up with different skeleton nodes (#33)
+
+An armour's thin (`_0`) and heavy (`_1`) mesh are converted separately, and the
+rebuild step kept only bones that still carried weight, so the unweighted skeleton
+nodes in front of the meshes (the root stubs `NPC`, `NPC COM`, `NPC Root`, a chain
+bone one weight had emptied) were dropped from one file and kept in the other.
+Nodes sit before the meshes in the file, so a different node count moved every mesh
+behind them to a different position. The rebuild now keeps the old file's unweighted
+root-level nodes (a node with a real parent is left to the physics-chain code, and
+a zero-weight bone is still never added to a skin), and the jiggle sync pairs
+shapes that an author named per weight (`TorsoF_0` / `TorsoF_1`) by position and
+vertex count instead of leaving them out. On 70 torso pairs from the reported
+modlist the pairs whose nodes differ go from 9 to 1 and the pairs with a mesh at a
+different position from 6 to 0 (the one left is a source whose `_0` and `_1` already
+differ). No node changed parent. One visible difference: about a quarter of the
+files, which lost the three root stubs in both weights before, now keep them as
+the source has them. Whether this removes the in-game geometry break is not
+confirmed. `CBBE2UBE_NO_REAUTHOR_KEEPS_NODES=1` (set to 1) drops the nodes as before.
+Both weights also start from the same skeleton nodes: at the first write the tool creates
+the source's actor-skeleton nodes (and the body's bones), with their source parents and
+transforms, so which nodes a file ends up with no longer depends on what each weight's
+passes added (median 3 more nodes per file, at most 52; capped at 100 per piece). A rebuild
+keeps the unweighted ones of those too, flat, unless a physics chain hangs below them, so a
+weight that is rebuilt keeps the same nodes as one that is not.
+`CBBE2UBE_NO_CANONICAL_SKELETON_NODES=1` turns both off.
+Those nodes come from both weights' source files together: an author's two files can carry
+different unused skeleton nodes (a gauntlet's heavy file has foot nodes its thin one lacks, a
+cuirass's thin file has pauldron bones), and copying each file's own set kept that difference.
+In a full scratch conversion, the pairs whose node counts differ went from 47 to 7, and this
+closes 3 of those 7. Of the other 4, two came from a bone name cut short by one letter in one
+weight (fixed separately) and one from a source whose root node is named after its file
+(`BodyM_0.nif`, `BodyM_1.nif`): the physics-chain code recreated that root as an ordinary node,
+under a different name in each weight. It is now treated as the written file's root, so the
+chain keeps every position and parent and the stray node is gone.
+`CBBE2UBE_NO_CANONICAL_PARTNER_UNION=1` reads each weight's source alone;
+`CBBE2UBE_NO_CHAIN_SOURCE_ROOT=1` recreates a file-named root as before.
+
 ### Fixed — a piece converted from its BodySlide build no longer shows skin at the side of the bust when the arms move
 
 A piece converted from its zeroed BodySlide build keeps the author's skin weights, and on some

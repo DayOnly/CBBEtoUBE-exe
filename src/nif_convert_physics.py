@@ -1802,6 +1802,199 @@ def _seed_flat_chain_anchors(dst_nif, src_nif, stem_scan: bool = True) -> int:
         _note_pass_failure("_seed_flat_chain_anchors", _e)
         return 0
 
+def _weight_partner_source(src_nif):
+    """The OTHER weight's source file beside `src_nif` (`x_0.nif` <-> `x_1.nif`,
+    either case), loaded, or None when there is none, it cannot be read, or
+    CANONICAL_PARTNER_UNION is off. #canonical-partner-union"""
+    if not _nc().CANONICAL_PARTNER_UNION:
+        return None
+    try:
+        p = Path(str(getattr(src_nif, "filepath", "") or ""))
+        stem = p.stem
+        if len(stem) < 2 or stem[-2] != "_" or stem[-1] not in "01":
+            return None
+        other = p.with_name(stem[:-1] + ("1" if stem[-1] == "0" else "0") + p.suffix)
+        if not other.is_file():
+            return None
+        return _nc()._pynifly().NifFile(filepath=str(other))
+    except Exception as _pe:
+        _note_pass_failure("_weight_partner_source", _pe)
+        return None
+
+
+def _canonical_skeleton_nodes(src_nif, body_bones=(), partner_nif=None) -> "list[str]":
+    """The skeleton nodes every output weight of this piece should carry, derived
+    from things BOTH weights share: the source file's nodes and the body's bones.
+    #canonical-skeleton-nodes
+
+    nifly writes every NiNode in front of the shapes, so one more node in one
+    weight file moves every mesh behind it to a different position, and which
+    skeleton bones a file ends up with is decided per weight by passes that read
+    that weight's geometry (a jiggle bone grafted on one weight and not the other,
+    a twist bone left on two vertices of one). No per-file gate can be made to
+    agree, so the node set stops depending on them: it is a function of the source.
+
+    Only real skeleton nodes (`_actor_can_resolve_bone`), never genital anatomy
+    (stripped on purpose), the root, a shape, or a node that is an ANCESTOR of a
+    custom chain bone: the chain code builds those with their parent links and
+    skips a node that already exists, so a flat copy made here would flatten an
+    SMP chain. A source with more than `_CANONICAL_NODE_CAP` such nodes (a cloak
+    whose chain nodes pass for skeleton names) gets none: the converter drops
+    those on purpose and the set would resurrect them.
+
+    `partner_nif` (the other weight's source, #canonical-partner-union) is read the
+    same way and its nodes join the set, so both weights get the same nodes even
+    when the author's two files differ.
+    """
+    names = set(body_bones or ())
+    shape_names: "set[str]" = set()
+    root_names: "set[str]" = set()
+    ancestors: "set[str]" = set()
+    for nif in (src_nif, partner_nif):
+        if nif is None:
+            continue
+        try:
+            nodes = dict(nif.nodes)
+        except Exception:
+            nodes = {}
+        try:
+            shapes = {sh.name for sh in nif.shapes}
+        except Exception:
+            shapes = set()
+        try:
+            root_names.add(nif.rootNode.name)
+        except Exception:
+            pass
+        shape_names |= shapes
+        names |= set(nodes)
+        for n, node in nodes.items():
+            if n in shapes or _actor_can_resolve_bone(n):
+                continue
+            cur, seen = getattr(node, "parent", None), set()
+            while cur is not None and cur.name not in seen:
+                seen.add(cur.name)
+                ancestors.add(cur.name)
+                cur = getattr(cur, "parent", None)
+    out = []
+    for n in sorted(names):
+        if (not n or n in root_names or n in shape_names or n in ancestors
+                or n.lower().endswith(".nif")):
+            continue
+        if not _actor_can_resolve_bone(n) or _nc()._is_genital_anatomy_bone(n):
+            continue
+        out.append(n)
+    cap = int(_nc()._CANONICAL_NODE_CAP)
+    if cap > 0 and len(out) > cap:
+        return []
+    return out
+
+
+def _seed_canonical_skeleton_nodes(dst_nif, src_nif, body_bones=()) -> int:
+    """Create the piece's canonical skeleton nodes in a still-EMPTY dst NIF, with
+    the SOURCE's hierarchy, so `_0` and `_1` start from the same node set whatever
+    each weight's passes add later. #canonical-skeleton-nodes
+
+    A node is created parent-first, with its source LOCAL transform and its source
+    parent link, exactly as `_precreate_custom_bone_chains` builds an anchor's
+    ancestors. A first version made them all flat under the root, and on 300 real
+    files that flattened 458 nodes whose parents the existing code had linked
+    (`UpperArm` under `Clavicle`, `Calf` under `Thigh`, ...): the chain code skips a
+    node that already exists, so whoever creates it first decides its parent. A node
+    whose source parent cannot be created is skipped, never flattened; a body bone
+    the source does not have is created flat at identity, which is what `add_bone`
+    makes for one. A node already there (a seeded chain anchor) is left as it is.
+    Returns the number of nodes created."""
+    if not _nc().CANONICAL_SKELETON_NODES:
+        return 0
+    try:
+        partner = _weight_partner_source(src_nif)   # #canonical-partner-union
+        names = _canonical_skeleton_nodes(src_nif, body_bones, partner_nif=partner)
+        if not names:
+            return 0
+        pyn = _nc()._pynifly()
+        # This weight's own node first; a node only the partner has comes with
+        # the partner's transform and parent.
+        src_nodes: dict = {}
+        root_names: "set[str]" = set()
+        for nif in (partner, src_nif):
+            if nif is None:
+                continue
+            try:
+                src_nodes.update(dict(nif.nodes))
+            except Exception:
+                pass
+            try:
+                root_names.add(nif.rootNode.name)
+            except Exception:
+                pass
+        wanted = set(names)
+        existing = set(dst_nif.nodes.keys())
+        added = [0]
+        visiting: "set[str]" = set()
+
+        def _make(name) -> bool:
+            if name in existing:
+                return True
+            if name in visiting:
+                return False                      # a cycle: leave it out
+            visiting.add(name)
+            try:
+                node = src_nodes.get(name)
+                if node is None:
+                    xf = pyn.TransformBuf()
+                    xf.set_identity()
+                    par = None                    # a body bone the source lacks
+                else:
+                    xf = node.transform
+                    pnode = getattr(node, "parent", None)
+                    par = pnode.name if pnode is not None else None
+                    if par in root_names:
+                        par = None
+                if par is not None:
+                    if par not in wanted or not _make(par):
+                        return False              # never flatten what has a parent
+                dst_nif.add_node(name, xf, parent=par)
+                existing.add(name)
+                added[0] += 1
+                return True
+            except Exception:
+                return False
+            finally:
+                visiting.discard(name)
+
+        for n in names:
+            _make(n)
+        return added[0]
+    except Exception as _e:
+        _note_pass_failure("_seed_canonical_skeleton_nodes", _e)
+        return 0
+
+
+def _chain_source_root(src_nif, dst_nif) -> "str | None":
+    """The name of `src_nif`'s root when the chain code should treat it as the
+    written file's root (#chain-source-root): CHAIN_SOURCE_ROOT on, the root
+    named something `dst_nif` does not already have (a file-named root such as
+    `BodyM_0.nif`), and an identity transform. None otherwise."""
+    if not _nc().CHAIN_SOURCE_ROOT:
+        return None
+    try:
+        r = src_nif.rootNode
+        name = r.name
+        if not name or name in set(dst_nif.nodes.keys()):
+            return None
+        xf = r.transform
+        t = xf.translation
+        R = xf.rotation
+        if any(abs(float(c)) > 1e-4 for c in t) or abs(float(xf.scale) - 1.0) > 1e-4:
+            return None
+        if any(abs(float(R[i][j]) - (1.0 if i == j else 0.0)) > 1e-4
+               for i in range(3) for j in range(3)):
+            return None
+        return name
+    except Exception:
+        return None
+
+
 def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names,
                                   stem_scan: bool = True) -> int:
     """Recreate, in `dst_nif`, the node sub-trees for any armor-specific
@@ -1938,6 +2131,22 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names,
             _nc()._reanchor_nif_root_chains(chain, anchors, src_nodes)
         except Exception:
             pass
+    # #chain-source-root: a source whose ROOT node is named after its file
+    # (`BodyM_0.nif`) had that root recreated as an ordinary node by the walks
+    # below, one per weight under two different names, so `_0` and `_1` carried
+    # different node sets (#33). The source root IS the written file's root:
+    # after the pelvis re-anchor above (which needs to see bones hung on it),
+    # what still hangs on it hangs on the written root, and the root itself is
+    # never created. Only for a root the written file does not already have
+    # (a `Scene Root` source is unchanged) and with an identity transform (the
+    # children's local transforms then stay exact).
+    _src_root = _chain_source_root(src_nif, dst_nif)
+    if _src_root is not None:
+        chain.pop(_src_root, None)
+        anchors.discard(_src_root)
+        for _b, (_bxf, _bpar) in list(chain.items()):
+            if _bpar == _src_root:
+                chain[_b] = (_bxf, None)
     # AFTER the re-anchor, so it adds to whatever local transform that left --
     # the two compose, and running first would have the re-anchor overwrite it.
     if _nc().CHAIN_REST_LIFT:
@@ -2009,7 +2218,7 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names,
             # bones required by accessory chains (bag/book off Spine) are present.
             cur = a
             seen2: set[str] = set()
-            while cur and cur not in seen2:
+            while cur and cur not in seen2 and cur != _src_root:
                 seen2.add(cur)
                 src_c = src_nodes.get(cur)
                 if src_c is None:
@@ -2066,13 +2275,15 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names,
         anc: list[tuple] = []  # [(name, local_xform, parent_name)] leaf -> root
         cur = a
         seen2: set[str] = set()
-        while cur and cur not in seen2:
+        while cur and cur not in seen2 and cur != _src_root:
             seen2.add(cur)
             n = src_nodes.get(cur)
             if n is None:
                 break
             p = n.parent
             pn = p.name if p is not None else None
+            if pn is not None and pn == _src_root:
+                pn = None
             anc.append((cur, n.transform, pn))
             if pn is None:
                 break
