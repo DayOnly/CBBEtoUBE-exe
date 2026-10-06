@@ -42,7 +42,7 @@ file  niflydll.py        upstream 16c5c4f8458f4f9d82917a3688b6badc5444603a  loca
 file  niflytools.py      upstream 977a83ffe2656e5e72811a3d5f6639b4068e99dd  local c0617a7bd607d0606fd2c8acb04f5e79380316ba  patch patches/niflytools.py.diff
 file  pynenum.py         upstream 93be20465f980b848c158f4efbc9c985d5959a17  local 93be20465f980b848c158f4efbc9c985d5959a17
 file  pynifly.md         upstream 876c41f7240fdee2b65a203ebacd41bac5ccefb0  local 876c41f7240fdee2b65a203ebacd41bac5ccefb0
-file  pynifly.py         upstream 711baf4555144ab42b8ee46ba74b45e722977ca6  local 612e29dc98c06dbe183b3bfe27f7c030c1ebe9c7  patch patches/pynifly.py.diff
+file  pynifly.py         upstream 711baf4555144ab42b8ee46ba74b45e722977ca6  local c4c6e90dbad11fe4acb130bf3e2bfaa4a4fa7912  patch patches/pynifly.py.diff
 file  pynmathutils.py    upstream dfadce7f0c14b9d662e0e7fd16a4d5064f1cf8bc  local d5a6348019f944271b507b0b15031f39a2fa4f45  patch patches/pynmathutils.py.diff
 file  structs.py         upstream c8637dd029a7117246439433908c8555dc0316b6  local c8637dd029a7117246439433908c8555dc0316b6
 file  tri_strip.py       upstream 10471cd9ea534bd7eac336f157c717fa2568e854  local ef551dea5a163a537f7398e2c3bbd069e569ac62  patch patches/tri_strip.py.diff
