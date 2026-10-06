@@ -6248,6 +6248,7 @@ def _finalize_physics_and_motion_match(dst_path, src_path, biped_slots) -> None:
 # since 2026-09-01. Imported BY NAME so `nc.<name>` keeps working everywhere.
 from .nif_convert_physics import (  # noqa: E402
     _ColliderDeclined,
+    _hdt_xml_pointer_absent,
     _actor_can_resolve_bone,
     _actor_skeleton_bone_names,
     simulated_vert_mask,
@@ -15944,6 +15945,7 @@ __all__ = [
     "_fill_zero_weight_verts",
     "_find_ube_shapedata",
     "_harden_hdt_xml_for_fsmp",
+    "_hdt_xml_pointer_absent",
     "_hdt_sanitise",
     "_install_skin",
     "_is_arm_hand_bone",

@@ -22,6 +22,10 @@ The run summary also names the pieces behind each swallowed pass failure (six, w
 the full list in `conversion_report.json`), where it listed only counts, so a dropped
 physics shape is no longer anonymous. A piece is named by its path below `meshes\!UBE`
 (`armor/iron/armorf_1.nif`), since many mods share a file name like `armorf_1.nif`.
+A piece whose mesh names a physics file that no mod in your load order ships (an author's
+leftover pointer to another mod's file) is no longer counted as a failed pass or flagged as
+"dropped by a rebuild": the game loads no physics for it either, and the log says that
+plainly. In one full run this was all 12 such "failures".
 When a build is taken over (or held back from) a source that carries a different physics
 rig (an SMP rebuild of a plain skirt), the log and `conversion_report.json` now say so by
 piece, under `rig_differs`; which file is converted is unchanged.
