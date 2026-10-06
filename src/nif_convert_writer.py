@@ -395,10 +395,19 @@ def validate_dst_nif(dst_path: "Path",
                 for ed in snf.rootNode.extra_data():
                     if (hasattr(ed, "string_data")
                             and ed.name == "HDT Skinned Mesh Physics Object"):
-                        warnings.append(
-                            f"{name} :: source declares an HDT physics link "
-                            f"but the converted NIF has NONE (SMP dead -- "
-                            f"extra-data dropped by a rebuild?)")
+                        # #hdt-xml-absent: a link to a file no folder of the
+                        # load order ships was dead in the source too.
+                        _gone = _nc()._hdt_xml_pointer_absent(src_path, nif=snf)
+                        if _gone:
+                            warnings.append(
+                                f"{name} :: source names a physics file no mod "
+                                f"in the load order ships ({_gone}); converted "
+                                f"without physics, as the game loads it")
+                        else:
+                            warnings.append(
+                                f"{name} :: source declares an HDT physics link "
+                                f"but the converted NIF has NONE (SMP dead -- "
+                                f"extra-data dropped by a rebuild?)")
                         break
             except Exception:
                 pass
