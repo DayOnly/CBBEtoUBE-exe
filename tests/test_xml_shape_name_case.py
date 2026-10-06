@@ -203,3 +203,42 @@ def test_the_replayed_prune_returns_a_rename_alone():
     raw = _XML.replace('name="Gone"', 'name="wst"').encode("utf-8")
     out = ph._hdt_xml_shape_pruned(raw, {"skirt", "feet", "wst"})
     assert _refs(out) == ["feet", "skirt", "wst"]
+
+
+
+# --- the reported tabard ----------------------------------------------------
+# A cuirass XML declares its tabard collider `<per-triangle-shape name="robe">`;
+# the mesh calls the shape `Robe`. The collider set came back as {"robe"}, so
+# every "a per-triangle collider is never grafted" test (#smp-collider-graft)
+# missed `Robe`, and the breast/butt graft gave it NPC L/R Breast01-03 and
+# NPC L/R Butt: the tabard stretched down from chest height. The `Scarf`, which
+# the XML does not list, keeps its grafted breast weights, as reported.
+
+_TABARD_XML = (
+    '<system>\n'
+    '\t<per-triangle-shape name="robe">\n\t\t<tag>Body</tag>\n\t</per-triangle-shape>\n'
+    '</system>\n'
+)
+
+
+def test_the_reported_tabard_collider_is_a_collider_under_the_meshs_spelling(monkeypatch):
+    monkeypatch.setattr(ph, "_read_source_hdt_xml_text", lambda *a, **k: _TABARD_XML)
+    names = ph._hdt_collider_shape_names("cuirass_1.nif", nif=_Nif(["Robe", "Scarf"]))
+    assert "Robe" in names
+    assert "Scarf" not in names
+
+
+def test_without_the_rule_the_tabard_was_not_a_collider(monkeypatch):
+    monkeypatch.setattr(nc, "XML_SHAPE_NAME_CASE", False)
+    monkeypatch.setattr(ph, "_read_source_hdt_xml_text", lambda *a, **k: _TABARD_XML)
+    names = ph._hdt_collider_shape_names("cuirass_1.nif", nif=_Nif(["Robe", "Scarf"]))
+    assert "Robe" not in names, "control: the exact comparison missed it"
+
+
+def test_the_breast_butt_graft_asks_the_collider_set_with_the_written_nif():
+    """The graft passes the loaded NIF, so the set it gets carries the mesh's
+    spelling; asked without it, the shape names could not be read."""
+    import inspect
+    from src import nif_convert_weights as nw
+    src = inspect.getsource(nw._transfer_body_jiggle_to_fitted)
+    assert "collider_names = _nc()._hdt_collider_shape_names(\n        dst_path, nif=nf," in src
