@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+### Fixed — an SMP armour converted from its own mesh keeps its author's physics file
+
+The guard that stops a physics file being shipped with a mesh it was never written for (the
+falling tassets of #32) also fired on the SMP mod's heavy chitin cuirass converted from your
+BodySlide build: its file ties two chains to stabilisers that the author's own mesh does not have
+either. The build is, shape for shape, the mesh the SMP mod ships with that file -- the pairing
+CBBE wearers load -- yet a regenerated rig shipped in place of the author's. The guard now ships
+the author's file when the mod that ships it also ships a mesh with the source's shapes and vertex
+counts at the same path, and records `#authored-xml-own-mesh`. A mesh the file came along on
+without its author (the #32 cuirass) is still declined. Off with
+`CBBE2UBE_NO_AUTHORED_XML_OWN_MESH=1`.
+
+### Fixed — a piece whose BodySlide build only renames its shapes is converted from the build
+
+The same check compared shapes by name, and a BodySlide project often names a shape otherwise
+than the mod's loose mesh (`CloakF_1` and `CloakF_0`, `MiraakBoots` and `Shoes`), so 31 pieces on
+the reported modlist kept their loose mesh over a build that differs in nothing but names. A shape
+on one side only now matches a shape on the other side only when it has the same vertex count and
+an identical triangle list at that weight: one mesh under two names. Only for builds without
+physics, whose files name shapes. On the reported modlist: 32 more pieces from the build (mostly
+Sons of Skyrim armour). The log and `conversion_report.json`
+(`zeroed_output_source.moved_over_renamed_shapes`) name the renamed shapes. Off with
+`CBBE2UBE_NO_ZOS_RENAMED_SHAPES=1`.
+
+### Fixed — a piece is no longer converted from an older model of it when the game loads another
+
+When a mod higher in the load order ships an older model of a piece at the same path as the
+mod whose design your BodySlide build is (a retexture with the armour's old mesh above an SMP
+mod), the converter took that older model: its shapes differ from the build, and a difference
+in garment shapes was read as "the build is another design". UBE wearers then got another
+armour than CBBE wearers, and the SMP mod's physics file still drove chains the old mesh never
+had: one cuirass's tassets fell through the floor. Now, before a garment difference keeps the
+loose mesh, the other mods that ship the piece loose are asked the same question against the
+build; when one of them matches the build at both weights, the build is taken, and the log and
+`conversion_report.json` (`zeroed_output_source.moved_over_other_design`) name both mods. A
+build that matches no loose mesh still keeps the loose mesh, and a physics change is still
+refused first. On the reported modlist this moves 11 pieces (the cuirass, which now ships with
+its author's physics file; six first-person outfit meshes; two pairs of gloves; two first-person
+cuirasses) and nothing else. Off with `CBBE2UBE_NO_ZOS_OTHER_DESIGN=1`. (#32)
+
 ### Fixed — seams on armour with a glow or effect shader no longer tear when the body moves
 
 The two sides of a UV seam are one point of the garment, and the author skins them alike. The
