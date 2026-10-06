@@ -3051,6 +3051,134 @@ def _source_twin_pairs(verts) -> set:
             for a, b in cKDTree(pts).query_pairs(_nc()._SEAM_TWIN_TOL)}
 
 
+def _join_seam_twin_rows(src_rows, twins, rows) -> dict:
+    """The seam-twin join rule on plain rows: union the twin pairs the AUTHOR
+    skinned alike (L1 within `_COINCIDENT_SKIN_GATE`), and give each cluster
+    the mean of its members' `rows`, capped to four influences and
+    renormalised. Returns {vert: new row} for the vertices that change; never
+    edits `rows`, and leaves the last-carrier guard to the caller.
+    #fx-seam-twin-prewrite"""
+    from collections import defaultdict as _dd
+    nc = _nc()
+    src, ours = src_rows, rows
+    n = len(ours)
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    joined: set = set()
+    for a, b in sorted(twins):
+        if not (0 <= a < n and 0 <= b < n):
+            continue
+        ra, rb = src[a], src[b]
+        if sum(abs(ra.get(x, 0.0) - rb.get(x, 0.0))
+               for x in set(ra) | set(rb)) > nc._COINCIDENT_SKIN_GATE:
+            continue          # the author drew a skin boundary here -- keep it
+        joined.add(a)
+        joined.add(b)
+        pa, pb = find(a), find(b)
+        if pa != pb:
+            parent[pa] = pb
+    groups = _dd(list)
+    for g in sorted(joined):
+        groups[find(g)].append(g)
+
+    changed: dict = {}
+    for mem in groups.values():
+        if len(mem) < 2:
+            continue
+        ro = [ours[i] for i in mem]
+        if any(not r for r in ro):
+            continue          # an unweighted member: nothing to share
+        avg: dict = _dd(float)
+        for r in ro:
+            for b, w in r.items():
+                avg[b] += w / len(ro)
+        kept = {b: w for b, w in avg.items() if w > nc._WRITE_MIN}
+        if len(kept) > nc._SKIN_MAX_INFLUENCES:
+            # Total order, never weight alone: symmetric bones tie EXACTLY.
+            # #deterministic-set-iteration
+            kept = dict(sorted(kept.items(), key=lambda kv: (-kv[1], kv[0]))
+                        [:nc._SKIN_MAX_INFLUENCES])
+        tot = sum(kept.values())
+        if tot <= nc._WRITE_MIN:
+            continue
+        tgt = {b: w / tot for b, w in kept.items()}
+        for i in mem:
+            if any(abs(tgt.get(b, 0.0) - ours[i].get(b, 0.0)) > nc._WRITE_MIN
+                   for b in set(tgt) | set(ours[i])):
+                changed[i] = dict(tgt)
+    return changed
+
+
+def _unify_seam_twins_in_skin(src_shape, weights_map, src_nif=None):
+    """Join the seam twins of one shape in a skin that has not been written yet.
+    Returns `(n, weights)`: the number of vertices whose row changed and a NEW
+    {bone: [(vert, weight), ...]} map (the caller's map is not touched; it can
+    be shared). `n == 0` hands back `weights_map` itself.
+
+    `_match_coincident_cross_shape_skin` joins seam twins after the last weight
+    pass, but it reloads and re-saves the written NIF, and a NIF with an effect
+    shader cannot be re-saved (pynifly's read-back of the transplanted effect
+    controller corrupts it -> CTD), so that pass returns early on one -- as does
+    every other re-saving pass. The body reskin pairs each vertex to the body by
+    its own normal, so on those NIFs every reskinned shape shipped with its UV
+    seams skinned apart: 1,917 twins on one dwarven cuirass's plate, 335 on one
+    daedric torso, while the glow shapes themselves keep the source skin and
+    were never split. Nothing re-weights such a NIF after its one write, so
+    joining the twins here is the last word.
+
+    The same rule as the post-write pass: twins are vertices at one place in the
+    SOURCE shape; a pair is joined only where the AUTHOR skinned the two alike
+    (L1 within `_COINCIDENT_SKIN_GATE`); the shared row is the members' mean,
+    capped to four influences and renormalised; a bone never loses its last
+    carrier (`_restore_emptied_bones`). #fx-seam-twin-prewrite"""
+    nc = _nc()
+    if not (nc.SEAM_TWIN_SKIN and nc.FX_SEAM_TWIN_PREWRITE):
+        return 0, weights_map
+    if not weights_map or (src_shape.name or "") in nc.RESKIN_SKIP_NAMES:
+        return 0, weights_map
+    nif = src_nif if src_nif is not None else getattr(src_shape, "file", None)
+    if nif is None or not nc._nif_has_fx_shape(nif):
+        return 0, weights_map   # the post-write pass reaches every other NIF
+    try:
+        n = len(src_shape.verts)
+        twins = _source_twin_pairs(src_shape.verts)
+    except Exception:
+        return 0, weights_map
+    if not twins:
+        return 0, weights_map
+
+    def _rows(wmap):
+        out = [dict() for _ in range(n)]
+        for b, prs in (wmap or {}).items():
+            for vi, w in (prs.tolist() if hasattr(prs, "tolist") else prs):
+                iv = int(vi)
+                if 0 <= iv < n and float(w) > 0.0:
+                    out[iv][b] = out[iv].get(b, 0.0) + float(w)
+        return out
+
+    src = _rows(src_shape.bone_weights)
+    ours = _rows(weights_map)
+
+    changed = _join_seam_twin_rows(src, twins, ours)
+    if changed:
+        _restore_emptied_bones(ours, changed)   # drops a bone's last carrier
+    if not changed:
+        return 0, weights_map
+    for i, row in changed.items():
+        ours[i] = row
+    out: dict = {b: [] for b in weights_map}
+    for i, r in enumerate(ours):
+        for b, w in r.items():
+            out[b].append((i, float(w)))
+    return len(changed), out
+
+
 def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     """Give cross-shape coincident verts ONE weight row. Returns verts unified.
 
@@ -3788,6 +3916,8 @@ def _cap_weight_roughness_to_author(dst_path, src_nif_path=None) -> int:
         _note_pass_failure("_cap_weight_roughness_to_author/open", _oe)
         return 0
     src_by_name = {s.name: s for s in snf.shapes}
+    _fx_twin_tie = (_nc().SEAM_TWIN_SKIN and _nc().FX_SEAM_TWIN_PREWRITE
+                    and _nc()._nif_has_fx_shape(nf))   # #fx-seam-twin-prewrite
 
     def _rows(shape):
         out = [dict() for _ in range(len(shape.verts))]
@@ -3861,6 +3991,18 @@ def _cap_weight_roughness_to_author(dst_path, src_nif_path=None) -> int:
                 changed[i] = new
         if not changed:
             continue
+        # The cap scores each vertex against its own topological neighbours, and
+        # the two sides of a UV seam have different ones, so it pulls twins the
+        # author skinned alike apart again (on two effect pieces: 3,182 twins re-
+        # split after the pre-write join, 0 with the cap off). Elsewhere the
+        # coincident match runs after this and re-joins them; on an effect NIF
+        # it does not run, so the twins are tied here. #fx-seam-twin-prewrite
+        if _fx_twin_tie and (s.name or "") not in _nc().RESKIN_SKIP_NAMES:
+            _post = list(ours)
+            for _i, _r in changed.items():
+                _post[_i] = _r
+            changed.update(_join_seam_twin_rows(
+                auth, _source_twin_pairs(a.verts), _post))
         # `top[:_ROUGHNESS_MAX_INFLUENCES]` above is a CAP, and a cap can take a
         # bone's last carrier. MEASURED, not anticipated: the 2026-08-25 trace
         # caught this pass emptying `L Breast03` off a `Chain` shape that held

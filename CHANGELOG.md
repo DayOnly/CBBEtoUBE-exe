@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed — seams on armour with a glow or effect shader no longer tear when the body moves
+
+The two sides of a UV seam are one point of the garment, and the author skins them alike. The
+body reskin pairs each vertex to the body on its own, so it splits them, and a later pass joins
+them again (#seam-twin-skin). That pass reloads and re-saves the written mesh, though, and a
+mesh with an effect shader (a glow, gems, wisps) is never re-saved by it, so every reskinned
+shape on such a mesh shipped with its seams skinned apart: 1,917 seam pairs on one dwarven
+cuirass's plate, 335 on one daedric torso. The seam pairs are now joined in the skin before
+the mesh's one write, under the same rule (only where the author skinned the two sides alike;
+the shared row is the mean of the sides, at most four bones; no bone loses its last vertex). The
+weight-roughness cap, which still runs on these meshes and scores each side of a seam against
+different neighbours, keeps the pairs tied there too. On those two pieces: 4,730 split seam
+pairs before, 0 after; no vertex moves, and the glow shapes are untouched (they keep the
+author's skin as before). Off with `CBBE2UBE_NO_FX_SEAM_TWIN_PREWRITE=1`. (#47)
+
 ### Fixed — a piece converted from its BodySlide build no longer shows skin at the side of the bust when the arms move
 
 A piece converted from its zeroed BodySlide build keeps the author's skin weights, and on some
