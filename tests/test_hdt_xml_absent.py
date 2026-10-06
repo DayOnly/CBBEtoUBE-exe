@@ -101,3 +101,12 @@ def test_a_file_that_exists_but_did_not_resolve_is_still_a_failure(monkeypatch):
     assert got is None
     assert any("hdt_xml_unresolved" in f for f in fails)
     assert not any("#hdt-xml-absent" in e for e in effects)
+
+
+def test_a_file_only_the_meshs_own_mod_ships_is_not_absent(monkeypatch):
+    """Found by the fallback lookup (the mesh's own mod) though not by the load
+    order: it exists, so it is not absent."""
+    _world(monkeypatch)
+    _cs.patch(monkeypatch, "_resolve_data_rel_in_vfs",
+              lambda rel, src: Path("D:/mods/Own/meshes/dress.xml"))
+    assert ph._hdt_xml_pointer_absent(Path("boots_1.nif"), nif=_Nif()) is None

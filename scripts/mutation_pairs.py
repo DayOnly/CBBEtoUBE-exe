@@ -17626,7 +17626,7 @@ PAIRS = (
               '        if False:\n            return None\n', 1),
          ),
          tests=('tests/test_hdt_xml_absent.py',),
-         expect=('test_a_pointer_that_resolves_is_not_absent', ),
+         expect=('test_a_file_only_the_meshs_own_mod_ships_is_not_absent', ),
     ),
     Pair('HXA-c', 'with no load order a pointer still counts as absent',
          edits=(
