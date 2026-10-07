@@ -6623,6 +6623,27 @@ def _stale_source_probes(ctx, state):
     return status, classify
 
 
+def _stale_plugin_owner(ctx, stem) -> "str | None":
+    """The enabled mod whose copy of plugin `stem` (.esp/.esm/.esl) wins the load
+    order: the first, highest priority first. None when no enabled mod ships it
+    or the order is unknown. #stale-patch-attribution"""
+    mr = ctx.get("mods_root")
+    order = ctx.get("enabled_ordered") or []
+    if not mr or not stem:
+        return None
+    excl = {n.lower() for n in (ctx.get("excluded") or ())}
+    for m in order:
+        if m.lower() in excl:
+            continue
+        for ext in (".esp", ".esm", ".esl"):
+            try:
+                if (Path(mr) / m / f"{stem}{ext}").is_file():
+                    return m
+            except OSError:
+                continue
+    return None
+
+
 def _stale_patch_sets(patches_dir, written) -> "dict[str, list | None]":
     """Per-source patches this run did not write: {ESP name: [its sidecars...,
     the ESP last]}, None for a set with a linked file (never moved). Coverage
@@ -6757,12 +6778,7 @@ def _stale_output_sweep_run(args, output, patches_dir, results, claimed_dst_path
             pass
     stale = set(inv.bases) - claimed - superseded
     recorded = dict((manifest or {}).get("bases", {}))
-    status, classify = _stale_source_probes(ctx, state)
-    dec = stale_sweep.decide_bases(stale, recorded, ran, status, classify)
-    for d in dec:
-        if d.action == "move" and d.key in inv.unsafe:
-            d.action, d.reason = "hold", "a file of it lies outside the output folder"
-    _STALE_ADOPTED = {d.key: d.source for d in dec if d.action == "adopt"}
+    rec_patches = dict((manifest or {}).get("patches", {}))
     sets = _stale_patch_sets(patches_dir, written)
     root_write = Path(patches_dir) == output
     named: dict = {}
@@ -6771,13 +6787,28 @@ def _stale_output_sweep_run(args, output, patches_dir, results, claimed_dst_path
         if n not in named:
             named[n] = stale_sweep.patch_bases(Path(patches_dir) / n)
         return named[n]
+    # A conversion from before the manifest is recorded by no run; the per-source
+    # patch that run wrote names its source. #stale-patch-attribution
+    attributed: dict = {}
+    if stale_sweep.attribution_on():
+        attributed, a_patches = stale_sweep.attribute_unrecorded(
+            stale, set(sets), recorded, rec_patches,
+            lambda n: (_new_source_patch_stem(n) or _legacy_source_patch_stem(n)),
+            lambda stem: _stale_plugin_owner(ctx, stem), _names_of)
+        recorded = {**attributed, **recorded}
+        rec_patches = {**a_patches, **rec_patches}
+    status, classify = _stale_source_probes(ctx, state)
+    dec = stale_sweep.decide_bases(stale, recorded, ran, status, classify)
+    for d in dec:
+        if d.action == "move" and d.key in inv.unsafe:
+            d.action, d.reason = "hold", "a file of it lies outside the output folder"
+    _STALE_ADOPTED = {d.key: d.source for d in dec if d.action == "adopt"}
     # A per-source patch left in place can be merged by a later run's fallback:
     # hold every base it could name, then decide the patches again (one that
     # moved because all its source's bases moved may have to stay now).
     while True:
         pdec = stale_sweep.decide_patches(
-            set(sets), dict((manifest or {}).get("patches", {})), ran, status, dec,
-            claims_by_source, recorded)
+            set(sets), rec_patches, ran, status, dec, claims_by_source, recorded)
         for d in pdec:
             if d.action == "move" and (root_write or sets.get(d.key) is None):
                 d.action, d.reason = "hold", ("the per-source patches sit at the mod root"
@@ -6803,6 +6834,9 @@ def _stale_output_sweep_run(args, output, patches_dir, results, claimed_dst_path
 
     print(f"\n--- stale-output sweep: {len(stale)} old conversion(s) in "
           f"meshes\\!UBE no source claimed this run ---")
+    if attributed:
+        print(f"  {len(attributed)} of them from before the manifest: their source "
+              "is the plugin the per-source patch naming them was made from")
     if gaps and (moves or pmoves):
         warn(f"stale-output sweep: {len(moves)} old conversion(s) NOT moved -- "
              f"the plan is incomplete: {'; '.join(gaps)}",
@@ -12842,6 +12876,9 @@ def _cmd_auto(args):
         stale_sweep={"all_mods": not only, "warn_base": _sos_warn_base,
                      "started": _sos_started, "mods_root": str(mr),
                      "enabled": None if enabled is None else sorted(enabled),
+                     # Highest priority first: whose copy of a plugin loads.
+                     # #stale-patch-attribution
+                     "enabled_ordered": list(prio or []),
                      "excluded": sorted(exclude)},
         carried_failures=_carried,   # #one-tally
         # `auto` checks the UBE nude skin's morph files; the convert step runs

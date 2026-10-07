@@ -144,6 +144,20 @@ refused first. On the reported modlist this moves 11 pieces (the cuirass, which 
 its author's physics file; six first-person outfit meshes; two pairs of gloves; two first-person
 cuirasses) and nothing else. Off with `CBBE2UBE_NO_ZOS_OTHER_DESIGN=1`. (#32)
 
+### Fixed — old conversions from before the conversion record are cleared out when their armour is no longer converted
+
+The output folder's old conversions are moved to `_superseded` only when a run has recorded which
+mod made them, and that record started in 1.5. Conversions an earlier build made of a mod the
+converter no longer selects were recorded by no run and stayed forever ("not recorded as converted
+by any run"): on the reported modlist, two clothing mods whose armour a later patch made
+non-playable kept 13 pieces, 22 meshes from 1.4.1 in the output, and the coverage step went on
+pointing armatures at them. Such a piece now takes its source from the per-source patch that
+earlier run wrote beside it (its name is the source plugin; the mod whose copy of that plugin wins
+the load order is the source). It is then decided like any recorded piece: it moves only when
+that mod is gone or the converter's own rules give a reason (here: non-playable), and the patch
+goes with it. A piece no such patch names stays where it is. Off with
+`CBBE2UBE_NO_STALE_PATCH_ATTRIBUTION=1`.
+
 ### Fixed — seams on armour with a glow or effect shader no longer tear when the body moves
 
 The two sides of a UV seam are one point of the garment, and the author skins them alike. The
