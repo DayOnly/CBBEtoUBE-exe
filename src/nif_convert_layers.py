@@ -771,8 +771,28 @@ def _weld_cross_shape_seams(shape_jobs, tol: float = _SEAM_WELD_TOL,
               and (j["src"].name or "") not in _excl
               and not _nc()._shape_has_effect_shader(j["src"])
               and _nc()._shape_has_identity_g2s(j["src"])]
-    if len(plates) < 2:
+    # #seam-weld-physics-anchor. The physics cloth itself is never moved -- but
+    # leaving it out of the weld altogether left the plate on the other side of
+    # a shared seam with no partner, so the seam stayed open at whatever the two
+    # sides' separate fits made of it. Reported in game on a daedric cuirass:
+    # all 42 seam points between its plate and its SMP cloth torso open, by up
+    # to 0.58u, from the waist to the hips. A VISIBLE physics shape (textured,
+    # not hidden: a hidden collider is a proxy, and pulling a plate onto it
+    # would bend the plate toward something nobody sees) joins as an ANCHOR: it
+    # is in the clusters, its vertices and weights stay as they are, and the
+    # plate members of its cluster land ON it.
+    anchors = []
+    if _nc().SEAM_WELD_PHYSICS_ANCHOR:
+        anchors = [j for j in shape_jobs
+                   if (j["src"].name or "") in _excl
+                   and (j["src"].textures or {})
+                   and not _nc()._shape_is_hidden(j["src"])
+                   and not _nc()._shape_has_effect_shader(j["src"])
+                   and _nc()._shape_has_identity_g2s(j["src"])]
+    if len(plates) < (1 if anchors else 2):
         return 0
+    n_plates = len(plates)
+    plates = plates + anchors       # anchors last: index >= n_plates
     src_arrs, fin_arrs, owner = [], [], []  # owner[g] = (plate_idx, local_idx)
     for pi, pj in enumerate(plates):
         try:
@@ -785,7 +805,7 @@ def _weld_cross_shape_seams(shape_jobs, tol: float = _SEAM_WELD_TOL,
         src_arrs.append(psrc); fin_arrs.append(pfin)
         owner.extend((pi, li) for li in range(len(psrc)))
     valid = [a for a in src_arrs if a is not None]
-    if len(valid) < 2:
+    if len(valid) < 2 or not any(a is not None for a in src_arrs[:n_plates]):
         return 0
     all_src = np.concatenate([a for a in src_arrs if a is not None])
     tree = cKDTree(all_src)
@@ -823,12 +843,20 @@ def _weld_cross_shape_seams(shape_jobs, tol: float = _SEAM_WELD_TOL,
         cluster = [owner[m] for m in members]
         if len({pi for pi, _ in cluster}) < 2:
             continue  # single-shape cluster -> not a cross-shape seam
-        centroid = np.mean([fin_arrs[pi][li] for pi, li in cluster], axis=0)
-        for pi, li in cluster:
-            fin_arrs[pi][li] = centroid
+        fixed = [(pi, li) for pi, li in cluster if pi >= n_plates]
+        movable = [(pi, li) for pi, li in cluster if pi < n_plates]
+        if not movable:
+            continue  # anchors only: nothing of ours to move
+        # The anchor's own position when the cluster has one (#seam-weld-
+        # physics-anchor), else the centroid as before.
+        target = np.mean([fin_arrs[pi][li] for pi, li in (fixed or cluster)],
+                         axis=0)
+        for pi, li in movable:
+            fin_arrs[pi][li] = target
             changed.add(pi)
             n_weld += 1
-        seam_clusters.append(cluster)
+        if len({pi for pi, _ in movable}) >= 2:
+            seam_clusters.append(movable)   # skin-match plates only
     for pi in changed:
         plates[pi]["verts"] = fin_arrs[pi]
         plates[pi]["verts_modified"] = True

@@ -884,6 +884,11 @@ WINDING_CONSISTENCY_REPAIR = not _flag("CBBE2UBE_NO_WINDING_REPAIR", False)
 # clearance pass had deliberately pushed out being averaged back in -- verify
 # clipping, not just the seam count. CBBE2UBE_NO_SEAM_WELD_SELF=1 disables.
 SEAM_WELD_SELF = not _flag("CBBE2UBE_NO_SEAM_WELD_SELF", False)
+# #seam-weld-physics-anchor -- the cross-shape seam weld leaves authored physics
+# cloth where it is (moving its rest desyncs the simulation), and the plate on
+# the other side of the seam now welds ONTO it instead of to nothing. Off with
+# CBBE2UBE_NO_SEAM_WELD_PHYSICS_ANCHOR=1.
+SEAM_WELD_PHYSICS_ANCHOR = not _flag("CBBE2UBE_NO_SEAM_WELD_PHYSICS_ANCHOR", False)
 # #bust-morph-residual. The bust requirement is met against the BIND body, but
 # the character in game is MORPHED, and a nipple can travel 5.35u outward at
 # runtime. The armour follows -- `generate_armor_tri` gives a hugging vert the
