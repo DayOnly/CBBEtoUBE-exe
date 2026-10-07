@@ -1275,3 +1275,124 @@ def test_an_error_while_deciding_moves_nothing_and_records_no_adoption(w, monkey
     assert _sweep(w, results) == 1
     monkeypatch.setattr(ss, "decide_patches", real)
     assert w.has(OLD) and ss.pending() is None and ac._STALE_ADOPTED == {}
+
+
+# ============================================================ #stale-patch-attribution
+
+def _named_patch(w, name, *bases):
+    """A per-source patch set whose armatures name `bases` below !UBE."""
+    _patch_set(w, name)
+    recs = [_rec(b"ARMA", 0x01000800 + i, encode_subrecord(
+        b"MOD3", encode_zstring("!UBE\\" + b.replace("/", "\\") + "_1.nif")))
+        for i, b in enumerate(bases)]
+    _plugin(w.patches / name, ARMA=recs)
+
+
+def _ships(w, mod, plugin):
+    (w.mod(mod) / plugin).write_bytes(b"x")
+
+
+def _attr_args(w, results, order):
+    a = _args(w, results)
+    a.stale_sweep["enabled_ordered"] = list(order)
+    return a
+
+
+def _nonplayable(monkeypatch, seen=None):
+    def _plan(mod_dir, **k):
+        if seen is not None:
+            seen.append(Path(mod_dir).name)
+        k["drop_reasons"][OLD] = "non-playable"
+        return set()
+    monkeypatch.setattr(ac, "_player_armor_mesh_bases", _plan)
+
+
+def test_a_base_from_before_the_manifest_takes_its_source_from_the_patch_naming_it(w, monkeypatch):
+    """The reported case: a 1.4.1 conversion no run has recorded, its source's
+    armour since made non-playable by a later plugin. The per-source patch that
+    run wrote names the base, and its plugin's winning copy is the source."""
+    w.record({})
+    _named_patch(w, "Old (CBBEtoUBE src).esp", OLD)
+    _ships(w, "Old Mod", "Old.esp")
+    seen: list = []
+    _nonplayable(monkeypatch, seen)
+    results = [_vanilla(w)]
+    _sweep(w, results, args=_attr_args(w, results, ["Old Mod"]))
+    assert not w.has(OLD), "moved on the planner's reason"
+    assert not (w.patches / "Old (CBBEtoUBE src).esp").exists(), "its patch moves with it"
+    assert seen == ["Old Mod"]
+    row = next(d for d in w.report()["bases"] if d["key"] == OLD)
+    assert row["source"] == "Old Mod" and row["action"] == "move"
+
+
+def test_an_attributed_base_without_a_reason_holds(w, monkeypatch):
+    w.record({})
+    _named_patch(w, "Old (CBBEtoUBE src).esp", OLD)
+    _ships(w, "Old Mod", "Old.esp")
+    monkeypatch.setattr(ac, "_player_armor_mesh_bases", lambda d, **k: {OLD})
+    results = [_vanilla(w)]
+    _sweep(w, results, args=_attr_args(w, results, ["Old Mod"]))
+    assert w.has(OLD) and (w.patches / "Old (CBBEtoUBE src).esp").is_file()
+
+
+def test_a_patch_whose_plugin_no_enabled_mod_ships_attributes_nothing(w, monkeypatch):
+    w.record({})
+    _named_patch(w, "Old (CBBEtoUBE src).esp", OLD)
+    _nonplayable(monkeypatch)
+    results = [_vanilla(w)]
+    _sweep(w, results, args=_attr_args(w, results, ["Other Mod"]))
+    assert w.has(OLD)
+    row = next(d for d in w.report()["bases"] if d["key"] == OLD)
+    assert row["source"] is None and row["action"] == "hold"
+
+
+def test_the_source_is_the_mod_whose_copy_of_the_plugin_wins(w, monkeypatch):
+    """An update mod that ships its own copy of the plugin, above the base mod."""
+    w.record({})
+    _named_patch(w, "Old (CBBEtoUBE src).esp", OLD)
+    _ships(w, "Old Mod", "Old.esp")
+    _ships(w, "Old Mod - Update", "Old.esp")
+    seen: list = []
+    _nonplayable(monkeypatch, seen)
+    results = [_vanilla(w)]
+    _sweep(w, results, args=_attr_args(w, results, ["Old Mod - Update", "Old Mod"]))
+    assert seen == ["Old Mod - Update"]
+    assert next(d for d in w.report()["bases"] if d["key"] == OLD)["source"] == "Old Mod - Update"
+
+
+def test_a_base_two_patches_give_different_sources_stays_unrecorded():
+    got, _p = ss.attribute_unrecorded(
+        {OLD}, {"A (CBBEtoUBE src).esp", "B (CBBEtoUBE src).esp"}, {}, {},
+        lambda n: n.split(" ")[0], lambda stem: f"{stem} Mod", lambda n: {OLD})
+    assert got == {}
+
+
+def test_a_recorded_patch_keeps_its_record():
+    got, gp = ss.attribute_unrecorded(
+        {OLD}, {"A (CBBEtoUBE src).esp"}, {}, {"A (CBBEtoUBE src).esp": "Rec Mod"},
+        lambda n: "A", lambda stem: "Other Mod", lambda n: {OLD})
+    assert got == {} and gp == {}
+
+
+def test_a_recorded_base_keeps_its_record_under_an_unrecorded_patch():
+    got, gp = ss.attribute_unrecorded(
+        {OLD}, {"A (CBBEtoUBE src).esp"}, {OLD: "Rec Mod"}, {},
+        lambda n: "A", lambda stem: "Other Mod", lambda n: {OLD})
+    assert got == {} and gp == {"A (CBBEtoUBE src).esp": "Other Mod"}
+
+
+def test_the_attribution_switch_holds_every_unrecorded_base(w, monkeypatch):
+    monkeypatch.setenv("CBBE2UBE_NO_STALE_PATCH_ATTRIBUTION", "1")
+    w.record({})
+    _named_patch(w, "Old (CBBEtoUBE src).esp", OLD)
+    _ships(w, "Old Mod", "Old.esp")
+    _nonplayable(monkeypatch)
+    results = [_vanilla(w)]
+    _sweep(w, results, args=_attr_args(w, results, ["Old Mod"]))
+    assert w.has(OLD)
+
+
+def test_the_run_hands_the_sweep_the_load_order_by_priority():
+    import inspect
+    src = inspect.getsource(ac._cmd_auto)
+    assert '"enabled_ordered": list(prio or [])' in src
