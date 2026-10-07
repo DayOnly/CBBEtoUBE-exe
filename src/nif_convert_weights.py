@@ -3758,6 +3758,18 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
                 e0["rows"][i] = dict(tg)
                 changed[k0].add(i)
 
+    # Each seam twin's twins, per shape, for the last-carrier step below.
+    # #seam-twin-carrier-row
+    twin_peers: dict = _dd(dict)
+    if twin_joined:
+        _tg = _dd(list)
+        for m in twin_joined:
+            _tg[tfind(m)].append(m)
+        for _tm in _tg.values():
+            _cl = [owner[m] for m in _tm]
+            for _kk, _ii in _cl:
+                twin_peers[_kk][_ii] = [j for kk2, j in _cl if kk2 == _kk and j != _ii]
+
     n_weak = 0
     for mem in groups.values():
         if len(mem) < 2:
@@ -3838,6 +3850,25 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
         pre = [old.get(i, rr[i]) for i in range(n)]
         chg = {int(i): rr[int(i)] for i in ch}
         if _restore_emptied_bones(pre, chg):
+            # #seam-twin-carrier-row. A vertex handed back keeps its pre-pass
+            # row; its seam twins were joined to a DIFFERENT row, so the pair the
+            # join closed opens again (30 pairs on one cuirass, every one of them
+            # a hand-back). Its twins take the handed-back row instead: the bone
+            # keeps its carrier, the pair stays one point. The guard is asked
+            # again, so a twin whose change would now empty another bone is
+            # handed back in its turn -- safety first, the seam second.
+            if _nc().SEAM_TWIN_CARRIER_ROW and twin_peers.get(k):
+                for _round in range(3):
+                    _moved = False
+                    for i in sorted(set(ch) - set(chg)):
+                        for j in twin_peers[k].get(int(i), ()):
+                            if j in chg and chg[j] != pre[int(i)]:
+                                chg[j] = dict(pre[int(i)])
+                                _moved = True
+                    if not _moved or not _restore_emptied_bones(pre, chg):
+                        break
+                for j, r in chg.items():
+                    rr[j] = r
             for i in sorted(set(ch) - set(chg)):
                 rr[int(i)] = old[int(i)]        # back to its pre-pass row
                 ch.discard(i)

@@ -325,3 +325,46 @@ def test_seam_twins_in_a_cluster_whose_shared_bones_hold_too_little_still_share_
     r = dst[0]._rows
     assert r[0] == r[1]
     assert dst[1]._rows[0] == {BELLY: 1.0}
+
+
+# --------------------------------------------------------------------------
+# #seam-twin-carrier-row: the last-carrier guard and the seam pair
+# --------------------------------------------------------------------------
+
+def _carrier_case():
+    """The joined row caps to four bones and drops `NPC L Thigh`, which only side
+    b carries: the guard hands b its old row back. Belly lives on elsewhere."""
+    a = {PELV: 0.4, SPINE: 0.3, SPINE1: 0.2, BELLY: 0.1}
+    b = {PELV: 0.4, SPINE: 0.3, SPINE1: 0.2, LTHIGH: 0.1}
+    dst, src = _torso([a, b], [SEAM, SEAM], [SEAM, SEAM], [_alike(), _alike()])
+    dst[0]._rows[2] = {PELV: 0.5, BELLY: 0.5}       # Belly has another carrier
+    return dst, src, b
+
+
+def test_a_handed_back_twin_gives_its_row_to_its_twin():
+    dst, src, b = _carrier_case()
+    _run(dst, src)
+    r = dst[0]._rows
+    assert r[0] == r[1] == b, "both sides on the carrier's own row"
+    assert any(w > 1e-4 for _i, w in dst[0].bone_weights[LTHIGH])
+
+
+def test_without_the_carrier_row_the_handed_back_pair_stays_split(monkeypatch):
+    monkeypatch.setattr(nc, "SEAM_TWIN_CARRIER_ROW", False)
+    dst, src, _b = _carrier_case()
+    _run(dst, src)
+    assert dst[0]._rows[0] != dst[0]._rows[1]
+
+
+def test_a_twin_that_would_empty_another_bone_is_handed_back_too():
+    """Belly's ONLY carrier is side a: taking b's row would empty it, so the
+    guard hands a back as well. Safety before the seam: the pair stays split."""
+    dst, src, _b = _carrier_case()
+    dst[0]._rows[2] = {PELV: 1.0}
+    _run(dst, src)
+    assert any(w > 1e-4 for _i, w in dst[0].bone_weights[BELLY])
+    assert any(w > 1e-4 for _i, w in dst[0].bone_weights[LTHIGH])
+
+
+def test_the_carrier_row_switch_is_on_by_default():
+    assert nc.SEAM_TWIN_CARRIER_ROW is True

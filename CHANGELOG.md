@@ -13,6 +13,13 @@ on the spine and the other not. The seam pairs of a skipped cluster are now join
 themselves; the cluster's other members are left as before. Off with
 `CBBE2UBE_NO_SEAM_TWIN_IN_WEAK_CLUSTER=1`.
 
+A seam pair also came apart again where the pass's guard against emptying a bone handed one side
+its old row back (the side that was a bone's last carrier): the other side kept the joined row.
+Its twin now takes the handed-back row too, so the bone keeps its carrier and the seam stays
+closed; where that would empty a different bone, the guard keeps both sides as they were. On one
+cuirass 30 such pairs, 15 now closed and 15 kept apart for the bone. Off with
+`CBBE2UBE_NO_SEAM_TWIN_CARRIER_ROW=1`.
+
 ### Fixed — seams on armour with a glow or effect shader no longer tear when the body moves
 
 The two sides of a UV seam are one point of the garment, and the author skins them alike. The

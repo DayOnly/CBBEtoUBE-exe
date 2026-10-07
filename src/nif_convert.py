@@ -9094,6 +9094,11 @@ SEAM_TWIN_SKIN = (
 # CBBE2UBE_NO_SEAM_TWIN_IN_WEAK_CLUSTER=1.
 SEAM_TWIN_IN_WEAK_CLUSTER = (
     not _flag("CBBE2UBE_NO_SEAM_TWIN_IN_WEAK_CLUSTER", False))
+# #seam-twin-carrier-row -- when the last-carrier guard hands a seam twin its old
+# row back, its twins take that row too, so the bone keeps its carrier and the
+# pair stays one point. Off with CBBE2UBE_NO_SEAM_TWIN_CARRIER_ROW=1.
+SEAM_TWIN_CARRIER_ROW = (
+    not _flag("CBBE2UBE_NO_SEAM_TWIN_CARRIER_ROW", False))
 # #fx-seam-twin-prewrite -- the pass above reloads and re-saves the written NIF,
 # which a NIF with an effect shader cannot survive (the effect controller is
 # corrupted -> CTD), so it skips one; every reskinned shape of such a NIF shipped
