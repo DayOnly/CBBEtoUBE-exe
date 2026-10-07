@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed — a robe whose skirt is already simulated no longer gets a skirt collider that fights it
+
+The generated skirt collider (`SkirtCol`) gives cloth the physics file does not simulate a
+collision shape, built from that cloth and riding its bones. Since the collider's source moved to
+the cloth below the hip, it could pick a skirt the physics file DOES simulate as cloth: on the
+reported robe the skirt collides with everything except its own tag, the collider copied the
+robe's tag, and the skirt collided with a copy of itself -- the physics broke in game. The
+collider is now never built from a shape the physics file already declares. On the reported
+modlist this removes it from two pieces (the robe, and one dress whose tags happened to keep it
+harmless); the ten others that carry one keep it. Off with
+`CBBE2UBE_NO_SKIRT_PROXY_DECLARED_SOURCE=1`.
+
 ### Fixed — the generated skirt collider is built from the skirt, not from the shoulder pieces
 
 When a piece's own physics colliders do not cover its simulated skirt, the tool adds a hidden

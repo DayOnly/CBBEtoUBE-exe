@@ -1105,6 +1105,16 @@ class _ColliderDeclined(Exception):
 _SKIRT_PROXY_SOURCE_MIN = 40
 
 
+def _skirt_proxy_excluded(xml_text, triangle_decls) -> "set[str]":
+    """The shapes the skirt proxy may not be built from: every shape the XML
+    declares -- per-triangle and, under #skirt-proxy-declared-source, per-vertex
+    cloth too (see the note at the call)."""
+    out = set(triangle_decls)
+    if _nc().SKIRT_PROXY_DECLARED_SOURCE:
+        out |= set(re.findall(r'<per-vertex-shape\s+name="([^"]+)"', xml_text or ""))
+    return out
+
+
 def _skirt_proxy_source(shapes, decls, chain_mass, body_z=None):
     """(shape, simulated vert count) the skirt proxy is built from, or (None, -1).
 
@@ -1249,7 +1259,16 @@ def _add_skirt_collider_proxy(dst_path) -> int:
         v = np.asarray(sh_.verts, dtype=np.float64)
         return (v + _nc().shape_body_offset(sh_, body_verts=_base_v))[:, 2]
 
-    src_sh, best = _skirt_proxy_source(nf.shapes, set(decls), _chain_mass,
+    # #skirt-proxy-declared-source: a shape the XML already declares -- per-
+    # vertex cloth as well as per-triangle -- is in the collision already, and
+    # a proxy built from it rides its own bones under a cloned block's tags.
+    # Reported in game on a robe (#52 had just made the pick land on its skirt):
+    # the per-vertex skirt, tag `skirt`, collides with everything but `skirt`;
+    # the proxy built from it cloned the robe's `robes` block, so the skirt
+    # collided with a copy of itself and the physics broke. The proxy exists
+    # for cloth the physics does NOT represent; that cloth is never declared.
+    src_sh, best = _skirt_proxy_source(nf.shapes, _skirt_proxy_excluded(txt, decls),
+                                       _chain_mass,
                                        body_z=_body_z)
     if src_sh is None or best < _SKIRT_PROXY_SOURCE_MIN:
         return 0

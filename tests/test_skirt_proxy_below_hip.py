@@ -103,7 +103,7 @@ def test_the_switch_is_on_by_default():
 
 def test_the_proxy_builder_takes_its_source_from_this_rule():
     src = inspect.getsource(ph._add_skirt_collider_proxy)
-    assert "_skirt_proxy_source(nf.shapes, set(decls), _chain_mass," in src
+    assert "_skirt_proxy_source(nf.shapes, _skirt_proxy_excluded(txt, decls)," in src
     assert "body_z=_body_z" in src
     assert "shape_body_offset(sh_, body_verts=_base_v)" in src
 
@@ -131,3 +131,44 @@ def test_a_hidden_stabiliser_is_never_the_source():
     stab = _Shape("Stabilizer", 396, 50)
     stab.flags = 0x1
     assert _pick([stab, _Shape("Skirt", 306, 50)]) == ("Skirt", 306)
+
+
+# --- #skirt-proxy-declared-source: never from cloth the physics already has -------
+
+_ROBE_XML = ('<system>'
+             '<per-triangle-shape name="MiraakRobes"><tag>robes</tag></per-triangle-shape>'
+             '<per-vertex-shape name="MiraakSkirt"><tag>skirt</tag>'
+             '<no-collide-with-tag>skirt</no-collide-with-tag></per-vertex-shape>'
+             '</system>')
+
+
+def test_a_per_vertex_cloth_the_xml_declares_is_not_a_source():
+    """The reported robe: the simulated skirt is declared per-vertex; a proxy
+    built from it rode its own bones under the robe's tags and the skirt
+    collided with itself."""
+    excl = ph._skirt_proxy_excluded(_ROBE_XML, ["MiraakRobes"])
+    assert excl == {"MiraakRobes", "MiraakSkirt"}
+    shapes = [_Shape("MiraakPauldrons", 474, 110), _Shape("MiraakSkirt", 306, 50)]
+    assert _pick(shapes, decls=excl) == ("MiraakPauldrons", 474)
+
+
+def test_an_undeclared_cloth_is_still_a_source():
+    """The case the proxy exists for: a robe whose visible cloth is in no
+    collision block."""
+    excl = ph._skirt_proxy_excluded('<system><per-triangle-shape name="col">'
+                                    '</per-triangle-shape></system>', ["col"])
+    assert _pick([_Shape("robes", 900, 50)], decls=excl) == ("robes", 900)
+
+
+def test_the_declared_source_switch_counts_triangle_shapes_only(monkeypatch):
+    monkeypatch.setattr(nc, "SKIRT_PROXY_DECLARED_SOURCE", False)
+    assert ph._skirt_proxy_excluded(_ROBE_XML, ["MiraakRobes"]) == {"MiraakRobes"}
+
+
+def test_the_declared_source_switch_is_on_by_default():
+    assert nc.SKIRT_PROXY_DECLARED_SOURCE is True
+
+
+def test_the_proxy_asks_for_the_declared_shapes():
+    import inspect as _i
+    assert "_skirt_proxy_excluded(txt, decls)" in _i.getsource(ph._add_skirt_collider_proxy)
