@@ -9088,6 +9088,12 @@ COINCIDENT_SKIN_MATCH = (
 # CBBE2UBE_NO_SEAM_TWIN_SKIN=1.
 SEAM_TWIN_SKIN = (
     not _flag("CBBE2UBE_NO_SEAM_TWIN_SKIN", False))
+# #seam-twin-in-weak-cluster -- the twins of one shape are joined even when the
+# cluster they fell into is skipped as weak (a rigid part or a cross-shape edge
+# widened it past a palette both shapes share). Off with
+# CBBE2UBE_NO_SEAM_TWIN_IN_WEAK_CLUSTER=1.
+SEAM_TWIN_IN_WEAK_CLUSTER = (
+    not _flag("CBBE2UBE_NO_SEAM_TWIN_IN_WEAK_CLUSTER", False))
 # #fx-seam-twin-prewrite -- the pass above reloads and re-saves the written NIF,
 # which a NIF with an effect shader cannot survive (the effect controller is
 # corrupted -> CTD), so it skips one; every reskinned shape of such a NIF shipped

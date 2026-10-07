@@ -3326,6 +3326,14 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     # SOURCE (output distance is not asked: the weld may not have run), behind the
     # same author gate as the cross-shape edges above.
     twin_joined: set = set()
+    tparent: dict = {}          # the twins alone, #seam-twin-in-weak-cluster
+
+    def tfind(x):
+        tparent.setdefault(x, x)
+        while tparent[x] != x:
+            tparent[x] = tparent[tparent[x]]
+            x = tparent[x]
+        return x
     base = 0
     for k, e in enumerate(ents):
         for ia, ib in e["twins"]:
@@ -3339,6 +3347,9 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
             joined.add(b)
             twin_joined.add(a)
             twin_joined.add(b)
+            ta, tb = tfind(a), tfind(b)
+            if ta != tb:
+                tparent[ta] = tb
             pa, pb = find(a), find(b)
             if pa != pb:
                 parent[pa] = pb
@@ -3704,6 +3715,49 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     for g in sorted(joined):
         groups[find(g)].append(g)
 
+    # #seam-twin-in-weak-cluster. A cluster is skipped as weak when the bones its
+    # shapes all carry hold too little of a member's row -- right for a CROSS-
+    # SHAPE join, which can only share what every shape can write. But the
+    # union also pulls in the seam twins of any vertex it touches, and a twin
+    # pair is one point of ONE shape, so its own palette always holds both rows
+    # whole. Skipping the cluster left those twins on the rows the weight passes
+    # gave them: measured on a pouch whose welded rigid part spans two shapes,
+    # 142 twin pairs the author skinned identically (Pelvis 1.0 both) shipped
+    # 0.137 against 0.003 on Spine. The twins of such a cluster are joined among
+    # themselves instead, by the same mean, cap and renormalise.
+    def _join_twins_of(mem) -> None:
+        if not (_nc().SEAM_TWIN_IN_WEAK_CLUSTER and twin_joined):
+            return
+        sub = _dd(list)
+        for m in mem:
+            if m in twin_joined:
+                sub[tfind(m)].append(m)
+        for tm in sub.values():
+            if len(tm) < 2:
+                continue
+            cl = [owner[m] for m in tm]
+            k0 = cl[0][0]
+            if any(kk != k0 for kk, _i in cl):
+                continue            # twins are of one shape; never guess
+            e0 = ents[k0]
+            rt = [e0["rows"][i] for _k, i in cl]
+            av: dict = _dd(float)
+            for r in rt:
+                for b, w in r.items():
+                    av[b] += w / len(rt)
+            kp = {b: w for b, w in av.items() if w > _nc()._WRITE_MIN}
+            if len(kp) > _nc()._SKIN_MAX_INFLUENCES:
+                kp = dict(sorted(kp.items(), key=lambda kv: (-kv[1], kv[0]))
+                          [:_nc()._SKIN_MAX_INFLUENCES])
+            tt = sum(kp.values())
+            if tt <= _nc()._WRITE_MIN:
+                continue
+            tg = {b: w / tt for b, w in kp.items()}
+            for _k, i in cl:
+                e0["old"].setdefault(i, e0["rows"][i])
+                e0["rows"][i] = dict(tg)
+                changed[k0].add(i)
+
     n_weak = 0
     for mem in groups.values():
         if len(mem) < 2:
@@ -3718,11 +3772,13 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
             basis = ents[k]["pal"] if basis is None else (basis & ents[k]["pal"])
         if not basis:
             n_weak += 1
+            _join_twins_of(mem)
             continue
         ro = [ents[k]["rows"][i] for k, i in cluster]
         if any(sum(w for b, w in r.items() if b in basis)
                < _nc()._COINCIDENT_SKIN_MIN_SHARE for r in ro):
             n_weak += 1
+            _join_twins_of(mem)
             continue
         avg: dict = _dd(float)
         for r in ro:
@@ -3739,6 +3795,7 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
         tot = sum(kept.values())
         if tot <= _nc()._WRITE_MIN:
             n_weak += 1
+            _join_twins_of(mem)
             continue
         tgt = {b: w / tot for b, w in kept.items()}
         for k, i in cluster:

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed — seams next to a rigid part or another shape no longer stay split
+
+The pass that gives the two sides of a UV seam one skin row also joins vertices that touch across
+shapes and the vertices of a part the author skinned rigid, all in one cluster, and skips a cluster
+whose shapes share too few bones to give every member one row. A seam pair caught in such a cluster
+was skipped with it, although its two sides are one point of one shape and can always share that
+shape's bones: on one pouch, 142 seam pairs the author skinned identically shipped with one side
+on the spine and the other not. The seam pairs of a skipped cluster are now joined among
+themselves; the cluster's other members are left as before. Off with
+`CBBE2UBE_NO_SEAM_TWIN_IN_WEAK_CLUSTER=1`.
+
 ### Fixed — seams on armour with a glow or effect shader no longer tear when the body moves
 
 The two sides of a UV seam are one point of the garment, and the author skins them alike. The
