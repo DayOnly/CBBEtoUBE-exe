@@ -9795,6 +9795,12 @@ _SKIRT_PROXY_CHAIN_MIN = _knob("CBBE2UBE_SKIRT_PROXY_CHAIN_MIN", 0.5)
 # restores the old rule.
 SKIRT_PROXY_BELOW_HIP = (
     not _flag("CBBE2UBE_NO_SKIRT_PROXY_BELOW_HIP", False))
+# #skirt-proxy-declared-source -- the skirt proxy is never built from a shape
+# the physics XML already declares (per-vertex or per-triangle): that cloth is
+# in the collision already, and a proxy riding its bones collided with it. Off
+# with CBBE2UBE_NO_SKIRT_PROXY_DECLARED_SOURCE=1.
+SKIRT_PROXY_DECLARED_SOURCE = (
+    not _flag("CBBE2UBE_NO_SKIRT_PROXY_DECLARED_SOURCE", False))
 _SKIRT_PROXY_GAP = _knob("CBBE2UBE_SKIRT_PROXY_GAP", 3.0)
 # #collider-declared-bones on this proxy: how much of its weight may be moved
 # onto kinematic XML-declared ancestors before the proxy is DECLINED instead.
