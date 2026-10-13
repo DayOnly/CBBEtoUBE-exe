@@ -10944,6 +10944,13 @@ from .nif_convert_layers import (  # noqa: E402
 # This pass re-imposes the SOURCE order, classified from the source-frame
 # clearance so it's immune to whatever the warp did.
 OVERLAY_PAIR_R = 3.0       # 3D dist to pair an A vert with the nearest B vert
+# #abdomen-order-radial: the abdomen order pass lifts a vert only where the
+# partner layer's surface is FACE-ON beneath it along the body normal. Pairing
+# within OVERLAY_PAIR_R alone read a lateral neighbour as "below" and lifted
+# cloth over bare skin. Off with CBBE2UBE_NO_ABDOMEN_ORDER_RADIAL=1 (scratch
+# control only).
+ABDOMEN_ORDER_RADIAL = not _flag("CBBE2UBE_NO_ABDOMEN_ORDER_RADIAL", False)
+ABDOMEN_ORDER_RADIAL_COS = _knob("CBBE2UBE_ABDOMEN_ORDER_RADIAL_COS", 0.7)
 OVERLAY_MIN_OVERLAP = 30   # minimum overlapping verts to consider a pair
 OVERLAY_CAP = 3.0          # per-vert lift cap (runaway guard)
 LAYER_STACK_GAP = _knob("CBBE2UBE_LAYER_STACK_GAP", 0.15)     # clearance a locally-outer layer keeps above the outermost inner vert beneath it
@@ -12644,15 +12651,33 @@ _LAYER_RIDE_BARY_CAND = _knob("CBBE2UBE_LAYER_RIDE_BARY_CAND", 6, int)
 # flipped are untouched, so a correct fit is never disturbed. #layer-order
 LAYER_ORDER_REPAIR_ENABLED = (
     not _flag("CBBE2UBE_NO_LAYER_ORDER", False))
-# The #clearance-field solve produces a SMOOTH, layer-consistent mesh. This repair
-# was built to clean up the SPIKY per-vertex push, and on the smooth solve output
-# it MISFIRES: it reads fine interface verts as violations and hard-yanks them,
-# buckling thin straps (a plated top's belt: folds ~55 with the repair, 24 without;
-# pack total 92->46, belt spikiness 19.4->4.1). So when a clearance-field solve is
-# active the repair is OFF by default. VERIFIED IN GAME -- the belt reads better
-# without it. Force it back on with CBBE2UBE_FORCE_LAYER_ORDER=1.
+# #layer-order-surface (default ON; CBBE2UBE_NO_LAYER_ORDER_SURFACE=1 is a
+# scratch control only). Pair each vert to the closest SURFACE point of the
+# neighbouring layer's SOURCE mesh (triangle + barycentrics, replayed on the
+# output), keep only FACE-ON pairs (offset along that face's normal), and work in
+# WORLD frame so shapes with their own global-to-skin are reached too. Measured
+# over 36 pieces from source: verts that sank under the layer above them
+# 8659 -> 7449 (surfaced 4602 -> 4829), skin pokes 152 -> 151, creases +0.7%.
+LAYER_ORDER_SURFACE = not _flag("CBBE2UBE_NO_LAYER_ORDER_SURFACE", False)
+# #source-body-warp (call site in convert_nif_phase2): a source whose own skin
+# body sits more than this far off the CBBE template (torso p50) is warped from
+# that body. Measured: vanilla-body cuirass 1.03u, CBBE builds 0.00-0.32u.
+# Off with CBBE2UBE_NO_SOURCE_BODY_WARP=1 (scratch control only).
+SOURCE_BODY_WARP = not _flag("CBBE2UBE_NO_SOURCE_BODY_WARP", False)
+SOURCE_BODY_WARP_MIN = _knob("CBBE2UBE_SOURCE_BODY_WARP_MIN", 0.4)
+SOURCE_BODY_TIGHTEN = not _flag("CBBE2UBE_NO_SOURCE_BODY_TIGHTEN", False)
+SOURCE_BODY_TIGHT_TARGET = _knob("CBBE2UBE_SOURCE_BODY_TIGHT_TARGET", 1.5)
+LAYER_ORDER_FACE_COS = _knob("CBBE2UBE_LAYER_ORDER_FACE_COS", 0.7)
+# The #clearance-field solve produces a SMOOTH, layer-consistent mesh, and the
+# legacy nearest-VERTEX pairing MISFIRES on it: it reads fine interface verts as
+# violations and hard-yanks them, buckling thin straps (a plated top's belt:
+# folds ~55 with the repair, 24 without; pack total 92->46, belt spikiness
+# 19.4->4.1; VERIFIED IN GAME -- the belt read better without it). The misfire is
+# an edge-slide past a coarse plate's rim read as a crossing, which the surface
+# pairing above does not make -- so only the legacy pairing is held back under
+# the field. CBBE2UBE_FORCE_LAYER_ORDER=1 forces the legacy pairing on.
 if (CLEARANCE_FIELD_SOLVE or CLEARANCE_FIELD_INFLATE) and (
-        not _flag("CBBE2UBE_FORCE_LAYER_ORDER", False)):
+        not _flag("CBBE2UBE_FORCE_LAYER_ORDER", False)) and not LAYER_ORDER_SURFACE:
     LAYER_ORDER_REPAIR_ENABLED = False
 # (moved to nif_convert_layers.py, 2026-09-01)
 _LAYER_ORDER_EPS = 0.05     # sign-noise band
@@ -14651,6 +14676,59 @@ def _fit_shapes_swap(ctx) -> None:
         })
 
 
+def _source_body_warp(src_body_world, cbbe_verts, cbbe_to_ube_delta):
+    """#source-body-warp: the warp field for a piece AUTHORED ON ANOTHER BODY.
+
+    `src_body_world` = the piece's own inline body (world frame); `cbbe_verts` /
+    `cbbe_to_ube_delta` = the CBBE template and its per-vert delta to UBE. When
+    the source body's torso (z 70-115) sits more than SOURCE_BODY_WARP_MIN off
+    the template (median nearest distance), returns (that offset, a delta per
+    SOURCE body vert that carries it to the CBBE surface and on to UBE);
+    otherwise None (a CBBE build: warp by the template as before)."""
+    from scipy.spatial import cKDTree
+    sv = np.asarray(src_body_world, dtype=np.float64)
+    cv = np.asarray(cbbe_verts, dtype=np.float64)
+    torso = (sv[:, 2] > 70.0) & (sv[:, 2] < 115.0)
+    if int(torso.sum()) < 20 or not len(cv):
+        return None
+    tree = cKDTree(cv)
+    dt, _ = tree.query(sv[torso])
+    off = float(np.median(dt))
+    if off <= float(SOURCE_BODY_WARP_MIN):
+        return None
+    _, j = tree.query(sv)
+    return off, (cv[j] - sv) + np.asarray(cbbe_to_ube_delta, dtype=np.float64)[j]
+
+
+def _source_body_tighten(verts_world, tris, body_v, body_n, body_tree=None):
+    """#source-body-tighten: pull a loose TORSO surface (z 70-118, feathered over
+    4u at each end) in toward SOURCE_BODY_TIGHT_TARGET along the body normal.
+    Pull-in only, the field smoothed over the mesh so plates move whole, and
+    never left inside the target (or inside where it started, if closer).
+    Returns (new world verts, per-vert pull) or None when nothing is loose."""
+    from scipy.spatial import cKDTree
+    bv = np.asarray(body_v, dtype=np.float64)
+    bn = np.asarray(body_n, dtype=np.float64)
+    tree = body_tree if body_tree is not None else cKDTree(bv)
+    vw = np.asarray(verts_world, dtype=np.float64)
+    target = float(SOURCE_BODY_TIGHT_TARGET)
+    _, i = tree.query(vw)
+    gap = ((vw - bv[i]) * bn[i]).sum(1)
+    z = vw[:, 2]
+    zw = np.clip((z - 70.0) / 4.0, 0.0, 1.0) * np.clip((118.0 - z) / 4.0, 0.0, 1.0)
+    pull = np.clip(gap - target, 0.0, None) * zw
+    if not np.any(pull > 1e-3):
+        return None
+    mv = _smooth_vertex_field(-pull[:, None] * bn[i], tris, iters=4, verts=vw)
+    new = vw + mv
+    # never past the target after smoothing
+    _, i2 = tree.query(new)
+    gap2 = ((new - bv[i2]) * bn[i2]).sum(1)
+    under = np.minimum(gap, target) - gap2
+    new = new + np.clip(under, 0.0, None)[:, None] * bn[i2]
+    return new, pull
+
+
 def convert_nif_phase2(
     src_path: str | Path,
     dst_path: str | Path,
@@ -14926,6 +15004,8 @@ def convert_nif_phase2(
         _named_body = [s for s in src_nif.shapes if s.name in _bn]
         if _named_body:
             cbbe_body_shape = max(_named_body, key=lambda s: len(s.verts))
+    _src_body_is_inline = cbbe_body_shape is not None   # #source-body-warp
+    _sbw_fired = False
     if cbbe_body_shape is None and cbbe_body_ref_path is not None:
         cbbe_ref = nif_io.open_nif_retry(str(Path(cbbe_body_ref_path)))  # transient-IO resilient
         cbbe_body_shape = max(cbbe_ref.shapes, key=lambda s: len(s.verts)) if cbbe_ref.shapes else None
@@ -15056,6 +15136,32 @@ def convert_nif_phase2(
         cbbe_verts_for_warp_p2, body_delta_for_warp_p2 = \
             _cached_cbbe_to_ube_delta(
                 cbbe_body_path_p2, ube_femalebody_path_p2)
+    # #source-body-warp: a piece AUTHORED ON ANOTHER BODY (its own inline,
+    # skin-textured body sits off the CBBE template -- a vanilla-body cuirass a
+    # retexture mod ships, with no CBBE build anywhere) was warped by the CBBE
+    # template's delta as if it had been built on CBBE. Its authored stand-off
+    # is to ITS body, so warp by that body's route to UBE instead: each source
+    # body vert goes to the CBBE surface (vanilla -> CBBE) and then by the CBBE
+    # -> UBE delta found there. Off with CBBE2UBE_NO_SOURCE_BODY_WARP=1.
+    if (SOURCE_BODY_WARP and _src_body_is_inline
+            and cbbe_body_shape is not None
+            and cbbe_verts_for_warp_p2 is not None):
+        try:
+            _g_sbw = (_shape_global_to_skin(cbbe_body_shape)
+                      if cbbe_body_shape.has_global_to_skin else None)
+            _sv_sbw = _verts_skin_to_world(
+                np.asarray(cbbe_body_shape.verts, dtype=np.float64), _g_sbw)
+            _sbw = _source_body_warp(_sv_sbw, cbbe_verts_for_warp_p2,
+                                     body_delta_for_warp_p2)
+            if _sbw is not None:
+                _off_sbw, body_delta_for_warp_p2 = _sbw
+                print(f"  [source-body-warp] {cbbe_body_shape.name!r} sits "
+                      f"{_off_sbw:.2f}u off the CBBE template "
+                      f"(torso p50): warping from it", file=sys.stderr)
+                cbbe_verts_for_warp_p2 = _sv_sbw
+                _sbw_fired = True
+        except Exception as _e:
+            _note_pass_failure("source-body-warp", _e)
 
     # HDT-SMP per-vertex soft-body cloth keeps its authored weighting
     # (skip body-fit reskin) so it can still swing — see
@@ -15124,6 +15230,43 @@ def convert_nif_phase2(
         ube_idx=ube_idx,
     ))
 
+    # #source-body-tighten (user call 10-12): a piece warped from its OWN
+    # non-CBBE body (#source-body-warp fired) is authored loose for that body --
+    # a vanilla-body cuirass stands 3.5u off the waist and ~5.5u at the lower-back
+    # hem, which an arched idle opens to view. Pull its TORSO surface in toward
+    # SOURCE_BODY_TIGHT_TARGET along the body normal: pull-in only, never inside
+    # the target, the field smoothed over the mesh so plates move whole.
+    # Off with CBBE2UBE_NO_SOURCE_BODY_TIGHTEN=1 (scratch control only).
+    if (SOURCE_BODY_TIGHTEN and _sbw_fired and shape_jobs
+            and body_verts_for_p2 is not None and body_norms_for_p2 is not None):
+        try:
+            from scipy.spatial import cKDTree as _ckd_sbt
+            _bt_sbt = _ckd_sbt(body_verts_for_p2)
+            for _j in shape_jobs:
+                _s = _j.get("src")
+                if _s is None or _j.get("verts") is None:
+                    continue
+                if _s.name in set(hdt_softbody_names) | set(hdt_collider_names):
+                    continue
+                _g = (_shape_global_to_skin(_s) if _s.has_global_to_skin else None)
+                if _g is not None and _g2s_is_identity(_g):
+                    _g = None
+                _vw = np.asarray(_j["verts"], dtype=np.float64)
+                if _g is not None:
+                    _vw = _verts_skin_to_world(_vw, _g)
+                _res = _source_body_tighten(
+                    _vw, np.asarray(_s.tris, dtype=np.int64).reshape(-1, 3),
+                    body_verts_for_p2, body_norms_for_p2, _bt_sbt)
+                if _res is None:
+                    continue
+                _new, _pull = _res
+                _j["verts"] = _verts_world_to_skin(_new, _g) if _g is not None else _new
+                _j["verts_modified"] = True
+                print(f"  [source-body-tighten] {_s.name!r}: pulled {int((_pull > 0.05).sum())} vert(s), "
+                      f"max {float(_pull.max()):.2f}u", file=sys.stderr)
+        except Exception as _e:
+            _note_pass_failure("source-body-tighten", _e)
+
     # Z-fight auto-offset: push inner-layer verts inward along body normals.
     if body_verts_for_p2 is not None and shape_jobs:
         try:
@@ -15176,6 +15319,10 @@ def convert_nif_phase2(
                 cbbe_body_verts=cbbe_verts_for_warp_p2,
                 source_body_verts=src_body_v_p2,
                 source_body_normals=src_body_n_p2,
+                source_body_g2s=(_shape_global_to_skin(cbbe_body_shape)
+                                 if cbbe_body_shape is not None
+                                 and cbbe_body_shape.has_global_to_skin
+                                 else None),
             )
             if n_abdo:
                 import sys as _sys

@@ -110,6 +110,33 @@ _MATCH_NEAR = _knob("CBBE2UBE_MATCH_NEAR", 4.0)
 _MATCH_FAR = _knob("CBBE2UBE_MATCH_FAR", 10.0)
 
 
+# #drape-morph-headroom. A DRAPE vert (stand-off beyond _MATCH_NEAR) hangs in
+# free air: the body growing under a slider only reaches it once the growth
+# exceeds the gap it hangs at. The IDW average gave it the body's FULL growth
+# regardless -- a skirt flap 10u off the thigh moved out by the thigh's whole
+# 3-5u under a runtime preset and tilted visibly outward (in game, a fur-skirt
+# cuirass). So scale a drape vert's delta by the share of the body's outward
+# growth that is left after closing its gap (minus a contact clearance), and
+# give a SHRINKING body nothing to pull: hanging cloth does not follow skin in.
+# Blended in over _MATCH_NEAR.._MATCH_FAR so hugging cloth keeps the exact copy.
+# Off with CBBE2UBE_NO_DRAPE_MORPH_HEADROOM=1 (scratch control only).
+_DRAPE_MORPH_HEADROOM = not _flag("CBBE2UBE_NO_DRAPE_MORPH_HEADROOM", False)
+_DRAPE_CONTACT_CLEAR = _knob("CBBE2UBE_DRAPE_CONTACT_CLEAR", 0.5)
+
+
+def _drape_headroom_scale(propagated, body_delta, outward, gap):
+    """Per-vert scale in [0, 1] for a drape vert's morph delta: the fraction of
+    the body's outward growth (body_delta . outward) left once the gap, less a
+    contact clearance, is closed. Hugging verts (gap <= _MATCH_NEAR) get 1."""
+    grow = np.einsum("ij,ij->i", body_delta, outward)
+    room = np.maximum(gap - _DRAPE_CONTACT_CLEAR, 0.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        s = np.where(grow > 1e-9, np.clip((grow - room) / grow, 0.0, 1.0), 0.0)
+    span = max(_MATCH_FAR - _MATCH_NEAR, 1e-6)
+    h = np.clip((gap - _MATCH_NEAR) / span, 0.0, 1.0)
+    return (1.0 - h) + h * s
+
+
 def _motion_match_weight(nearest_dist: np.ndarray) -> np.ndarray:
     """Per-vert weight on the nearest-body-vert delta: 1 when hugging (copy the
     body exactly, ratio 1.0), easing to 0 at drape distance (keep IDW smoothing)."""
@@ -220,6 +247,15 @@ def generate_armor_tri(
         nearest_dist = dists[:, 0]
         shape_knn[armor_shape_name] = (neighbors, dists, nearest_dist)
 
+    # Outward direction per armor vert (from its nearest body vert), for
+    # #drape-morph-headroom. Per shape, slider-independent.
+    shape_outward: dict[str, np.ndarray] = {}
+    for armor_shape_name, (neighbors, dists, nearest_dist) in shape_knn.items():
+        _av = np.asarray(armor_shapes[armor_shape_name], dtype=np.float64)
+        _u = _av - body_verts_arr[neighbors[:, 0]]
+        _u /= np.maximum(np.linalg.norm(_u, axis=1, keepdims=True), 1e-9)
+        shape_outward[armor_shape_name] = _u
+
     # Dense body delta buffer reused across morphs (avoids re-allocating per shape×morph).
     morph_delta_buf = np.zeros((body_n, 3), dtype=np.float64)
     # Per-shape morph accumulator.
@@ -282,6 +318,14 @@ def generate_armor_tri(
             if match_w is not None:
                 nearest_delta = morph_delta_buf[neighbors[:, 0]]
                 propagated = match_w * nearest_delta + (1.0 - match_w) * propagated
+            # #drape-morph-headroom (see the constant): drape cloth moves only
+            # by the body growth that actually reaches it.
+            if _DRAPE_MORPH_HEADROOM:
+                _od = shape_outward.get(armor_shape_name)
+                if _od is not None:
+                    propagated = propagated * _drape_headroom_scale(
+                        propagated, morph_delta_buf[neighbors[:, 0]], _od,
+                        nearest_dist)[:, None]
             # Extremity dampening: scale propagated deltas by (1 - extremity_fraction)
             # so sleeve/calf verts get full body-morph response while
             # finger/toe verts stay near-zero (matching the separate nude Hands/Feet
