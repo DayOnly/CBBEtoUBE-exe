@@ -204,6 +204,9 @@ from .nif_convert_trigen import (  # noqa: E402
     _reset_morph_flags,
     armor_relpath_under_meshes,
     _collect_tri_inputs,
+    _surface_track_inputs,
+    _nipple_morph_bridge_inputs,
+    _morph_body_tris,
     _normalize_shader_for_morph,
     _pick_bodytri_carriers,
     _source_morph_tri_shape_names,
@@ -384,6 +387,7 @@ from .nif_convert_fitgeom import (  # noqa: E402
     _inflate_cloth_over_bust_butt,
     conform_to_source_standoff,
     _surface_deficit,
+    _nipple_bridge,
     _bust_morph_chord_req,
     _relax_conform_field,
     _solve_clearance_field,
@@ -445,6 +449,26 @@ BUST_NEIGHBORHOOD_K_MAX = 64
 # pass behaves exactly as before.
 BUST_SURFACE_REQ = not _flag("CBBE2UBE_NO_BUST_SURFACE_REQ", False)
 BUST_SURFACE_K = 24            # body points tested per garment triangle
+
+
+def _NIPPLE_MORPH_BRIDGE_ON() -> bool:
+    """#nipple-morph-bridge's (or #nipple-morph-envelope's) flag lives in
+    sliderset_gen; read it there. Either one needs the nipple inputs."""
+    from . import sliderset_gen as _sg
+    return bool(_sg._NIPPLE_MORPH_BRIDGE or _sg._NIPPLE_MORPH_ENVELOPE)
+
+
+def _MORPH_SURFACE_SAMPLE_ON() -> bool:
+    """#morph-surface-sample's flag lives in sliderset_gen; read it there."""
+    from . import sliderset_gen as _sg
+    return bool(_sg._MORPH_SURFACE_SAMPLE)
+
+
+def _SURFACE_MORPH_TRACK_ON() -> bool:
+    """#surface-morph-track's flag lives in sliderset_gen; read it there so the
+    one switch decides everywhere."""
+    from . import sliderset_gen as _sg
+    return bool(_sg._SURFACE_MORPH_TRACK)
 # Ceiling on what the surface test may demand. NOT a knob: 1.5 / 2.5 / 3.5 all
 # give the same result across 112 installed presets (1 still poking, the same
 # outlier) and the same fit, so the cap is not the limiter -- it is a safety rail.
@@ -3669,7 +3693,11 @@ def _load_body_mesh(ref_path: Path) -> MeshIndex:
 # rigidity again on both paths).
 FIT_STAGES = (
     ("warp_hf",             "warp_armor_by_body_delta",   ("copy", "swap"), None),
-    ("panel_rigid_hf",      "_rigidify_within_clearance", ("copy", "swap"), None),
+    ("panel_rigid_hf",      "_rigidify_within_clearance", ("copy", "swap"),
+     "COPY PATH HAS NO NIPPLE MAP: the swap path passes body_nipple so the "
+     "#panel-rigid-tip-guard can hold the nipple core out of a re-rigidified "
+     "panel; the copy path has no injected body nipple weights in scope, so "
+     "the guard is inert there by construction (same as the call without it)."),
     ("panel_blind_hf",      "_partial_rigid_panels",      ("copy", "swap"),
      "BRANCH-GATED on both paths: it is the ELSE of `PANEL_RIGID_EARLY_CLEAR and "
      "<body verts and normals available>`, i.e. the body-BLIND form that runs "
@@ -3701,7 +3729,11 @@ FIT_STAGES = (
      "no reason until then, and the table's own test cannot catch it: it derives "
      "calls by walking the AST, which sees both arms of an if/else. "
      "docs/worklog/2026-09-02_BUTT_COPY_PATH_TROUSERS.md"),
-    ("panel_rigid",         "_rigidify_within_clearance", ("copy", "swap"), None),
+    ("panel_rigid",         "_rigidify_within_clearance", ("copy", "swap"),
+     "COPY PATH HAS NO NIPPLE MAP: the swap path passes body_nipple so the "
+     "#panel-rigid-tip-guard can hold the nipple core out of a re-rigidified "
+     "panel; the copy path has no injected body nipple weights in scope, so "
+     "the guard is inert there by construction (same as the call without it)."),
     ("panel_blind",         "_partial_rigid_panels",      ("copy", "swap"), None),
     ("antipoke",            "clear_armor_outside_body",   ("copy", "swap"),
      "BOTH PATHS AT DEFAULTS since 2026-09-02, when `#phase1-antipoke` was "
@@ -5262,6 +5294,21 @@ def convert_nif(
                         # NioOverride only honors one BODYTRI per NIF,
                         # so we can't put a separate hook on BaseShape;
                         # the per-armor TRI must carry both.
+                        # #surface-morph-track: the body whose weights give
+                        # the breast region -- the injected one when it shares
+                        # the reference topology, else the reference itself.
+                        _trk_body = next(
+                            (x for x in dst_check.shapes if x.name == "BaseShape"
+                             and len(x.verts) == len(body_verts_arr)), None)
+                        if _trk_body is None and (_SURFACE_MORPH_TRACK_ON()
+                                                  or _NIPPLE_MORPH_BRIDGE_ON()
+                                                  or _MORPH_SURFACE_SAMPLE_ON()):
+                            _trk_body = next(
+                                (x for x in pyn.NifFile(filepath=str(
+                                    ube_body_ref_path)).shapes
+                                 if x.name == "BaseShape"), None)
+                        _trk_tris, _trk_mask = _surface_track_inputs(
+                            dst_check, armor_shape_verts, _trk_body)
                         tri = generate_armor_tri(
                             armor_shape_verts,
                             body_verts_arr,
@@ -5275,6 +5322,10 @@ def convert_nif(
                             # differently needs its table under that name too.
                             also_named=pair_alias_map(src_path,
                                                       variant_sources),
+                            armor_shape_tris=_trk_tris,
+                            body_track_mask=_trk_mask,
+                            nipple_bridge=_nipple_morph_bridge_inputs(_trk_body),
+                            body_tris=_morph_body_tris(_trk_body),
                         )
                         atomic_tri_save(tri, auto_tri_dst_phase1)
             except Exception as _e_tri:
@@ -13209,6 +13260,30 @@ PANEL_RIGID_SURFACE_GUARD = _flag("CBBE2UBE_PANEL_RIGID_SURFACE_GUARD", True)
 # worse. Any sweep of this MUST score morphed clip on those same pieces and on a
 # CLEAN preset, not just the bind pose.
 PANEL_RIGID_KEEP_CLEARANCE = _knob("CBBE2UBE_PANEL_RIGID_KEEP_CLEARANCE", 0.0)
+# #panel-rigid-tip-guard -- default ON (CBBE2UBE_NO_PANEL_RIGID_TIP_GUARD=1 turns it off). See `_rigidify_within_clearance`:
+# the nipple-tip body points are tested against the panel SURFACE, so the
+# rigidify cannot settle a coarse plate onto the apex. Body-swap path only (the
+# copy path has no nipple map in scope).
+PANEL_RIGID_TIP_GUARD = not _flag("CBBE2UBE_NO_PANEL_RIGID_TIP_GUARD", False)
+# #nipple-bridge -- default ON (CBBE2UBE_NO_NIPPLE_BRIDGE=1 turns it off). See `_nipple_bridge`: the garment
+# passes over the nipple (its own curvature continued from the ring around it)
+# instead of tracing it, with a floor from the measured per-apex morph demand.
+NIPPLE_BRIDGE = not _flag("CBBE2UBE_NO_NIPPLE_BRIDGE", False)
+NIPPLE_BRIDGE_MARGIN = _knob("CBBE2UBE_NIPPLE_BRIDGE_MARGIN", 0.15)
+NIPPLE_BRIDGE_R_FULL = 1.5      # fully bridged inside this radius (u)
+NIPPLE_BRIDGE_R_IN = 2.5        # bridge fades out by here
+NIPPLE_BRIDGE_R_OUT = 5.0       # ring the garment's own curvature is fitted on
+# Bridge only a garment fine enough to trace a nipple (median edge over the
+# core). Coarser ones cannot outline, and their flat triangles sag between the
+# bridged corners -- measured on a 2.8u cuirass: tip +0.25u -> -0.10u.
+NIPPLE_BRIDGE_MAX_EDGE = 1.5
+# ...and only one that actually TRACES the nipple: its bump over the apex must
+# be at least this share of the body's own. Below it there is no outline to fix.
+NIPPLE_BRIDGE_MIN_TRACE = 0.4
+# The floor lift is a dome of this radius-scale (u) standing on each body core
+# point's own requirement, not one uniform lift over the core (that left a
+# raised disc with an edge). 0 = the uniform lift.
+NIPPLE_BRIDGE_DOME_R = _knob("CBBE2UBE_NIPPLE_BRIDGE_DOME_R", 1.0)
 
 
 # (moved to nif_convert_fitgeom.py, 2026-09-01)
@@ -13741,7 +13816,8 @@ def _fit_shapes_swap(ctx) -> None:
                             body_verts_for_p2, body_norms_for_p2,
                             PANEL_RIGIDITY,
                             skip_mask=_extremity_vert_mask(s, len(hf_verts)),
-                            min_verts=PANEL_RIGIDITY_MIN_VERTS)
+                            min_verts=PANEL_RIGIDITY_MIN_VERTS,
+                            body_nipple=body_nipple_for_p2)
                     else:
                         _pv_h2, _np_h2, _wd_h2 = _partial_rigid_panels(
                             hf_orig, hf_verts,
@@ -14153,7 +14229,8 @@ def _fit_shapes_swap(ctx) -> None:
                         _sv_body, override, np.asarray(s.tris, dtype=np.int64),
                         body_verts_for_p2, body_norms_for_p2,
                         PANEL_RIGIDITY, skip_mask=_skip,
-                        min_verts=PANEL_RIGIDITY_MIN_VERTS)
+                        min_verts=PANEL_RIGIDITY_MIN_VERTS,
+                        body_nipple=body_nipple_for_p2)
                 else:
                     _pv, _np_, _wd = _partial_rigid_panels(
                         _sv_body, override, np.asarray(s.tris, dtype=np.int64),
@@ -14365,7 +14442,8 @@ def _fit_shapes_swap(ctx) -> None:
                             np.asarray(s.tris, dtype=np.int64),
                             body_verts_for_p2, body_norms_for_p2,
                             PANEL_RIGIDITY, skip_mask=_skip,
-                            min_verts=PANEL_RIGIDITY_MIN_VERTS)
+                            min_verts=PANEL_RIGIDITY_MIN_VERTS,
+                            body_nipple=body_nipple_for_p2)
                         if _rn:
                             override = _rv
                             _stage('panel_rigidity_post', override)
@@ -14374,6 +14452,20 @@ def _fit_shapes_swap(ctx) -> None:
                                   f"strength {_rs:.2f} of {PANEL_RIGIDITY:.2f}")
                     except Exception as _pe2:
                         _note_pass_failure("panel-rigidity/post", _pe2)
+                # #nipple-bridge: after the last pass that moves the inner layer
+                # and before the ride, so an outer layer rides the bridged one.
+                if (NIPPLE_BRIDGE and override is not None
+                        and body_nipple_for_p2 is not None):
+                    try:
+                        _nbv = _nipple_bridge(override, body_verts_for_p2,
+                                              body_norms_for_p2,
+                                              body_nipple_for_p2, skip_mask=_skip,
+                                              tris=np.asarray(s.tris, dtype=np.int64))
+                        if _nbv is not None:
+                            override = _nbv
+                            _stage('nipple_bridge', override)
+                    except Exception as _nbe:
+                        _note_pass_failure("nipple-bridge", _nbe)
                 # Clip-risk telemetry: verts still INSIDE the body after the
                 # final pass (deep verts past max_push, or capped regions) are
                 # the residual in-game clip risk. Greppable in the run log.
@@ -15938,6 +16030,9 @@ def convert_nif_phase2(
                     # Carrier-first TRI (hand-authored UBE convention).
                     p2_carriers = _pick_bodytri_carriers(dst_check, exclude_body=BODYTRI_CARRIER_CLOTH)
                     p2_carrier_name = p2_carriers[0].name if p2_carriers else None
+                    # #surface-morph-track: see the phase 1 call site.
+                    _trk_tris, _trk_mask = _surface_track_inputs(
+                        dst_check, armor_shape_verts, ube_basereshape)
                     # Include BaseShape so one BODYTRI delivers both cloth + body morphs.
                     tri = generate_armor_tri(
                         armor_shape_verts,
@@ -15949,6 +16044,10 @@ def convert_nif_phase2(
                         armor_vert_extremity_fractions=armor_vert_ef,
                         # #pair-tri-names -- see the phase 1 call site.
                         also_named=pair_alias_map(src_path, variant_sources),
+                        armor_shape_tris=_trk_tris,
+                        body_track_mask=_trk_mask,
+                        nipple_bridge=_nipple_morph_bridge_inputs(ube_basereshape),
+                        body_tris=_morph_body_tris(ube_basereshape),
                     )
                     atomic_tri_save(tri, auto_tri_dst)
         except Exception as e:

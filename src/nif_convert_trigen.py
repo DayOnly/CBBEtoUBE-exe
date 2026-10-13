@@ -507,6 +507,95 @@ def _collect_tri_inputs(nif, body_vert_count=None):
             armor_vert_ef[s.name] = ef
     return armor_shape_verts, body_in_dst, armor_vert_ef
 
+def _surface_track_inputs(nif, armor_shape_verts, body_shape):
+    """(armor_shape_tris, body_track_mask) for #surface-morph-track, or
+    (None, None) when neither it nor #nipple-morph-bridge is on (the bridge
+    needs the triangles to judge whether a garment is fine enough to trace a
+    nipple; the mask is read only by the track, which checks its own flag),
+    or no body weights are at hand.
+
+    The mask is the breast region of the BODY (summed breast-bone weight >= 0.2),
+    so the surface solve stays local to the bust. Triangles come from the same
+    written NIF the verts were read from, index for index.
+    """
+    from . import sliderset_gen as _sg
+    if not (_sg._SURFACE_MORPH_TRACK or _sg._NIPPLE_MORPH_BRIDGE
+            or _sg._NIPPLE_MORPH_ENVELOPE) or body_shape is None:
+        return None, None
+    try:
+        tris = {}
+        for s in nif.shapes:
+            if s.name in armor_shape_verts:
+                t = np.asarray(s.tris, dtype=np.int64).reshape(-1, 3)
+                if len(t) and len(s.verts) == len(armor_shape_verts[s.name]):
+                    tris[s.name] = t
+        n = len(body_shape.verts)
+        w = np.zeros(n, dtype=np.float64)
+        for bn, prs in (body_shape.bone_weights or {}).items():
+            if "breast" in bn.lower():
+                for i, x in prs:
+                    if 0 <= int(i) < n:
+                        w[int(i)] += float(x)
+        mask = w >= 0.2
+        if not mask.any() or not tris:
+            return None, None
+        return tris, mask
+    except Exception as _e:
+        _note_pass_failure("_surface_track_inputs", _e)
+        return None, None
+
+def _morph_body_tris(body_shape):
+    """The body's triangles for #morph-surface-sample, or None when the flag is
+    off or there is no body."""
+    from . import sliderset_gen as _sg
+    if not _sg._MORPH_SURFACE_SAMPLE or body_shape is None:
+        return None
+    try:
+        t = np.asarray(body_shape.tris, dtype=np.int64).reshape(-1, 3)
+        return t if len(t) else None
+    except Exception as _e:
+        _note_pass_failure("_morph_body_tris", _e)
+        return None
+
+
+def _nipple_morph_bridge_inputs(body_shape):
+    """[(apex index, apex unit normal, body vertex areas)] per side for
+    #nipple-morph-bridge and #nipple-morph-envelope, or None when both flags
+    are off / no nipple map."""
+    from . import sliderset_gen as _sg
+    if not (_sg._NIPPLE_MORPH_BRIDGE or _sg._NIPPLE_MORPH_ENVELOPE) \
+            or body_shape is None:
+        return None
+    try:
+        from .nif_convert_bust import _body_nipple_weight
+        nw = _body_nipple_weight(body_shape)
+        if nw is None or float(np.max(nw)) <= 0.0:
+            return None
+        nw = np.asarray(nw, dtype=np.float64)
+        bv = np.asarray(body_shape.verts, dtype=np.float64)
+        bt = np.asarray(body_shape.tris, dtype=np.int64).reshape(-1, 3)
+        fn = np.cross(bv[bt[:, 1]] - bv[bt[:, 0]], bv[bt[:, 2]] - bv[bt[:, 0]])
+        bn = np.zeros_like(bv)
+        for k in range(3):
+            np.add.at(bn, bt[:, k], fn)
+        bn /= np.linalg.norm(bn, axis=1, keepdims=True) + 1e-12
+        patch = nw >= 0.75 * float(nw.max())
+        area = _sg._vertex_areas(bv, bt)
+        out = []
+        for sd in (bv[:, 0] > 0.0, bv[:, 0] <= 0.0):
+            ts = np.flatnonzero(patch & sd)
+            if len(ts) < 3:
+                continue
+            n0 = bn[ts].mean(0)
+            n0 /= np.linalg.norm(n0) + 1e-12
+            ap = int(ts[int(np.argmax(bv[ts] @ n0))])
+            nA = bn[ap] / (np.linalg.norm(bn[ap]) + 1e-12)
+            out.append((ap, nA, area))
+        return out or None
+    except Exception as _e:
+        _note_pass_failure("_nipple_morph_bridge_inputs", _e)
+        return None
+
 def _normalize_shader_for_morph(shape) -> None:
     """DISABLED (no-op). The env-map flag (Shader_Flags_1 bit 7) does NOT
     block NioOverride morphing. The former flag-clear also caused
@@ -871,6 +960,11 @@ def _refresh_armor_tri_after_reimport(
             return False
 
         carriers = _pick_bodytri_carriers(nf)
+        # #surface-morph-track: this REGENERATES the whole TRI, so it must ask
+        # for the same surface solve the first write did, or it silently undoes
+        # it on every piece that re-imports a physics shape.
+        _trk_tris, _trk_mask = _surface_track_inputs(
+            nf, armor_shape_verts, body_shape)
         tri = generate_armor_tri(
             armor_shape_verts,
             body_verts_arr,
@@ -879,6 +973,10 @@ def _refresh_armor_tri_after_reimport(
             include_body_shapes=body_in_dst,
             carrier_shape_name=carriers[0].name if carriers else None,
             armor_vert_extremity_fractions=armor_vert_ef,
+            armor_shape_tris=_trk_tris,
+            body_track_mask=_trk_mask,
+            nipple_bridge=_nipple_morph_bridge_inputs(body_shape),
+            body_tris=_morph_body_tris(body_shape),
         )
         got = {sh.name for sh in tri.shapes}
         if not (got - have):
