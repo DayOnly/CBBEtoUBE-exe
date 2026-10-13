@@ -19191,4 +19191,22 @@ PAIRS = (
          tests=('tests/test_source_body_warp.py',),
          expect=('test_outside_the_torso_band_is_left_alone',),
     ),
+    Pair('SBT-c', 'each layer is pulled to the target on its own again (the stack collapses)',
+         edits=(
+             ('src/nif_convert.py',
+              '    ref = gap if stack_gap is None else np.minimum(gap, np.asarray(stack_gap, dtype=np.float64))',
+              '    ref = gap  # MUTATED', 1),
+         ),
+         tests=('tests/test_source_body_warp.py',),
+         expect=('test_a_layer_stack_moves_as_one',),
+    ),
+    Pair('SBT-d', 'the tighten pulls the bust in too',
+         edits=(
+             ('src/nif_convert.py',
+              '        zw = zw * (np.asarray(body_nipple, dtype=np.float64)[i] <= 0.0)',
+              '        pass  # MUTATED', 1),
+         ),
+         tests=('tests/test_source_body_warp.py',),
+         expect=('test_the_bust_is_left_alone',),
+    ),
 )

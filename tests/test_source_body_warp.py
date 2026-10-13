@@ -161,3 +161,31 @@ def test_smoothing_never_drags_a_vert_inside_where_it_may_rest():
     new, _ = nc._source_body_tighten(g, t, body, nb)
     floor = np.minimum(g[:, 1], float(nc.SOURCE_BODY_TIGHT_TARGET))
     assert np.all(new[:, 1] >= floor - 1e-6)
+
+
+def test_a_layer_stack_moves_as_one():
+    """Cloth at 3.0u under armour at 4.0u: both move by the INNER layer's pull,
+    so the armour stays 1.0u over the cloth. Pulled each to the target on its
+    own, the two converged and the armour came through under a large preset."""
+    cloth, t, body, nb = _tighten_case(3.0)
+    armour, _, _, _ = _tighten_case(4.0)
+    stack = np.vstack([cloth, armour])
+    inner = np.full(len(cloth), 3.0)                    # innermost gap at each spot
+    target = float(nc.SOURCE_BODY_TIGHT_TARGET)
+    c_new, _ = nc._source_body_tighten(cloth, t, body, nb, stack_gap=inner)
+    a_new, _ = nc._source_body_tighten(armour, t, body, nb, stack_gap=inner)
+    mid = (cloth[:, 2] > 80.0) & (cloth[:, 2] < 108.0)
+    assert np.allclose(c_new[mid, 1], target, atol=0.05)
+    assert np.allclose(a_new[mid, 1] - c_new[mid, 1], 1.0, atol=0.05)
+
+
+def test_the_bust_is_left_alone():
+    g, t, body, nb = _tighten_case(3.5)
+    nip = (body[:, 2] > 90.0) & (body[:, 2] < 100.0)    # the bust band
+    res = nc._source_body_tighten(g, t, body, nb, body_nipple=nip.astype(float))
+    assert res is not None
+    new, _ = res
+    over_bust = (g[:, 2] > 91.0) & (g[:, 2] < 99.0)
+    assert np.allclose(new[over_bust, 1], g[over_bust, 1], atol=0.3)
+    waist = (g[:, 2] > 76.0) & (g[:, 2] < 86.0)
+    assert np.all(new[waist, 1] < 2.0)                  # the waist is still pulled in

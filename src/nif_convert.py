@@ -15015,11 +15015,21 @@ def _source_body_warp(src_body_world, cbbe_verts, cbbe_to_ube_delta):
     return off, (cv[j] - sv) + np.asarray(cbbe_to_ube_delta, dtype=np.float64)[j]
 
 
-def _source_body_tighten(verts_world, tris, body_v, body_n, body_tree=None):
+def _source_body_tighten(verts_world, tris, body_v, body_n, body_tree=None,
+                         stack_gap=None, body_nipple=None):
     """#source-body-tighten: pull a loose TORSO surface (z 70-118, feathered over
     4u at each end) in toward SOURCE_BODY_TIGHT_TARGET along the body normal.
     Pull-in only, the field smoothed over the mesh so plates move whole, and
     never left inside the target (or inside where it started, if closer).
+
+    `stack_gap`: per vert, the gap of the INNERMOST layer of the piece at that
+    spot. The pull is set by it, so every layer moves by the same amount and
+    the authored spacing between layers survives. Pulling each layer to the
+    target on its own collapsed a cloth/armour stack (cloth 2.25 -> 1.48u,
+    armour over it 3.30 -> 1.71u) and the armour came through under a large
+    preset. `body_nipple`: the body's nipple map; the BUST is left alone (the
+    rule is for the waist and the lower-back hem, and pulling a coarse plate
+    in over the breast settled it onto the nipple at rest).
     Returns (new world verts, per-vert pull) or None when nothing is loose."""
     from scipy.spatial import cKDTree
     bv = np.asarray(body_v, dtype=np.float64)
@@ -15031,7 +15041,10 @@ def _source_body_tighten(verts_world, tris, body_v, body_n, body_tree=None):
     gap = ((vw - bv[i]) * bn[i]).sum(1)
     z = vw[:, 2]
     zw = np.clip((z - 70.0) / 4.0, 0.0, 1.0) * np.clip((118.0 - z) / 4.0, 0.0, 1.0)
-    pull = np.clip(gap - target, 0.0, None) * zw
+    if body_nipple is not None and len(body_nipple) == len(bv):
+        zw = zw * (np.asarray(body_nipple, dtype=np.float64)[i] <= 0.0)
+    ref = gap if stack_gap is None else np.minimum(gap, np.asarray(stack_gap, dtype=np.float64))
+    pull = np.clip(ref - target, 0.0, None) * zw
     if not np.any(pull > 1e-3):
         return None
     mv = _smooth_vertex_field(-pull[:, None] * bn[i], tris, iters=4, verts=vw)
@@ -15039,7 +15052,7 @@ def _source_body_tighten(verts_world, tris, body_v, body_n, body_tree=None):
     # never past the target after smoothing
     _, i2 = tree.query(new)
     gap2 = ((new - bv[i2]) * bn[i2]).sum(1)
-    under = np.minimum(gap, target) - gap2
+    under = np.minimum(gap, np.maximum(target, gap - pull)) - gap2
     new = new + np.clip(under, 0.0, None)[:, None] * bn[i2]
     return new, pull
 
@@ -15566,6 +15579,11 @@ def convert_nif_phase2(
         try:
             from scipy.spatial import cKDTree as _ckd_sbt
             _bt_sbt = _ckd_sbt(body_verts_for_p2)
+            _bv_sbt = np.asarray(body_verts_for_p2, dtype=np.float64)
+            _bn_sbt = np.asarray(body_norms_for_p2, dtype=np.float64)
+            # every eligible shape in world space first: the pull is set by the
+            # INNERMOST layer at each spot, so a stack moves as one
+            _sbt_jobs = []
             for _j in shape_jobs:
                 _s = _j.get("src")
                 if _s is None or _j.get("verts") is None:
@@ -15578,9 +15596,21 @@ def convert_nif_phase2(
                 _vw = np.asarray(_j["verts"], dtype=np.float64)
                 if _g is not None:
                     _vw = _verts_skin_to_world(_vw, _g)
+                _sbt_jobs.append((_j, _s, _g, _vw))
+            _stack = (np.vstack([x[3] for x in _sbt_jobs]) if _sbt_jobs
+                      else np.zeros((0, 3)))
+            if len(_stack):
+                _, _si = _bt_sbt.query(_stack)
+                _sgap = ((_stack - _bv_sbt[_si]) * _bn_sbt[_si]).sum(1)
+                _stree = _ckd_sbt(_stack)
+            for _j, _s, _g, _vw in _sbt_jobs:
+                _near = _stree.query_ball_point(_vw, 1.5)
+                _inner = np.asarray([float(_sgap[ix].min()) if len(ix) else np.inf
+                                     for ix in _near])
                 _res = _source_body_tighten(
                     _vw, np.asarray(_s.tris, dtype=np.int64).reshape(-1, 3),
-                    body_verts_for_p2, body_norms_for_p2, _bt_sbt)
+                    body_verts_for_p2, body_norms_for_p2, _bt_sbt,
+                    stack_gap=_inner, body_nipple=body_nipple_for_p2)
                 if _res is None:
                     continue
                 _new, _pull = _res
