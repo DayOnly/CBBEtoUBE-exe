@@ -158,16 +158,23 @@ def test_no_skin_lock_where_gap_aware_had_no_skin(tmp_path):
 # --- ordering: the SMP hold keeps the last word over gap-aware ---------------
 
 def test_smp_hold_runs_after_gap_aware_at_both_sites():
-    import inspect
-    src = inspect.getsource(nc)
-    gaf = [i for i in range(len(src)) if src.startswith("_gap_aware_follow(dst_path", i)]
-    hold = [i for i in range(len(src))
-            if src.startswith("_hold_weights_at_smp_boundary(dst_path", i)]
-    coin = [i for i in range(len(src))
-            if src.startswith("_match_coincident_cross_shape_skin(dst_path", i)]
-    assert len(gaf) == len(hold) == len(coin) == 2
-    for g, h, c in zip(gaf, hold, coin):
-        assert g < h < c
+    # Scanned per converter module (split-safe), not as one module's source.
+    from tests import _converter_sources as _cs
+    totals = [0, 0, 0]
+    for _path, src in _cs.texts().items():
+        gaf = [i for i in range(len(src)) if src.startswith("_gap_aware_follow(dst_path", i)
+                and src[max(i - 4, 0):i] != "def "]
+        hold = [i for i in range(len(src))
+                if src.startswith("_hold_weights_at_smp_boundary(dst_path", i)
+                and src[max(i - 4, 0):i] != "def "]
+        coin = [i for i in range(len(src))
+                if src.startswith("_match_coincident_cross_shape_skin(dst_path", i)
+                and src[max(i - 4, 0):i] != "def "]
+        assert len(gaf) == len(hold) == len(coin), _path
+        for g, h, c in zip(gaf, hold, coin):
+            assert g < h < c, _path
+        totals = [totals[0] + len(gaf), totals[1] + len(hold), totals[2] + len(coin)]
+    assert totals == [2, 2, 2]
 
 
 # --- one lock per part; the draping exemption --------------------------------
