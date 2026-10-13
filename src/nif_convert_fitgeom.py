@@ -3785,7 +3785,7 @@ def _partial_rigid_panels(src_v, dst_v, tris, strength: float,
 
 def _rigidify_within_clearance(src_v, cur_v, tris, body_v, body_n,
                                strength: float, skip_mask=None,
-                               min_verts: int = 24):
+                               min_verts: int = 24, body_nipple=None):
     """Rigidify each panel as far as it can go WITHOUT losing body clearance.
 
     `_partial_rigid_panels` has to run before the anti-poke, so the anti-poke
@@ -3849,6 +3849,83 @@ def _rigidify_within_clearance(src_v, cur_v, tris, body_v, body_n,
             return np.concatenate([(A + B + C) / 3.0, (A + B) * 0.5,
                                    (B + C) * 0.5, (A + C) * 0.5])
 
+        # #panel-rigid-tip-guard (EXPERIMENT): the nipple-tip body points, tested
+        # against the panel SURFACE (barycentric over its triangles). The vertex
+        # and centroid/midpoint samples above are garment-side: on a coarse plate
+        # none of them sits over a 0.44u nipple rising between them, so the
+        # bisection lets the plate settle onto the apex. Measured on a reported
+        # cuirass: anti-poke left the core +0.21u clear, this pass shipped it at
+        # -0.044u (72 core rays through). Same rule as the other floors --
+        # nothing newly enters, nothing gets deeper -- only measured where it
+        # fails. Tip-local by construction: no clearance is ADDED anywhere.
+        _tip_P = _tip_N = _tip_tree = None
+        _t_tip = None
+        if (_nc().PANEL_RIGID_TIP_GUARD and body_nipple is not None
+                and tris is not None):
+            _nw = np.asarray(body_nipple, dtype=np.float64)
+            if len(_nw) == len(bv) and float(_nw.max()) > 0:
+                # The NIPPLE, not the breast: the points within 1.5u of each
+                # side's apex (the most protruding tip vert along the tip
+                # patch's mean normal). The whole >= 75% weight patch is ~3u
+                # across and includes skin a tight top legitimately hugs at
+                # ~0.04u; guarding that froze a top's panel at strength 0.009
+                # instead of 0.12 and kept the anti-poke's emboss.
+                _patch = _nw >= 0.75 * float(_nw.max())
+                _ti = []
+                for _sd in (bv[:, 0] > 0.0, bv[:, 0] <= 0.0):
+                    _ts = np.flatnonzero(_patch & _sd)
+                    if len(_ts) < 3:
+                        continue
+                    _n0 = bn[_ts].mean(0)
+                    _n0 /= np.linalg.norm(_n0) + 1e-12
+                    _ap = _ts[int(np.argmax(bv[_ts] @ _n0))]
+                    _ti.append(np.flatnonzero(
+                        _sd & (np.linalg.norm(bv - bv[_ap], axis=1) < 1.5)))
+                _ti = np.concatenate(_ti) if _ti else np.zeros(0, dtype=np.int64)
+                if len(_ti):
+                    _tip_P, _tip_N = bv[_ti], bn[_ti]
+                    _tip_tree = _KD(_tip_P)
+                    _t_tip = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+                    _t_tip = _t_tip[(_t_tip >= 0).all(axis=1)
+                                    & (_t_tip < len(d)).all(axis=1)]
+
+        def _tip_pairs(Q_full, tl_glob):
+            """(tri rows, body tip idx, weights) for tip points projecting
+            inside the given triangles of the CURRENT surface."""
+            A, B, C = Q_full[tl_glob[:, 0]], Q_full[tl_glob[:, 1]], Q_full[tl_glob[:, 2]]
+            cen = (A + B + C) / 3.0
+            R = np.sqrt(np.max(np.stack([((A - cen) ** 2).sum(1), ((B - cen) ** 2).sum(1),
+                                         ((C - cen) ** 2).sum(1)], 1), axis=1))
+            near = _tip_tree.query(cen)[0] <= R + 4.0
+            rows, pts, ws = [], [], []
+            for r in np.flatnonzero(near):
+                cand = _tip_tree.query_ball_point(cen[r], R[r] + 4.0)
+                if not cand:
+                    continue
+                cand = np.asarray(cand, dtype=np.int64)
+                # ALONG THE TIP'S OWN NORMAL (a ray), not a projection onto the
+                # triangle's plane: an edge-on strap or hem "contains" the plane
+                # projection of a point it merely sits beside, and read 0.05u in
+                # front of a nipple whose covering surface was 1.27u out.
+                e1, e2 = B[r] - A[r], C[r] - A[r]
+                Nd = _tip_N[cand]
+                pv = np.cross(Nd, e2)
+                det = pv @ e1
+                okd = np.abs(det) > 1e-9
+                inv = np.where(okd, 1.0 / np.where(okd, det, 1.0), 0.0)
+                sv = _tip_P[cand] - A[r]
+                wb = np.einsum("ij,ij->i", sv, pv) * inv
+                qv = np.cross(sv, e1)
+                wc = np.einsum("ij,ij->i", Nd, qv) * inv
+                ins = okd & (wb >= 0) & (wc >= 0) & (wb + wc <= 1)
+                for j in np.flatnonzero(ins):
+                    rows.append(r)
+                    pts.append(cand[j])
+                    ws.append((1.0 - wb[j] - wc[j], wb[j], wc[j]))
+            if not rows:
+                return None
+            return (np.asarray(rows), np.asarray(pts), np.asarray(ws))
+
         out = d.copy()
         touched = 0
         used = []
@@ -3895,9 +3972,57 @@ def _rigidify_within_clearance(src_v, cur_v, tris, body_v, body_n,
                     _cs = clear_of(_samples(Q, tl))
                     floor_s = np.where(_cs > 0.0, _cs * _kc, _cs) - 1e-4
 
+            # #panel-rigid-tip-guard: tip points under this panel's triangles
+            _tp = None
+            if _tip_tree is not None:
+                _keep_t = free[_t_tip].all(axis=1)
+                if _keep_t.any():
+                    _tg = _t_tip[_keep_t]
+                    _pr = _tip_pairs(d, _tg)
+                    if _pr is not None:
+                        _pos_t = np.full(len(d), -1, dtype=np.int64)
+                        _pos_t[np.flatnonzero(free)] = np.arange(int(free.sum()))
+                        _tl_t = _pos_t[_tg[_pr[0]]]
+                        _P, _N, _W = _tip_P[_pr[1]], _tip_N[_pr[1]], _pr[2]
+                        _c0 = np.einsum("nj,nj->n", np.einsum(
+                            "nk,nkj->nj", _W, Q[_tl_t]) - _P, _N)
+                        # The surface COVERING the tip only: in front of it, or at
+                        # most 1u through it. A triangle well behind the point (the
+                        # back of a dress, seen through the torso) is not covering
+                        # anything, and holding it "no deeper" refused a whole
+                        # panel's rigidification -- which left the anti-poke's
+                        # emboss in place (a dress's outline 0.86 -> 1.20).
+                        _ok = (_c0 > -1.0) & (_c0 <= 4.0)
+                        # ONE surface per tip point: the first one in FRONT of it
+                        # (smallest clearance >= 0) -- the surface that would show
+                        # a poke. A point already through some buried layer but
+                        # covered further out is not exposed, and holding that
+                        # buried layer "no deeper" froze a whole top's panel (the
+                        # top's outline stayed 1.25 instead of the control's 0.87).
+                        # A point with nothing in front keeps its least-deep pair.
+                        if _ok.any():
+                            _pt = _pr[1]
+                            _keep1 = np.zeros(len(_c0), dtype=bool)
+                            for _q in np.unique(_pt[_ok]):
+                                _ix = np.flatnonzero(_ok & (_pt == _q))
+                                _fr = _ix[_c0[_ix] >= 0.0]
+                                _keep1[_fr[np.argmin(_c0[_fr])] if len(_fr)
+                                       else _ix[np.argmax(_c0[_ix])]] = True
+                            _ok = _keep1
+                        if _ok.any():
+                            _tp = (_tl_t[_ok], _P[_ok], _N[_ok], _W[_ok],
+                                   np.minimum(_c0[_ok], 0.0) - 1e-4)
+
+            def _tip_ok(V):
+                tl_, P_, N_, W_, fl_ = _tp
+                S = np.einsum("nk,nkj->nj", W_, V[tl_])
+                return bool(np.all(np.einsum("nj,nj->n", S - P_, N_) >= fl_))
+
             def feasible(sv):
                 moved = Q + (rigid - Q) * sv
                 if not bool(np.all(clear_of(moved) >= floor)):
+                    return False
+                if _tp is not None and not _tip_ok(moved):
                     return False
                 if tl is None:
                     return True
@@ -3925,6 +4050,252 @@ def _rigidify_within_clearance(src_v, cur_v, tris, body_v, body_n,
         # "0 panels" and read as "nothing qualified".
         _note_pass_failure("_rigidify_within_clearance", _re)
         return cur_v, 0, 0.0
+
+def _bridge_surface_shortfall(V, tris, core, P, nA, floor, facing=None):
+    """How far below `floor` the garment SURFACE sits over the worst of the body
+    points P (along nA), over the triangles touching the bridged core (and, when
+    `facing` is given, only those whose corners all face outward). 0 if none."""
+    t = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+    keep = np.asarray(core, dtype=bool)[t].any(axis=1)
+    if facing is not None:
+        keep &= np.asarray(facing, dtype=bool)[t].all(axis=1)
+    t = t[keep]
+    if not len(t):
+        return 0.0
+    A, B, C = V[t[:, 0]], V[t[:, 1]], V[t[:, 2]]
+    ea = np.cross(nA, [0.0, 0.0, 1.0])
+    if np.linalg.norm(ea) < 1e-6:
+        ea = np.cross(nA, [1.0, 0.0, 0.0])
+    ea /= np.linalg.norm(ea)
+    eb = np.cross(nA, ea)
+    def uv(X):
+        return np.c_[X @ ea, X @ eb]
+    a2, b2, c2, p2 = uv(A), uv(B), uv(C), uv(P)
+    worst = 0.0
+    v0, v1 = b2 - a2, c2 - a2
+    den = v0[:, 0] * v1[:, 1] - v0[:, 1] * v1[:, 0]
+    ok = np.abs(den) > 1e-12
+    for k in range(len(P)):
+        v2 = p2[k] - a2
+        wb = np.where(ok, (v2[:, 0] * v1[:, 1] - v2[:, 1] * v1[:, 0]) / np.where(ok, den, 1.0), -1.0)
+        wc = np.where(ok, (v0[:, 0] * v2[:, 1] - v0[:, 1] * v2[:, 0]) / np.where(ok, den, 1.0), -1.0)
+        ins = (wb >= 0) & (wc >= 0) & (wb + wc <= 1)
+        if not ins.any():
+            continue
+        hs = ((1 - wb[ins] - wc[ins]) * (A[ins] @ nA) + wb[ins] * (B[ins] @ nA)
+              + wc[ins] * (C[ins] @ nA))
+        hp = float(P[k] @ nA)
+        # the surface above the point: the nearest one at or above it
+        above = hs[hs >= hp - 2.0]
+        if not len(above):
+            continue
+        gap = float(above.min()) - hp
+        worst = max(worst, floor - gap)
+    return max(0.0, worst)
+
+def _bridge_dome(req, d2, kap):
+    """The bridge's floor lift as a function of the shortfall top-up `extra`:
+    at each core vert, the upper envelope of downward parabolas (curvature
+    `kap`) standing on every body core point's own requirement `req`; `d2` is
+    the (core vert x body point) squared lateral distance."""
+    def lift(extra):
+        return np.maximum(0.0, (req[None, :] + extra - kap * d2).max(axis=1))
+    return lift
+
+
+def _nipple_bridge(cur_v, body_v, body_n, body_nipple, skip_mask=None,
+                   tris=None):
+    """#nipple-bridge (EXPERIMENT): the garment passes OVER the nipple instead of
+    tracing it.
+
+    A fine garment hugging the body at any near-constant clearance reproduces
+    the 0.44u nipple bump (controls: a constant 1.3u offset scores outline 1.2),
+    and the clearance ramp makes it worse because the morph amplitude, and so the
+    requirement, peaks at the nipple. The author's garment does not: on the
+    reported top it sits 0.17u CLOSER over the nipple than over the rest of the
+    breast, ours 0.19u further out (stage dump: anti-poke +0.32u at the tip).
+
+    Per apex: fit a quadric to the garment's own heights 2.5-5u out (along the
+    apex normal), continue it over the core, and blend the core onto it (fully
+    inside 1.5u, fading out by 2.5u). Then lift the core uniformly only as far as
+    the MEASURED DEMAND needs: the worst single-slider outward motion of the apex
+    relative to the ring around it, from the body's own morph data, plus
+    NIPPLE_BRIDGE_MARGIN. Moves vertices along the apex normal only, never a
+    `skip_mask` vertex, and skips a garment with too few vertices over the
+    nipple to trace it in the first place (a coarse plate cannot outline).
+
+    Returns the new verts, or None when nothing qualified.
+    """
+    try:
+        V = np.array(cur_v, dtype=np.float64, copy=True)
+        bv = np.asarray(body_v, dtype=np.float64)
+        bn = np.asarray(body_n, dtype=np.float64)
+        nw = np.asarray(body_nipple, dtype=np.float64)
+        if len(nw) != len(bv) or not len(V) or float(nw.max()) <= 0.0:
+            return None
+        tip = nw >= 0.75 * float(nw.max())
+        stack = _cached_body_morph_stack(_find_ube_body_osd(), len(bv))
+        r_full = float(_nc().NIPPLE_BRIDGE_R_FULL)
+        r_in = float(_nc().NIPPLE_BRIDGE_R_IN)
+        r_out = float(_nc().NIPPLE_BRIDGE_R_OUT)
+        margin = float(_nc().NIPPLE_BRIDGE_MARGIN)
+        changed = False
+        for side in (bv[:, 0] > 0.0, bv[:, 0] <= 0.0):
+            ts = np.flatnonzero(tip & side)
+            if len(ts) < 10:
+                continue
+            n0 = bn[ts].mean(0)
+            n0 /= np.linalg.norm(n0) + 1e-12
+            ap = ts[int(np.argmax(bv[ts] @ n0))]
+            A = bv[ap]
+            nA = bn[ap] / (np.linalg.norm(bn[ap]) + 1e-12)
+            ea = np.cross(nA, [0.0, 0.0, 1.0])
+            if np.linalg.norm(ea) < 1e-6:
+                ea = np.cross(nA, [1.0, 0.0, 0.0])
+            ea /= np.linalg.norm(ea)
+            eb = np.cross(nA, ea)
+            rel = V - A
+            u, w, h = rel @ ea, rel @ eb, rel @ nA
+            r = np.hypot(u, w)
+            cand = (r < r_out) & (h > -4.0) & (h < 4.0)
+            if skip_mask is not None:
+                cand &= ~np.asarray(skip_mask, dtype=bool)
+            # OUTWARD-FACING surface only. A thick or closed shape (a torus, a
+            # double-walled plate) has an inner wall facing the body; fitting one
+            # quadric through both walls scattered the normals, and the late
+            # coherence repair then collapsed the patch into the body (measured
+            # on a reported cuirass: tip +0.06u after the bridge -> -1.32u).
+            facing = None
+            if tris is not None:
+                _tt = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+                _fn = np.cross(V[_tt[:, 1]] - V[_tt[:, 0]], V[_tt[:, 2]] - V[_tt[:, 0]])
+                _vn = np.zeros_like(V)
+                for _k in range(3):
+                    np.add.at(_vn, _tt[:, _k], _fn)
+                _vn /= np.linalg.norm(_vn, axis=1, keepdims=True) + 1e-12
+                # Winding is not trusted to point outward (garments ship both
+                # ways). Two walls present -> the OUTER one is the one standing
+                # higher along nA; one wall -> its majority sign.
+                _d = _vn @ nA
+                _pos, _neg = cand & (_d > 0.3), cand & (_d < -0.3)
+                _n = max(int(cand.sum()), 1)
+                if int(_pos.sum()) > 0.2 * _n and int(_neg.sum()) > 0.2 * _n:
+                    _sg = 1.0 if h[_pos].mean() >= h[_neg].mean() else -1.0
+                else:
+                    _sg = 1.0 if float(_d[cand].sum()) >= 0.0 else -1.0
+                facing = (_sg * _d) > 0.3
+                cand &= facing
+            ann = cand & (r >= r_in)
+            core = cand & (r < r_in)
+            if int(ann.sum()) < 12 or int(core.sum()) < 6:
+                continue
+            # Only a garment fine enough to TRACE a nipple can outline one. On a
+            # coarser one the bridged corners are joined by flat triangles that
+            # sag below the smooth target -- measured: a 2.8u cuirass went from
+            # +0.25u to -0.10u at the tip. Coarse pieces are the morph-track's
+            # class, not this one.
+            if tris is not None:
+                _t = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+                _tc = _t[core[_t].any(axis=1)]
+                if len(_tc):
+                    _el = np.linalg.norm(V[_tc[:, [0, 1, 2]]] - V[_tc[:, [1, 2, 0]]], axis=2)
+                    if float(np.median(_el)) > float(_nc().NIPPLE_BRIDGE_MAX_EDGE):
+                        continue
+
+            def _q(uu, ww):
+                return np.c_[np.ones_like(uu), uu, ww, uu * uu, uu * ww, ww * ww]
+            coef, *_ = np.linalg.lstsq(_q(u[ann], w[ann]), h[ann], rcond=None)
+            # the floor: measured demand at THIS apex
+            brel = bv - A
+            bu, bw, bh = brel @ ea, brel @ eb, brel @ nA
+            br = np.hypot(bu, bw)
+            # ONLY A GARMENT THAT TRACES THE NIPPLE. Its own bump over the apex
+            # (heights above its ring quadric) must be a real share of the body's
+            # (the body's heights above ITS ring quadric). A garment that already
+            # passes over is not this pass's defect, and lifting one -- a coarse
+            # plate whose triangles are wider than the blend ring -- tilted them
+            # sharply enough for the late coherence repair to collapse the patch
+            # into the body (measured: tip -0.04 -> -1.32u).
+            _gc = core & (r < 1.2)
+            _bring = side & (br >= r_in) & (br < r_out) & (bh > -4.0)
+            _bcen = side & (br < 0.6)
+            if int(_gc.sum()) < 3 or int(_bring.sum()) < 12 or not int(_bcen.sum()):
+                continue
+            _bcoef, *_ = np.linalg.lstsq(_q(bu[_bring], bw[_bring]), bh[_bring],
+                                         rcond=None)
+            _bb = float(np.max(bh[_bcen] - _q(bu[_bcen], bw[_bcen]) @ _bcoef))
+            _gb = float(np.max(h[_gc] - _q(u[_gc], w[_gc]) @ coef))
+            if _bb <= 0.05 or _gb < float(_nc().NIPPLE_BRIDGE_MIN_TRACE) * _bb:
+                continue
+            ring = side & (br >= r_full) & (br < r_in) & (bh > -4.0)
+            demand = 0.0
+            if stack is not None and len(stack) and int(ring.sum()):
+                for dm in stack:
+                    d = np.asarray(dm, dtype=np.float64)
+                    demand = max(demand, float((d[ap] - d[ring].mean(0)) @ nA))
+            floor = demand + margin
+            bcore = side & (br < r_full) & (bh > -2.0)
+            lift = 0.0
+            if int(bcore.sum()):
+                lift = max(0.0, float(np.max(bh[bcore] + floor
+                                             - _q(bu[bcore], bw[bcore]) @ coef)))
+            # The lift as a DOME, not a plateau. One uniform lift over the whole
+            # core, faded out over r_full..r_in, left a raised disc with an edge
+            # about 1.5u out -- measured on a reported top's inner layer: +0.21u
+            # flat to 1.5u, 0 by 2u, and the outer plate ridden over it showed a
+            # circle. Each body core point needs only ITS OWN height plus the
+            # floor; the nipple falls away from the apex, so the requirement does
+            # too. The lift at a garment vert is the upper envelope of downward
+            # parabolas standing on those requirements: never below any of them,
+            # round at the top, and falling to zero by itself.
+            dome_r = float(_nc().NIPPLE_BRIDGE_DOME_R)
+            _dome = None
+            extra = 0.0
+            if dome_r > 0.0 and int(bcore.sum()):
+                _dome = _bridge_dome(
+                    bh[bcore] + floor - _q(bu[bcore], bw[bcore]) @ coef,
+                    (u[core][:, None] - bu[bcore][None, :]) ** 2
+                    + (w[core][:, None] - bw[bcore][None, :]) ** 2,
+                    1.0 / (2.0 * dome_r * dome_r))
+            t = np.clip((r_in - r[core]) / max(r_in - r_full, 1e-6), 0.0, 1.0)
+            wgt = t * t * (3.0 - 2.0 * t)                     # smoothstep
+            V0 = V.copy()
+            # The floor is checked on the ACTUAL triangle surface, not the smooth
+            # target: the body core points are projected onto the garment's own
+            # triangles and the whole core is lifted until every one of them
+            # clears `floor`. (The vertex-vs-surface gap, again.)
+            for _it in range(4):
+                if _dome is not None:
+                    target = _q(u[core], w[core]) @ coef + _dome(extra)
+                else:
+                    target = _q(u[core], w[core]) @ coef + lift
+                # LOWER ONLY. An outline is a garment standing too high over the
+                # nipple; the bridge brings it down to the smooth surface and
+                # stops at the floor. It never raises a vertex: lifting a core
+                # to a floor kicked a coarse plate's triangles up, and the late
+                # coherence repair collapsed the patch into the body (tip
+                # -0.04 -> -1.32u). A garment already below the floor is the
+                # tip guard's and the morph track's job, not this pass's.
+                dh = wgt * (np.minimum(target, h[core]) - h[core])
+                V = V0.copy()
+                V[core] += nA[None, :] * dh[:, None]
+                if tris is None or not int(bcore.sum()):
+                    break
+                _short = _bridge_surface_shortfall(V, tris, core, bv[bcore], nA,
+                                                   floor, facing=facing)
+                if _short <= 1e-3:
+                    break
+                if _dome is not None:
+                    # a dome's peak moves less of the surface than a uniform
+                    # lift does, so it converges slower: overshoot a little
+                    extra += 1.25 * _short
+                else:
+                    lift += _short
+            changed = True
+        return V if changed else None
+    except Exception as _e:
+        _note_pass_failure("_nipple_bridge", _e)
+        return None
 
 def _panel_fit_out_of_body(pts, c, kd, body_v, body_n):
     """Get one rigid panel out of the body WITHOUT bending it.
