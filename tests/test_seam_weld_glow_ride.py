@@ -284,3 +284,32 @@ def test_two_plates_meeting_at_an_anchor_land_on_it():
     nc._weld_cross_shape_seams([jp, jo, jc], exclude_names={"torso"})
     np.testing.assert_allclose(jp["verts"][0], [0, 0, 0.0], atol=1e-9)
     np.testing.assert_allclose(jo["verts"][0], [0, 0, 0.0], atol=1e-9)
+
+
+def _body_plane(z):
+    """A body surface at height z with its normal +z (outside = above)."""
+    g = np.arange(-12.0, 12.01, 1.0)
+    X, Y = np.meshgrid(g, g)
+    bv = np.c_[X.ravel(), Y.ravel(), np.full(X.size, z)]
+    return bv, np.tile([0.0, 0.0, 1.0], (len(bv), 1))
+
+
+def test_a_plate_is_not_welded_onto_cloth_resting_inside_the_body():
+    """BODY GUARD: the cloth's rest (z 0.0) is inside the body (surface at 0.3);
+    the plate (z 0.6) is outside. Welding would carry the plate into the body --
+    measured on a long shirt, plate verts inside 13 -> 25. The seam stays open."""
+    jp, jc = _plate_and_cloth()
+    bv, bn = _body_plane(0.3)
+    n = nc._weld_cross_shape_seams([jp, jc], exclude_names={"torso"},
+                                    body_v=bv, body_n=bn)
+    assert n == 0
+    np.testing.assert_allclose(jp["verts"][0], [0, 0, 0.6], atol=1e-9)
+
+
+def test_the_body_guard_still_welds_onto_cloth_outside_the_body():
+    jp, jc = _plate_and_cloth()
+    bv, bn = _body_plane(-1.0)
+    n = nc._weld_cross_shape_seams([jp, jc], exclude_names={"torso"},
+                                    body_v=bv, body_n=bn)
+    assert n == 1
+    np.testing.assert_allclose(jp["verts"][0], [0, 0, 0.0], atol=1e-9)

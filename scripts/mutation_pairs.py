@@ -18699,4 +18699,33 @@ PAIRS = (
          tests=('tests/test_skirt_proxy_below_hip.py',),
          expect=('test_the_proxy_asks_for_the_declared_shapes', 'test_the_proxy_builder_takes_its_source_from_this_rule', ),
     ),
+    # #seam-weld-physics-anchor (2026-10-07, guard 10-13): a plate seam to SMP cloth
+    # stayed open (42/42 points, up to 0.58u); the anchor must not drag a plate into the body.
+    Pair('SWA-a', 'the anchor weld drags a plate into the body again',
+         edits=(
+             ('src/nif_convert_layers.py',
+              '                if t_clear < c0 - 1e-6:\n                    continue',
+              '                if False:  # MUTATED\n                    continue', 1),
+         ),
+         tests=('tests/test_seam_weld_glow_ride.py',),
+         expect=('test_a_plate_is_not_welded_onto_cloth_resting_inside_the_body',),
+    ),
+    Pair('SWA-b', 'an anchored cluster welds to its centroid, not onto the cloth',
+         edits=(
+             ('src/nif_convert_layers.py',
+              '        target = np.mean([fin_arrs[pi][li] for pi, li in (fixed or cluster)],',
+              '        target = np.mean([fin_arrs[pi][li] for pi, li in cluster],  # MUTATED', 1),
+         ),
+         tests=('tests/test_seam_weld_glow_ride.py',),
+         expect=('test_a_plate_welds_onto_the_physics_cloth_it_shares_a_seam_with',),
+    ),
+    Pair('SWA-c', 'a hidden physics proxy becomes an anchor',
+         edits=(
+             ('src/nif_convert_layers.py',
+              '                   and not _nc()._shape_is_hidden(j["src"])\n',
+              '', 1),
+         ),
+         tests=('tests/test_seam_weld_glow_ride.py',),
+         expect=('test_a_hidden_physics_shape_is_no_anchor',),
+    ),
 )

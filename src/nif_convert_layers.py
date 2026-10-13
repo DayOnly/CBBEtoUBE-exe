@@ -742,7 +742,7 @@ def _canonical_stack_name_groups(src_nif_path, exclude) -> "list | None":
 _SEAM_WELD_TOL = _knob("CBBE2UBE_SEAM_WELD_TOL", 0.05)
 
 def _weld_cross_shape_seams(shape_jobs, tol: float = _SEAM_WELD_TOL,
-                            exclude_names=None):
+                            exclude_names=None, body_v=None, body_n=None):
     """Weld source-coincident cross-plate seam verts to their centroid.
 
     Operates on the pass-1 `shape_jobs` (each {"src", "verts",
@@ -809,6 +809,12 @@ def _weld_cross_shape_seams(shape_jobs, tol: float = _SEAM_WELD_TOL,
         return 0
     all_src = np.concatenate([a for a in src_arrs if a is not None])
     tree = cKDTree(all_src)
+    body_tree = bv_arr = bn_arr = None
+    if (anchors and body_v is not None and body_n is not None
+            and len(body_v) and len(body_n) == len(body_v)):
+        bv_arr = np.asarray(body_v, dtype=np.float64)
+        bn_arr = np.asarray(body_n, dtype=np.float64)
+        body_tree = cKDTree(bv_arr)
     try:
         pairs = tree.query_pairs(tol, output_type="ndarray")
     except Exception:
@@ -851,7 +857,23 @@ def _weld_cross_shape_seams(shape_jobs, tol: float = _SEAM_WELD_TOL,
         # physics-anchor), else the centroid as before.
         target = np.mean([fin_arrs[pi][li] for pi, li in (fixed or cluster)],
                          axis=0)
+        # BODY GUARD (anchored clusters only). Authored physics cloth can rest
+        # INSIDE the converted body, and welding the plate onto it carried the
+        # plate in with it -- measured on a long shirt: plate verts inside the
+        # body 13 -> 25. A plate vert is not moved onto an anchor that would
+        # leave it inside the body and deeper than it already was; that seam
+        # point stays open instead.
+        if fixed and body_tree is not None:
+            _, _bi = body_tree.query(target)
+            t_clear = float((target - bv_arr[_bi]) @ bn_arr[_bi])
+        else:
+            t_clear = None
         for pi, li in movable:
+            if t_clear is not None and t_clear < 0.0:
+                _, _ci = body_tree.query(fin_arrs[pi][li])
+                c0 = float((fin_arrs[pi][li] - bv_arr[_ci]) @ bn_arr[_ci])
+                if t_clear < c0 - 1e-6:
+                    continue
             fin_arrs[pi][li] = target
             changed.add(pi)
             n_weld += 1

@@ -4963,8 +4963,9 @@ def convert_nif(
                                       | set(layered_cloth_names))
                     except Exception:
                         _weld_excl = set()
-                    n_weld = _weld_cross_shape_seams(shape_jobs_p1,
-                                                     exclude_names=_weld_excl)
+                    n_weld = _weld_cross_shape_seams(
+                        shape_jobs_p1, exclude_names=_weld_excl,
+                        body_v=body_verts_for_fit, body_n=body_normals_for_fit)
                     if n_weld:
                         import sys as _sys
                         print(f"  seam weld: closed {n_weld} cross-plate seam "
@@ -15554,8 +15555,9 @@ def convert_nif_phase2(
                               | set(layered_cloth_names))
             except Exception:
                 _weld_excl = set()
-            n_weld = _weld_cross_shape_seams(shape_jobs,
-                                             exclude_names=_weld_excl)
+            n_weld = _weld_cross_shape_seams(
+                shape_jobs, exclude_names=_weld_excl,
+                body_v=body_verts_for_p2, body_n=body_norms_for_p2)
             if n_weld:
                 import sys as _sys
                 print(f"  seam weld: closed {n_weld} cross-plate seam vert(s)",
