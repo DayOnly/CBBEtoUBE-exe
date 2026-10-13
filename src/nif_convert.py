@@ -1261,6 +1261,8 @@ from .nif_convert_weights import (  # noqa: E402
     _match_full_weights_to_body,
     _match_rigid_leg_bend_to_body,
     _match_coincident_cross_shape_skin,
+    _rigid_plate_jiggle_where_needed,
+    _gap_aware_follow,
     _unify_seam_twins_in_skin,
     _match_seam_skinning,
     _cap_weight_roughness_to_author,
@@ -1297,6 +1299,7 @@ from .nif_convert_weights import (  # noqa: E402
     _cached_scale_bone_data,
     _align_scale_bone_stbs_to_verts,
     _adjust_skin_to_bone_baked,
+    _adjust_global_to_skin_baked,
     _is_scale_bone,
     _is_breast_bone,
     _is_leg_rigid_bone,
@@ -2176,6 +2179,7 @@ from .nif_convert_bodyrefs import (  # noqa: E402
 from .nif_convert_skinframe import (  # noqa: E402
     _g2s_is_identity, _shape_global_to_skin, _verts_skin_to_world,
     _verts_world_to_skin,
+    _shape_world_verts,
 )
 
 
@@ -5294,6 +5298,28 @@ def convert_nif(
                       f"the author", file=_sys.stderr)
         except Exception as _pe:
             _note_pass_failure("_cap_weight_roughness_to_author", _pe)
+        # A rigid torso plate keeps jiggle follow only where the body would come
+        # through it (#jiggle-where-needed). After every pass that adds jiggle,
+        # before the cross-shape unification below, which must stay last.
+        try:
+            n_jw = _rigid_plate_jiggle_where_needed(
+                dst_path, src_nif_path=src_path, biped_slots=biped_slots)
+            if n_jw:
+                import sys as _sys
+                print(f"  jiggle-where-needed: re-weighted {n_jw} vert(s)",
+                      file=_sys.stderr)
+        except Exception as _pe:
+            _note_pass_failure("_rigid_plate_jiggle_where_needed", _pe)
+        # Then the armour follows the skin under it by how tight it fits
+        # (#gap-aware-follow) -- last of the follow passes, before the unification.
+        try:
+            n_gf = _gap_aware_follow(dst_path, biped_slots=biped_slots)
+            if n_gf:
+                import sys as _sys
+                print(f"  gap-aware follow: re-weighted {n_gf} vert(s)",
+                      file=_sys.stderr)
+        except Exception as _pe:
+            _note_pass_failure("_gap_aware_follow", _pe)
         # Hold a reskinned layer to the author where it meets an SMP layer that
         # KEPT the author's rig (#smp-boundary-weight-hold). After the body
         # matches, for the same reason the coincident match is: each of them
@@ -5313,7 +5339,8 @@ def convert_nif(
         # earlier repair.
         try:
             n_cs = _match_coincident_cross_shape_skin(dst_path,
-                                                      src_nif_path=src_path)
+                                                      src_nif_path=src_path,
+                                                      biped_slots=biped_slots)
             if n_cs:
                 import sys as _sys
                 print(f"  coincident skin: unified {n_cs} cross-shape vert(s)",
@@ -8714,7 +8741,7 @@ def _selfint_overrides(nf, dst_path, src_path) -> dict:
     try:
         snf = _open_source_nif(src_path)   # #dup-shape-names
         for s in snf.shapes:
-            src_shapes[s.name] = (np.asarray(s.verts, np.float64),
+            src_shapes[s.name] = (_shape_world_verts(s),   # #source-world-frame
                                   np.asarray(s.tris, np.int64))
     except Exception:
         src_shapes = {}
@@ -9129,6 +9156,13 @@ RIGID_PART_SKIN_MATCH = (
 _RIGID_PART_GATE = _knob("CBBE2UBE_RIGID_PART_GATE", 0.15)
 # Below this a "part" is a stray sliver, not an ornament worth rigidifying.
 _RIGID_PART_MIN_VERTS = _knob("CBBE2UBE_RIGID_PART_MIN_VERTS", 8, int)
+GAF_COVER_SIDE = not _flag("CBBE2UBE_NO_GAF_COVER_SIDE", False)
+AUTHOR_PULL_SKIN_LOCK = not _flag("CBBE2UBE_NO_AUTHOR_PULL_SKIN_LOCK", False)
+FULL_WEIGHT_GAP_RAMP = not _flag("CBBE2UBE_NO_FULL_WEIGHT_GAP_RAMP", False)
+COVER_BAND_FEATHER = not _flag("CBBE2UBE_NO_COVER_BAND_FEATHER", False)
+GAF_FACE_COVER = not _flag("CBBE2UBE_NO_GAF_FACE_COVER", False)
+FAMILY_SURFACE_TARGET = not _flag("CBBE2UBE_NO_FAMILY_SURFACE_TARGET", False)
+FAMILY_BREAST_KEEP = not _flag("CBBE2UBE_NO_FAMILY_BREAST_KEEP", False)
 # DO NOT REBUILD `#rigid-part-cap` HERE -- it was written, measured and DELETED.
 #
 # It bounded a part's deformation by pulling every row toward the part MEAN by
@@ -9239,6 +9273,24 @@ _SMP_HOLD_NEAR = _knob("CBBE2UBE_SMP_HOLD_NEAR", 0.5)
 _SMP_HOLD_FAR = _knob("CBBE2UBE_SMP_HOLD_FAR", 6.0)
 _SMP_HOLD_MIN_SHARE = _knob("CBBE2UBE_SMP_HOLD_MIN_SHARE", 0.75)
 SMP_BOUNDARY_HOLD = not _flag("CBBE2UBE_NO_SMP_BOUNDARY_HOLD", False)
+
+# #jiggle-where-needed (`_rigid_plate_jiggle_where_needed`): a rigid torso plate
+# with no skin under it loses the converter-added body-jiggle follow.
+JIGGLE_WHERE_NEEDED = not _flag("CBBE2UBE_NO_JIGGLE_WHERE_NEEDED", False)
+
+# #gap-aware-follow (`_gap_aware_follow`): armour takes the skin row of the body
+# point under it -- all of it where the fit is tight, none where there is room.
+GAP_AWARE_FOLLOW = not _flag("CBBE2UBE_NO_GAP_AWARE_FOLLOW", False)
+# Full follow within 1u, none past 4u. Population of 40 pieces with a body copy,
+# vs 0.5u/3u: exposed 8143 -> 7857, creases 34872 -> 30426, stretch 29007 -> 27769,
+# kinematic poke-through 1214 -> 1072; wider (1.5/5, 1/6) re-crumpled a layered
+# cuirass and reaches authored drape.
+_GAF_TIGHT = _knob("CBBE2UBE_GAF_TIGHT", 1.0)
+_GAF_LOOSE = _knob("CBBE2UBE_GAF_LOOSE", 4.0)
+# The blend is smoothed over this radius so the follow cannot itself make a kink.
+_GAF_SMOOTH = _knob("CBBE2UBE_GAF_SMOOTH", 3.0)
+# A separate piece no longer than this (fur card, stud, buckle) moves as one.
+_GAF_PIECE = _knob("CBBE2UBE_GAF_PIECE", 8.0)
 
 
 # (moved to nif_convert_weights.py, 2026-09-01)
@@ -15732,6 +15784,28 @@ def convert_nif_phase2(
                   f"author", file=_sys.stderr)
     except Exception as _pe:
         _note_pass_failure("_cap_weight_roughness_to_author", _pe)
+    # A rigid torso plate keeps jiggle follow only where the body would come
+    # through it (#jiggle-where-needed). After every pass that adds jiggle,
+    # before the cross-shape unification below, which must stay last.
+    try:
+        n_jw = _rigid_plate_jiggle_where_needed(
+                dst_path, src_nif_path=src_path, biped_slots=biped_slots)
+        if n_jw:
+            import sys as _sys
+            print(f"  jiggle-where-needed: re-weighted {n_jw} vert(s)",
+                  file=_sys.stderr)
+    except Exception as _pe:
+        _note_pass_failure("_rigid_plate_jiggle_where_needed", _pe)
+    # Then the armour follows the skin under it by how tight it fits
+    # (#gap-aware-follow) -- last of the follow passes, before the unification.
+    try:
+        n_gf = _gap_aware_follow(dst_path, biped_slots=biped_slots)
+        if n_gf:
+            import sys as _sys
+            print(f"  gap-aware follow: re-weighted {n_gf} vert(s)",
+                  file=_sys.stderr)
+    except Exception as _pe:
+        _note_pass_failure("_gap_aware_follow", _pe)
     # Hold a reskinned layer to the author where it meets an SMP layer that KEPT
     # the author's rig (#smp-boundary-weight-hold). Placed with the other
     # author-relative passes, after the body matches, because each of those
@@ -15750,7 +15824,8 @@ def convert_nif_phase2(
     # earlier would simply be re-diverged by the next pass.
     try:
         n_cs = _match_coincident_cross_shape_skin(dst_path,
-                                                  src_nif_path=src_path)
+                                                  src_nif_path=src_path,
+                                                  biped_slots=biped_slots)
         if n_cs:
             import sys as _sys
             print(f"  coincident skin: unified {n_cs} cross-shape vert(s)",
@@ -15817,6 +15892,7 @@ __all__ = [
     "_PASS_FAILURES_THIS_PIECE",
     "_actor_can_resolve_bone",
     "_actor_skeleton_bone_parents",
+    "_adjust_global_to_skin_baked",
     "_adjust_skin_to_bone_baked",
     "_align_scale_bone_stbs_to_verts",
     "_authored_layer_depth",

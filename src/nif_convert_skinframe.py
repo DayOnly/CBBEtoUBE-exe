@@ -64,6 +64,21 @@ def _verts_skin_to_world(verts_skin: np.ndarray, g2s) -> np.ndarray:
     return ((np.asarray(verts_skin, np.float64) - t) @ R) / sc
 
 
+def _shape_world_verts(shape) -> np.ndarray:
+    """A shape's verts in the WORLD frame (lifted by its own g2s; identity is a
+    no-op). Every SOURCE-vs-output geometric comparison must go through this:
+    a source authored at g2s x0.045 stores verts 22x too small, and a pass with
+    an absolute tolerance then reads garbage -- the self-intersection baseline
+    counted 0 crossings on a fluted plate that has 2682, so the repair 'fixed'
+    all of them and crumpled the fluting. #source-world-frame"""
+    v = np.asarray(shape.verts, dtype=np.float64)
+    try:
+        g = shape.global_to_skin if shape.has_global_to_skin else None
+    except Exception:
+        g = None
+    return _verts_skin_to_world(v, g)
+
+
 def _verts_world_to_skin(verts_world: np.ndarray, g2s) -> np.ndarray:
     """Apply global_to_skin: world verts -> skin space. No-op if identity."""
     if g2s is None or _g2s_is_identity(g2s):
