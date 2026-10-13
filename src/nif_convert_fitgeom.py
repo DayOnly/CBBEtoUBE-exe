@@ -2054,15 +2054,21 @@ def _bust_morph_chord_req(cur_cloth, tris, ui, ube_body_verts,
             return None
         u0, u1, u2 = ui[t[:, 0]], ui[t[:, 1]], ui[t[:, 2]]
         worst = np.full(len(t), -np.inf)
+        # Only the INSIDE pairs count, so gather them once instead of computing
+        # all (triangle x K) pairs for every slider and masking most away (the
+        # per-slider loop over ~100+ sliders was ~10% of a heavy piece). Same
+        # value per pair, same max -- bit-identical.
+        ti, ki = np.nonzero(ok)
+        wa, wb, wc = (wA[ti, ki][:, None], wB[ti, ki][:, None],
+                      wC[ti, ki][:, None])
+        c0, c1, c2 = u0[ti], u1[ti], u2[ti]
+        bj, nbj = bidx[ti, ki], nb[ti, ki]
         for dm in morph_stack:
             d = dm.astype(np.float64)
             # the surface point's motion: what the three corners will copy
-            interp = (wA[:, :, None] * d[u0][:, None, :]
-                      + wB[:, :, None] * d[u1][:, None, :]
-                      + wC[:, :, None] * d[u2][:, None, :])
-            ch = np.einsum("tkj,tkj->tk", d[bidx] - interp, nb)
-            np.maximum(worst, np.where(ok, ch, -np.inf).max(axis=1),
-                       out=worst)
+            interp = wa * d[c0] + wb * d[c1] + wc * d[c2]
+            ch = np.einsum("pj,pj->p", d[bj] - interp, nbj)
+            np.maximum.at(worst, ti, ch)
         worst = np.where(np.isfinite(worst), worst, 0.0)
         worst = np.clip(worst, 0.0,
                         _nc().BUST_MORPH_CHORD_MAX if cap is None else float(cap))

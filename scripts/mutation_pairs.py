@@ -19209,4 +19209,24 @@ PAIRS = (
          tests=('tests/test_source_body_warp.py',),
          expect=('test_the_bust_is_left_alone',),
     ),
+    # #closest-on-body-dedup (2026-10-13): padded to the body's max vertex degree, a
+    # point evaluated ~1128 slots for ~28 triangles (26% of a heavy piece).
+    Pair('COB-a', 'each neighbour contributes only its first triangle',
+         edits=(
+             ('src/nif_convert_weights.py',
+              '        tri = flat[np.repeat(indptr[nb].ravel(), cl) + offs]',
+              '        tri = flat[np.repeat(indptr[nb].ravel(), cl)]  # MUTATED', 1),
+         ),
+         tests=('tests/test_closest_on_body_fast.py',),
+         expect=('test_bit_identical_to_the_padded_form',),
+    ),
+    Pair('COB-b', 'candidates are credited to the wrong point',
+         edits=(
+             ('src/nif_convert_weights.py',
+              '        pt = np.repeat(np.arange(c), cnt.sum(1))     # owning point per entry',
+              '        pt = np.repeat(np.arange(c)[::-1], cnt.sum(1)[::-1])  # MUTATED', 1),
+         ),
+         tests=('tests/test_closest_on_body_fast.py',),
+         expect=('test_bit_identical_to_the_padded_form',),
+    ),
 )

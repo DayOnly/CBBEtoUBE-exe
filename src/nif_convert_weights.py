@@ -4704,12 +4704,19 @@ def _rigid_plate_jiggle_where_needed(dst_path, src_nif_path=None,
     return changed_total
 
 
-def _closest_on_body(P, bV, bT, tree, vt_adj, k: int = 8, chunk: int = 4096):
+def _closest_on_body(P, bV, bT, tree, vt_adj, k: int = 8, chunk: int = 8192):
     """For each point: (closest point on the body SURFACE, triangle index,
     barycentrics). Candidates are the triangles around the k nearest body
     verts -- exact for any point whose closest surface point lies on one of
     them, which for a closed body and k=8 is every point within a few units.
-    Vectorised over a padded candidate table (-1 = no triangle)."""
+
+    Each (point, triangle) candidate is evaluated ONCE. The previous form padded
+    every vertex's triangle list to the body's MAXIMUM vertex degree (141 on the
+    UBE body, mean 5.8), so a point evaluated 8 x 141 = 1128 slots for ~28 real
+    triangles -- 26% of a heavy piece's conversion, and arrays of ~110 MB per
+    chunk. Ties go to the FIRST occurrence in neighbour-then-adjacency order, as
+    the padded argmin did, so the result is bit-identical (measured on 104k
+    points of two pieces)."""
     P = np.asarray(P, np.float64)
     m = len(P)
     best_q = np.zeros((m, 3))
@@ -4717,19 +4724,30 @@ def _closest_on_body(P, bV, bT, tree, vt_adj, k: int = 8, chunk: int = 4096):
     best_w = np.zeros((m, 3))
     if not m:
         return best_q, best_t, best_w
-    deg = max((len(a) for a in vt_adj), default=0)
-    pad = np.full((len(vt_adj), max(deg, 1)), -1, np.int64)
-    for j, a in enumerate(vt_adj):
-        pad[j, :len(a)] = a
+    lens = np.fromiter((len(a) for a in vt_adj), dtype=np.int64, count=len(vt_adj))
+    indptr = np.zeros(len(vt_adj) + 1, dtype=np.int64)
+    np.cumsum(lens, out=indptr[1:])
+    if not indptr[-1]:
+        return best_q, best_t, best_w
+    flat = np.concatenate([np.asarray(a, np.int64) for a in vt_adj if len(a)])
     _, nn = tree.query(P, k=k)
     nn = np.asarray(nn).reshape(m, -1)
+    ntri = len(bT)
     for s0 in range(0, m, chunk):
         sl = slice(s0, s0 + chunk)
-        cand = pad[nn[sl]].reshape(len(nn[sl]), -1)          # (c, k*deg)
-        ok = cand >= 0
-        cs = np.where(ok, cand, 0)
-        A, B, C = bV[bT[cs, 0]], bV[bT[cs, 1]], bV[bT[cs, 2]]
-        ab, ac, ap = B - A, C - A, P[sl, None, :] - A
+        nb = nn[sl]
+        c = len(nb)
+        cnt = lens[nb]
+        pt = np.repeat(np.arange(c), cnt.sum(1))     # owning point per entry
+        cl = cnt.ravel()
+        offs = np.arange(cl.sum()) - np.repeat(np.cumsum(cl) - cl, cl)
+        tri = flat[np.repeat(indptr[nb].ravel(), cl) + offs]
+        rank = np.arange(len(tri))                   # neighbour-then-adjacency order
+        _, first = np.unique(pt * ntri + tri, return_index=True)
+        pt, tri, rank = pt[first], tri[first], rank[first]
+        A, B, C = bV[bT[tri, 0]], bV[bT[tri, 1]], bV[bT[tri, 2]]
+        Pp = P[sl][pt]
+        ab, ac, ap = B - A, C - A, Pp - A
         d00 = (ab * ab).sum(-1)
         d01 = (ab * ac).sum(-1)
         d11 = (ac * ac).sum(-1)
@@ -4741,13 +4759,14 @@ def _closest_on_body(P, bV, bT, tree, vt_adj, k: int = 8, chunk: int = 4096):
         u = np.clip(1 - v - w, 0, 1)
         s = u + v + w
         u, v, w = u / s, v / s, w / s
-        Q = A * u[..., None] + B * v[..., None] + C * w[..., None]
-        dd = np.where(ok, np.linalg.norm(Q - P[sl, None, :], axis=-1), np.inf)
-        j = np.argmin(dd, axis=1)
-        r = np.arange(len(j))
-        best_q[sl] = Q[r, j]
-        best_t[sl] = cs[r, j]
-        best_w[sl] = np.stack([u[r, j], v[r, j], w[r, j]], axis=1)
+        Q = A * u[:, None] + B * v[:, None] + C * w[:, None]
+        dd = np.linalg.norm(Q - Pp, axis=-1)
+        order = np.lexsort((rank, dd, pt))
+        pick = order[np.r_[0, np.flatnonzero(np.diff(pt[order])) + 1]]
+        r = s0 + pt[pick]
+        best_q[r] = Q[pick]
+        best_t[r] = tri[pick]
+        best_w[r] = np.stack([u[pick], v[pick], w[pick]], axis=1)
     return best_q, best_t, best_w
 
 
