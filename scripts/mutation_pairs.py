@@ -18912,8 +18912,8 @@ PAIRS = (
     Pair('NBR-b', 'the measured floor is never applied, the bridge can sink onto the apex',
          edits=(
              ('src/nif_convert_fitgeom.py',
-              '            if int(bcore.sum()):',
-              '            if False:  # MUTATED', 1),
+              '                    bh[bcore] + floor - _q(bu[bcore], bw[bcore]) @ coef,',
+              '                    bh[bcore] - _q(bu[bcore], bw[bcore]) @ coef,  # MUTATED: no floor', 1),
          ),
          tests=('tests/test_nipple_bridge.py',),
          expect=('test_apex_keeps_the_floor', 'test_measured_demand_raises_the_floor'),
@@ -18921,8 +18921,8 @@ PAIRS = (
     Pair('NBR-c', 'the bridge floor is checked on the smooth target, not the triangle surface',
          edits=(
              ('src/nif_convert_fitgeom.py',
-              '                lift += _short',
-              '                lift += 0.0  # MUTATED', 1),
+              '                    extra += 1.25 * _short',
+              '                    extra += 0.0  # MUTATED', 1),
          ),
          tests=('tests/test_nipple_bridge.py',),
          expect=('test_floor_holds_on_the_triangle_surface',),
@@ -18961,7 +18961,7 @@ PAIRS = (
               '                        _ok = np.abs(_c0) <= 4.0  # MUTATED', 1),
          ),
          tests=('tests/test_panel_rigid_tip_guard.py',),
-         expect=('test_a_surface_behind_the_tip_does_not_block_the_panel',),
+         expect=('test_a_surface_only_behind_the_tip_does_not_block_the_panel',),
     ),
     Pair('PTG-c', 'tip points are paired by plane projection, not along their own normal',
          edits=(

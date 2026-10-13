@@ -222,3 +222,38 @@ def test_an_edge_on_strap_beside_the_tip_does_not_block_the_panel():
                 src, cur, t, bv, bn, 1.0, min_verts=3, body_nipple=nip)[0]))
     assert _tip_clearance(res[0][:n], t_f) >= 0.0
     assert np.allclose(res[0], res[1])
+
+
+def test_a_surface_only_behind_the_tip_does_not_block_the_panel():
+    """Nothing covers the tip from the FRONT (the panel's front plate sits off to
+    one side); only its back sheet lies behind the tip, ~3.6u deep. Pairing that
+    sheet would hold it no-deeper and refuse the panel for a surface that covers
+    nothing -- the case the `c0 > -1` filter exists for."""
+    bv, bn, nip = _body()
+    g = np.arange(-6.0, 6.01, 0.4)
+    X, Z = np.meshgrid(g, g)
+    back = np.c_[X.ravel(), np.full(X.size, -2.5), Z.ravel()]
+    bv = np.vstack([bv, back])
+    bn = np.vstack([bn, np.tile([0.0, -1.0, 0.0], (len(back), 1))])
+    nip = np.r_[nip, np.zeros(len(back))]
+    src_f, cur_f, t_f = _plate(0.0)
+    src_f[:, 0] += 12.0; cur_f[:, 0] += 12.0       # front plate well off the tip
+    src_f[:, 1] += 0.5; cur_f[:, 1] += 0.5
+    src_b, _, _ = _plate(0.0)
+    src_b[:, 1] = -3.0                              # the back sheet, behind the tip
+    cur_b = src_b.copy(); cur_b[:, 1] = -2.8 + 0.05 * np.sin(cur_b[:, 0])
+    n = len(src_f)
+    src = np.vstack([src_f, src_b]); cur = np.vstack([cur_f, cur_b])
+    edge = [j * 5 + 4 for j in range(5)]
+    strip = []
+    for a, b in zip(edge[:-1], edge[1:]):
+        strip += [[a, b, b + n], [a, b + n, a + n]]
+    t = np.vstack([t_f, t_f[:, ::-1] + n, np.asarray(strip)])
+    res = []
+    for on in (False, True):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(nc, "PANEL_RIGID_TIP_GUARD", on)
+            res.append(np.asarray(fg._rigidify_within_clearance(
+                src, cur, t, bv, bn, 1.0, min_verts=3, body_nipple=nip)[0]))
+    assert not np.allclose(res[0], cur)                # the rigidify did act
+    assert np.allclose(res[0], res[1])
