@@ -121,3 +121,26 @@ def test_shape_bake_translation_scale_is_none():
     # a non-identity SCALE is _shape_bake_matrix's job (bind-preserving), not this
     assert nc._shape_bake_translation(
         _MockShape(_tb(scale=0.5, trans=(0.0, 0.0, 64.68)))) is None
+
+
+# ---- #source-world-frame: source-vs-output comparisons in the WORLD frame ----
+
+class _G2SShape:
+    def __init__(self, verts, scale):
+        self.verts = verts
+        self.has_global_to_skin = True
+        g = pyn.TransformBuf()
+        g.set_identity()
+        g.scale = scale
+        self.global_to_skin = g
+
+
+def test_shape_world_verts_lifts_a_scaled_source():
+    v = np.array([[0.0, 0.0, 2.9], [1.0, 0.0, 0.0]])
+    w = nc._shape_world_verts(_G2SShape(v, 1.0 / 22.2455))
+    assert np.allclose(w, v * 22.2455, atol=1e-3)
+
+
+def test_shape_world_verts_identity_is_noop():
+    v = np.array([[0.0, 0.0, 64.0], [1.0, 2.0, 3.0]])
+    assert np.allclose(nc._shape_world_verts(_G2SShape(v, 1.0)), v)

@@ -144,16 +144,20 @@ def build_colored_shape_nif(path, *, name="ColorShape", alphas=None):
 
 
 _DEFAULT_BONES = ("NPC Spine [Spn0]", "NPC L Thigh [LThg]")
+_ROT_Z180 = ((-1.0, 0.0, 0.0), (0.0, -1.0, 0.0), (0.0, 0.0, 1.0))
 
 
 def build_skinned_shape_nif(path, *, name="SkinShape", scale=1.0,
                             trans=(0.0, 0.0, 0.0), bones=_DEFAULT_BONES,
-                            g2s_trans=None):
+                            g2s_trans=None, rot_z180=False, g2s_scale=None):
     """Like build_shape_nif but SKINNED, so the shape round-trips as a skinned mesh
     (bone weights persist). Requires the pynifly sequence skin() -> add_bone (ALL
     first) -> set_skin_to_bone_xform -> setShapeWeights. Verts are split evenly
     across the bones (each weight 1.0). Pass `g2s_trans` to set a non-identity
-    global-to-skin (the authored furexarot/elven offset-g2s case). Returns `path`."""
+    global-to-skin (the authored furexarot/elven offset-g2s case). `rot_z180`
+    turns BOTH the transform and the g2s 180 degrees about Z, and `g2s_scale`
+    sets the g2s scale -- together the matched scaled pair one HDT cuirass
+    ships (transform x22.245 rot 180, g2s x0.045 rot 180). Returns `path`."""
     pyn = nc._pynifly()
     nif = pyn.NifFile()
     nif.initialize("SKYRIMSE", str(path))
@@ -164,6 +168,8 @@ def build_skinned_shape_nif(path, *, name="SkinShape", scale=1.0,
     tb.set_identity()
     tb.scale = scale
     tb.translation = tuple(trans)
+    if rot_z180:
+        tb.rotation = pyn.MATRIX3(*(pyn.VECTOR3(*r) for r in _ROT_Z180))
     sh.transform = tb
     sh.skin()
     for bn in bones:
@@ -178,10 +184,15 @@ def build_skinned_shape_nif(path, *, name="SkinShape", scale=1.0,
     half = len(VERTS) // 2
     sh.setShapeWeights(bones[0], [(i, 1.0) for i in range(half)])
     sh.setShapeWeights(bones[1], [(i, 1.0) for i in range(half, len(VERTS))])
-    if g2s_trans is not None:
+    if g2s_trans is not None or g2s_scale is not None:
         g = pyn.TransformBuf()
         g.set_identity()
-        g.translation = tuple(g2s_trans)
+        if g2s_trans is not None:
+            g.translation = tuple(g2s_trans)
+        if g2s_scale is not None:
+            g.scale = g2s_scale
+        if rot_z180:
+            g.rotation = pyn.MATRIX3(*(pyn.VECTOR3(*r) for r in _ROT_Z180))
         sh.set_global_to_skin(g)
     nif.save()
     return path
@@ -240,15 +251,18 @@ def uv_sphere(radius, rings=8, segs=12, centre=(0.0, 0.0, 100.0)):
 
 def build_skinned_shapes_nif(path, shapes, *, bones=_DEFAULT_BONES):
     """Several SKINNED shapes in one NIF. `shapes` is [(name, verts, tris,
-    normals)]; every shape is skinned to `bones` with weight 1.0 split by
-    vertex index, the recipe of build_skinned_shape_nif. Creates the parent
-    folder. Returns `path`."""
+    normals)] or [(name, verts, tris, normals, bones)]; every shape is skinned
+    to its own `bones` (default: `bones`) with weight 1.0 split by vertex
+    index, the recipe of build_skinned_shape_nif. Creates the parent folder.
+    Returns `path`."""
     pyn = nc._pynifly()
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     nif = pyn.NifFile()
     nif.initialize("SKYRIMSE", str(path))
-    for name, verts, tris, normals in shapes:
+    default_bones = bones
+    for name, verts, tris, normals, *own in shapes:
+        bones = own[0] if own else default_bones
         verts, tris, normals = list(verts), list(tris), list(normals)
         uvs = [(0.0, 0.0)] * len(verts)
         sh = nif.createShapeFromData(name, verts, tris, uvs, normals)

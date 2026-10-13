@@ -4210,12 +4210,8 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                                 and _col_cbbe_v is not None
                                 and _col_delta is not None):
                             try:
-                                _col_ov = warp_armor_by_body_delta(
-                                    np.asarray(src_shape.verts,
-                                               dtype=np.float64),
-                                    _col_cbbe_v, _col_delta,
-                                    min_standoff=0.0,
-                                )
+                                _col_ov = _warp_collider_to_ube(
+                                    src_shape, _col_cbbe_v, _col_delta)
                             except Exception:
                                 _col_ov = None
                         # Preserve the authored collider/framework skin VERBATIM
@@ -4305,6 +4301,23 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
             import traceback as _tb
             _tb.print_exc()
         return False
+
+def _warp_collider_to_ube(src_shape, cbbe_v, delta) -> np.ndarray:
+    """A re-imported collider's verts, warped CBBE -> UBE, in its STORED frame.
+
+    The delta is a WORLD field, so lift the stored verts by the shape's g2s,
+    warp, and lower back -- the main fit's pass 1 / pass 2. Warping the stored
+    verts of a x0.045-g2s collider sampled the delta at the FEET and shipped it
+    22x: one HDT cuirass's ColSkirt/ColBelt moved 5.2u rearward, shoving the
+    skirt into the back plate. Identity g2s = the old behaviour, byte for byte.
+    #collider-warp-frame"""
+    g2s = (_shape_global_to_skin(src_shape)
+           if src_shape.has_global_to_skin else None)
+    world = _verts_skin_to_world(
+        np.asarray(src_shape.verts, dtype=np.float64), g2s)
+    return _verts_world_to_skin(
+        warp_armor_by_body_delta(world, cbbe_v, delta, min_standoff=0.0), g2s)
+
 
 def _hdt_softbody_shape_names(src_nif_path: Path, nif=None,
                               stem_scan: bool = True) -> set:

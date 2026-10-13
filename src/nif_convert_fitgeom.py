@@ -171,6 +171,25 @@ ANTIPOKE_SURFACE_CLEAR = _knob("CBBE2UBE_ANTIPOKE_SURFACE_CLEAR", 0.1)
 # BUST_SURFACE_MAX_PUSH plays for the conform, and tighter because this pass
 # runs LAST and nothing downstream can take an overshoot back.
 ANTIPOKE_SURFACE_MAX_PUSH = _knob("CBBE2UBE_ANTIPOKE_SURFACE_MAX_PUSH", 0.5)
+# --- #rear-surface-req -------------------------------------------------------
+# The REAR_STANDOFF floor asks each VERTEX to stand clear; on a convex buttock a
+# coarse face sags between its corners, so the floor held its corners at 1.0u
+# while the surface touched the skin (a guard cuirass: rear gap p1 0.07u, the
+# skin through the tunic on every stride; in game "body shows through at the
+# rear"). Same surface test as #antipoke-surface-req, over the rear floor's own
+# feathered zone: the SURFACE must clear REAR_SURFACE_CLEAR (scaled by the zone
+# weight, so no step at its edges). Push-out only, capped. 0.5u: the most an
+# in-game stride + butt motion took the skin through (gap + depth) there.
+# Measured over 36 pieces from source: skin pokes in motion 315 -> 152, exposed
+# 4191 -> 4055, creases and stretch flat. It lifts a few open hems ~0.1u (a
+# light cuirass: +45 exposed on the stride). Exempting the hem's ring from the
+# rule was built and measured: it gave those back but returned 30 pokes on two
+# robes/bodies whose rear hem IS the poke (152 -> 182). Do not rebuild it
+# without a test that separates a flaring hem from a poking one.
+# Off with CBBE2UBE_NO_REAR_SURFACE_REQ=1 (scratch control only).
+REAR_SURFACE_REQ = not _flag("CBBE2UBE_NO_REAR_SURFACE_REQ", False)
+REAR_SURFACE_CLEAR = _knob("CBBE2UBE_REAR_SURFACE_CLEAR", 0.5)
+REAR_SURFACE_MAX_PUSH = _knob("CBBE2UBE_REAR_SURFACE_MAX_PUSH", 1.0)
 # Per-shape trace. On by default WHILE the pass is opt-in: an armed pass that
 # silently does nothing is the failure mode this band keeps producing, so the
 # INERT reason is printed too. `CBBE2UBE_ANTIPOKE_SURFACE_QUIET=1` silences it.
@@ -3112,6 +3131,7 @@ def clear_armor_outside_body(
         jig_k = np.where(dd <= radius, jig[jj], 0.0)
         jig_worst = np.max(jig_k, axis=1)
         req = req + np.clip(jiggle_gain * jig_worst, 0.0, jiggle_cap)
+    _rear_w = None
     if rear_standoff > 0.0:
         # REAR butt / upper-thigh dynamic standoff (see REAR_STANDOFF): a flat
         # minimum gap where the nearest body vert is rear-facing and at butt/
@@ -3141,6 +3161,7 @@ def clear_armor_outside_body(
         _fn = max(float(rear_standoff_feather_ny), 1e-6)
         wn = np.clip((rear_standoff_ny - nrm[:, 1]) / _fn, 0.0, 1.0)
         req = np.maximum(req, rear_standoff * wz * wn)
+        _rear_w = wz * wn
     if calf_standoff > 0.0:
         # CALF / lower-leg flex standoff (see CALF_STANDOFF): flat minimum gap over the
         # lower-leg band, all-round -- the knee/calf bend punches through the thin
@@ -3346,6 +3367,13 @@ def clear_armor_outside_body(
                 print(f"    [antipoke-surface] raised {_raised} vert(s), "
                       f"max +{float(_need_surf.max()):.4f}u over "
                       f"{int(_in_bust.sum())} bust vert(s)")
+    if (REAR_SURFACE_REQ and tris is not None and _rear_w is not None
+            and bool((_rear_w > 1e-3).any())):
+        _need_r = _surface_deficit(
+            v, tris, bv, bn, _rear_w > 1e-3, REAR_SURFACE_CLEAR * _rear_w, tree,
+            (rear_standoff_z_lo, rear_standoff_z_hi), max_push=REAR_SURFACE_MAX_PUSH)
+        if _need_r is not None:
+            push = np.clip(np.maximum(push, _need_r), 0.0, max_push)
     # #clearance-field: solve ONE minimum-stretch displacement that meets every
     # vertex's outward requirement, instead of pushing each vertex along its own
     # (diverging) body normal and then feathering/re-projecting the damage. `push`

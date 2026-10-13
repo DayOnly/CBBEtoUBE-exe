@@ -33,6 +33,7 @@ from .nif_convert_physics import (  # noqa: E402
 from .nif_convert_skinframe import (  # noqa: E402
     _g2s_is_identity,
     _shape_global_to_skin,
+    _shape_world_verts,
 )
 from .nif_convert_telemetry import _note_pass_effect, _note_pass_failure  # noqa: E402
 from .user_warnings import plain_error, warn  # noqa: E402
@@ -45,6 +46,7 @@ from .nif_convert_weights import (  # noqa: E402
     _strip_jiggle_weights_map,
     _align_scale_bone_stbs_to_verts,
     _adjust_skin_to_bone_baked,
+    _adjust_global_to_skin_baked,
     _is_scale_bone,
 )
 
@@ -151,7 +153,12 @@ def _install_skin(new_shape, dst_nif, src_shape, bone_names, xforms_map,
         # skinned render but uses it to place the bounding sphere. An identity g2s
         # on an offset-g2s shape puts the cull bound ~120u below the geometry ->
         # frustum-culled when the camera zooms in (invisible torso/body up close).
-        new_shape.set_global_to_skin(src_shape.global_to_skin)
+        # A BAKED shape transform was the other half of that pair, so it moves
+        # into the g2s rather than being dropped. #g2s-bake-pair
+        _g2s_out = src_shape.global_to_skin
+        if bake_T is not None:
+            _g2s_out = _adjust_global_to_skin_baked(_g2s_out, bake_T)
+        new_shape.set_global_to_skin(_g2s_out)
     for bn in surviving:
         pairs = weights_map.get(bn)
         if pairs:
@@ -275,13 +282,11 @@ def validate_dst_nif(dst_path: "Path",
             s for s in loaded_nif.shapes
             if (s.textures or {}) and s.name not in _nc().UBE_BODY_INJECT_NAMES
         ]
-        trees = {
-            s.name: cKDTree(np.asarray(s.verts, dtype=np.float64))
-            for s in textured
-        }
+        # World frame: the source side may be a scaled-g2s mesh. #source-world-frame
+        trees = {s.name: cKDTree(_shape_world_verts(s)) for s in textured}
         out: dict[tuple[str, str], int] = {}
         for i, a in enumerate(textured):
-            a_verts = np.asarray(a.verts, dtype=np.float64)
+            a_verts = _shape_world_verts(a)
             for b in textured[i + 1:]:
                 dists, _ = trees[b.name].query(
                     a_verts, k=1, distance_upper_bound=ZFIGHT_THRESHOLD)
@@ -2741,7 +2746,8 @@ def _repair_body_in_shape_frame(body, shape):
 
 
 def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
-                        exclude_shapes=None, nif=None, shape_order=None) -> bool:
+                        exclude_shapes=None, nif=None, shape_order=None,
+                        override_skin_by_name=None) -> bool:
     """Re-author a NIF from scratch into a fresh NifFile — copy every shape
     via _copy_shape (clean pynifly authoring) instead of leaving the
     source-derived bytes produced by the verbatim `shutil.copy2` path.
@@ -2752,6 +2758,11 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
     re-points every colour-variant swap that names it (BUG-09). Names absent
     from the NIF are ignored; shapes absent from the list keep their current
     relative order and follow the listed ones, so a partial list is safe.
+
+    `override_skin_by_name`: optional {shape_name -> {"bones", "xforms",
+    "weights"}} -- a whole replacement skin for that shape, installed through
+    `_copy_shape`'s override path (so a bone left with no weight is dropped
+    from the skin instead of shipping as a zero-weight palette entry).
 
     `override_verts_by_name`: optional {shape_name -> (N,3) verts} to write NEW
     vertex positions for those shapes (same count/order). Used by the cross-shape
@@ -2910,6 +2921,7 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
                 if _rbody is not None and s.name in _ov:
                     _rb = _repair_body_in_shape_frame(_rbody, s)
                 _copy_shape(s, new, override_verts=_ov.get(s.name),
+                            override_skin=(override_skin_by_name or {}).get(s.name),
                             preserve_authored_skin=(s.name in _preserve),
                             skip_geometry_repair=(s.name in _colliders),
                             xml_stem_scan=_dss, repair_body=_rb)
