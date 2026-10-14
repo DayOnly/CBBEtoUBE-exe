@@ -10749,6 +10749,36 @@ PAIRS = (
          expect=('test_phase2_still_attaches_a_found_pointer_to_a_body_piece',
                  'test_phase2_still_generates_for_a_body_piece'),
     ),
+    # #finalize-stale-sibling (2026-10-14): a pointerless piece is never linked
+    # to a `<stem>.xml` an earlier run left beside it.
+    Pair('FSS-a', 'a stale sibling is linked to a pointerless piece',
+         edits=(
+             ('src/nif_convert_physics.py',
+              '        if ptr is None and not wrote_sibling and _finalize_repoint():\n',
+              '        if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_finalize_repoint.py',),
+         expect=('test_a_stale_sibling_gives_a_pointerless_piece_no_physics',
+                 'test_a_failed_copy_gives_a_pointerless_piece_no_stale_physics'),
+    ),
+    Pair('FSS-b', 'a sibling this call wrote is refused too',
+         edits=(
+             ('src/nif_convert_physics.py',
+              '        if ptr is None and not wrote_sibling and _finalize_repoint():\n',
+              '        if ptr is None and _finalize_repoint():  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_finalize_repoint.py',),
+         expect=('test_a_piece_without_a_pointer_still_gets_the_sibling',),
+    ),
+    Pair('FSS-c', 'the off-switch no longer brings the stale link back',
+         edits=(
+             ('src/nif_convert_physics.py',
+              '        if ptr is None and not wrote_sibling and _finalize_repoint():\n',
+              '        if ptr is None and not wrote_sibling:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_finalize_repoint.py',),
+         expect=('test_switched_off_a_stale_sibling_is_linked_as_before',),
+    ),
     # #body-collider-constraint-gate (2026-09-25): the opt-in chest body
     # collider never lands on an unconstrained XML.
     Pair('BCC-a', 'a body collider is added to an unconstrained XML',

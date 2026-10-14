@@ -4128,6 +4128,17 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
         ptr = next((ed for ed in nf.rootNode.extra_data()
                     if getattr(ed, "name", None) == "HDT Skinned Mesh Physics Object"),
                    None)
+        if ptr is None and not wrote_sibling and _finalize_repoint():
+            # #finalize-stale-sibling: no pointer and this call wrote no sibling,
+            # so nothing in THIS run made `<stem>.xml` -- both generators attach
+            # their own pointer when they write one. The file is an earlier
+            # run's: the output mod is never cleaned between runs. Linking it
+            # gave a piece whose source ships no physics the physics of an old
+            # build (measured 2026-10-14: one cuirass pair in the live output,
+            # rigid in a run into an empty folder with the same code). Leave
+            # the piece as the source has it, and do not let the steps below
+            # read that file either.
+            return False
         if ptr is None:
             from pyn.pynifly import NiStringExtraData  # type: ignore
             NiStringExtraData.New(
@@ -4514,7 +4525,11 @@ def _finalize_repoint() -> bool:
     slot-33/37 piece a physics pointer (found or generated) and the finalize
     skips them, but phase 2 still attached one, which then never met a
     finalize at all.
-    CBBE2UBE_NO_FINALIZE_REPOINT=1 restores both old behaviours."""
+
+    And it covers #finalize-stale-sibling (2026-10-14): a piece that reaches
+    the finalize with no pointer, where the finalize wrote no sibling, gets no
+    pointer -- a `<stem>.xml` already there was left by an earlier run.
+    CBBE2UBE_NO_FINALIZE_REPOINT=1 restores all three old behaviours."""
     return not _flag("CBBE2UBE_NO_FINALIZE_REPOINT", False)
 
 def _pointer_differs(current: str, rel: str) -> bool:
