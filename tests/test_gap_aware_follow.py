@@ -243,3 +243,31 @@ def test_new_bone_transform_is_anchored_in_the_shapes_own_frame():
                                {"L Breast02": "L Breast01", "L Breast01": "NPC Spine2 [Spn2]"})
     got, _ = nc._stb_to_mat4(out)
     assert np.allclose(got, breast @ np.linalg.inv(G), atol=1e-4)
+
+
+def test_the_four_bone_cap_runs_without_failing(tmp_path):
+    """Armour and skin on three bones each, sharing one: mixed rows carry five
+    bones, so the neighbourhood-ranked 4-influence cap must run. A
+    failure inside the pass is swallowed (recorded, not raised) -- the one
+    that dropped the cap's neighbour lists left every piece's weights
+    unfollowed while each test here still passed -- so check the record."""
+    from tests.synthetic_nif import build_skinned_shapes_nif, uv_sphere
+    from src import nif_convert_telemetry as tel
+    av, at, an = uv_sphere(10.5, centre=CENTRE)   # 2.5u off: a graded, MIXED follow
+    bv, bt, bn = uv_sphere(8.0, centre=CENTRE)
+    f = build_skinned_shapes_nif(tmp_path / "cap.nif", [
+        ("Armour", av, at, an, ("NPC Spine2 [Spn2]", "NPC Spine1 [Spn1]", "NPC Pelvis [Pelv]")),
+        ("BaseShape", bv, bt, bn, ("NPC Spine2 [Spn2]", "L Breast02", "NPC Spine [Spn0]"))])
+    # every vert on all three of its shape's bones (the builder splits by vertex)
+    pyn = nc._pynifly()
+    nf = pyn.NifFile(filepath=str(f))
+    for sh in nf.shapes:
+        nv = len(sh.verts)
+        for bn in sh.bone_names:
+            sh.setShapeWeights(bn, [(i, 1.0 / 3.0) for i in range(nv)])
+    nf.save()
+    before = dict(tel._PASS_FAILURES)
+    n = nw._gap_aware_follow(f, biped_slots=nc.BIPED_SLOT32_BIT)
+    new = {k: v for k, v in tel._PASS_FAILURES.items() if before.get(k, 0) != v}
+    assert not new, new
+    assert n > 0

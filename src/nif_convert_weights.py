@@ -4827,6 +4827,66 @@ def _gaf_new_bone_stb(bone, shape, shape_bw, body_stb, parents):
     return None
 
 
+def _ball_mean(V, vals, r):
+    """Each vertex's mean of `vals` over the verts within `r` of it -- exactly
+    `vals[query_ball_point(V, r)].mean()`, without building every ball.
+
+    On a small DENSE mesh the balls are huge: a worn book prop of 50,705 verts
+    about 8u across has a median 12,975 verts within 3u, 676 million pairs as
+    Python lists -- one piece ran ~25 min and set a full reconvert's finish
+    time. A ball whose members all share one value v has mean v exactly when v
+    is 0.0 or 1.0 (a sum of n zeros or ones is exact), which is nearly every
+    ball here (the follow strength is 0 or 1 outside a transition band). Those
+    are found with one nearest-neighbour query against the verts holding any
+    OTHER value (exact). The mixed balls are summed over pairs in chunks: the
+    same members, a different summation order -- equal to the old mean to the
+    last bits of a double, far below the float32 the weights are stored in."""
+    from scipy.spatial import cKDTree
+    V = np.asarray(V, dtype=np.float64)
+    vals = np.asarray(vals, dtype=np.float64)
+    n = len(V)
+    out = np.empty(n)
+    todo = np.ones(n, dtype=bool)
+    lim = r * (1.0 + 1e-9) + 1e-9            # borderline balls take the exact path
+    for v in (0.0, 1.0):
+        same = vals == v
+        if not same.any():
+            continue
+        other = ~same
+        if other.any():
+            d, _ = cKDTree(V[other]).query(V[same & todo], k=1)
+            uniform = np.zeros(n, dtype=bool)
+            uniform[np.flatnonzero(same & todo)[d > lim]] = True
+        else:
+            uniform = same & todo
+        out[uniform] = v
+        todo &= ~uniform
+    idx = np.flatnonzero(todo)
+    if len(idx):
+        # Mixed balls: same members, summed with bincount over pairs found in
+        # chunks (a chunk holds at most ~4M pairs). The sum ORDER differs from
+        # numpy's pairwise mean, so the result can differ in the last bits of a
+        # double -- below float32, which is what the weights are stored in.
+        tree = cKDTree(V)
+        lens = tree.query_ball_point(V[idx], r, return_length=True)
+        sums = np.zeros(len(idx)); cnts = np.zeros(len(idx))
+        start = 0
+        while start < len(idx):
+            stop = start + 1
+            budget = int(lens[start])
+            while stop < len(idx) and budget + int(lens[stop]) <= 4_000_000:
+                budget += int(lens[stop]); stop += 1
+            m = cKDTree(V[idx[start:stop]]).sparse_distance_matrix(
+                tree, r, output_type="ndarray")
+            ii = m["i"].astype(np.int64, copy=False)
+            jj = m["j"].astype(np.int64, copy=False)
+            sums[start:stop] = np.bincount(ii, weights=vals[jj], minlength=stop - start)
+            cnts[start:stop] = np.bincount(ii, minlength=stop - start)
+            start = stop
+        out[idx] = sums / np.maximum(cnts, 1.0)
+    return out
+
+
 def _gap_aware_follow(dst_path, biped_slots: int = 0) -> int:
     """Make the armour move like the skin directly under it, by how tight it
     fits. #gap-aware-follow
@@ -5026,9 +5086,8 @@ def _gap_aware_follow(dst_path, biped_slots: int = 0) -> int:
         blend[near] = x * x * (3.0 - 2.0 * x)            # smoothstep
         blend[chain] = 0.0
         sm_r = float(nc._GAF_SMOOTH)
-        nbs = cKDTree(V).query_ball_point(V, sm_r) if sm_r > 0 else None
-        if nbs is not None:
-            blend = np.array([blend[x_].mean() for x_ in nbs])
+        if sm_r > 0:
+            blend = _ball_mean(V, blend, sm_r)
             blend[chain] = 0.0
         if not (blend > 1e-3).any():
             continue
@@ -5176,6 +5235,12 @@ def _gap_aware_follow(dst_path, biped_slots: int = 0) -> int:
                     r[b] = w
             mixed.append(r)
         # 4-influence cap by NEIGHBOURHOOD rank, so neighbours keep one bone set.
+        # Balls only for the verts that need the cap (one batched query: the
+        # same sorted lists the whole-mesh query gave).
+        need = [i for i in range(n) if len(mixed[i]) > 4 and not chain[i]]
+        nbs = {}
+        if need and sm_r > 0:
+            nbs = dict(zip(need, cKDTree(V).query_ball_point(V[need], sm_r)))
         out = []
         for i in range(n):
             r = mixed[i]
@@ -5183,7 +5248,7 @@ def _gap_aware_follow(dst_path, biped_slots: int = 0) -> int:
                 out.append(r)
                 continue
             score: dict = {}
-            for j in (nbs[i] if nbs is not None else [i]):
+            for j in nbs.get(i, [i]):
                 for b, w in mixed[j].items():
                     if b in r:
                         score[b] = score.get(b, 0.0) + w

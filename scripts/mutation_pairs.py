@@ -19229,4 +19229,33 @@ PAIRS = (
          tests=('tests/test_closest_on_body_fast.py',),
          expect=('test_bit_identical_to_the_padded_form',),
     ),
+    # #gaf-ball-mean (2026-10-13): a speed change dropped the 4-bone cap's neighbour
+    # lists; the pass failed on EVERY piece (swallowed) while each other test passed.
+    Pair('GBM-a', 'the 4-bone cap loses its neighbour lists (the pass fails on every piece)',
+         edits=(
+             ('src/nif_convert_weights.py',
+              '        nbs = {}\n        if need and sm_r > 0:\n            nbs = dict(zip(need, cKDTree(V).query_ball_point(V[need], sm_r)))\n',
+              '        pass  # MUTATED: the lists are gone\n', 1),
+         ),
+         tests=('tests/test_gap_aware_follow.py',),
+         expect=('test_the_four_bone_cap_runs_without_failing',),
+    ),
+    Pair('GBM-b', 'a ball is called uniform with an other-valued vert just inside the radius',
+         edits=(
+             ('src/nif_convert_weights.py',
+              '    lim = r * (1.0 + 1e-9) + 1e-9            # borderline balls take the exact path',
+              '    lim = r * 0.5  # MUTATED', 1),
+         ),
+         tests=('tests/test_ball_mean.py',),
+         expect=('test_matches_the_list_mean',),
+    ),
+    Pair('GBM-c', 'every ball is called uniform',
+         edits=(
+             ('src/nif_convert_weights.py',
+              '            uniform[np.flatnonzero(same & todo)[d > lim]] = True',
+              '            uniform[np.flatnonzero(same & todo)] = True  # MUTATED', 1),
+         ),
+         tests=('tests/test_ball_mean.py',),
+         expect=('test_matches_the_list_mean',),
+    ),
 )
