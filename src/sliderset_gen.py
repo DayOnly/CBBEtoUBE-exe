@@ -592,6 +592,223 @@ def _nipple_morph_envelope_prep(av, tris, body_verts, nb, tree):
     return np.asarray(rows), lists, nrm
 
 
+# ---- #nipple-morph-stack (default ON) -------------------------
+# The bridge and the envelope each shape a garment's nipple-local morph ON ITS
+# OWN: a fine layer is low-passed, a coarse one lifted. Stacked over a nipple,
+# an inner coarse layer then rises further than the fine layer over it, and
+# comes through it under a preset that drives the nipple sliders -- measured on
+# a two-layer leather cuirass: outer-under-inner bust crossings 7 -> 119 verts
+# (mild preset), 29 -> 185, 25 -> 237 (large) once both steps were on; 13 / 23
+# / 37 with both off. Same class as the source-body tighten collapsing a stack.
+#
+# ON: for a NIPPLE-LOCAL slider, near an apex, wherever one garment layer is
+# on top of another it rises (along the apex normal) at least as far: each of
+# its verts clears the surface under it, and each of its faces clears the
+# verts and ridges of the layer under it. "On top" is decided point by point,
+# never per layer. Only ever adds outward motion; breast-SHAPE sliders and a
+# single-layer garment are untouched. Over 12 layered pieces the order flips
+# under three presets fell 12-14% against the steps unheld.
+_NIPPLE_MORPH_STACK = not _flag("CBBE2UBE_NO_NIPPLE_MORPH_STACK", False)
+NIPPLE_MORPH_STACK_GAP = 3.0   # a layer counts as "beneath" within this (u)
+# lateral reach from an apex: the bridge works out to R_OUT and the envelope
+# lifts whole triangles that touch its ENV_R zone, so the stack must reach past both
+NIPPLE_MORPH_STACK_R = 6.0
+
+
+def _apex_frame(nA):
+    nA = np.asarray(nA, dtype=np.float64)
+    ea = np.cross(nA, [0.0, 0.0, 1.0])
+    if np.linalg.norm(ea) < 1e-6:
+        ea = np.cross(nA, [1.0, 0.0, 0.0])
+    ea /= np.linalg.norm(ea)
+    return nA, ea, np.cross(nA, ea)
+
+
+def _stack_tri_frame(x, y):
+    d0x, d0y = x[:, 1] - x[:, 0], y[:, 1] - y[:, 0]
+    d1x, d1y = x[:, 2] - x[:, 0], y[:, 2] - y[:, 0]
+    den = d0x * d1y - d0y * d1x
+    ok = np.abs(den) > 1e-12
+    return d0x, d0y, d1x, d1y, ok, np.where(ok, den, 1.0)
+
+
+def _stack_bary(px, py, x, y, fr):
+    d0x, d0y, d1x, d1y, ok, safe = fr
+    qx, qy = px - x[:, 0], py - y[:, 0]
+    wb = (qx * d1y - qy * d1x) / safe
+    wc = (d0x * qy - d0y * qx) / safe
+    wa = 1.0 - wb - wc
+    return wa, wb, wc, ok & (wa >= -1e-6) & (wb >= -1e-6) & (wc >= -1e-6)
+
+
+def _nipple_morph_stack_prep(shapes_av, shapes_tris, body_verts, nb):
+    """[(outer name, rows, inner name, corners (k,3), bary (k,3), normals (k,3))]
+    in innermost-first order of the outer layer, or [] when nothing is stacked.
+    Entry k says: outer vert rows[k] rises (along normals[k]) at least as far as
+    bary[k] . (inner rise at corners[k]). A row may appear more than once.
+
+    Near each apex (NIPPLE_MORPH_STACK_R laterally), two ways one layer covers
+    another, both within NIPPLE_MORPH_STACK_GAP along the apex normal:
+      * an outer VERT over an inner triangle -- the inner surface under it;
+      * an inner VERT under an outer triangle -- all three outer corners must
+        clear it, since the flat outer face between them cannot bend round it
+        (the envelope's reason, layer against layer).
+    Shapes are ordered by their median height over the apexes, so an outer
+    layer is adjusted after the layers under it."""
+    B = np.asarray(body_verts, dtype=np.float64)
+    names = [n for n in shapes_av if (shapes_tris or {}).get(n) is not None]
+    if len(names) < 2 or not nb:
+        return []
+    height: dict = {n: [] for n in names}
+    found: dict = {}
+    gap = NIPPLE_MORPH_STACK_GAP
+    # Which layer is outer is decided LOCALLY, at each point: whichever is on
+    # top there must rise at least as far as the one under it. One order per
+    # pair over the whole bust was wrong for many-layer armour (a jacket over a
+    # top in one place, under it in another), and holding TOUCHING layers
+    # together from both sides lifted a cuirass up through its pauldron -- both
+    # measured worse than this on 12 layered pieces.
+    frames = []
+    for ap, nA, _area in nb:
+        nA, ea, eb = _apex_frame(nA)
+        A = B[ap]
+        loc = {}
+        for n in names:
+            av = np.asarray(shapes_av[n], dtype=np.float64)
+            loc[n] = ((av - A) @ ea, (av - A) @ eb, (av - A) @ nA)
+            u, w, h = loc[n]
+            near = (np.hypot(u, w) < NIPPLE_MORPH_STACK_R) & (h > -1.0) & (h < 6.0)
+            height[n].extend(h[near].tolist())
+        frames.append((nA, loc))
+    med = {n: (float(np.median(height[n])) if height[n] else np.inf) for n in names}
+    for nA, loc in frames:
+        for out_n in names:
+            ou, ow, oh = loc[out_n]
+            rows = np.flatnonzero((np.hypot(ou, ow) < NIPPLE_MORPH_STACK_R)
+                                  & (oh > -1.0) & (oh < 6.0))
+            if not len(rows):
+                continue
+            ot = np.asarray(shapes_tris[out_n], dtype=np.int64).reshape(-1, 3)
+            otsel = ot[np.hypot(ou[ot].mean(1), ow[ot].mean(1)) < NIPPLE_MORPH_STACK_R + 3.0]
+            ofr = _stack_tri_frame(ou[otsel], ow[otsel]) if len(otsel) else None
+            for in_n in names:
+                if in_n == out_n:
+                    continue
+                iu, iw, ih = loc[in_n]
+                t = np.asarray(shapes_tris[in_n], dtype=np.int64).reshape(-1, 3)
+                tsel = t[np.hypot(iu[t].mean(1), iw[t].mean(1)) < NIPPLE_MORPH_STACK_R + 3.0]
+                # an outer vert over an inner triangle
+                if len(tsel):
+                    x, y, z = iu[tsel], iw[tsel], ih[tsel]
+                    fr = _stack_tri_frame(x, y)
+                    for r in rows:
+                        wa, wb, wc, inside = _stack_bary(ou[r], ow[r], x, y, fr)
+                        if not inside.any():
+                            continue
+                        hz = wa * z[:, 0] + wb * z[:, 1] + wc * z[:, 2]
+                        below = inside & (oh[r] - hz >= 0.0) & (oh[r] - hz <= gap)
+                        if not below.any():
+                            continue
+                        # the layer surface nearest under the vert
+                        k = int(np.flatnonzero(below)[np.argmin(np.abs(oh[r] - hz[below]))])
+                        found.setdefault((out_n, in_n, int(r), tuple(tsel[k])),
+                                         ((wa[k], wb[k], wc[k]), nA))
+                # an inner vert under an outer triangle: every corner clears it
+                if ofr is not None:
+                    x, y, z = ou[otsel], ow[otsel], oh[otsel]
+                    irows = np.flatnonzero((np.hypot(iu, iw) < NIPPLE_MORPH_STACK_R)
+                                           & (ih > -1.0) & (ih < 6.0))
+                    for j in irows:
+                        wa, wb, wc, inside = _stack_bary(iu[j], iw[j], x, y, ofr)
+                        if not inside.any():
+                            continue
+                        hz = wa * z[:, 0] + wb * z[:, 1] + wc * z[:, 2]
+                        above = inside & (hz - ih[j] >= 0.0) & (hz - ih[j] <= gap)
+                        for k in np.flatnonzero(above):
+                            for c in otsel[k]:
+                                found.setdefault((out_n, in_n, int(c), (int(j),) * 3),
+                                                 ((1.0, 0.0, 0.0), nA))
+                # an inner EDGE crossing an outer edge: the lifted inner layer
+                # peaks along its edges, and a flat outer face spanning such a
+                # ridge dips below it between the points held above. Both outer
+                # endpoints clear the inner edge where the two edges cross.
+                if len(tsel) and ofr is not None:
+                    ie = np.unique(np.sort(tsel[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), 1), axis=0)
+                    oe = np.unique(np.sort(otsel[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), 1), axis=0)
+                    p0 = np.c_[ou[oe[:, 0]], ow[oe[:, 0]]]
+                    p1 = np.c_[ou[oe[:, 1]], ow[oe[:, 1]]]
+                    r_ = p1 - p0
+                    for c, d in ie:
+                        q0 = np.array([iu[c], iw[c]])
+                        s_ = np.array([iu[d], iw[d]]) - q0
+                        den = r_[:, 0] * s_[1] - r_[:, 1] * s_[0]
+                        ok = np.abs(den) > 1e-12
+                        safe = np.where(ok, den, 1.0)
+                        qp = q0 - p0
+                        t_ = (qp[:, 0] * s_[1] - qp[:, 1] * s_[0]) / safe        # along outer
+                        u_ = (qp[:, 0] * r_[:, 1] - qp[:, 1] * r_[:, 0]) / safe  # along inner
+                        hit = ok & (t_ > 1e-6) & (t_ < 1 - 1e-6) & (u_ > 1e-6) & (u_ < 1 - 1e-6)
+                        for k in np.flatnonzero(hit):
+                            a_, b_ = oe[k]
+                            ho = (1 - t_[k]) * oh[a_] + t_[k] * oh[b_]
+                            hi = (1 - u_[k]) * ih[c] + u_[k] * ih[d]
+                            if ho - hi < 0.0 or ho - hi > gap:
+                                continue
+                            # keyed by the crossing (the outer edge too): one
+                            # outer vert's edges can cross one inner edge at
+                            # several points, and each is a separate floor
+                            for o in (a_, b_):
+                                found.setdefault((out_n, in_n, int(o), (int(c), int(d), int(d)),
+                                                  (int(a_), int(b_))),
+                                                 ((1.0 - u_[k], u_[k], 0.0), nA))
+    if not found:
+        return []
+    groups: dict = {}
+    for key, (bary, nrm) in sorted(found.items()):
+        out_n, in_n, r, corners = key[:4]
+        g = groups.setdefault((out_n, in_n), ([], [], [], []))
+        g[0].append(r); g[1].append(corners); g[2].append(bary); g[3].append(nrm)
+    prep = []
+    for (out_n, in_n), (rows, corners, bary, nrm) in sorted(
+            groups.items(), key=lambda kv: (med[kv[0][0]], kv[0])):
+        prep.append((out_n, np.asarray(rows), in_n, np.asarray(corners),
+                     np.asarray(bary), np.asarray(nrm)))
+    return prep
+
+
+def _nipple_morph_stack_apply(props, prep, passes: int = 2):
+    """Lift each prepared vert so it rises (along its apex normal) at least as
+    far as the layer surface beneath it. `props` = {shape name: (n,3) deltas}
+    for one slider; an adjusted shape's array is replaced, never written in place.
+
+    `passes`: a lift carried to one layer raises the floor of the layer on top
+    of it, and the floors are listed by layer height, not by that chain -- a
+    second pass carries it through a three-layer stack listed out of order."""
+    for _p in range(max(1, passes)):
+        _nipple_morph_stack_once(props, prep)
+    return props
+
+
+def _nipple_morph_stack_once(props, prep):
+    for out_n, rows, in_n, corners, bary, nrm in prep:
+        po, pi = props.get(out_n), props.get(in_n)
+        if po is None or pi is None:
+            continue
+        under = np.einsum("kc,kcj->kj", bary, pi[corners])     # inner delta under
+        lift = np.einsum("kj,kj->k", under, nrm) - np.einsum("kj,kj->k", po[rows], nrm)
+        need = lift > 1e-9
+        if not need.any():
+            continue
+        # a row constrained more than once takes its LARGEST lift, applied once
+        r, l, n = rows[need], lift[need], nrm[need]
+        order = np.lexsort((-l, r))
+        first = order[np.r_[True, r[order][1:] != r[order][:-1]]]
+        po = po.copy()
+        po[r[first]] += n[first] * l[first][:, None]
+        props[out_n] = po
+    return props
+
+
 def _nipple_morph_envelope_apply(prop, prep, delta_buf, local_idx, far_idx):
     if not _nipple_local(delta_buf, local_idx, far_idx):
         return prop
@@ -863,6 +1080,17 @@ def generate_armor_tri(
                 _p = None
             if _p is not None:
                 shape_nmb[armor_shape_name] = _p
+    # #nipple-morph-stack: which layer lies under which, near each apex.
+    stack_prep: list = []
+    if _NIPPLE_MORPH_STACK and nipple_bridge and _nmb_local is not None:
+        try:
+            stack_prep = _nipple_morph_stack_prep(
+                {n: armor_shapes[n] for n in shape_knn},
+                armor_shape_tris or {}, body_verts_arr, nipple_bridge)
+        except Exception as _e:
+            from .nif_convert_telemetry import _note_pass_failure
+            _note_pass_failure("nipple-morph-stack", _e)
+            stack_prep = []
 
     for body_m in body_osd.morphs:
         if not len(body_m):
@@ -877,6 +1105,7 @@ def generate_armor_tri(
         morph_delta_buf.fill(0.0)
         morph_delta_buf[idxs[valid]] = deltas[valid]
 
+        pending: dict = {}          # this slider's delta per shape, stored below
         for armor_shape_name, (neighbors, dists, nearest_dist) in shape_knn.items():
             w = shape_w[armor_shape_name]          # hoisted: see above
             # einsum fuses the weight-multiply and the sum. The previous form
@@ -939,6 +1168,11 @@ def generate_armor_tri(
                     propagated = propagated * np.clip(
                         1.0 - np.asarray(ef, dtype=np.float64), 0.0, 1.0
                     )[:, None]
+            pending[armor_shape_name] = propagated
+        # #nipple-morph-stack: a layer rises at least as far as the layer under it
+        if stack_prep and _nipple_local(morph_delta_buf, _nmb_local, _nmb_breast):
+            pending = _nipple_morph_stack_apply(pending, stack_prep)
+        for armor_shape_name, propagated in pending.items():
             magnitudes = np.linalg.norm(propagated, axis=1)
             keep = np.where(magnitudes >= min_delta)[0]
             if len(keep) == 0:
