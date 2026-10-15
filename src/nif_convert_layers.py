@@ -1523,6 +1523,37 @@ def _stack_depth_from_relation(n, rel):
         _depth(i)
     return depth
 
+def _ride_body_floor_push(cand, fitted, body_verts, body_norms, btree, margin):
+    """#ride-body-floor + #ride-floor-margin: the outward push, along the body
+    normal, that keeps each ridden vert no deeper than
+    `min(its fitted clearance, margin)`.
+
+    A vert the FIT CHAIN left inside (fitted < 0) is held where the chain had
+    it, never hauled out -- that is the anti-poke's job, not the ride's. A vert
+    the chain held clear keeps up to `margin` of that clearance. With margin 0
+    (the floor as it was) the ride could set a layer down ON the skin wherever
+    its author built it at or under their body, and the skin then came through
+    whenever the body moved under it: a pair of leggings at the mons, fitted
+    0.9u clear, ridden to 0.00-0.05u, walked through by 0.1u. Only the inward
+    component is ever touched, so the tangential motion that makes the stack
+    cohere is kept in full.
+
+    Returns (push (n, 3), short (n,)): `short` is how far each vert is lifted.
+    """
+    bv = np.asarray(body_verts, dtype=np.float64)
+    bn = np.asarray(body_norms, dtype=np.float64)
+    cand = np.asarray(cand, dtype=np.float64)
+    fitted = np.asarray(fitted, dtype=np.float64)
+    _, bj = btree.query(cand)
+    n = bn[bj]
+    sd = np.einsum('ij,ij->i', cand - bv[bj], n)
+    _, fj = btree.query(fitted)
+    fd = np.einsum('ij,ij->i', fitted - bv[fj], bn[fj])
+    floor = np.minimum(fd, float(margin)) - 1e-4
+    short = np.clip(floor - sd, 0.0, None)
+    return n * short[:, None], short
+
+
 def _feather_ride_disp(disp, mask, tris, sv, stats=None):
     """Smooth the ride's displacement field WITHIN the ridden mask.
 
@@ -1761,23 +1792,12 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
             # nothing downstream re-introduces what it removes.
             if _nc().RIDE_BODY_FLOOR and body_verts is not None and body_norms is not None:
                 try:
-                    _cand = sv + _rd
-                    _bvv = np.asarray(body_verts, dtype=np.float64)
-                    _bnn = np.asarray(body_norms, dtype=np.float64)
-                    _, _bj = btree.query(_cand[_apply])
-                    _n = _bnn[_bj]
-                    _sd = np.einsum('ij,ij->i', _cand[_apply] - _bvv[_bj], _n)
-                    # Never deeper than the FIT CHAIN already had this vert:
-                    # a vert it left inside stays where it was rather than being
-                    # hauled out by a pass that is not the anti-poke.
-                    _, _fj = btree.query(fv[_apply])
-                    _fd = np.einsum('ij,ij->i', fv[_apply] - _bvv[_fj],
-                                    _bnn[_fj])
-                    _floor = np.minimum(_fd, 0.0) - 1e-4
-                    _short = np.clip(_floor - _sd, 0.0, None)
+                    _push, _short = _ride_body_floor_push(
+                        (sv + _rd)[_apply], fv[_apply], body_verts, body_norms,
+                        btree, float(_nc().RIDE_BODY_FLOOR_MARGIN))
                     if float(_short.max(initial=0.0)) > 0.0:
                         _fix = np.zeros_like(_rd)
-                        _fix[_apply] = _n * _short[:, None]
+                        _fix[_apply] = _push
                         _rd = _rd + _fix
                         _cst["body_floor"] = _cst.get("body_floor", 0) + int(
                             (_short > 0.0).sum())

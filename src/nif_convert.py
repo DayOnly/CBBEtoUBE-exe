@@ -13504,6 +13504,16 @@ RIDE_OUTWARD_ALLOW = _knob("CBBE2UBE_RIDE_OUTWARD_ALLOW", 0.0)
 RIDE_MIN_GAP = _knob("CBBE2UBE_RIDE_MIN_GAP", 0.05)
 
 RIDE_BODY_FLOOR = _flag("CBBE2UBE_RIDE_BODY_FLOOR", True)
+# #ride-floor-margin: the floor is min(fitted clearance, MARGIN), so a vert the
+# fit chain held clear keeps up to MARGIN of that clearance instead of being set
+# down ON the skin. Traced from an in-game report (front crotch clipping while
+# walking): a leather cuirass's leggings, fitted 0.9u clear at the mons, were
+# ridden to 0.00-0.05u because their author built them 0.1-0.3u under their own
+# body; a stride moves that skin ~0.1u relative to the cloth. 0.2: that piece's
+# visible skin while walking/sprinting 6 -> 0 (0.4 the same). Over 45 pieces
+# (19 change, all layered) every pose total flat or better, bust layer flips
+# under presets net flat (-10 / +2 / -1). 0.0 = the floor as it was.
+RIDE_BODY_FLOOR_MARGIN = _knob("CBBE2UBE_RIDE_BODY_FLOOR_MARGIN", 0.2)
 _PANEL_RIDE_COVERAGE = _knob("CBBE2UBE_PANEL_RIDE_COVERAGE", 0.9)
 # WHERE in the panel's displacement spread to sit the plate, as a quantile along
 # the panel's own ride direction. 0.5 is the plain mean: the plate lands in the
