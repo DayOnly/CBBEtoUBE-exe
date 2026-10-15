@@ -1171,7 +1171,8 @@ _FINGERPRINT_HASHED_GROUPS = {
                "print or write nothing; several also run extra code inside the "
                "fit that no test proves byte-neutral"},
     "not proven neutral": {
-        "names": ("CBBE2UBE_RAY_CHUNK", "CBBE2UBE_NO_ZEROED_PROBE_MEMO"),
+        "names": ("CBBE2UBE_RAY_CHUNK", "CBBE2UBE_CAST_PAIR_CHUNK",
+                  "CBBE2UBE_NO_ZEROED_PROBE_MEMO"),
         "why": "how the ray casts are batched and whether a body probe is "
                "remembered: no test proves the NIF bytes the same"},
     # Read through `_flag`, but the mesh maths is the same either way: proven

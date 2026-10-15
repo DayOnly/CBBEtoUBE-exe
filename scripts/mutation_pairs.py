@@ -697,6 +697,28 @@ PAIRS = (
          tests=('tests/test_raw_env_reads.py',),
          expect=('test_an_int_knob_keeps_its_cast_and_a_float_knob_its_type',),
     ),
+    # #cast-pair-chunk (2026-10-14): `_cast` slices its pairs and must give what
+    # one batch gives, the tie-break between equal hits included.
+    Pair('CPC-a', 'the sliced hits reach the tie-break out of pair order',
+         edits=(
+             ('src/fit_metrics.py',
+              '        ray_h, tri_h, t_h = np.concatenate(hr), np.concatenate(ht), np.concatenate(hv)\n',
+              '        ray_h, tri_h, t_h = np.concatenate(hr[::-1]), np.concatenate(ht[::-1]), np.concatenate(hv[::-1])  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_cast_pair_chunk.py',),
+         expect=('test_slices_give_what_one_batch_gives[1-ties]',
+                 'test_slices_give_what_one_batch_gives[37-ties]'),
+    ),
+    Pair('CPC-b', 'a pair at each slice boundary is never tested',
+         edits=(
+             ('src/fit_metrics.py',
+              '        for s0 in range(0, len(ray_i), step):\n',
+              '        for s0 in range(0, len(ray_i), step + 1):  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_cast_pair_chunk.py',),
+         expect=('test_slices_give_what_one_batch_gives[1-mixed]',
+                 'test_slices_give_what_one_batch_gives[1-ties]'),
+    ),
     Pair('G7-g', 'a kill switch loses its polarity',
          edits=(
              ('src/fit_metrics.py', 'PUSH_ENABLED = not _flag("CBBE2UBE_NO_MIN_PUSH", False)\n', 'PUSH_ENABLED = _flag("CBBE2UBE_NO_MIN_PUSH", False)\n', 1),

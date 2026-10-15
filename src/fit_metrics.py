@@ -89,6 +89,14 @@ CAST_CULL_MIN = 4096   # below this the cull costs more than the test it saves
 # Chunking cannot change a verdict: every ray is independent, so a chunk
 # boundary is invisible to the result.
 RAY_CHUNK = _knob("CBBE2UBE_RAY_CHUNK", 512, int)
+# `_cast` tests its (ray, triangle) pairs in slices of this many. A caller that
+# casts every ray at once (the gap-aware follow does) otherwise holds a dozen
+# (pairs, 3) temporaries together: the cast was the conversion's peak memory on
+# the heaviest acceptance piece (2.39 GB, +0.5 GB over the rest of the piece;
+# measured 2026-10-14). Slicing PAIRS, not rays, keeps every pair in its
+# original order, so the per-ray minimum and the tie-break between equal hits
+# are the ones the single batch gives.
+CAST_PAIR_CHUNK = _knob("CBBE2UBE_CAST_PAIR_CHUNK", 1 << 20, int)
 
 MIN_HITS = 40          # below this the garment does not cover the bust and
                        # the distribution is a handful of stray rays
@@ -307,6 +315,28 @@ class _ClipTester:
         who = np.full(n_rays, -1, np.int64)
         if not len(ray_i):
             return (out, who) if want_tri else out
+        # Whether to cull is decided ONCE, on the whole pair set, as before the
+        # slicing: a short last slice is culled like the rest.
+        cull = CAST_CULL and len(ray_i) > CAST_CULL_MIN
+        step = CAST_PAIR_CHUNK if CAST_PAIR_CHUNK > 0 else len(ray_i)
+        hr, ht, hv = [], [], []
+        for s0 in range(0, len(ray_i), step):
+            r, tr, tv = self._cast_slice(O, D, ray_i[s0:s0 + step],
+                                         tri_i[s0:s0 + step], cull, tmin)
+            hr.append(r); ht.append(tr); hv.append(tv)
+        # Hits only, still in pair order: the minimum and the tie-break below
+        # see exactly the rows the single batch fed them.
+        ray_h, tri_h, t_h = np.concatenate(hr), np.concatenate(ht), np.concatenate(hv)
+        np.minimum.at(out, ray_h, t_h)
+        if want_tri:
+            sel = t_h <= out[ray_h] + 1e-12
+            who[ray_h[sel]] = tri_h[sel]
+            return out, who
+        return out
+
+    def _cast_slice(self, O, D, ray_i, tri_i, cull, tmin):
+        """(ray, triangle, t) of the pairs in this slice that HIT, in order."""
+        none = (np.empty(0, np.int64), np.empty(0, np.int64), np.empty(0))
         V, T = self.gV, self.gT
         # RAY-LINE CULL. A ray along unit D can only hit a triangle whose
         # centroid lies within that triangle's own radius of the ray LINE, so
@@ -316,7 +346,7 @@ class _ClipTester:
         # ray. Measured: 4.0% of pairs survive, and _cast runs 2.0x faster with
         # bit-identical hits. Conservative -- it can only drop pairs that could
         # not have intersected.
-        if CAST_CULL and len(ray_i) > CAST_CULL_MIN:
+        if cull:
             d_r = D[ray_i]
             w = self.cent[tri_i] - O[ray_i]
             # SQUARED form, via the Lagrange identity:
@@ -344,7 +374,7 @@ class _ClipTester:
             k = perp2 <= lim * lim
             ray_i, tri_i = ray_i[k], tri_i[k]
             if not len(ray_i):
-                return (out, who) if want_tri else out
+                return none
         a = V[T[tri_i, 0]]
         e1 = V[T[tri_i, 1]] - a
         e2 = V[T[tri_i, 2]] - a
@@ -361,12 +391,7 @@ class _ClipTester:
         t = np.einsum("ij,ij->i", q, e2) * inv
         hit = (ok & (u >= -1e-6) & (v >= -1e-6) & (u + v <= 1 + 1e-6)
                & (t > tmin) & (t < self.tmax))
-        np.minimum.at(out, ray_i[hit], t[hit])
-        if want_tri:
-            sel = hit & (t <= out[ray_i] + 1e-12)
-            who[ray_i[sel]] = tri_i[sel]
-            return out, who
-        return out
+        return ray_i[hit], tri_i[hit], t[hit]
 
     def clipping(self, bV, bN, idx, oriented: bool = True, chunk: int = 0):
         """(clip_mask, in_t) over `idx`. clip = out escapes AND in hits.
