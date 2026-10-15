@@ -82,11 +82,13 @@ def _interleaved():
     return v, t
 
 
-def _run(on, shapes):
+def _run(on, shapes, spread=0.0):
+    """The floors are tested on their own (spread 0); the spread has its own tests."""
     importlib.reload(sg)
     nb = [(_APEX, np.array([0.0, 1.0, 0.0]), sg._vertex_areas(_BV, _BT))]
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(sg, "_NIPPLE_MORPH_STACK", bool(on))
+        mp.setattr(sg, "NIPPLE_MORPH_STACK_SPREAD", float(spread))
         tri = sg.generate_armor_tri(
             {n: v.copy() for n, (v, _t) in shapes.items()}, _BV, _osd(),
             body_shape_name="BaseShape", include_body_shapes=False,
@@ -242,3 +244,49 @@ def test_it_never_lowers_or_slides_anything():
     for k in (("Inner", "Grow"), ("Outer", "Grow")):
         d = on[k] - off[k]
         assert (d[:, 1] >= -1e-12).all() and np.abs(d[:, [0, 2]]).max() < 1e-12
+
+
+# ---- the lift is spread over the upper layer (#nipple-morph-stack spread)
+
+def _spread_case():
+    """A flat 9x9 grid layer with two floored verts needing different lifts."""
+    g = np.arange(0.0, 4.01, 0.5)
+    X, Z = np.meshgrid(g, g)
+    av = np.c_[X.ravel(), np.zeros(X.size), Z.ravel()]
+    a, b = 40, 42                                # 1.0u apart in the middle row
+    up = np.array([[0.0, 1.0, 0.0]])
+    prep = [("Top", np.array([a, b]), "Under", np.array([[0, 0, 0], [1, 1, 1]]),
+             np.array([[1.0, 0, 0], [1.0, 0, 0]]), np.repeat(up, 2, 0))]
+    props = {"Top": np.zeros((len(av), 3)), "Under": np.array([[0, 0.6, 0], [0, 0.3, 0]])}
+    return av, prep, props, a, b
+
+
+def test_spread_keeps_every_floored_vert_at_its_lift():
+    av, prep, props, a, b = _spread_case()
+    sp = sg._nipple_morph_stack_spread_prep({"Top": av}, prep, radius=1.5)
+    out = sg._nipple_morph_stack_apply({k: v.copy() for k, v in props.items()}, prep, spread=sp)
+    assert out["Top"][a, 1] == pytest.approx(0.6)
+    assert out["Top"][b, 1] == pytest.approx(0.3)   # its own lift beats a's spread (0.185)
+
+
+def test_spread_rounds_the_lift_and_takes_the_largest():
+    """Neighbours rise less than the vert they surround, falling off with
+    distance; where two spreads overlap the larger one wins, never their sum."""
+    av, prep, props, a, b = _spread_case()
+    sp = sg._nipple_morph_stack_spread_prep({"Top": av}, prep, radius=1.5)
+    out = sg._nipple_morph_stack_apply({k: v.copy() for k, v in props.items()}, prep, spread=sp)
+    y = out["Top"][:, 1]
+    near = int(np.argmin(np.linalg.norm(av - av[a] - [0, 0, 0.5], axis=1)))
+    assert 0.0 < y[near] < y[a]
+    assert y.max() == pytest.approx(0.6)
+    far = np.linalg.norm(av - av[a], axis=1) > 1.5 + 1e-9
+    far &= np.linalg.norm(av - av[b], axis=1) > 1.5 + 1e-9
+    assert np.all(y[far] == 0.0)
+
+
+def test_no_spread_lifts_only_the_floored_verts():
+    av, prep, props, a, b = _spread_case()
+    out = sg._nipple_morph_stack_apply({k: v.copy() for k, v in props.items()}, prep)
+    y = out["Top"][:, 1]
+    assert set(np.flatnonzero(y > 0)) == {a, b}
+    assert sg._nipple_morph_stack_spread_prep({"Top": av}, prep, radius=0.0) == {}

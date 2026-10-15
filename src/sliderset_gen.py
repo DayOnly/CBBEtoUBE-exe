@@ -613,6 +613,14 @@ NIPPLE_MORPH_STACK_GAP = 3.0   # a layer counts as "beneath" within this (u)
 # lateral reach from an apex: the bridge works out to R_OUT and the envelope
 # lifts whole triangles that touch its ENV_R zone, so the stack must reach past both
 NIPPLE_MORPH_STACK_R = 6.0
+# The lift a floor needs is spread over the upper layer's own surface out to this
+# radius (smooth falloff, max-combined), so it rises as a broad rounded dome over
+# the bulge under it instead of tracing it: without it the outer layer drew the
+# inner layer's nipple bulge (outline up on 9 of 24 piece-weights). Measured over
+# 12 layered pieces: mean outline under three presets .106/.126/.249 unspread ->
+# .104/.119/.235 at 1.5u, with the layer order kept (flips +1%); 2.5u bought no
+# more outline and gave back more flips. 0 = no spread.
+NIPPLE_MORPH_STACK_SPREAD = _knob("CBBE2UBE_NIPPLE_MORPH_STACK_SPREAD", 1.5)
 
 
 def _apex_frame(nA):
@@ -776,7 +784,30 @@ def _nipple_morph_stack_prep(shapes_av, shapes_tris, body_verts, nb):
     return prep
 
 
-def _nipple_morph_stack_apply(props, prep, passes: int = 2):
+def _nipple_morph_stack_spread_prep(shapes_av, prep, radius=None):
+    """{upper layer: (rows, neighbour verts per row, falloff weight per row)}:
+    each floored vert's neighbours on its OWN layer within `radius` (default
+    NIPPLE_MORPH_STACK_SPREAD), weight (1 - (d/r)^2)^2 -- 1 at the vert itself,
+    so a spread lift is never below the lift the floor asked for."""
+    r = float(NIPPLE_MORPH_STACK_SPREAD if radius is None else radius)
+    if r <= 0 or not prep:
+        return {}
+    out: dict = {}
+    for name in sorted({g[0] for g in prep}):
+        rows = np.unique(np.concatenate([g[1] for g in prep if g[0] == name]))
+        av = np.asarray(shapes_av[name], dtype=np.float64)
+        nbrs = cKDTree(av).query_ball_point(av[rows], r)
+        lists, wts = [], []
+        for k, nb in enumerate(nbrs):
+            nb = np.asarray(sorted(nb), dtype=np.int64)
+            d = np.linalg.norm(av[nb] - av[rows[k]], axis=1) / r
+            lists.append(nb)
+            wts.append(np.clip(1.0 - d * d, 0.0, 1.0) ** 2)
+        out[name] = (rows, lists, wts)
+    return out
+
+
+def _nipple_morph_stack_apply(props, prep, passes: int = 2, spread=None):
     """Lift each prepared vert so it rises (along its apex normal) at least as
     far as the layer surface beneath it. `props` = {shape name: (n,3) deltas}
     for one slider; an adjusted shape's array is replaced, never written in place.
@@ -785,11 +816,11 @@ def _nipple_morph_stack_apply(props, prep, passes: int = 2):
     of it, and the floors are listed by layer height, not by that chain -- a
     second pass carries it through a three-layer stack listed out of order."""
     for _p in range(max(1, passes)):
-        _nipple_morph_stack_once(props, prep)
+        _nipple_morph_stack_once(props, prep, spread or {})
     return props
 
 
-def _nipple_morph_stack_once(props, prep):
+def _nipple_morph_stack_once(props, prep, spread=None):
     for out_n, rows, in_n, corners, bary, nrm in prep:
         po, pi = props.get(out_n), props.get(in_n)
         if po is None or pi is None:
@@ -804,7 +835,27 @@ def _nipple_morph_stack_once(props, prep):
         order = np.lexsort((-l, r))
         first = order[np.r_[True, r[order][1:] != r[order][:-1]]]
         po = po.copy()
-        po[r[first]] += n[first] * l[first][:, None]
+        sp = (spread or {}).get(out_n)
+        if sp is None:
+            po[r[first]] += n[first] * l[first][:, None]
+        else:
+            # spread each needed lift over the layer's own neighbours, keeping the
+            # largest at every vert (each floored vert keeps at least its own)
+            srows, lists, wts = sp
+            at = {int(x): k for k, x in enumerate(srows)}
+            best = np.zeros(len(po))
+            bn = np.zeros((len(po), 3))
+            for rr, ll, nn in zip(r[first], l[first], n[first]):
+                k = at.get(int(rr))
+                if k is None:
+                    nb, val = np.array([int(rr)]), np.array([ll])
+                else:
+                    nb, val = lists[k], ll * wts[k]
+                up = val > best[nb]
+                best[nb[up]] = val[up]
+                bn[nb[up]] = nn
+            m = best > 1e-12
+            po[m] += bn[m] * best[m][:, None]
         props[out_n] = po
     return props
 
@@ -1082,15 +1133,19 @@ def generate_armor_tri(
                 shape_nmb[armor_shape_name] = _p
     # #nipple-morph-stack: which layer lies under which, near each apex.
     stack_prep: list = []
+    stack_spread: dict = {}
     if _NIPPLE_MORPH_STACK and nipple_bridge and _nmb_local is not None:
         try:
             stack_prep = _nipple_morph_stack_prep(
                 {n: armor_shapes[n] for n in shape_knn},
                 armor_shape_tris or {}, body_verts_arr, nipple_bridge)
+            stack_spread = _nipple_morph_stack_spread_prep(
+                {n: armor_shapes[n] for n in shape_knn}, stack_prep)
         except Exception as _e:
             from .nif_convert_telemetry import _note_pass_failure
             _note_pass_failure("nipple-morph-stack", _e)
             stack_prep = []
+            stack_spread = {}
 
     for body_m in body_osd.morphs:
         if not len(body_m):
@@ -1171,7 +1226,7 @@ def generate_armor_tri(
             pending[armor_shape_name] = propagated
         # #nipple-morph-stack: a layer rises at least as far as the layer under it
         if stack_prep and _nipple_local(morph_delta_buf, _nmb_local, _nmb_breast):
-            pending = _nipple_morph_stack_apply(pending, stack_prep)
+            pending = _nipple_morph_stack_apply(pending, stack_prep, spread=stack_spread)
         for armor_shape_name, propagated in pending.items():
             magnitudes = np.linalg.norm(propagated, axis=1)
             keep = np.where(magnitudes >= min_delta)[0]
