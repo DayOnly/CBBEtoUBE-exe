@@ -4887,6 +4887,52 @@ def _ball_mean(V, vals, r):
     return out
 
 
+def _ball_bone_scores(V, need, r, rows) -> "dict[int, dict[str, float]]":
+    """{i: {bone: sum of rows[j][bone] over the verts j within `r` of vert i}}
+    for each i in `need`, for the bones of rows[i] -- bit for bit what summing
+    over `query_ball_point(V[need], r)` gives, without its Python lists.
+
+    Those lists were the gap-aware cap's peak memory: on a dense worn prop
+    (50,705 verts, most needing the cap) the batched query held +5 GB and the
+    loop over it took ~35 s (measured 2026-10-15). Here the balls are found in
+    chunks of at most ~4M pairs and summed as a sparse x dense product. With the
+    row indices sorted, that product adds each ball's members in ascending j --
+    the order the sorted lists gave -- one at a time from 0.0, so every score is
+    the same double; a bone a member lacks adds 0.0, which changes nothing."""
+    from scipy.spatial import cKDTree
+    from scipy.sparse import csr_matrix
+    V = np.asarray(V, dtype=np.float64)
+    need = np.asarray(need, dtype=np.int64)
+    bones = sorted({b for row in rows for b in row})
+    col = {b: k for k, b in enumerate(bones)}
+    W = np.zeros((len(V), len(bones)))
+    for j, row in enumerate(rows):
+        for b, w in row.items():
+            W[j, col[b]] = w
+    tree = cKDTree(V)
+    lens = tree.query_ball_point(V[need], r, return_length=True)
+    out: "dict[int, dict[str, float]]" = {}
+    start = 0
+    while start < len(need):
+        stop = start + 1
+        budget = int(lens[start])
+        while stop < len(need) and budget + int(lens[stop]) <= 4_000_000:
+            budget += int(lens[stop]); stop += 1
+        m = cKDTree(V[need[start:stop]]).sparse_distance_matrix(
+            tree, r, output_type="ndarray")
+        ball = csr_matrix((np.ones(len(m)), (m["i"].astype(np.int64, copy=False),
+                                             m["j"].astype(np.int64, copy=False))),
+                          shape=(stop - start, len(V)))
+        # Built from coordinates the matrix is already canonical (tocsr sorts
+        # each row); explicit because the exactness rests on that order.
+        ball.sort_indices()
+        S = ball @ W
+        for k, i in enumerate(need[start:stop]):
+            out[int(i)] = {b: float(S[k, col[b]]) for b in rows[i]}
+        start = stop
+    return out
+
+
 def _gap_aware_follow(dst_path, biped_slots: int = 0) -> int:
     """Make the armour move like the skin directly under it, by how tight it
     fits. #gap-aware-follow
@@ -5235,23 +5281,16 @@ def _gap_aware_follow(dst_path, biped_slots: int = 0) -> int:
                     r[b] = w
             mixed.append(r)
         # 4-influence cap by NEIGHBOURHOOD rank, so neighbours keep one bone set.
-        # Balls only for the verts that need the cap (one batched query: the
-        # same sorted lists the whole-mesh query gave).
         need = [i for i in range(n) if len(mixed[i]) > 4 and not chain[i]]
-        nbs = {}
-        if need and sm_r > 0:
-            nbs = dict(zip(need, cKDTree(V).query_ball_point(V[need], sm_r)))
+        scores = (_ball_bone_scores(V, need, sm_r, mixed) if need and sm_r > 0
+                  else {i: mixed[i] for i in need})
         out = []
         for i in range(n):
             r = mixed[i]
             if len(r) <= 4 or chain[i]:
                 out.append(r)
                 continue
-            score: dict = {}
-            for j in nbs.get(i, [i]):
-                for b, w in mixed[j].items():
-                    if b in r:
-                        score[b] = score.get(b, 0.0) + w
+            score = scores[i]
             keep = sorted(r, key=lambda b: (-score.get(b, 0.0), b))[:4]
             out.append({b: r[b] for b in keep})
         _cap_and_renormalise_rows(out, n, {b for r in out for b in r})

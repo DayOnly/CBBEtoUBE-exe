@@ -19283,11 +19283,11 @@ PAIRS = (
     ),
     # #gaf-ball-mean (2026-10-13): a speed change dropped the 4-bone cap's neighbour
     # lists; the pass failed on EVERY piece (swallowed) while each other test passed.
-    Pair('GBM-a', 'the 4-bone cap loses its neighbour lists (the pass fails on every piece)',
+    Pair('GBM-a', 'the 4-bone cap loses its neighbourhood scores (the pass fails on every piece)',
          edits=(
              ('src/nif_convert_weights.py',
-              '        nbs = {}\n        if need and sm_r > 0:\n            nbs = dict(zip(need, cKDTree(V).query_ball_point(V[need], sm_r)))\n',
-              '        pass  # MUTATED: the lists are gone\n', 1),
+              '        scores = (_ball_bone_scores(V, need, sm_r, mixed) if need and sm_r > 0\n                  else {i: mixed[i] for i in need})\n',
+              '        pass  # MUTATED: the scores are gone\n', 1),
          ),
          tests=('tests/test_gap_aware_follow.py',),
          expect=('test_the_four_bone_cap_runs_without_failing',),
@@ -19309,5 +19309,25 @@ PAIRS = (
          ),
          tests=('tests/test_ball_mean.py',),
          expect=('test_matches_the_list_mean',),
+    ),
+    # #ball-bone-scores (2026-10-15): the gap-aware cap's neighbourhood scores,
+    # summed as a sparse product in the order the sorted ball lists gave.
+    Pair('GBS-a', 'a later chunk reads its scores from the wrong rows',
+         edits=(
+             ('src/nif_convert_weights.py',
+              '        for k, i in enumerate(need[start:stop]):\n',
+              '        for k, i in enumerate(need[start:stop], start):  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_ball_bone_scores.py',),
+         expect=('test_chunks_do_not_change_the_scores',),
+    ),
+    Pair('GBS-b', 'a neighbour exactly at the radius drops out of the ball',
+         edits=(
+             ('src/nif_convert_weights.py',
+              '        m = cKDTree(V[need[start:stop]]).sparse_distance_matrix(\n            tree, r, output_type="ndarray")\n',
+              '        m = cKDTree(V[need[start:stop]]).sparse_distance_matrix(\n            tree, r * 0.999, output_type="ndarray")  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_ball_bone_scores.py',),
+         expect=('test_a_neighbour_exactly_at_the_radius_counts_the_same',),
     ),
 )
