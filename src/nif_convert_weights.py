@@ -1275,6 +1275,35 @@ def _covered_skin_target(cover, clearance, body_w, eps):
     return {bone: w / tot for bone, w in acc.items()}
 
 
+def _covered_skin_target_near(cover, clearance, body_w, eps, Vb, at, sigma):
+    """`_covered_skin_target` with each skin vert's weight also scaled by a
+    Gaussian of its distance to the garment vert at `at` (#gap-aware-cover-near).
+    The gap-aware pool reaches GAF_SMOOTH round each vert, and the touching-weight
+    favours whatever skin is tightest ANYWHERE in it: at the crotch that was the
+    pelvis skin of the body's slit 2-3u away, not the thigh under the vert. A
+    greave vert on the inner thigh went L Thigh 0.73 / Pelvis 0.26 -> Pelvis
+    0.85, the thigh moved out from under it on every stride, and inner-thigh
+    skin came through (stride 2 -> 21, crouch 2 -> 50; back to 2 / 1 with
+    sigma 1.0). The Gaussian is smooth, so neighbouring verts still agree.
+    sigma <= 0 is the plain target. Pure."""
+    if sigma <= 0:
+        return _covered_skin_target(cover, clearance, body_w, eps)
+    if not cover:
+        return None
+    acc: dict = {}
+    tot = 0.0
+    for b in cover:
+        c = float(clearance[b])
+        d2 = float(((Vb[b] - at) ** 2).sum())
+        wgt = np.exp(-d2 / (2.0 * sigma * sigma)) / (max(c, 0.0) + eps)
+        tot += wgt
+        for bone, w in body_w[b].items():
+            acc[bone] = acc.get(bone, 0.0) + float(w) * wgt
+    if tot <= 1e-300:
+        return None
+    return {bone: w / tot for bone, w in acc.items()}
+
+
 def _covered_skin_map(Vg, Vb, Nb, band, reach):
     """Which body vertices each garment vertex COVERS: for every body vertex in
     `band`, its nearest garment vertex within `reach`. Returns ({garment vertex:
@@ -5229,7 +5258,8 @@ def _gap_aware_follow(dst_path, biped_slots: int = 0) -> int:
                             for b in _cover[int(_ks[j])]
                             if not (_opp and (_opp & _bside[b]))]
                     if len(_bis) >= nc._COVER_MIN_VERTS:
-                        _ct = _covered_skin_target(_bis, _clr, brows, nc._COVER_EPS)
+                        _ct = _covered_skin_target_near(_bis, _clr, brows, nc._COVER_EPS,
+                                                        bV, V[i], float(nc._COVER_NEAR_SIGMA))
                         if _ct:
                             # FEATHERED AT THE BAND EDGE (#cover-band-feather): the
                             # pooled row hands over to the closest skin's over the

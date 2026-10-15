@@ -19207,6 +19207,36 @@ PAIRS = (
          tests=('tests/test_nipple_morph_stack.py',),
          expect=('test_spread_rounds_the_lift_and_takes_the_largest',),
     ),
+    # #gap-aware-cover-near (2026-10-15): the pooled covered-skin target is
+    # weighted by distance to the vert, so slit skin off to the side cannot swamp it.
+    Pair('GCN-a', 'the distance weighting is never applied',
+         edits=(
+             ('src/nif_convert_weights.py',
+              '    if sigma <= 0:\n        return _covered_skin_target(cover, clearance, body_w, eps)\n',
+              '    if True:  # MUTATED\n        return _covered_skin_target(cover, clearance, body_w, eps)\n', 1),
+         ),
+         tests=('tests/test_weight_pass_handoff.py',),
+         expect=('test_touching_skin_further_off_does_not_swamp_the_skin_under_the_vert',),
+    ),
+    Pair('GCN-b', 'the pass pools covered skin flat again',
+         edits=(
+             ('src/nif_convert_weights.py',
+              '                        _ct = _covered_skin_target_near(_bis, _clr, brows, nc._COVER_EPS,\n'
+              '                                                        bV, V[i], float(nc._COVER_NEAR_SIGMA))\n',
+              '                        _ct = _covered_skin_target(_bis, _clr, brows, nc._COVER_EPS)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_weight_pass_handoff.py',),
+         expect=('test_gap_aware_pools_covered_skin_by_distance',),
+    ),
+    Pair('GCN-c', 'distance raises the weight instead of lowering it',
+         edits=(
+             ('src/nif_convert_weights.py',
+              '        wgt = np.exp(-d2 / (2.0 * sigma * sigma)) / (max(c, 0.0) + eps)\n',
+              '        wgt = np.exp(d2 / (2.0 * sigma * sigma)) / (max(c, 0.0) + eps)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_weight_pass_handoff.py',),
+         expect=('test_touching_skin_further_off_does_not_swamp_the_skin_under_the_vert',),
+    ),
     Pair('AWF-a', 'the abdomen order pass reads raw source verts again, each in its own frame',
          edits=(
              ('src/nif_convert_layers.py',

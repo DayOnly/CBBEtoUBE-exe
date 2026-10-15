@@ -285,3 +285,64 @@ def test_family_funding_without_a_breast_bone_is_the_uniform_rescale():
     assert np.allclose(nw._fund_unmanaged(Go, [0.2], [False, False]), [[0.15, 0.05]])
     # only breast to take it from: falls back to the uniform rescale
     assert np.allclose(nw._fund_unmanaged(np.array([[0.4, 0.0]]), [0.6], [True, False]), [[0.6, 0.0]])
+
+
+# ---- #gap-aware-cover-near: the pooled covered-skin target is weighted by
+# each skin vert's distance to the garment vert, so touching skin a few units
+# away no longer swamps the skin under it (a greave on the inner thigh took the
+# body slit's pelvis rows and the thigh moved out from under it on a stride).
+
+def _near_case():
+    Vb = np.array([[-1.8, 0.0, 60.0],    # inner-thigh skin under the vert
+                   [-1.8, 0.0, 60.5],
+                   [-0.1, 0.0, 62.5]])   # slit skin, touching, 2.5u off
+    clr = np.array([0.3, 0.3, -1.5])
+    rows = [{LT: 0.73, PELVIS: 0.27}, {LT: 0.71, PELVIS: 0.29}, {PELVIS: 1.0}]
+    return Vb, clr, rows, np.array([-1.4, 0.0, 60.2])
+
+
+def test_near_with_sigma_zero_is_the_plain_target():
+    Vb, clr, rows, at = _near_case()
+    plain = nw._covered_skin_target([0, 1, 2], clr, rows, 0.5)
+    assert nw._covered_skin_target_near([0, 1, 2], clr, rows, 0.5, Vb, at, 0.0) == plain
+
+
+def test_touching_skin_further_off_does_not_swamp_the_skin_under_the_vert():
+    Vb, clr, rows, at = _near_case()
+    plain = nw._covered_skin_target([0, 1, 2], clr, rows, 0.5)
+    near = nw._covered_skin_target_near([0, 1, 2], clr, rows, 0.5, Vb, at, 1.0)
+    assert plain[PELVIS] > 0.5                    # the defect: pelvis wins
+    assert near[LT] > 0.6 and near[PELVIS] < 0.4  # the thigh under it wins
+    assert abs(sum(near.values()) - 1.0) < 1e-9
+
+
+def test_near_target_moves_smoothly_with_the_vert():
+    """Neighbouring verts must agree: a small step changes the row a little."""
+    Vb, clr, rows, at = _near_case()
+    a = nw._covered_skin_target_near([0, 1, 2], clr, rows, 0.5, Vb, at, 1.0)
+    b = nw._covered_skin_target_near([0, 1, 2], clr, rows, 0.5, Vb, at + [0.05, 0, 0.05], 1.0)
+    assert max(abs(a.get(k, 0) - b.get(k, 0)) for k in set(a) | set(b)) < 0.05
+
+
+def test_gap_aware_pools_covered_skin_by_distance(monkeypatch, tmp_path):
+    """The pass's pooled covered-skin target goes through the distance-weighted
+    form with the configured sigma -- a call site reverting to the flat pool
+    would bring the inner-thigh pelvis rows back."""
+    from tests.synthetic_nif import build_skinned_shapes_nif, pynifly_available, uv_sphere
+    if not pynifly_available():
+        return
+    c = (0.0, 0.0, 62.0)                     # inside the covered-skin band
+    av, at, an = uv_sphere(8.3, centre=c)
+    bv, bt, bn = uv_sphere(8.0, centre=c)
+    f = build_skinned_shapes_nif(tmp_path / "meshes" / "x" / "piece_1.nif", [
+        ("Armour", av, at, an, ("NPC Spine2 [Spn2]", "NPC Spine1 [Spn1]")),
+        ("BaseShape", bv, bt, bn, ("NPC Spine1 [Spn1]", "NPC Spine2 [Spn2]"))])
+    sigmas = []
+    real = nw._covered_skin_target_near
+    def spy(*a):
+        sigmas.append(a[-1])
+        return real(*a)
+    monkeypatch.setattr(nw, "_covered_skin_target_near", spy)
+    nw._gap_aware_follow(f, biped_slots=nc.BIPED_SLOT32_BIT)
+    assert sigmas, "the pooled covered-skin target was never taken"
+    assert set(sigmas) == {float(nc._COVER_NEAR_SIGMA)} and nc._COVER_NEAR_SIGMA > 0

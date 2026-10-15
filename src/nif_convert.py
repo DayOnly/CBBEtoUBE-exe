@@ -9235,6 +9235,9 @@ _RIGID_PART_GATE = _knob("CBBE2UBE_RIGID_PART_GATE", 0.15)
 # Below this a "part" is a stray sliver, not an ornament worth rigidifying.
 _RIGID_PART_MIN_VERTS = _knob("CBBE2UBE_RIGID_PART_MIN_VERTS", 8, int)
 GAF_COVER_SIDE = not _flag("CBBE2UBE_NO_GAF_COVER_SIDE", False)
+# #gap-aware-cover-near: pooled skin also weighted by its distance to the vert
+# (Gaussian, this sigma); 0 = the flat pool.
+_COVER_NEAR_SIGMA = _knob("CBBE2UBE_COVER_NEAR_SIGMA", 1.0)
 AUTHOR_PULL_SKIN_LOCK = not _flag("CBBE2UBE_NO_AUTHOR_PULL_SKIN_LOCK", False)
 FULL_WEIGHT_GAP_RAMP = not _flag("CBBE2UBE_NO_FULL_WEIGHT_GAP_RAMP", False)
 COVER_BAND_FEATHER = not _flag("CBBE2UBE_NO_COVER_BAND_FEATHER", False)
