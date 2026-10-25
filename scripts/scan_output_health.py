@@ -138,6 +138,26 @@ def _parse_combined_arma_meshes(esp_path):
     return out
 
 
+def _other_mesh_roots(out_dir) -> "list[str]":
+    """The `meshes` folders of the OTHER enabled mods (MO2 profile when it can be read, else every mod folder beside
+    the output), where a hand-built `!UBE` mesh the patch points at may live."""
+    mods_root = os.path.dirname(os.path.abspath(out_dir))
+    names = None
+    try:
+        from src import paths as _p
+        names = _p.enabled_mods_ordered(_p.discover_layout())
+    except Exception:
+        names = None
+    if not names:
+        try:
+            names = sorted(os.listdir(mods_root))
+        except OSError:
+            names = []
+    own = os.path.basename(os.path.abspath(out_dir)).lower()
+    return [os.path.join(mods_root, n, "meshes") for n in names
+            if n.lower() != own and os.path.isdir(os.path.join(mods_root, n, "meshes"))]
+
+
 def main():
     # Imported HERE, not at module scope: the MALFORMED pass spawns a process
     # pool, and on Windows every worker re-imports this module. A module-level
@@ -147,21 +167,33 @@ def main():
 
     out_dir = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\CBBEtoUBE Auto"
     meshes = os.path.join(out_dir, "meshes")
-    combined = os.path.join(out_dir, "CBBE_to_UBE_Combined.esp")
+    # EVERY patch plugin the run wrote (a large run splits into CBBE_to_UBE_Combined2.esp, ...): reading the
+    # first one only left the second's armatures unchecked (audit 2026-10-20 F08: 5441 paths unread).
+    combined_all = sorted(glob.glob(os.path.join(out_dir, "CBBE_to_UBE_Combined*.esp")))
+    combined = combined_all[0] if combined_all else os.path.join(out_dir, "CBBE_to_UBE_Combined.esp")
     print(f"=== HEALTH SCAN: {out_dir} ===")
 
     # ---- INVISIBLE pass ----
     missing = []
-    if os.path.isfile(combined):
-        armas = _parse_combined_arma_meshes(combined)
+    elsewhere = 0
+    if combined_all:
+        armas = [a for esp_p in combined_all for a in _parse_combined_arma_meshes(esp_p)]
+        other_mods = None
         for fid, mps in armas:
             for m in mps:
                 if m.lower().startswith("!ube\\"):
-                    fp = os.path.join(meshes, m.replace("\\", os.sep))
-                    if not os.path.isfile(fp):
-                        missing.append((fid, m))
-        print(f"\n[INVISIBLE] ARMA count: {len(armas)}; "
-              f"!UBE meshes referenced but MISSING: {len(missing)}")
+                    rel = m.replace("\\", os.sep)
+                    if os.path.isfile(os.path.join(meshes, rel)):
+                        continue
+                    # A hand-built UBE mesh another enabled mod ships is drawn in game: not missing.
+                    if other_mods is None:
+                        other_mods = _other_mesh_roots(out_dir)
+                    if any(os.path.isfile(os.path.join(r, rel)) for r in other_mods):
+                        elsewhere += 1
+                        continue
+                    missing.append((fid, m))
+        print(f"\n[INVISIBLE] {len(combined_all)} patch plugin(s), ARMA count: {len(armas)}; "
+              f"!UBE meshes referenced but MISSING: {len(missing)} (+{elsewhere} provided by another mod)")
         for fid, m in missing[:25]:
             print(f"   ARMA {fid:08X} -> {m}")
         if len(missing) > 25:

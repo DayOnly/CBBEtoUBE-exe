@@ -7437,3 +7437,95 @@ def _match_seam_skinning(plates, seam_clusters):
         if _o and id(_o) in touched:
             _weights_from_index(_o)
     return n_matched
+
+
+# #pair-weight-parity (DEFAULT ON since 2026-10-21; CBBE2UBE_NO_PAIR_WEIGHT_PARITY=1 off): the post-write passes that
+# copy the weights of the NEAREST BODY POINT look the body up at each weight's own geometry, so a vertex near a band
+# edge landed on a different body vertex at `_0` and `_1` and the two weights' skin diverged where the source's are
+# identical (audit 2026-10-20 F11: 116 pieces, 12,970 verts off by L1 > 0.5; armpit / bust flank, pelvis / thigh).
+# The game blends the pair per vertex with ONE weight set, so the author's are equal. Once both weights are written,
+# a vertex whose SOURCE weights agree across the pair takes `_1`'s weights at `_0` too. Same pair-unit point as the
+# body zap, so a single convert of the pair ends the same as the batch.
+PAIR_WEIGHT_PARITY = not _flag("CBBE2UBE_NO_PAIR_WEIGHT_PARITY", False)
+PAIR_PARITY_SRC_TOL = 1e-3      # source rows this close (L1) count as the author's one weight set
+PAIR_PARITY_OUT_TOL = 1e-3      # our rows further apart than this are re-synced
+
+
+def _weight_matrix(shape, n, bones):
+    """(n, len(bones)) skin weights of `shape`, columns in `bones` order (bones it lacks stay 0)."""
+    M = np.zeros((n, len(bones)))
+    col = {b: k for k, b in enumerate(bones)}
+    for b, prs in (shape.bone_weights or {}).items():
+        k = col.get(b)
+        if k is None:
+            continue
+        for i, w in prs:
+            if 0 <= int(i) < n:
+                M[int(i), k] += float(w)
+    return M
+
+
+def _pair_weight_parity(dst_path, variant_sources) -> int:
+    """#pair-weight-parity on the pair `dst_path` belongs to. Returns the number of `_0` verts re-synced."""
+    if not PAIR_WEIGHT_PARITY or not variant_sources:
+        return 0
+    dst_path = Path(dst_path); st = dst_path.stem
+    if st[-2:] not in ("_0", "_1"):
+        return 0
+    p0 = dst_path.with_name(st[:-2] + "_0" + dst_path.suffix)
+    p1 = dst_path.with_name(st[:-2] + "_1" + dst_path.suffix)
+    s0, s1 = variant_sources.get("_0"), variant_sources.get("_1")
+    if not (p0.is_file() and p1.is_file() and s0 and s1):
+        return 0
+    pyn = _nc()._pynifly()
+    try:
+        o0, o1 = pyn.NifFile(filepath=str(p0)), pyn.NifFile(filepath=str(p1))
+        a0 = {s.name: s for s in pyn.NifFile(filepath=str(s0)).shapes}
+        a1 = {s.name: s for s in pyn.NifFile(filepath=str(s1)).shapes}
+    except Exception as e:
+        _note_pass_failure("pair-weight-parity", e, dst_path)
+        return 0
+    by1 = {s.name: s for s in o1.shapes}
+    overrides, total = {}, 0
+    for s in o0.shapes:
+        t = by1.get(s.name); x0, x1 = a0.get(s.name), a1.get(s.name)
+        n = len(s.verts)
+        if (t is None or x0 is None or x1 is None or n == 0 or len(t.verts) != n
+                or len(x0.verts) != n or len(x1.verts) != n or s.name in _nc().UBE_BODY_INJECT_NAMES):
+            continue
+        sb = sorted(set(x0.bone_weights or {}) | set(x1.bone_weights or {}))
+        same_src = np.abs(_weight_matrix(x0, n, sb) - _weight_matrix(x1, n, sb)).sum(1) < PAIR_PARITY_SRC_TOL
+        ob = sorted(set(s.bone_weights or {}) | set(t.bone_weights or {}))
+        W0, W1 = _weight_matrix(s, n, ob), _weight_matrix(t, n, ob)
+        fix = same_src & (np.abs(W0 - W1).sum(1) > PAIR_PARITY_OUT_TOL)
+        if not fix.any():
+            continue
+        W0[fix] = W1[fix]
+        weights: dict = {}
+        for k, b in enumerate(ob):
+            col = W0[:, k]
+            idx = np.flatnonzero(col > _nc()._WRITE_MIN)
+            if len(idx):
+                weights[b] = [(int(i), float(col[i])) for i in idx]
+        xforms = {}
+        for b in weights:
+            x = s.get_shape_skin_to_bone(b) if b in (s.bone_names or []) else None
+            if x is None and b in (t.bone_names or []):
+                x = t.get_shape_skin_to_bone(b)
+            xforms[b] = x
+        if any(x is None for x in xforms.values()):
+            continue
+        overrides[s.name] = {"bones": list(weights), "xforms": xforms, "weights": weights}
+        total += int(fix.sum())
+    if not overrides:
+        return 0
+    try:
+        from . import nif_convert_writer as _nw
+        if not _nw._reauthor_nif_fresh(p0, nif=o0, override_skin_by_name=overrides):
+            _note_pass_failure("pair-weight-parity", RuntimeError("re-author declined"), p0)
+            return 0
+    except Exception as e:
+        _note_pass_failure("pair-weight-parity", e, p0)
+        return 0
+    _note_pass_effect("#pair-weight-parity", f"{p0.name}: {total} vert(s) re-synced to {p1.name}", p0)
+    return total

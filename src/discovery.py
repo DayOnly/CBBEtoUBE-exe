@@ -807,6 +807,69 @@ def _overwrite_mesh_index_on() -> bool:
 OVERWRITE_LABEL = "<MO2 overwrite>"
 
 
+def _weight_pair_provider_on() -> bool:
+    r"""#weight-pair-provider (2026-10-21): are a base's `_0` and `_1` taken
+    from ONE provider? Yes, by default.
+
+    The index picked each weight FILE's winner on its own, so a mod that ships
+    one weight only (a retexture shipping `_1`) split a pair across two
+    designs: `_1` from it, `_0` from the base mod. The game blends the two per
+    vertex, so they must be one mesh (audit 2026-10-20 F20: farm-clothes shoes,
+    249 vs 237 verts). When the two winners differ AND are not one mesh (shape
+    names or vertex / triangle counts differ), both weights now come from the
+    first-ranked provider (tier, then MO2 priority) that ships BOTH; with none,
+    the pair is left as found (a weight shipped nowhere else). A split pair that
+    IS one mesh (a hotfix shipping the one weight it fixes) is left alone.
+    CBBE2UBE_NO_WEIGHT_PAIR_PROVIDER=1 resolves each file alone again."""
+    return not _flag("CBBE2UBE_NO_WEIGHT_PAIR_PROVIDER", False)
+
+
+def _mesh_signature(path: Path) -> "dict | None":
+    """{shape name: (verts, tris)} of a NIF, or None when it cannot be read."""
+    try:
+        nf = nif_io.open_nif_retry(str(path))
+        return {s.name: (len(s.verts), len(s.tris)) for s in nf.shapes}
+    except Exception:
+        return None
+
+
+def _resolve_weight_pairs(index: "dict[str, Path]", win_tier: "dict[str, int]",
+                          seen: "dict[str, list[tuple[str, Path, int]]]",
+                          alternates: "dict[str, list[tuple[str, Path]]]") -> "list[str]":
+    """#weight-pair-provider: re-point both weights of every split pair at the
+    first-ranked provider in `seen` (rel -> [(mod, file, tier)] in walk order)
+    that ships both. Returns the bases moved."""
+    moved = []
+    for k0 in [k for k in index if k.endswith("_0.nif")]:
+        base = k0[:-len("_0.nif")]
+        k1 = base + "_1.nif"
+        if k1 not in index:
+            continue
+        win0 = next((m for m, n, _ in seen.get(k0, ()) if n == index[k0]), None)
+        win1 = next((m for m, n, _ in seen.get(k1, ()) if n == index[k1]), None)
+        if win0 is None or win1 is None or win0 == win1:
+            continue
+        sig0, sig1 = _mesh_signature(index[k0]), _mesh_signature(index[k1])
+        if sig0 is None or sig1 is None or sig0 == sig1:
+            continue                    # one mesh (or unreadable): as the game draws it
+        ships = {k: {m: (n, t) for m, n, t in seen[k]} for k in (k0, k1)}
+        both = next((m for m, _, _ in seen[k1] if m in ships[k0]), None)
+        if both is None:
+            continue
+        for k in (k0, k1):
+            index[k], win_tier[k] = ships[k][both]
+            # #zos-other-design: the tier-0 providers ranked below the new winner.
+            below = [(m, n) for m, n, t in seen[k] if t == 0]
+            pos = next((i for i, (m, _) in enumerate(below) if m == both), -1)
+            rest = below[pos + 1:] if win_tier[k] == 0 else []
+            if rest:
+                alternates[k] = rest
+            else:
+                alternates.pop(k, None)
+        moved.append(base)
+    return moved
+
+
 def _zeroed_output_provider(mods_root: Path, enabled_mods: "list[str]",
                             skip: "set[str]", overwrite: "Path | None" = None
                             ) -> "tuple[str | None, str]":
@@ -1173,6 +1236,9 @@ def build_mesh_index(
     # priority order -- what the zeroed-source rule asks when the winner is another
     # design than the build.
     alternates: "dict[str, list[tuple[str, Path]]]" = {}
+    # #weight-pair-provider: every provider of a weight file, in walk order.
+    pair_on = _weight_pair_provider_on()
+    seen: "dict[str, list[tuple[str, Path, int]]]" = {}
     # (label, folder, tier). MO2's overwrite is the top of the game's VFS and
     # where BodySlide run through MO2 writes, so it is indexed like a BodySlide
     # output of an unnamed body: tier 2, ahead of every other output -- it wins
@@ -1208,6 +1274,8 @@ def build_mesh_index(
                 continue
             if target_keys is not None and rel not in target_keys:
                 continue
+            if pair_on and rel.endswith(("_0.nif", "_1.nif")):
+                seen.setdefault(rel, []).append((mod_name, nif, mtier))
             if rel not in index:           # first (highest priority) wins
                 index[rel] = nif
                 win_tier[rel] = mtier
@@ -1234,6 +1302,11 @@ def build_mesh_index(
                         alternates.setdefault(rel, []).insert(
                             0, (_zos_mod_of(index[rel], mods_root), index[rel]))
                     index[rel] = nif       # tier unchanged; priority already lost, body wins
+    if pair_on:
+        moved = _resolve_weight_pairs(index, win_tier, seen, alternates)
+        if moved:
+            _zos_say(f"[weight-pair-provider] {len(moved)} weight pair(s) split across two "
+                     f"mods now come from one provider that ships both: {', '.join(moved[:5])}")
     _prefer_zeroed_outputs(index, win_tier, mods_root, enabled_mods, skip,
                            overwrite if _overwrite_mesh_index_on() else None,
                            alternates)

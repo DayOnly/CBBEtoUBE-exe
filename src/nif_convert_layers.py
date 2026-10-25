@@ -1608,6 +1608,11 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
     """
     if not _nc().LAYER_RIDE_ENABLED or body_verts is None:
         return 0
+    if _nc()._zap_lean() and not _nc()._ZAP_KEEP_RIDE:   # #zap-lean (#zap-keep-ride)
+        return 0
+    # #zap-ride-restore: on a zapped piece the warp IS the authors' fit, so the ride only gives back the gap the warp
+    # squeezed: outward along the body normal, never inward, never sideways, no rigid panels (authors bend them).
+    _restore = bool(_nc()._zap_lean() and _nc()._ZAP_RIDE_RESTORE)
     try:
         from scipy.spatial import cKDTree
     except Exception:
@@ -1751,7 +1756,7 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
             # geometry beneath it -> its SOURCE offset to that geometry is preserved.
             _rd = disp
             _apply = mask
-            if _nc().PANEL_RIGID_RIDE and enable_panels:
+            if _nc().PANEL_RIGID_RIDE and enable_panels and not _restore:
                 _st = {}
                 _rd, _force = _panel_rigid_disp(
                     sv, j["src"].tris, disp, mask,
@@ -1787,6 +1792,20 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
                           file=_sys.stderr)
             if _nc().RIDE_FEATHER:
                 _rd = _feather_ride_disp(_rd, _apply, j["src"].tris, sv, _cst)
+            if _restore and body_norms is not None:
+                try:
+                    _cand = sv + _rd
+                    _, _rj = btree.query(fv[_apply])
+                    _rn = np.asarray(body_norms, dtype=np.float64)[_rj]
+                    _out = np.clip(np.einsum('ij,ij->i', _cand[_apply] - fv[_apply], _rn), 0.0, None)
+                    # REJECTED 10-19: restoring only where the nearest reference vert sat beneath in the SOURCE
+                    # (> 0.05u). On 136 zapped layered pieces: better/worse piece-weights 61/26 -> 37/42.
+                    _keep = np.zeros_like(_rd)
+                    _keep[_apply] = fv[_apply] + _rn * _out[:, None] - sv[_apply]
+                    _rd = np.where(_apply[:, None], _keep, _rd)
+                    _cst["zap_restore"] = _cst.get("zap_restore", 0) + int((_out > 1e-4).sum())
+                except Exception as _zre:
+                    _note_pass_failure("ride/zap-restore", _zre)
             # #ride-body-floor: clamp the INWARD component of the ride so this
             # pass cannot put cloth into the body. Applied after the feather so
             # nothing downstream re-introduces what it removes.

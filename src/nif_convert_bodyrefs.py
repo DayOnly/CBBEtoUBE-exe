@@ -394,6 +394,24 @@ def _find_ube_body_osd() -> Path | None:
     Env override: CBBE2UBE_UBE_OSD."""
     return _find_ube_shapedata("ube_osd", "CBBE2UBE_UBE_OSD", "osd")
 
+def _find_ube_extremity_shapedata() -> "list[tuple[str, Path, Path]]":
+    """#extremity-morph: [(shape prefix, template NIF, OSD)] for UBE's own Hands and Feet slider data, the folders
+    beside the body's in BodySlide ShapeData (`<body set> Hands` / `<body set> Feet`). Empty when not found."""
+    osd = _find_ube_body_osd()
+    if osd is None:
+        return []
+    out = []
+    root = Path(osd).parent.parent
+    stem = Path(osd).parent.name
+    base = stem[:-len(" Body")] if stem.endswith(" Body") else stem
+    for part in ("Hands", "Feet"):
+        d = root / f"{base} {part}"
+        nif, o = d / f"{base} {part}.nif", d / f"{base} {part}.osd"
+        if nif.is_file() and o.is_file():
+            out.append((part, nif, o))
+    return out
+
+
 def _find_user_preset_body(weight_suffix: str = "_1") -> Path | None:
     """Find the user's BodySlide-built UBE body NIF (the `!UBE\\Body` tangent
     output) at the requested weight, scanned across mods. No fixed mod name.

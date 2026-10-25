@@ -83,7 +83,9 @@ hiddenimports += ["src.gui", "src.gui_settings", "src.exclusions",
 a = Analysis(
     ["cbbe_to_ube_main.py"],
     pathex=[".", ".pynifly"],
-    binaries=[(".pynifly/NiflyDLL.dll", ".")],
+    binaries=[(".pynifly/NiflyDLL.dll", "."),
+              # the body-zap visibility rasteriser (native/zraster.c, built by native/build_zraster.bat)
+              ("native/zraster.dll", ".")],
     # The exe is what end users actually receive, so the GPL requires the
     # licence travel WITH it (GPLv3 §4/§5) -- shipping it only in the repo is
     # not enough. Third-party notices ride along for the same reason.

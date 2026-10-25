@@ -12,9 +12,11 @@ import numpy as np
 import sys
 
 from .atomic_io import atomic_tri_save
+from .envflags import flag as _flag
 from .nif_convert_bodyrefs import (  # noqa: E402
     _glob_first_in_mods,
     _find_ube_body_osd,
+    _find_ube_extremity_shapedata,
 )
 from .nif_convert_telemetry import _note_pass_failure  # noqa: E402
 
@@ -451,6 +453,11 @@ def _reset_morph_flags(shape) -> None:
     except Exception:
         pass
 
+# #virtualbody-morphs: an authored VirtualBody collider gets its own morphs like every other collider (see
+# `_collect_tri_inputs`). Kill switch CBBE2UBE_NO_VIRTUALBODY_MORPHS.
+_VIRTUALBODY_MORPHS = not _flag("CBBE2UBE_NO_VIRTUALBODY_MORPHS", False)
+
+
 def _collect_tri_inputs(nif, body_vert_count=None):
     """Split a written NIF's shapes into the three inputs `generate_armor_tri`
     takes: armour verts IN BODY SPACE, the injected body shapes, and per-vert
@@ -483,10 +490,14 @@ def _collect_tri_inputs(nif, body_vert_count=None):
     authored shape that merely shares the name: it goes in the armour set and
     gets its own K-NN-propagated morphs, at its own vertex count.
 
-    `VirtualBody` is never armour whatever it measures -- it is the SMP collision
-    proxy we generate ourselves, its topology is per-piece by construction, and
-    it must not morph. It is also inert on the other side: `generate_armor_tri`
-    only ever emits a verbatim body TriShape for `BaseShape`.
+    `VirtualBody` IS armour here (#virtualbody-morphs, 2026-10-18). The old rule
+    ("the SMP proxy we generate ourselves, must not morph") was false: the UBE
+    reference ships no VirtualBody, so every one in our output is the AUTHOR'S
+    collider, and authors morph it (138-186 morphs on the three pairs that have
+    one). Unmorphed, it stayed at base shape while body and cloth followed the
+    preset -- 1-5u inside the hips, 2-10u inside the bust -- so the SMP cloth
+    collided with a body smaller than the one on screen. Every other collider
+    name (ColBody, CollisionLegs, VirtualLegs...) already took this path.
 
     With no `body_vert_count` (an unmeasured caller) this falls back to the
     name-only split, i.e. the behaviour before the topology check.
@@ -495,17 +506,76 @@ def _collect_tri_inputs(nif, body_vert_count=None):
     armor_vert_ef: "dict[str, np.ndarray]" = {}
     body_in_dst: "set[str]" = set()
     for s in nif.shapes:
-        if s.name in _nc().UBE_BODY_INJECT_NAMES:
+        if s.name in _nc().UBE_BODY_INJECT_NAMES and not (_VIRTUALBODY_MORPHS and s.name == "VirtualBody"):
             if not (s.name == "BaseShape" and body_vert_count
                     and len(s.verts) != int(body_vert_count)):
                 body_in_dst.add(s.name)
                 continue
         armor_shape_verts[s.name] = (
             np.asarray(s.verts, dtype=np.float64) + _nc().shape_body_offset(s))
+        # #stack-push: build the morphs from where the layer sat before the push (see _STACK_PUSH_OFFSETS)
+        _off = (_nc()._STACK_PUSH_OFFSETS.get((_nc()._stack_key(nif.filepath), s.name))
+                if getattr(nif, "filepath", None) and _nc()._STACK_PUSH_OFFSETS else None)
+        if _off is not None and len(_off) == len(armor_shape_verts[s.name]):
+            armor_shape_verts[s.name] = armor_shape_verts[s.name] - _off
         ef = _nc()._extremity_vert_fraction(s, len(s.verts))
         if ef is not None and ef.size:
             armor_vert_ef[s.name] = ef
     return armor_shape_verts, body_in_dst, armor_vert_ef
+
+_EXTREMITY_REFS: list = []
+
+
+def _extremity_refs() -> "list | None":
+    """#extremity-morph: [(shape prefix, template verts, OsdFile)] of UBE's Hands and Feet, loaded once; None when
+    off or not found."""
+    from . import sliderset_gen as _sg
+    if not _sg._EXTREMITY_MORPH:
+        return None
+    if not _EXTREMITY_REFS:
+        try:
+            for pre, nif_p, osd_p in _find_ube_extremity_shapedata():
+                nf = _nc()._pynifly().NifFile(filepath=str(nif_p))
+                s = next((x for x in nf.shapes if x.name == pre), None) or (nf.shapes[0] if nf.shapes else None)
+                if s is not None:
+                    _EXTREMITY_REFS.append((pre, np.asarray(s.verts, dtype=np.float64), _cached_osd_load(osd_p)))
+        except Exception as _e:
+            _note_pass_failure("extremity-morph/refs", _e)
+            return None
+        if not _EXTREMITY_REFS:
+            _EXTREMITY_REFS.append(None)
+    return None if _EXTREMITY_REFS[0] is None else list(_EXTREMITY_REFS)
+
+
+def _collider_tri_inputs(nif, armor_shape_verts, xml_owner=None, stem_scan=True):
+    """#collider-footprint-morph: {collider shape name: triangles} for the HIDDEN shapes the piece's HDT-SMP XML
+    uses as per-triangle colliders and that get their own morph table, or None. `xml_owner` is the NIF whose XML
+    names them (the SOURCE at first write -- the output's XML is not written yet -- else the output itself)."""
+    from . import sliderset_gen as _sg
+    if not _sg._COLLIDER_FOOTPRINT_MORPH:
+        return None
+    try:
+        from . import nif_convert_writer as _nwr
+        names = _nwr._hdt_collider_shape_names(Path(xml_owner if xml_owner is not None else nif.filepath),
+                                               nif=None if xml_owner is not None else nif,
+                                               stem_scan=stem_scan)
+    except Exception:
+        return None
+    out = {}
+    for s in nif.shapes:
+        # A VISIBLE cloth the XML also lists as a per-triangle collider (a robe the skirt bounces off) keeps cloth
+        # morphs: under the collider rule it billowed off the skin and showed skin the zap had deleted (2026-10-21).
+        try:
+            if not (int(s.flags) & 1):
+                continue
+        except Exception:
+            continue
+        if s.name in names and s.name in armor_shape_verts:
+            t = np.asarray(s.tris, dtype=np.int64).reshape(-1, 3)
+            if len(t) and len(s.verts) == len(armor_shape_verts[s.name]):
+                out[s.name] = t
+    return out or None
+
 
 def _surface_track_inputs(nif, armor_shape_verts, body_shape):
     """(armor_shape_tris, body_track_mask) for #surface-morph-track, or
@@ -525,7 +595,9 @@ def _surface_track_inputs(nif, armor_shape_verts, body_shape):
     try:
         tris = {}
         for s in nif.shapes:
-            if s.name in armor_shape_verts:
+            # #virtualbody-morphs: the collider gets its own morphs, but it is not a cloth layer -- left in, the
+            # lockstep / nipple stack lifted the visible cloth over it by the body's own motion
+            if s.name in armor_shape_verts and not (_VIRTUALBODY_MORPHS and s.name == "VirtualBody"):
                 t = np.asarray(s.tris, dtype=np.int64).reshape(-1, 3)
                 if len(t) and len(s.verts) == len(armor_shape_verts[s.name]):
                     tris[s.name] = t
@@ -892,7 +964,7 @@ def _source_morph_tri_shape_names(src_path: "Path") -> "set[str]":
 
 def _refresh_armor_tri_after_reimport(
         dst_path: "Path", tri_path, *,
-        fallback_body_verts=None) -> bool:
+        fallback_body_verts=None, fallback_body_shape=None) -> bool:
     """Re-emit the BODYTRI once the LATE passes have re-imported shapes that
     weren't in the NIF when the TRI was first written.  #tri-reimport-refresh
 
@@ -945,6 +1017,14 @@ def _refresh_armor_tri_after_reimport(
         body_osd = _cached_osd_load(osd_path)
 
         body_shape = _nc().ube_body_shape(nf)
+        # #virtualbody-morphs: with no BaseShape, `ube_body_shape` falls back to the VirtualBody COLLIDER, and the
+        # whole TRI was regenerated against it (the UBE OSD's 29298-vert offsets on a 996-vert proxy): every shape's
+        # morphs scrambled. Harmless only while the collider itself got no table (the refresh then gained nothing
+        # and was thrown away). The body is the injected BaseShape, else the reference the first write used.
+        if body_shape is not None and body_shape.name != "BaseShape":
+            body_shape = None
+        if body_shape is None and fallback_body_shape is not None:
+            body_shape = fallback_body_shape
         if body_shape is not None:
             body_verts_arr = np.asarray(body_shape.verts, dtype=np.float64)
         elif fallback_body_verts is not None:
@@ -977,6 +1057,8 @@ def _refresh_armor_tri_after_reimport(
             body_track_mask=_trk_mask,
             nipple_bridge=_nipple_morph_bridge_inputs(body_shape),
             body_tris=_morph_body_tris(body_shape),
+            collider_tris=_collider_tri_inputs(nf, armor_shape_verts, stem_scan=_nc()._dst_xml_stem_scan()),
+            extremity_refs=_extremity_refs(),
         )
         got = {sh.name for sh in tri.shapes}
         if not (got - have):

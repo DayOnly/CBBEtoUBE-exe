@@ -65,6 +65,7 @@ cap_blas_threads()
 
 from . import ube_patcher, nif_convert, paths, discovery, nif_io  # noqa: E402
 from . import child_lifetime  # noqa: E402
+from . import run_log  # noqa: E402
 from .user_warnings import NOTE, plain_error, problem_count, warn  # noqa: E402
 from . import stale_sweep  # noqa: E402
 from .envflags import flag as _flag, knob as _knob  # noqa: E402
@@ -100,14 +101,41 @@ def _nif_convert_worker(item: tuple) -> "nif_convert.ConvertResult":
     src, dst, ube_body_ref_path, biped_slots = item[:4]
     alt_tex = item[4] if len(item) > 4 else None
     variant_sources = item[5] if len(item) > 5 else None
+    first_person = bool(item[6]) if len(item) > 6 else False     # #zap-fp-armature
     try:
-        return nif_convert.convert_nif(
+        result = nif_convert.convert_nif(
             src, dst,
             ube_body_ref_path=ube_body_ref_path,
             biped_slots=biped_slots,
             alt_texture_shape_names=alt_tex,
             variant_sources=variant_sources,
         )
+        # #body-zap: after each weight is written, zap the pair's injected body
+        # (both weights get the same triangles; a re-run starts from the whole body).
+        from . import body_zap
+        _vs = variant_sources or {}
+        # #pair-weight-parity: once both weights are on disk, `_0` takes `_1`'s skin where the source pair agrees.
+        if (result is not None and result.dst_path is not None
+                and str(result.status).startswith("converted") and _vs.get("_0") and _vs.get("_1")
+                and not body_zap.partner_pending(result.dst_path, True)):
+            try:
+                from . import nif_convert_weights as _ncw
+                _ncw._pair_weight_parity(result.dst_path, _vs)
+            except Exception as _pe:
+                nif_convert._note_pass_failure("pair-weight-parity", _pe, result.dst_path)
+        if (body_zap.active() and result is not None and result.dst_path is not None
+                and str(result.status).startswith("converted")
+                and not body_zap.partner_pending(result.dst_path, bool(_vs.get("_0") and _vs.get("_1")))):
+            try:
+                _zs = body_zap.zap_pair(result.dst_path, first_person=first_person)
+                if _zs:
+                    print(f"  body-zap: {Path(result.dst_path).name}: {_zs['deleted_tris']} of "
+                          f"{_zs['deleted_tris'] + _zs['kept_tris']} body triangles hidden by the armour removed "
+                          f"({_zs['files']} weight file(s), {_zs['poses']} pose(s)"
+                          f"{', first-person' if _zs['first_person'] else ''})")
+            except Exception as _ze:
+                nif_convert._note_pass_failure("body-zap", _ze, result.dst_path)
+        return result
     except Exception as e:
         # The whole traceback goes to this worker's output, which rides home with
         # the result into the run log; the reason stays one line for the report
@@ -279,13 +307,41 @@ def _captured(call):
     return value, buf.getvalue()
 
 
+def _prune_zapped_morphs(results) -> None:
+    """#zap-prune-morphs at the end of a pair unit: both weights are written and the zap is final."""
+    from . import body_zap
+    if not (body_zap.active() and body_zap.ZAP_PRUNE_MORPHS):
+        return
+    seen = set()
+    for r in results:
+        dst = getattr(r, "dst_path", None)
+        if dst is None or not str(getattr(r, "status", "")).startswith("converted"):
+            continue
+        key = str(Path(dst).with_name(Path(dst).stem[:-2] if Path(dst).stem[-2:] in ("_0", "_1")
+                                      else Path(dst).stem)).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            n = body_zap.prune_undrawn_body_morphs(dst)
+            if n:
+                print(f"  body-zap: {Path(dst).name}: {n} morph rows of undrawn body vertices dropped from the .tri")
+        except Exception as e:
+            nif_convert._note_pass_failure("zap-prune-morphs", e, dst)
+
+
 def _run_unit(fn, unit: "list[tuple]") -> list:
     """One worker, one unit, in order: one result per item. Module-level so the
     spawn-mode pool can pickle it. #pair-unit-dispatch
 
     What the conversions printed comes back as the list's `.output`.
     #worker-output"""
-    values, text = _captured(lambda: [fn(it) for it in unit])
+    def _go():
+        vals = [fn(it) for it in unit]
+        if fn is _nif_convert_worker:
+            _prune_zapped_morphs(vals)
+        return vals
+    values, text = _captured(_go)
     results = _UnitResults(values)
     results.output = text
     return results
@@ -302,14 +358,13 @@ def _run_one(fn, item):
     return result
 
 
-def _echo_worker_output(text) -> None:
-    """Print what a worker printed, here in the parent, where it reaches the log."""
-    if text:
-        sys.stdout.write(text if text.endswith("\n") else text + "\n")
-        try:
-            sys.stdout.flush()
-        except Exception:
-            pass
+def _echo_worker_output(text, results=()) -> None:
+    """Print what a worker printed, here in the parent, where it reaches the log.
+
+    On a run with a detail log, the pass lines go there and the unit becomes
+    one line in its mod's block (`results` are its ConvertResults); the lines a
+    person must see still reach the run log as they happen. #readable-run-log"""
+    run_log.echo_unit(text, results)
 
 
 class _NifPool:
@@ -414,7 +469,7 @@ class _NifPool:
             except Exception:
                 broken.append(unit)   # worker death: nothing in this unit is certain
                 continue
-            _echo_worker_output(getattr(results, "output", ""))
+            _echo_worker_output(getattr(results, "output", ""), results)
             for r in results:
                 on_result(r)
         if broken:
@@ -440,7 +495,7 @@ class _NifPool:
             self._ensure()
             try:
                 res = self.pool.submit(functools.partial(_run_one, fn), it).result()
-                _echo_worker_output(getattr(res, "worker_output", ""))
+                _echo_worker_output(getattr(res, "worker_output", ""), [res])
                 on_result(res)
                 consec_crashes = 0
             except Exception as e:
@@ -818,7 +873,7 @@ class _GlobalNifSchedule:
                     self.crash_retries += 1
                     broken = True
                     continue
-                _echo_worker_output(getattr(results, "output", ""))
+                _echo_worker_output(getattr(results, "output", ""), results)
                 if any(_ran_out_of_memory(r) for r in results):
                     self.memory_retries += 1
                     print(f"  out of memory converting "
@@ -1090,6 +1145,8 @@ _NIF_RELEVANT_ARGS = (
 _FINGERPRINT_PLUMBING_WHY = {
     "CBBE2UBE_NO_PAUSE": "the keypress at exit",
     "CBBE2UBE_RUN_LOG": "where the run log goes",
+    "CBBE2UBE_RUN_LOG_VERBOSE": "which of the two run logs carries the pass lines "
+                                "(src/run_log.py); no mesh reads it",
     "CBBE2UBE_GLOW_LOG": "where the glow diagnostic appends its lines",
     "CBBE2UBE_STANDOFF_LOG": "where the standoff audit's JSONL goes",
     "CBBE2UBE_CONFIG": "where the settings file lives; its values arrive as "
@@ -1153,9 +1210,11 @@ _FINGERPRINT_HASHED_GROUPS = {
             "CBBE2UBE_UBE_BODY{}", "CBBE2UBE_CBBE_BODY_0",
             "CBBE2UBE_CBBE_BODY_1", "CBBE2UBE_CBBE_BODY{}",
             "CBBE2UBE_UBE_TEMPLATE", "CBBE2UBE_UBE_OSD", "CBBE2UBE_TEXCONV",
-            "CBBE2UBE_PAPYRUS_COMPILER"),
-        "why": "a different game Data, mods folder, body, overlay slot file "
-               "or tool changes what a mesh or texture becomes"},
+            "CBBE2UBE_PAPYRUS_COMPILER", "CBBE2UBE_BREAST_FIELD",
+            "CBBE2UBE_WARP_FIELD", "CBBE2UBE_ZAP_PRESETS"),
+        "why": "a different game Data, mods folder, body, overlay slot file, "
+               "local #breast-field table or tool changes what a mesh or "
+               "texture becomes"},
     "diagnostic": {
         "names": (
             "CBBE2UBE_CLEARANCE_TERM_AUDIT", "CBBE2UBE_COINCIDENT_SKIN_DEBUG",
@@ -1224,6 +1283,42 @@ def _nif_config_fingerprint(args) -> str:
     for name in _NIF_RELEVANT_ARGS:
         if hasattr(args, name):
             parts.append(f"arg:{name}={getattr(args, name)!r}")
+    # #breast-field: the LOCAL table changes every morph it reaches, and it is a
+    # file beside the tool, not an env value -- hash its bytes (62 KB), so adding,
+    # removing or replacing it invalidates --incremental reuse.
+    try:
+        from .sliderset_gen import breast_field_path
+        _bf = breast_field_path()
+        with open(_bf, "rb") if _bf else open(os.devnull, "rb") as _fh:
+            parts.append("breast-field:" + (hashlib.sha256(_fh.read()).hexdigest()
+                                            if _bf else "absent"))
+    except Exception as _e:
+        parts.append(f"breast-field:unreadable:{type(_e).__name__}")
+    # #warp-field-table: the same for the local warp table (every mesh it reaches)
+    try:
+        from . import nif_convert as _ncw
+        _wp = os.environ.get("CBBE2UBE_WARP_FIELD", "").strip()
+        if not _wp:
+            from .paths import tool_dir as _td
+            _wp = str(_td() / _ncw.WARP_FIELD_NAME)
+        if _ncw._WARP_FIELD_OFF or not os.path.isfile(_wp):
+            parts.append("warp-field:absent")
+        else:
+            with open(_wp, "rb") as _fh:
+                parts.append("warp-field:" + hashlib.sha256(_fh.read()).hexdigest())
+    except Exception as _e:
+        parts.append(f"warp-field:unreadable:{type(_e).__name__}")
+    # #body-zap: which presets the zap holds under decides which skin goes
+    try:
+        from . import body_zap as _bzh
+        _zp = _bzh.preset_paths() if _bzh.BODY_ZAP else []
+        h = hashlib.sha256()
+        for _p in _zp:
+            with open(_p, "rb") as _fh:
+                h.update(_p.encode("utf-8", "replace") + b"\0" + _fh.read())
+        parts.append("body-zap:" + (h.hexdigest() if _zp else "off"))
+    except Exception as _e:
+        parts.append(f"body-zap:unreadable:{type(_e).__name__}")
     blob = "\n".join(parts)
     return hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
 
@@ -3780,6 +3875,11 @@ def _auto_convert_mod_steps(
     except Exception:
         _raw_slot_map = {}
     slot_bits_for = _make_slot_resolver(_raw_slot_map)
+    # #zap-fp-armature: the meshes ARMAs use only as first-person models.
+    try:
+        _fp_bases = ube_patcher.build_first_person_bases(_src_esps)
+    except Exception:
+        _fp_bases = set()
     # Crash guard for ambiguous modder slots (44/47/...): keep only standard-slot
     # meshes OR those whose NIF is skinned to body-fit bones. Unskinned accessories
     # on these slots given a UBE body race CTD at actor setup. Must run before
@@ -4014,6 +4114,7 @@ def _auto_convert_mod_steps(
                 int(slot_bits),
                 alt_tex_shape_names,
                 variant_sources_by_base.get(_weight_base_key(rel)),
+                _weight_base_key(rel) in _fp_bases,          # #zap-fp-armature
             ))
         if skipped_incremental:
             print(f"  incremental: reusing {skipped_incremental} up-to-date "
@@ -7925,6 +8026,46 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
         return (False, total_targets, False)
 
 
+# #tidy-output (ON; CBBE2UBE_NO_TIDY_OUTPUT=1 keeps everything): the output mod is never cleaned, so three
+# by-products grew run after run -- measured on a live pack: `_bsa_staging` 432 MB (source meshes pulled out of
+# archives for one run), `_superseded\<run stamp>` 123 MB for runs long since judged, and `standoff_audit.jsonl`
+# 93 MB (every run appended to it). At a run's START the audit log is cleared, so it holds this run's records for
+# `scripts/postflight_1_2.py`; at its END the staging goes and only the NEWEST superseded run stays (the rollback
+# for this run). `_superseded\meshes` (copies moved aside for a mod's own UBE build) is not a run and stays.
+_TIDY_OUTPUT = not _flag("CBBE2UBE_NO_TIDY_OUTPUT", False)
+_RUN_STAMP_RE = __import__("re").compile(r"^\d{8}-\d{6}(-\d+)?$")
+
+
+def _tidy_output_at_start(output) -> None:
+    if not _TIDY_OUTPUT:
+        return
+    try:
+        p = Path(output) / "standoff_audit.jsonl"
+        if p.is_file():
+            p.unlink()
+    except OSError as e:
+        print(f"  tidy: could not clear the previous run's standoff_audit.jsonl ({e})")
+
+
+def _tidy_output_at_end(output) -> "list[str]":
+    """Remove the BSA staging and every superseded run but the newest. Returns what went."""
+    if not _TIDY_OUTPUT:
+        return []
+    import shutil
+    gone = []
+    st = Path(output) / "_bsa_staging"
+    if st.is_dir():
+        shutil.rmtree(st, ignore_errors=True)
+        gone.append(str(st))
+    sup = Path(output) / "_superseded"
+    if sup.is_dir():
+        runs = sorted(d for d in sup.iterdir() if d.is_dir() and _RUN_STAMP_RE.match(d.name))
+        for d in runs[:-1]:
+            shutil.rmtree(d, ignore_errors=True)
+            gone.append(str(d))
+    return gone
+
+
 def _sweep_orphan_temps_at_start(output, run_started: float) -> int:
     """Remove the temp files an interrupted earlier run left under `output`,
     print and record the count as a warning, and return it. #orphan-temps
@@ -8025,6 +8166,7 @@ def _cmd_convert(args):
                   "explicitly to silence this.")
 
     _orphans_removed = _sweep_orphan_temps_at_start(output, _run_started)
+    _tidy_output_at_start(output)
     # A killed run's sweep moves go back first, on every `auto` run: before any
     # patch or mesh of the output is read and the manifest is written.
     # #sweep-recover-every-run
@@ -8518,12 +8660,15 @@ def _cmd_convert(args):
                                 "whole source", plain_error(err))
             continue
         if r.source_esps:
-            for _ln in _esp_patch_log_lines(r):
-                print(_ln)
+            _esp_lines = _esp_patch_log_lines(r)
+            # The count stays in the run log; each plugin -> patch pair and
+            # the masters go to the detail log. #readable-run-log
+            print(_esp_lines[0])
+            run_log.detail_print(*_esp_lines[1:])
         else:
             print(f"    source ESP : {r.source_esp}")
             print(f"    output ESP : {r.output_esp}")
-        print(f"    masters    : {r.esp_stats.get('masters')}")
+        run_log.detail_print(f"    masters    : {r.esp_stats.get('masters')}")
         print(f"    NIFs       : {len(r.nif_results)} total — "
               f"{r.nif_copy_count} copy, {r.nif_swap_count} body-swap, "
               f"{r.nif_skipped} skipped")
@@ -8617,7 +8762,14 @@ def _cmd_convert(args):
                 # Validator notes already surfaced above — don't double-print.
                 if n.startswith("!! patch validator"):
                     continue
+                if n.startswith("UBE body ref:"):
+                    # The same body for every source. #readable-run-log
+                    run_log.detail_print(f"    note: {n}")
+                    continue
                 print(f"    note: {n}")
+        # One line per piece: what changed, any warning. #readable-run-log
+        for _ln in run_log.piece_lines(r.nif_results):
+            print(_ln)
     if _validator_all:
         _record_failure("patch validator", "per-source patches",
                         f"{len(_validator_all)} warning(s); each patch still loads",
@@ -9236,6 +9388,10 @@ def _cmd_convert(args):
     else:
         print("\n=== all clear ===")
 
+    _tidied = _tidy_output_at_end(output)
+    if _tidied:
+        print(f"  tidy: removed {len(_tidied)} by-product folder(s) from the output "
+              "(BSA staging, older superseded runs)")
     # Written every run (empty on a clean one) -- the GUI's end-of-run popup
     # reads it; an empty list means "nothing failed", never "no data".
     _write_failures_file()
@@ -10038,8 +10194,12 @@ class _BsaMeshIndex:
     _SKIP_BSA_TEXTURE = ("texture",)
 
     def __init__(self, enabled_mod_dirs, staging_dir,
-                 bsa_name_prefixes=None, skip_bsa=None, plugin_order=None):
+                 bsa_name_prefixes=None, skip_bsa=None, plugin_order=None,
+                 ext=".nif"):
         self._dirs = list(enabled_mod_dirs)   # MO2 priority order (highest first)
+        # The file type listed: meshes by default; the body zap's alpha test
+        # lists ".dds" (keys keep their 'textures/' prefix). #zap-alpha-archives
+        self._ext = ext.lower()
         # The active plugins in load order: between two archives listing the
         # same mesh, the one whose plugin loads later wins, as in game. None
         # keeps the MO2 order (the caller passes `_bsa_plugin_order`, None when
@@ -10082,7 +10242,8 @@ class _BsaMeshIndex:
         archives. #bsa-only-sources #bsa-load-order-winner"""
         return (tuple(str(d).lower() for d in self._dirs), self._skip,
                 tuple(self._name_prefixes or ()),
-                tuple(str(p).lower() for p in (self._plugin_order or ())))
+                tuple(str(p).lower() for p in (self._plugin_order or ())),
+                self._ext)
 
     def adopt_listing(self, other) -> bool:
         """Take `other`'s archive listing instead of scanning again, when `other`
@@ -10129,7 +10290,7 @@ class _BsaMeshIndex:
                 rank = ranks.get(bsa.stem.lower()) if ranks is not None else None
                 for f in files:
                     fl = f.lower().replace("\\", "/")
-                    if not fl.endswith(".nif"):
+                    if not fl.endswith(self._ext):
                         continue
                     rel = fl[7:] if fl.startswith("meshes/") else fl
                     if ranks is None:

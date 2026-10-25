@@ -36,7 +36,7 @@ from src import gui_settings as gs
 from src import preflight as pf
 
 REPO = Path(__file__).resolve().parents[1]
-RECIPE = {"conform_to_body": False, "layer_order_last": True}
+RECIPE = {"leg_bend_match": False, "layer_order_last": True}
 
 
 def _entry_module():
@@ -113,7 +113,7 @@ def test_the_log_says_where_the_settings_came_from_and_what_was_set(env, capsys)
     assert env["CBBE2UBE_CONFIG"] in line
     for var, val in _recipe_env().items():
         assert f"{var[9:]}={val}" in line, line
-    assert "conform_to_body=False" in log and "layer_order_last=True" in log, log
+    assert "leg_bend_match=False" in log and "layer_order_last=True" in log, log
     assert bi.run_config()["settings_applied"]["applied"] == _recipe_env()
 
 

@@ -125,3 +125,8 @@ census3_ab.json
 # Golden capture sets from a same-build A/B (golden_off/, golden_on/, ...).
 # Same generated data as golden/, just kept side by side for a comparison.
 golden_*/
+
+# The #breast-field table is derived from other authors' built outputs: it stays
+# LOCAL (beside the exe / repo root), never committed and never bundled.
+CBBEtoUBE_breast_field.npz
+CBBEtoUBE_warp_field.npz

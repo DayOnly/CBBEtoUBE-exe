@@ -95,32 +95,63 @@ def _rotate_previous(path):
 # closed mid-run. Path is surfaced in _finish so the user can find the log.
 _LOG_FILE = None
 _LOG_PATH = None
+# A run's detail log and the observer its summary is built from (src/run_log.py).
+# #readable-run-log
+_DETAIL_FILE = None
+_DETAIL_PATH = None
+_OBSERVER = None
+_SUMMARY = None
 
 
 class _Tee:
     """A write-through stream wrapper: everything written to the console also
     goes to the log file. Unknown attribute access (isatty, fileno, encoding,
     ...) delegates to the wrapped console stream so callers can't tell the
-    difference."""
+    difference.
 
-    def __init__(self, stream, logf):
+    A RUN also has a detail log (`detailf`) and an observer: `write` reaches
+    the console, the log, the detail log and the observer; `write_detail` the
+    detail log only; `write_main` all but the detail log. #readable-run-log"""
+
+    def __init__(self, stream, logf, detailf=None, observer=None):
         self._stream = stream
         self._logf = logf
+        self._detailf = detailf
+        self._observer = observer
+        # An instance attribute, so it never falls through to the console's.
+        self.detail_enabled = detailf is not None
+
+    def _put(self, s, targets):
+        for t in targets:
+            if t is not None:
+                try:
+                    t.write(s)
+                except Exception:
+                    pass
+        if self._observer is not None:
+            self._observer.feed(s)
 
     def write(self, s):
-        if self._stream is not None:
+        self._put(s, (self._stream, self._logf, self._detailf))
+        return len(s)
+
+    def write_main(self, s):
+        """The console and the log, not the detail log: a line the detail log
+        already holds in place. #readable-run-log"""
+        self._put(s, (self._stream, self._logf))
+        return len(s)
+
+    def write_detail(self, s):
+        """The detail log only. #readable-run-log"""
+        if self._detailf is not None:
             try:
-                self._stream.write(s)
+                self._detailf.write(s)
             except Exception:
                 pass
-        try:
-            self._logf.write(s)
-        except Exception:
-            pass
         return len(s)
 
     def flush(self):
-        for t in (self._stream, self._logf):
+        for t in (self._stream, self._logf, self._detailf):
             if t is not None:
                 try:
                     t.flush()
@@ -265,11 +296,72 @@ def _install_log_tee() -> None:
         _rotate_previous(os.path.join(os.path.dirname(_LOG_PATH),
                                       _FAILURES_NAME))
     _LOG_FILE = f
+    _install_detail_log(_rotate)
     try:
-        sys.stdout = _Tee(sys.stdout, f)
-        sys.stderr = _Tee(sys.stderr, f)
+        sys.stdout = _Tee(sys.stdout, f, _DETAIL_FILE, _OBSERVER)
+        sys.stderr = _Tee(sys.stderr, f, _DETAIL_FILE, _OBSERVER)
     except Exception:
         pass
+
+
+def _install_detail_log(is_run) -> None:
+    """A RUN's detail log beside its log (CBBEtoUBE_last_run_detail.log),
+    rotated with it, and the observer the run summary is built from. Not for
+    the window's session log or CBBEtoUBE_cli.log. Best-effort: without it the
+    log is written whole, as before. #readable-run-log"""
+    global _DETAIL_FILE, _DETAIL_PATH, _OBSERVER, _SUMMARY
+    _SUMMARY = None
+    if not is_run or not _LOG_PATH:
+        return
+    try:
+        from src import run_log
+        path = run_log.detail_path(_LOG_PATH)
+        _rotate_previous(path)
+        _DETAIL_FILE = open(path, "w", encoding="utf-8", buffering=1)
+        _DETAIL_PATH = path
+        run_log.reset()
+        _OBSERVER = run_log.RunObserver()
+    except Exception:
+        _DETAIL_FILE = _DETAIL_PATH = _OBSERVER = None
+
+
+def _print_run_summary(rc) -> None:
+    """The run summary at the bottom of the log (and the console, and the
+    window), then the end marker the window stops reading at. Kept in
+    `_SUMMARY` for `_finalize_run_log`, which puts it at the top. Not under
+    CBBE2UBE_RUN_LOG_VERBOSE=1, and not for a log with no detail log.
+    #readable-run-log"""
+    global _SUMMARY
+    if _DETAIL_FILE is None or _LOG_FILE is None:
+        return
+    try:
+        from src import run_log
+        if run_log.verbose():
+            return
+        ac = sys.modules.get("src.auto_convert")
+        fails = list(getattr(ac, "_RUN_FAILURES", []) or [])
+        _SUMMARY = run_log.summary_lines(_OBSERVER, fails, rc=rc,
+                                         main_path=_LOG_PATH, detail=_DETAIL_PATH)
+        print("\n" + "\n".join(_SUMMARY))
+        sys.stdout.write_main(run_log.END_MARKER + "\n")
+        sys.stdout.flush()
+    except Exception:
+        _SUMMARY = None
+
+
+def _finalize_run_log() -> None:
+    """Close the run's logs and put the summary at the top of the main log.
+    Last of all: nothing may write the log after it. #readable-run-log"""
+    global _SUMMARY
+    path, summary = _LOG_PATH, _SUMMARY
+    _SUMMARY = None
+    release_log_tee()
+    if path and summary:
+        try:
+            from src import run_log
+            run_log.prepend_to_file(path, summary)
+        except Exception:
+            pass
 
 
 def release_log_tee() -> bool:
@@ -301,7 +393,7 @@ def release_log_tee() -> bool:
     The window no longer calls it; a test that installs a tee drops it with
     this. Never raises.
     """
-    global _LOG_FILE, _LOG_PATH
+    global _LOG_FILE, _LOG_PATH, _DETAIL_FILE, _DETAIL_PATH, _OBSERVER
     if _LOG_FILE is None:
         return False
     for nm in ("stdout", "stderr"):
@@ -311,12 +403,15 @@ def release_log_tee() -> bool:
                 setattr(sys, nm, inner)
             except Exception:
                 pass
-    try:
-        _LOG_FILE.close()
-    except Exception:
-        pass
+    for fh in (_LOG_FILE, _DETAIL_FILE):
+        try:
+            if fh is not None:
+                fh.close()
+        except Exception:
+            pass
     _LOG_FILE = None
     _LOG_PATH = None
+    _DETAIL_FILE = _DETAIL_PATH = _OBSERVER = None
     return True
 
 
@@ -421,6 +516,9 @@ def _finish(rc: int) -> None:
         print("\nFinished with errors (see above).")
     if _LOG_PATH:
         print(f"(full log saved to: {_LOG_PATH})")
+    # Before the pause: the summary is at the top of the log while the console
+    # still waits for its key. #readable-run-log
+    _finalize_run_log()
     if os.environ.get("CBBE2UBE_NO_PAUSE"):
         return
     # Pause whenever a console WINDOW is attached — not only when stdin is a
@@ -475,5 +573,7 @@ if __name__ == "__main__":
         traceback.print_exc()
         print(f"\nERROR: {e!r}")
         rc = 1
+    _print_run_summary(rc)      # #readable-run-log
     _finish(rc)
+    _finalize_run_log()         # a source run: _finish returned before it
     sys.exit(rc)

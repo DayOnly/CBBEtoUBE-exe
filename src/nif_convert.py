@@ -116,6 +116,11 @@ _DEFAULTS_PROMOTED_2026_08_22 = (
     "PANEL_RIGID_RIDE",
     "PER_ANCHOR_ANCHOR_SEED",
 )
+# #defaults-demoted-2026-10-18: promoted above, OFF again since -- the authors' plates bend with the body and the
+# zapped pieces keep only the warp (see PANEL_RIGIDITY for the measurements)
+_DEFAULTS_DEMOTED_2026_10_18 = (
+    "PANEL_RIGIDITY",
+)
 
 # #defaults-promoted-2026-08-26 -- the two BUG-15(a)/(b) fixes.
 #
@@ -205,6 +210,8 @@ from .nif_convert_trigen import (  # noqa: E402
     armor_relpath_under_meshes,
     _collect_tri_inputs,
     _surface_track_inputs,
+    _collider_tri_inputs,
+    _extremity_refs,
     _nipple_morph_bridge_inputs,
     _morph_body_tris,
     _normalize_shader_for_morph,
@@ -1549,6 +1556,15 @@ AUTHORED_INFLATE = (not _flag("CBBE2UBE_NO_AUTHORED_INFLATE", False))
 # measures that split; it was 5 flags, all in this direction.
 # Kill switch: CBBE2UBE_NO_AUTHORED_ANTIPOKE=1
 AUTHORED_ANTIPOKE = (not _flag("CBBE2UBE_NO_AUTHORED_ANTIPOKE", False))
+# #hf-authored-inflate (OPT-IN, CBBE2UBE_HF_AUTHORED_INFLATE=1; off = the flat 0.6u push): the gauntlet / boot branch
+# inflates by a flat ARMOR_INFLATION_MAGNITUDE_HANDS_FEET with no floor, undoing 60% of its own warp: gloves and boots
+# ship ~0.3-0.4u off the authors (audit 2026-10-20 F21). With the main chain's #authored-inflate floor (the author's
+# own standoff on their body, plus the body's morph room, capped by the flat push) a 40-piece glove / boot sample went
+# median +0.439u -> +0.018u off the authors -- but forearm / calf poke through the cuff rose at bind 31 -> 37 u^2
+# (1-2 NIFs worse, 0-1 better per pose; heavy plate gauntlets): the flat push was the cuff's only margin over the
+# denser UBE forearm. A measured `minimum_push` after it did not help (bind 45 u^2). NOT ON until the cuff has a
+# clearance that does not cost poke.
+HF_AUTHORED_INFLATE = _flag("CBBE2UBE_HF_AUTHORED_INFLATE", False)
 # How much of the body's local outward morph the floor must cover. The margin
 # has to be the body's OWN morph amplitude -- the converter never sees the
 # player's preset -- and it has to be CAPPED, because the belly's runs to 8.7u
@@ -1904,7 +1920,7 @@ HDT_XML_SANITISE = _flag("CBBE2UBE_HDT_XML_SANITISE", False)
 # always run UNCONDITIONALLY. DEFAULT ON: adding the switch changes nothing by
 # construction, it only makes the pass reachable for an A/B.
 #
-# DO NOT CONFUSE IT WITH `CBBE2UBE_NO_CONFORM`, which gates
+# DO NOT CONFUSE IT WITH `CBBE2UBE_CONFORM_FITTED`, which gates
 # `CONFORM_FITTED_CLOTH` -> `_conform_fitted_to_body`, a WEIGHTS pass in the
 # shared tail. Two passes, both called "conform"; the older, obvious-looking
 # flag is the other one, so an A/B run against it measures nothing and reads as
@@ -2411,6 +2427,66 @@ def _closest_point_delta(points, tv, tt, *, fallback=None,
     return out
 
 
+# #warp-field-table (EXPERIMENT, local only): the CBBE->UBE warp field as the
+# AUTHORS convert. Our nearest-vertex field, tangentially smoothed (#warp-tan-smooth),
+# plus the tangential residual of the authors' own displacement learned from author-
+# built UBE twins (normal part = ours). Held out on 118 pieces: distance to the
+# authors' placement 0.05/0.21 (normal/tangential) -> 0.04/0.09; upper back 0.30 ->
+# 0.07. Derived from other authors' outputs, so it is a LOCAL file beside the tool
+# (`CBBEtoUBE_warp_field.npz`, keys f_0 / f_1, `nb`) or CBBE2UBE_WARP_FIELD, never
+# bundled. Absent or for another body: the data-free field above is used.
+_WARP_FIELD_OFF = _flag("CBBE2UBE_NO_WARP_FIELD", False)
+WARP_FIELD_NAME = "CBBEtoUBE_warp_field.npz"
+
+
+def _warp_field_table(cbbe_path: str, n: int):
+    if _WARP_FIELD_OFF:
+        return None
+    path = os.environ.get("CBBE2UBE_WARP_FIELD", "").strip()
+    if not path:
+        from .paths import tool_dir
+        path = str(tool_dir() / WARP_FIELD_NAME)
+    if not os.path.isfile(path):
+        return None
+    w = "_0" if Path(cbbe_path).stem.endswith("_0") else "_1"
+    try:
+        z = np.load(path)
+        if int(z["nb"]) != int(n) or f"f{w}" not in z.files:
+            return None
+        return np.asarray(z[f"f{w}"], dtype=np.float64)
+    except Exception as e:
+        print(f"  [warp-field] table unreadable, using the computed field: {e!r}")
+        return None
+
+
+# #warp-tan-smooth (default 160 passes since 10-18; 0 = off): the CBBE->UBE field is built by
+# NEAREST-VERTEX correspondence, so its TANGENTIAL part jumps between whichever UBE
+# vert happens to be nearest -- measured against 949 author-built UBE twins, our
+# warp slid cloth ~0.24u sideways everywhere (cosine to the authors' displacement
+# 0.55-0.8 on limbs and back). Smoothing ONLY the tangential part over the 3BA body
+# (k=8 neighbours, N passes) and keeping each point's exact normal offset cut the
+# held-out distance to the authors 0.254 -> 0.165u with no author data.
+WARP_TAN_SMOOTH = _knob("CBBE2UBE_WARP_TAN_SMOOTH", 160, int)
+
+
+def _tangent_smoothed_delta(cbbe_v, delta, ube_v, ube_t, iters):
+    from scipy.spatial import cKDTree
+    un = np.zeros_like(ube_v)
+    fn = np.cross(ube_v[ube_t[:, 1]] - ube_v[ube_t[:, 0]], ube_v[ube_t[:, 2]] - ube_v[ube_t[:, 0]])
+    for j in range(3):
+        np.add.at(un, ube_t[:, j], fn)
+    un /= np.linalg.norm(un, axis=1, keepdims=True) + 1e-12
+    _, jt = cKDTree(ube_v).query(cbbe_v + delta)
+    nt = un[jt]
+    dn = (delta * nt).sum(1, keepdims=True) * nt
+    tg = delta - dn
+    _, nb = cKDTree(cbbe_v).query(cbbe_v, k=8)
+    for _ in range(int(iters)):
+        tg = 0.5 * tg + 0.5 * tg[nb].mean(1)
+        tg = tg - (tg * nt).sum(1, keepdims=True) * nt
+    return tg + dn
+
+
 def _cached_cbbe_to_ube_delta(
         cbbe_path: Path, ube_path: Path,
 ) -> "tuple[np.ndarray, np.ndarray] | tuple[None, None]":
@@ -2481,6 +2557,16 @@ def _cached_cbbe_to_ube_delta(
                     # result, which is the shipped behaviour.
                     print(f"  [warp-field] closest-point field failed, "
                           f"keeping nearest-vertex: {e!r}")
+        _wt = _warp_field_table(str(cbbe_path), len(cbbe_v)) if cbbe_v.shape != ube_v.shape else None
+        if _wt is not None:
+            delta = _wt
+        elif int(WARP_TAN_SMOOTH) > 0 and cbbe_v.shape != ube_v.shape:
+            try:
+                delta = _tangent_smoothed_delta(cbbe_v, delta, ube_v,
+                                                np.asarray(ube_shape.tris, dtype=np.int64).reshape(-1, 3),
+                                                int(WARP_TAN_SMOOTH))
+            except Exception as e:
+                print(f"  [warp-tan-smooth] failed, keeping the unsmoothed field: {e!r}")
         _CBBE_UBE_DELTA_CACHE[key] = (cbbe_v, delta)
         return cbbe_v, delta
     except Exception:
@@ -2497,7 +2583,9 @@ GROOVE_SMOOTH_ITERS = 8
 # one. So how much cleanup is still needed is a function of how well the passes
 # upstream behave, and that has to be re-measurable in one command rather than
 # assumed from when it was written.
-GROOVE_SMOOTH_ENABLED = not _flag("CBBE2UBE_NO_GROOVE_SMOOTH", False)
+# OFF since 2026-10-18 (CBBE2UBE_GROOVE_SMOOTH=1 on): with the tangent-smoothed warp it no longer changes any
+# measured fit (fit sample + 157 layered pairs: distance, clipping and crossings flat)
+GROOVE_SMOOTH_ENABLED = _flag("CBBE2UBE_GROOVE_SMOOTH", False)
 GROOVE_SMOOTH_ROUGH = 0.25  # displacement-deviation (u) above which a vert is "grooved"
 
 
@@ -3797,7 +3885,8 @@ def _fit_shapes_copy(ctx) -> None:
     for s in src_nif_for_fit.shapes:
         if _should_drop_shape(s.name):
             continue  # vestigial mashup leftover (e.g. MaleUnderwearBody)
-        if _is_body_skin_extremity(s.name):
+        if _is_extremity_skin_here(s.name, biped_slots,
+                                   hdt_collider_names, hdt_softbody_names):
             # ALWAYS drop the source CBBE body-skin Hands/Feet shape.
             # The working BOOTS carry NO body-skin shape (just the boot
             # shell) and render; the only structural thing GAUNTLETS had
@@ -3906,11 +3995,27 @@ def _fit_shapes_copy(ctx) -> None:
                 _stage_hf('warp_hf', hf_verts)
             if body_verts_for_fit is not None:
                 try:
+                    # #hf-authored-inflate: the same floor as the main chain (the author's own standoff on the
+                    # body they built for, and the body's own morph room) -- it may reduce the push, never raise it.
+                    _hfa = {}
+                    if HF_AUTHORED_INFLATE and cbbe_verts_for_warp is not None:
+                        try:
+                            _hfa = dict(
+                                morph_amplitude=_cached_body_morph_amplitude(
+                                    _find_ube_body_osd(), body_normals_for_fit, len(body_verts_for_fit)),
+                                morph_max=ARMOR_INFLATION_MAGNITUDE_HANDS_FEET,
+                                src_armor_verts=hf_orig, src_body_verts=cbbe_verts_for_warp,
+                                src_body_normals=_cached_cbbe_body_normals(cbbe_body_path_p1),
+                                tris=np.asarray(s.tris, dtype=np.int64))
+                        except Exception as e:
+                            failed.append((f"{s.name}:hf-authored-inflate", repr(e)))
+                            _hfa = {}
                     inflated = inflate_armor_outward(
                         hf_verts, body_verts_for_fit,
                         magnitude=ARMOR_INFLATION_MAGNITUDE_HANDS_FEET,
                         close_threshold=HAND_FOOT_INFLATION_FALLOFF,
                         body_normals=body_normals_for_fit,
+                        **_hfa,
                     ).astype(np.float64)
                     # Same digit protection on the inflation push.
                     if hf_ef is not None:
@@ -4323,8 +4428,10 @@ def _fit_shapes_copy(ctx) -> None:
             # `skip_mask` is built the same way phase 2 builds it: any
             # vert carrying weight from a bone the ACTOR SKELETON cannot
             # resolve is SMP chain cloth and must not be rigidified.
+            # bound here, not inside the branch: the anti-poke below reads it too, and with
+            # PANEL_RIGIDITY=0 it was unbound there -- the NameError discarded the copy path's anti-poke.
+            _skip_p1 = None
             if PANEL_RIGIDITY > 0 and snapped is not None:
-                _skip_p1 = None
                 try:
                     _skip_p1 = simulated_vert_mask(s, MIXED_CLOTH_CHAIN_EPS)
                 except Exception:
@@ -4453,6 +4560,8 @@ def _fit_shapes_copy(ctx) -> None:
                         _ap_p1 - _pre_ap_p1, axis=1) > 1e-4).sum())
                     snapped = _ap_p1
                     _stage_p1('antipoke', snapped)
+                    if _STACK_PUSH:
+                        _STACK_AP[id(s)] = (_pre_ap_p1, np.asarray(snapped, dtype=np.float64), _skip_p1)
                     if _moved_p1:
                         print(f"    [phase1-antipoke] {s.name}: cleared "
                               f"{_moved_p1} vert(s) out of the body")
@@ -4745,27 +4854,29 @@ def convert_nif(
     if body_names or exposed_skin_names:
         if ube_body_ref_path is not None:
             matched_ref = _weight_matched_ube_ref(src_path, Path(ube_body_ref_path))
-            return convert_nif_phase2(
-                src_path, dst_path,
-                ube_body_ref_path=matched_ref,
-                cbbe_body_ref_path=cbbe_ref_path,
-                biped_slots=biped_slots,
-                # Inject the UBE BaseShape only when this armor HIDES/PROVIDES the
-                # body the viewer sees: a slot-32 body piece (or a slotless one),
-                # OR a FIRST-PERSON body viewmodel (the 1st-person view renders
-                # ONLY 1st-person meshes -- dropping its body = invisible arms).
-                # A plain non-body slot (boots 37, panties/underwear, a cloak, a
-                # waist) does NOT hide slot 32, so the actor's own nude UBE body
-                # already renders; injecting a second body there just z-fights.
-                # For those we DROP the inline CBBE body (it's in body_names) and
-                # inject nothing. Matches the exposed-skin gate above. #3ba-ref-body
-                inject_baseshape=((not biped_slots)
-                                  or bool(biped_slots & _BODY_SLOT_BIT)
-                                  or _is_first_person_mesh(src_path, nif)),
-                alt_texture_shape_names=alt_texture_shape_names,
-                extra_body_drop_names=tuple(exposed_skin_names),
-                variant_sources=variant_sources,
-            )
+            _inject = ((not biped_slots) or bool(biped_slots & _BODY_SLOT_BIT)
+                       or _is_first_person_mesh(src_path, nif))
+            from . import body_zap as _bz
+            with _bz.lean_for(_inject and _bz.ZAP_LEAN and _bz.active()):   # #zap-lean
+                return convert_nif_phase2(
+                    src_path, dst_path,
+                    ube_body_ref_path=matched_ref,
+                    cbbe_body_ref_path=cbbe_ref_path,
+                    biped_slots=biped_slots,
+                    # Inject the UBE BaseShape only when this armor HIDES/PROVIDES the
+                    # body the viewer sees: a slot-32 body piece (or a slotless one),
+                    # OR a FIRST-PERSON body viewmodel (the 1st-person view renders
+                    # ONLY 1st-person meshes -- dropping its body = invisible arms).
+                    # A plain non-body slot (boots 37, panties/underwear, a cloak, a
+                    # waist) does NOT hide slot 32, so the actor's own nude UBE body
+                    # already renders; injecting a second body there just z-fights.
+                    # For those we DROP the inline CBBE body (it's in body_names) and
+                    # inject nothing. Matches the exposed-skin gate above. #3ba-ref-body
+                    inject_baseshape=_inject,
+                    alt_texture_shape_names=alt_texture_shape_names,
+                    extra_body_drop_names=tuple(exposed_skin_names),
+                    variant_sources=variant_sources,
+                )
         return ConvertResult(
             src_path=src_path,
             dst_path=None,
@@ -4911,9 +5022,24 @@ def convert_nif(
                 src_nif_for_fit=src_nif_for_fit,
                 ube_base_for_reskin=ube_base_for_reskin,
             ))
+            if _STACK_PUSH and shape_jobs_p1 and body_verts_for_fit is not None and body_normals_for_fit is not None:
+                try:
+                    _n_sp = _stack_push_p1(shape_jobs_p1, body_verts_for_fit, body_normals_for_fit)
+                    _k = _stack_key(dst_path)
+                    for _key in [k for k in _STACK_PUSH_OFFSETS if k[0] == _k]:
+                        del _STACK_PUSH_OFFSETS[_key]
+                    if _STACK_PUSH_MORPH_PRE:
+                        for _j in shape_jobs_p1:
+                            if _j.get("stack_extra") is not None and (_j.get("g2s") is None or _g2s_is_identity(_j["g2s"])):
+                                _STACK_PUSH_OFFSETS[(_k, _j["src"].name)] = _j["stack_extra"]
+                    if _n_sp:
+                        print(f"  stack push: {_n_sp} vert(s) moved with the layer beneath them")
+                except Exception as _spe:
+                    _note_pass_failure("stack-push", _spe)
+                _STACK_AP.clear()
 
             # Z-fight auto-offset.
-            if shape_jobs_p1:
+            if shape_jobs_p1 and not _NO_LAYER_SEP:
                 try:
                     from scipy.spatial import cKDTree
                     zfight_map = {
@@ -4941,7 +5067,7 @@ def convert_nif(
             # layer. Fixes static Z-fighting / mesh intersection visible
             # even at standstill (separate problem from the motion-time
             # weight-sync below). See _separate_chest_layered_cloth_depth.
-            if shape_jobs_p1:
+            if shape_jobs_p1 and not _NO_LAYER_SEP:
                 try:
                     n_pushed = _separate_chest_layered_cloth_depth(
                         shape_jobs_p1,
@@ -5230,7 +5356,7 @@ def convert_nif(
                         # partially, corrupting the atlas opaque-diffuse
                         # detection (cut-out tiles wrongly forced opaque).
                         if s.name not in _coll_names_p1:
-                            _normalize_partitions(s)
+                            _normalize_partitions(s, biped_slots)
 
                     # BODYTRI goes on the carrier only.
                     for target_shape in carriers:
@@ -5326,6 +5452,9 @@ def convert_nif(
                             body_track_mask=_trk_mask,
                             nipple_bridge=_nipple_morph_bridge_inputs(_trk_body),
                             body_tris=_morph_body_tris(_trk_body),
+                            collider_tris=_collider_tri_inputs(
+                                dst_check, armor_shape_verts, xml_owner=src_path),
+                            extremity_refs=_extremity_refs(),
                         )
                         atomic_tri_save(tri, auto_tri_dst_phase1)
             except Exception as _e_tri:
@@ -5441,16 +5570,18 @@ def convert_nif(
         # Same re-import gap as the phase-2 path: the TRI was written before
         # _finalize_hdt_physics restored the textureless proxies, so they carry
         # no morph table. Re-emit now the NIF is final. #tri-reimport-refresh
-        _p1_body_verts = None
+        _p1_body_verts = _p1_body_shape = None
         if ube_body_ref_path is not None:
             try:
-                _, _p1_body_verts, _ = _cached_ube_body_verts(
+                _p1_ref_nif, _p1_body_verts, _ = _cached_ube_body_verts(
                     Path(ube_body_ref_path))
+                _p1_body_shape = next((x for x in _p1_ref_nif.shapes if x.name == "BaseShape"), None)
             except Exception:
-                _p1_body_verts = None
+                _p1_body_verts = _p1_body_shape = None
         _refresh_armor_tri_after_reimport(
             dst_path, auto_tri_dst_phase1,
-            fallback_body_verts=_p1_body_verts)
+            fallback_body_verts=_p1_body_verts,
+            fallback_body_shape=_p1_body_shape)
 
         # Validation pass — catches subtle skinning / TRI mismatches
         # that would only show up as spikes / missing morphs in-game.
@@ -5969,10 +6100,42 @@ PRESERVE_DISMEMBER_SLOTS = frozenset({
     43,  # ears
 })
 
-def _normalize_partitions(shape) -> bool:
+# #armature-slot-partition (DEFAULT ON since 2026-10-21; CBBE2UBE_NO_ARMATURE_SLOT_PARTITION=1 restores
+# the fixed-list behaviour): the game draws a partition only when the armature's BOD2
+# claims its slot. A piece whose armature does NOT claim 32 (a fur overlay on 57, a
+# skirt on 49) went invisible when a rewrite moved its triangles to SBP_32_BODY: the
+# collapse and the over-cap split both defaulted to 32. With the armature's slots known,
+# the rewrite keeps a slot the armature draws -- the source's own slot when it has one.
+# Armatures that claim 32 (and callers that do not pass the slots) are unchanged.
+# Audit 2026-10-20 F18: 2 pieces, every rewritten partition on an unclaimed 32.
+ARMATURE_SLOT_PARTITION = not _flag("CBBE2UBE_NO_ARMATURE_SLOT_PARTITION", False)
+
+
+def _armature_drawn_slot(ids, biped_slots: int) -> "int | None":
+    """#armature-slot-partition: the slot a rewritten partition table must carry so the
+    armature `biped_slots` still draws it, or None when 32 is right (the armature claims
+    32, the slots are unknown, or the switch is off). One source slot -> that slot (as
+    the source shipped it). Several -> the lowest the armature claims, else the
+    armature's own lowest slot."""
+    if not ARMATURE_SLOT_PARTITION or not biped_slots:
+        return None
+    if biped_slots & (1 << (SBP_32_BODY_ID - 30)):
+        return None
+    ids = {int(i) for i in ids if i is not None}
+    if len(ids) == 1:
+        return next(iter(ids))
+    claimed = sorted(i for i in ids if 30 <= i <= 61 and (biped_slots >> (i - 30)) & 1)
+    if claimed:
+        return claimed[0]
+    own = [30 + b for b in range(32) if (biped_slots >> b) & 1]
+    return own[0] if own else None
+
+
+def _normalize_partitions(shape, biped_slots: int = 0) -> bool:
     """Collapse a multi-partition shape into a single SBP_32_BODY
-    partition. No-op if shape already has 0 or 1 partition. Returns
-    True if a collapse was performed.
+    partition (or the slot the armature draws when it does not claim 32,
+    #armature-slot-partition). No-op if shape already has 0 or 1
+    partition. Returns True if a collapse was performed.
 
     Why: NioOverride's BodyMorph routing skips shapes whose partition
     table doesn't match the wearer's primary slot. Source CBBE armors
@@ -6008,9 +6171,10 @@ def _normalize_partitions(shape) -> bool:
         nd = getattr(parts[0], "namedict", None)
         if nd is None:
             return False
+        drawn = _armature_drawn_slot(part_ids, biped_slots)
         pyn = _pynifly()
         new_part = pyn.SkyPartition(
-            part_id=SBP_32_BODY_ID,
+            part_id=SBP_32_BODY_ID if drawn is None else drawn,
             flags=int(getattr(parts[0], "flags", 257) or 257),
             namedict=nd,
         )
@@ -6024,9 +6188,11 @@ def _normalize_partitions(shape) -> bool:
         return False
 
 
-def _preserved_dismember_slot(shape) -> "int | None":
+def _preserved_dismember_slot(shape, biped_slots: int = 0) -> "int | None":
     """The dismember slot id an over-cap SPLIT must keep so the shape still
     renders in its equip region, or None for body-region shapes (-> SBP_32_BODY).
+    Given the armature's `biped_slots`, a piece whose armature does not claim 32
+    keeps a slot the armature draws (#armature-slot-partition).
 
     Only returns a slot when EVERY source partition sits on ONE preserved
     dismember slot (hands/feet/head/...). Mixed-slot shapes -> None: re-slotting
@@ -6043,7 +6209,7 @@ def _preserved_dismember_slot(shape) -> "int | None":
         preserved = ids & PRESERVE_DISMEMBER_SLOTS
         if len(preserved) == 1 and ids == preserved:
             return next(iter(preserved))
-        return None
+        return _armature_drawn_slot(ids, biped_slots) if ids else None
     except Exception:
         return None
 
@@ -6191,7 +6357,7 @@ def _finalize_physics_and_motion_match(dst_path, src_path, biped_slots) -> None:
     straddles the finalize, the collider patches read the XML it writes, and the
     weight matches run last-wins so each notes why it sits where it does.
     """
-    _normalize_partitions_on_disk(dst_path, src_path)
+    _normalize_partitions_on_disk(dst_path, src_path, biped_slots)
 
     # Bust collider split, pass 1 (shape): BEFORE the physics finalize so the
     # hidden clone exists when the XML is validated/hardened against the NIF.
@@ -7056,8 +7222,10 @@ def _nif_has_garment_chain(src_nif) -> bool:
 # "Garment" is detected, not hardcoded: carries jiggle weight + not a physics chain +
 # hugs the body. Per-vert it only shrinks the bone set (partition-safe).
 # [DESIGN: Leg-plate bend / butt-jiggle conform]
+# OFF since 2026-10-18 (CBBE2UBE_CONFORM_FITTED=1 on): the weight conform changed 12 of 100 files on the screen and
+# the real walk/run clip test came out IDENTICAL on every one (skin 246/320, crossings 507/526 both ways)
 CONFORM_FITTED_CLOTH = (
-    not _flag("CBBE2UBE_NO_CONFORM", False)
+    _flag("CBBE2UBE_CONFORM_FITTED", False)
 )
 # Tunables (env-overridable). Validated on a pantyhose: 727/3846 verts conformed,
 # inner-back-thigh leg-follow 54% -> 65% (body ~65-71%); a rigid greave: 0 verts.
@@ -8592,8 +8760,10 @@ def _conform_blend_vert(dv: dict, bd: dict, blend: float, delta: float):
 # Physics-chain verts (SMP softbody) never move -- only the static torso layers do.
 # Measured offline: a layered dress 26->10, a corset top 4197->1148, a corset
 # 2569->675; body clearance held, fur untouched. Opt out with
-# CBBE2UBE_NO_SELFINT_REPAIR=1; band + gate tunable via CBBE2UBE_SELFINT_*.
-SELFINT_REPAIR = not _flag("CBBE2UBE_NO_SELFINT_REPAIR", False)
+# CBBE2UBE_SELFINT_REPAIR=1 (off by default since 10-18); band + gate tunable via CBBE2UBE_SELFINT_*.
+# OFF since 2026-10-18 (CBBE2UBE_SELFINT_REPAIR=1 on): with the tangent-smoothed warp, off is no worse -- layered
+# crossings -3/-2/-5%, no skin change -- and it was a quarter of a layered piece's conversion time
+SELFINT_REPAIR = _flag("CBBE2UBE_SELFINT_REPAIR", False)
 # Feathering rounds for the self-int separation step. Keeps the push continuous so
 # separating layers doesn't spike the mesh. 4 by SWEEP (0/1/2/4) on a bust top + a
 # cuirass cord shape: the cord's max edge jump falls 2.19 -> 1.09 (-50%) AND the
@@ -11842,6 +12012,10 @@ COHERENCE_REPAIR_OUTSIDE_BODY = (not _flag(
 # opened two new seam groups on one piece. 0 is the old behaviour.
 # CBBE2UBE_COHERENCE_HOLD_MARGIN=0 restores it.
 COHERENCE_HOLD_MARGIN = _knob("CBBE2UBE_COHERENCE_HOLD_MARGIN", 0.2)
+# #coherence-hold-surface (DEFAULT ON since 2026-10-19; CBBE2UBE_NO_COHERENCE_HOLD_SURFACE=1 off): the repair may not
+# newly expose skin its input covered (see `nif_convert_writer._hold_repair_surface`; it smoothed a min-push lift back
+# flat: 0 -> 528 exposed skin points on one breastplate). Judged with #push-tri, see fit_metrics.PUSH_TRI.
+COHERENCE_HOLD_SURFACE = not _flag("CBBE2UBE_NO_COHERENCE_HOLD_SURFACE", False)
 COHERENCE_MIN_AREA = _knob("CBBE2UBE_COHERENCE_MIN_AREA", 4.0)
 COHERENCE_SRC_MIN = _knob("CBBE2UBE_COHERENCE_SRC_MIN", 0.70)
 COHERENCE_OUT_MAX = _knob("CBBE2UBE_COHERENCE_OUT_MAX", 0.30)
@@ -12421,6 +12595,9 @@ def _physics_data_prefix() -> bool:
 def _resolve_safe_rel_in_vfs(norm: str, src_nif_path: Path) -> "Path | None":
     """The lookup half of `_resolve_data_rel_in_vfs`: `norm` has ALREADY
     passed `_safe_data_rel`. Never call it with an unchecked path."""
+    # a str path crashed below (`.parents`), and every caller reads a crash as "did not resolve" -- the physics
+    # protections then FAIL CLOSED on a piece whose XML is right there (#xml-path-str)
+    src_nif_path = Path(src_nif_path)
     # 0) The copy the GAME loads: the first provider in MO2 priority order
     #    (#xml-load-order). Only when no profile can be read, or nothing in the
     #    order ships the file, do the lookups below decide.
@@ -12645,6 +12822,34 @@ def _is_body_skin_foot(name: str) -> bool:
 
 def _is_body_skin_extremity(name: str) -> bool:
     return _is_body_skin_hand(name) or _is_body_skin_foot(name)
+
+
+def _zap_lean() -> bool:
+    """#zap-lean is on for the piece being converted (see body_zap.ZAP_LEAN)."""
+    from .body_zap import lean
+    return lean()
+
+
+def _is_extremity_skin_here(name: str, biped_slots, collider_names=(),
+                            softbody_names=()) -> bool:
+    """Whether a source shape is the piece's body-skin Hands/Feet, to be
+    swapped for the UBE extremity. The NAME alone is not enough
+    (#extremity-slot-gate): an SMP skirt (slots 47/52/56) carries a hidden
+    400-vert collider named `feet`; read as foot skin, it injected the full
+    visible UBE Feet into the skirt, on top of the actor's own feet. The UBE
+    replacement is only right where the piece hides that extremity -- slot 33
+    for hands, 37 for feet (`_inject_ube_extremity_replacement` assumes it) --
+    and never for a shape the physics XML uses as a collider or soft body.
+    Unknown slots (direct calls) keep the name rule."""
+    if not _is_body_skin_extremity(name):
+        return False
+    if name in collider_names or name in softbody_names:
+        return False
+    if biped_slots:
+        bit = BIPED_SLOT33_BIT if _is_body_skin_hand(name) else BIPED_SLOT37_BIT
+        if not biped_slots & bit:
+            return False
+    return True
 
 
 def _should_drop_shape(name: str) -> bool:
@@ -13033,7 +13238,128 @@ _LAYER_ORDER_SMOOTH = _knob("CBBE2UBE_LAYER_ORDER_SMOOTH", 2, int)
 # in-game verdict was "everything looks as it should", so the defaults
 # now match the only configuration that has EVER been judged. Details in
 # the `_DEFAULTS_PROMOTED_2026_08_22` block.
-PANEL_RIGIDITY = _knob("CBBE2UBE_PANEL_RIGIDITY", 0.75)
+# DEFAULT 0 since 2026-10-18 (was 0.75). The authors' plates BEND with the body (their bust panel deforms 2.47u p95
+# against a rigid fit, ours 1.19u); holding ours rigid pulled the fit off theirs and squeezed the layers above.
+# Off: zapped distance to the authors 0.313 -> 0.155u, layered crossings -17..-22%, Natural crotch exposure on pieces
+# without the zap 96 -> 45. The cuirass it was built for no longer needs it (bust panel p95 1.185 -> 1.191u).
+PANEL_RIGIDITY = _knob("CBBE2UBE_PANEL_RIGIDITY", 0.0)
+# #zap-warp-only (ON with #zap-lean; CBBE2UBE_NO_ZAP_WARP_ONLY=1 keeps them): a zapped piece keeps only the warp (+ the
+# chain blend and the repairs) -- no groove smooth, no panel rigidity, no anti-poke: the skin those pushed clear is
+# deleted. The warp alone IS the authors' fit (median distance 0.320 -> 0.062u).
+# Over the full fit sample (118) and the 157 layered author pairs, the 10-18 combined defaults vs the 1.5 chain:
+# zapped pieces median distance to the authors 0.320 -> 0.062u, holes 1.66 -> 1.55%; layered crossings N/FP/TB
+# -24/-14/-17% (zapped) and -15/-15/-22% (without the zap); drift from the source layer spacing 0.249 -> 0.121u /
+# 0.134 -> 0.100u (authors keep it to 0.04u); conversion time -35..-49%; walk/run about neutral.
+_ZAP_WARP_ONLY = not _flag("CBBE2UBE_NO_ZAP_WARP_ONLY", False)
+
+
+def _warp_only() -> bool:
+    return _ZAP_WARP_ONLY and _zap_lean()
+
+
+# #stack-push (DEFAULT ON since 2026-10-18; CBBE2UBE_NO_STACK_PUSH=1 off) -- the copy path's anti-poke pushed each
+# layer on its own, squeezing a stack (the authors keep the source layer spacing: per-vert drift 0.04u, ours 0.19u).
+# Record each layer's own push, take the largest push a layer BENEATH needed over each body spot (dilated + smoothed
+# over STACK_PUSH_R), and top every layer over that spot up to it along the body normal -- the stack moves as one,
+# the inner layer still clears. 12 layered pieces without the zap: share of verts squeezed > 0.2u 24 -> 15%.
+_STACK_PUSH = not _flag("CBBE2UBE_NO_STACK_PUSH", False)
+# #layer-separation (OFF since 2026-10-18; CBBE2UBE_LAYER_SEPARATION=1 on): the z-fight offset and the chest /
+# abdomen depth separation pushed layers apart one at a time; off, layered crossings fell 4/2/6% with no skin change
+_NO_LAYER_SEP = not _flag("CBBE2UBE_LAYER_SEPARATION", False)
+# #zap-keep-ride (DEFAULT ON since 2026-10-19; CBBE2UBE_NO_ZAP_KEEP_RIDE=1 off): #zap-lean skipped the layer ride on a
+# zapped piece, but the warp moves each layer on its own and collapses a stacked waist (in-game: corset over the shirt
+# 0.23u in the source, 0.25u by the author, 0.00u ours). The ride re-derives each outer layer from the one beneath
+# with its SOURCE offset -- layer-over-layer work the zap does not remove. With #zap-ride-restore, on the 136 zapped
+# layered author pairs: layer crossings bind/N/FP/TB/ShyGirl 17366/25767/22145/44515/28808 -> 15357/23338/19219/
+# 40460/25486 (authors 10012/16093/10600/28820/15420), collapsed layer pairs 73 -> 47, skin exposure unchanged,
+# distance to the authors median 0.055 -> 0.061u, walk/run neutral.
+_ZAP_KEEP_RIDE = not _flag("CBBE2UBE_NO_ZAP_KEEP_RIDE", False)
+# #zap-ride-restore (DEFAULT ON with #zap-keep-ride; CBBE2UBE_NO_ZAP_RIDE_RESTORE=1 = the plain ride): on a
+# zapped piece the ride only pushes a vert OUT along the body normal by what the warp squeezed below its source
+# offset; it never pulls in, never moves sideways, and rides no rigid panels.
+_ZAP_RIDE_RESTORE = not _flag("CBBE2UBE_NO_ZAP_RIDE_RESTORE", False)
+_STACK_PUSH_R = _knob("CBBE2UBE_STACK_PUSH_R", 1.5)
+_STACK_PUSH_GAP = _knob("CBBE2UBE_STACK_PUSH_GAP", 0.1)   # a layer must sit this far above another to ride its push
+_STACK_PUSH_NEAR = 6.0
+_STACK_AP: dict = {}
+# the push each layer got, per (written NIF, shape): the morphs are built from the layer's position BEFORE the push
+# (`nif_convert_trigen._collect_tri_inputs` subtracts it), so every layer keeps the slider motion it had without the
+# push and only its rest position moves -- a pushed stack could otherwise re-order close panels under a preset
+_STACK_PUSH_OFFSETS: dict = {}
+_STACK_PUSH_MORPH_PRE = not _flag("CBBE2UBE_NO_STACK_PUSH_MORPH_PRE", False)
+
+
+def _stack_key(path) -> str:
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+_STACK_GRAPH: dict = {}
+
+
+def _stack_push_graph(B):
+    """CSR neighbour lists of the body within STACK_PUSH_R (self included), built once per body."""
+    key = (len(B), float(_STACK_PUSH_R), float(np.round(B.sum(), 3)))
+    g = _STACK_GRAPH.get(key)
+    if g is None:
+        from scipy.spatial import cKDTree
+        lists = cKDTree(B).query_ball_point(B, float(_STACK_PUSH_R))
+        ptr = np.zeros(len(B) + 1, dtype=np.int64); ptr[1:] = np.cumsum([len(l) for l in lists])
+        g = (ptr, np.concatenate([np.asarray(l, dtype=np.int64) for l in lists]))
+        _STACK_GRAPH.clear(); _STACK_GRAPH[key] = g
+    return g
+
+
+def _stack_push_p1(jobs, body_verts, body_normals) -> int:
+    from scipy.spatial import cKDTree
+    B = np.asarray(body_verts, dtype=np.float64); N = np.asarray(body_normals, dtype=np.float64)
+    tree = cKDTree(B); recs = []; per = {}
+    for j in jobs:
+        rec = _STACK_AP.pop(id(j["src"]), None)
+        v = j.get("verts")
+        if rec is None or v is None:
+            continue
+        pre, ap, skip = rec
+        post = np.asarray(v, dtype=np.float64)
+        if not (len(pre) == len(ap) == len(post)):
+            continue
+        d, b = tree.query(pre)
+        own = np.clip(((ap - pre) * N[b]).sum(1), 0.0, None)
+        h = ((pre - B[b]) * N[b]).sum(1)            # the vert's height over the skin before the push
+        near = d < _STACK_PUSH_NEAR
+        if skip is not None and len(skip) == len(pre):
+            near = near & ~np.asarray(skip, dtype=bool)
+        recs.append((j, post, b, own, near, h))
+        Fj = np.zeros(len(B)); np.maximum.at(Fj, b[near], own[near])
+        Hj = np.full(len(B), np.inf); pushed = near & (own > 0)
+        np.minimum.at(Hj, b[pushed], h[pushed])     # where this layer sits, at the spots it was pushed
+        per[id(j)] = (Fj, Hj)
+    if len(recs) < 2:
+        return 0                     # a single layer keeps its own anti-poke exactly
+
+    ptr, nb = _stack_push_graph(B)
+
+    def _field(F):
+        """the pushes spread over STACK_PUSH_R (a layer above maps to a neighbouring body spot), then smoothed"""
+        Fd = np.maximum.reduceat(F[nb], ptr[:-1])
+        Fs = np.add.reduceat(Fd[nb], ptr[:-1]) / np.diff(ptr)
+        return np.where(Fd > 0, Fs, 0.0)
+    fields = {k: (_field(F), np.minimum.reduceat(H[nb], ptr[:-1])) for k, (F, H) in per.items()}
+    moved = 0
+    for j, post, b, own, near, h in recs:
+        # only a layer this vert sits ABOVE (by more than STACK_PUSH_GAP) carries it: near-coincident twin panels,
+        # decals and trims lying on a host are one surface, not a stack, and topping one up breaks it
+        push = own.copy()
+        for k, (Fk, Hk) in fields.items():
+            if k == id(j):
+                continue
+            above = h > Hk[b] + float(_STACK_PUSH_GAP)
+            push = np.where(above, np.maximum(push, Fk[b]), push)
+        extra = np.where(near, push - own, 0.0)
+        if (extra > 1e-4).any():
+            j["verts"] = post + N[b] * extra[:, None]; j["verts_modified"] = True
+            j["stack_extra"] = N[b] * extra[:, None]
+            moved += int((extra > 1e-4).sum())
+    return moved
 # --- #panel-rigid-early-clearance -- OPT-IN, CBBE2UBE_PANEL_RIGID_EARLY_CLEAR=1
 #
 # MEASURED 2026-08-23. `_partial_rigid_panels` is BODY-BLIND -- it takes no body
@@ -13822,11 +14148,26 @@ def _fit_shapes_swap(ctx) -> None:
             # body growth without puffing fingertips outward.
             if body_verts_for_p2 is not None:
                 try:
+                    # #hf-authored-inflate -- see the phase-1 sibling.
+                    _hfa2 = {}
+                    if HF_AUTHORED_INFLATE and src_body_v_p2 is not None:
+                        try:
+                            _hfa2 = dict(
+                                morph_amplitude=_cached_body_morph_amplitude(
+                                    _find_ube_body_osd(), body_norms_for_p2, len(body_verts_for_p2)),
+                                morph_max=ARMOR_INFLATION_MAGNITUDE_HANDS_FEET,
+                                src_armor_verts=hf_orig, src_body_verts=src_body_v_p2,
+                                src_body_normals=src_body_n_authored,
+                                tris=np.asarray(s.tris, dtype=np.int64))
+                        except Exception as e:
+                            failed.append((f"{s.name}:hf-authored-inflate", repr(e)))
+                            _hfa2 = {}
                     inflated = inflate_armor_outward(
                         hf_verts, body_verts_for_p2,
                         magnitude=ARMOR_INFLATION_MAGNITUDE_HANDS_FEET,
                         close_threshold=HAND_FOOT_INFLATION_FALLOFF,
                         body_normals=body_norms_for_p2,
+                        **_hfa2,
                     ).astype(np.float64)
                     if hf_ef is not None:
                         wf = (1.0 - hf_ef)[:, None]
@@ -13892,8 +14233,10 @@ def _fit_shapes_swap(ctx) -> None:
                     (x for x in ube_ref_for_reskin.shapes
                      if x.name == "BaseShape"), None,
                 )
-            except Exception:
+            except Exception as _fe:
                 ube_base_for_reskin = None
+                # #silent-fallback-count (audit 2026-10-20 F17): the hand/foot reskin is skipped; say so.
+                _note_pass_effect("#hf-reskin-fallback", f"{s.name}: no UBE base for the reskin ({_fe!r})")
             if (ube_base_for_reskin is not None
                     and (s.bone_names or [])
                     and s.name not in RESKIN_SKIP_NAMES):
@@ -14111,6 +14454,8 @@ def _fit_shapes_swap(ctx) -> None:
                 # Slot-aware inflation to maintain standoff under body morphs.
                 _infl_mag_p2 = _slot_aware_inflation_magnitude(
                     biped_slots, shape=s)
+                if _zap_lean():   # #zap-lean: no room needed over skin the zap deletes
+                    _infl_mag_p2 = 0.0
                 if _infl_mag_p2 > 0 and body_verts_for_p2 is not None:
                     try:
                         _morph_amp_p2 = _cached_body_morph_amplitude(
@@ -14152,7 +14497,7 @@ def _fit_shapes_swap(ctx) -> None:
                 # construction (it defaults to the previous behaviour); it
                 # exists because this pass could not be A/B'd in game at all.
                 #
-                # AND `CBBE2UBE_NO_CONFORM` IS NOT IT. That flag gates
+                # AND `CBBE2UBE_CONFORM_FITTED` IS NOT IT. That flag gates
                 # `CONFORM_FITTED_CLOTH` -> `_conform_fitted_to_body`, a WEIGHTS
                 # pass in the shared tail. Two different passes both called
                 # "conform", and the obvious-looking flag switches the other
@@ -14169,7 +14514,7 @@ def _fit_shapes_swap(ctx) -> None:
                 # natural control. A bind-pose survival number CANNOT settle it;
                 # only an in-game A/B can, and until now there was no way to run
                 # one.
-                if (PHASE2_CONFORM
+                if (PHASE2_CONFORM and not _zap_lean()   # #zap-lean
                         and src_body_v_p2 is not None
                         and body_verts_for_p2 is not None
                         and body_norms_for_p2 is not None):
@@ -14181,8 +14526,10 @@ def _fit_shapes_swap(ctx) -> None:
                             _amp_conf = _cached_body_morph_amplitude(
                                 _find_ube_body_osd(), body_norms_for_p2,
                                 len(body_verts_for_p2))
-                        except Exception:
+                        except Exception as _fe:
                             _amp_conf = None
+                            _note_pass_effect("#conform-amp-fallback",           # #silent-fallback-count
+                                              f"{s.name}: static-zone conform without its morph map ({_fe!r})")
                         # #derived-clearance: the clearance each slider TAKES
                         # AWAY, per body vert, over the whole slider envelope.
                         # Already computed for the anti-poke; conform's target
@@ -14221,7 +14568,7 @@ def _fit_shapes_swap(ctx) -> None:
                 # Source body passed for #groove-authored-cap -- the SAME arrays
                 # the conform above was given, so the authored standoff the cap
                 # bounds against is the one the conform aimed at.
-                if override is not None and body_verts_for_p2 is not None:
+                if override is not None and body_verts_for_p2 is not None and not _warp_only():
                     try:
                         override = _smooth_warp_grooves(
                             _sv_body, np.asarray(override, dtype=np.float64),
@@ -14251,7 +14598,7 @@ def _fit_shapes_swap(ctx) -> None:
         # bound here, not inside the branch: the post-anti-poke half reads it and
         # a shape can reach one block without the other.
         _skip = None
-        if PANEL_RIGIDITY > 0 and override is not None and _sv_body is not None:
+        if PANEL_RIGIDITY > 0 and override is not None and _sv_body is not None and not _warp_only():
             try:
                 try:
                     _skip = simulated_vert_mask(s, MIXED_CLOTH_CHAIN_EPS)
@@ -14367,7 +14714,7 @@ def _fit_shapes_swap(ctx) -> None:
                     _mixed_relax = True
             except Exception:
                 _mix_sim, _mixed_relax = None, False
-        if (body_verts_for_p2 is not None and body_norms_for_p2 is not None
+        if (body_verts_for_p2 is not None and body_norms_for_p2 is not None and not _warp_only()
                 and (biped_slots & (BIPED_SLOT32_BIT | BIPED_SLOT49_BIT))
                 and s.name not in RESKIN_SKIP_NAMES
                 and s.name not in hdt_softbody_names
@@ -14387,8 +14734,10 @@ def _fit_shapes_swap(ctx) -> None:
                     _antipoke_amp = _cached_body_morph_amplitude(
                         _find_ube_body_osd(), body_norms_for_p2,
                         len(body_verts_for_p2))
-                except Exception:
+                except Exception as _fe:
                     _antipoke_amp = None
+                    _note_pass_effect("#antipoke-amp-fallback",                 # #silent-fallback-count
+                                      f"{s.name}: anti-poke at the fixed clearance ({_fe!r})")
                 # #clearance-differential: what the worst slider TAKES AWAY,
                 # rather than how far the body grows. Cached per (OSD, verts).
                 _antipoke_diff = None
@@ -14397,8 +14746,10 @@ def _fit_shapes_swap(ctx) -> None:
                         _antipoke_diff = _cached_body_morph_differential(
                             _find_ube_body_osd(), body_verts_for_p2,
                             body_norms_for_p2)
-                    except Exception:
+                    except Exception as _fe:
                         _antipoke_diff = None
+                        _note_pass_effect("#antipoke-diff-fallback",            # #silent-fallback-count
+                                          f"{s.name}: anti-poke without the slider differential ({_fe!r})")
                 # Jiggle-overshoot headroom (default ON): only rigid/fitted
                 # cloth reaches this pass (softbody/HDT shapes are skipped
                 # above), which is exactly what a bouncing body punches through.
@@ -14406,8 +14757,10 @@ def _fit_shapes_swap(ctx) -> None:
                 if JIGGLE_CLEARANCE_ENABLED:
                     try:
                         _antipoke_jig = _body_jiggle_weight(ube_base_for_pass1)
-                    except Exception:
+                    except Exception as _fe:
                         _antipoke_jig = None
+                        _note_pass_effect("#antipoke-jiggle-fallback",          # #silent-fallback-count
+                                          f"{s.name}: anti-poke without jiggle headroom ({_fe!r})")
                 # A shape reached ONLY via the SMP relaxation is pushed exactly to
                 # the clearance target, not the 3.0 default -- overshoot spreads
                 # verts on the convex bust and opens new gaps. #smp-collision-only-antipoke
@@ -14473,7 +14826,7 @@ def _fit_shapes_swap(ctx) -> None:
                 # per PANEL, never per vertex, and never at the cost of a
                 # vertex the anti-poke just pushed clear.
                 if (PANEL_RIGIDITY > 0 and override is not None
-                        and _sv_body is not None):
+                        and _sv_body is not None and not _warp_only()):
                     try:
                         _rv, _rn, _rs = _rigidify_within_clearance(
                             _sv_body, override,
@@ -15295,7 +15648,7 @@ def convert_nif_phase2(
     # This read "the conform runs regardless of `fit_armor`" until 2026-08-23,
     # when `#phase2-conform` gave the pass a kill switch. Left alone it would
     # tell a reader the pass cannot be disabled -- the exact confusion that
-    # switch exists to end, since `CBBE2UBE_NO_CONFORM` gates a DIFFERENT pass
+    # switch exists to end, since `CBBE2UBE_CONFORM_FITTED` gates a DIFFERENT pass
     # of the same name.
     src_body_v_p2 = src_body_n_p2 = None
     # Hardened twin of `src_body_n_p2`, for the authored floors only. See where
@@ -15635,7 +15988,7 @@ def convert_nif_phase2(
             _note_pass_failure("source-body-tighten", _e)
 
     # Z-fight auto-offset: push inner-layer verts inward along body normals.
-    if body_verts_for_p2 is not None and shape_jobs:
+    if body_verts_for_p2 is not None and shape_jobs and not _NO_LAYER_SEP:
         try:
             from scipy.spatial import cKDTree
             zfight_map = {
@@ -15661,7 +16014,7 @@ def convert_nif_phase2(
 
     # Cleavage depth separation: push inner-layer cloth verts behind the outer
     # layer to fix static Z-fighting visible at standstill.
-    if shape_jobs and body_verts_for_p2 is not None:
+    if shape_jobs and body_verts_for_p2 is not None and not _NO_LAYER_SEP:
         try:
             # Source body normals often zeroed in BodySlide output; compute
             # from tris. Used by chest pass and abdomen order restore.
@@ -16085,7 +16438,7 @@ def convert_nif_phase2(
                 _reset_morph_flags(s)
                 _normalize_shader_for_morph(s)
                 if s.name not in _coll_names_p2:
-                    _normalize_partitions(s)
+                    _normalize_partitions(s, biped_slots)
 
             # BODYTRI goes on carriers only.
             for target in carriers_p2:
@@ -16238,6 +16591,9 @@ def convert_nif_phase2(
                         body_track_mask=_trk_mask,
                         nipple_bridge=_nipple_morph_bridge_inputs(ube_basereshape),
                         body_tris=_morph_body_tris(ube_basereshape),
+                        collider_tris=_collider_tri_inputs(
+                            dst_check, armor_shape_verts, xml_owner=src_path),
+                        extremity_refs=_extremity_refs(),
                     )
                     atomic_tri_save(tri, auto_tri_dst)
         except Exception as e:
@@ -16360,7 +16716,9 @@ def convert_nif_phase2(
     # morph table -> at runtime the cloth morphs to the preset and its collider
     # does not, and the chain sags off it. Re-emit now that the NIF is final.
     # No-op unless a shape is actually missing. #tri-reimport-refresh
-    _refresh_armor_tri_after_reimport(dst_path, auto_tri_dst)
+    _refresh_armor_tri_after_reimport(
+        dst_path, auto_tri_dst,
+        fallback_body_shape=next((x for x in ube_nif.shapes if x.name == "BaseShape"), None))
 
     # Validation pass — catches subtle skinning / TRI mismatches.
     val_warnings = validate_dst_nif(

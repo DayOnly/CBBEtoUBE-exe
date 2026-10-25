@@ -98,6 +98,10 @@ def _run(on, tris=True, bad_index=False):
         bt[0, 0] = len(_BV) + 5
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(sg, "_MORPH_SURFACE_SAMPLE", bool(on))
+        # this step is judged in isolation, on the closest-surface kernel without
+        # layer lockstep (both default ON since 2026-10-17; see test_morph_defaults_1017)
+        mp.setattr(sg, "MATCH_IDW_K", 0)
+        mp.setattr(sg, "_MORPH_LAYER_LOCKSTEP", False)
         tri = sg.generate_armor_tri(
             {"Plate": _PV.copy()}, _BV, _osd(), body_shape_name="BaseShape",
             include_body_shapes=False, body_tris=bt if tris else None)

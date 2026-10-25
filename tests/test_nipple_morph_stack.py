@@ -88,6 +88,10 @@ def _run(on, shapes, spread=0.0):
     nb = [(_APEX, np.array([0.0, 1.0, 0.0]), sg._vertex_areas(_BV, _BT))]
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(sg, "_NIPPLE_MORPH_STACK", bool(on))
+        # this step is judged in isolation, on the closest-surface kernel without
+        # layer lockstep (both default ON since 2026-10-17; see test_morph_defaults_1017)
+        mp.setattr(sg, "MATCH_IDW_K", 0)
+        mp.setattr(sg, "_MORPH_LAYER_LOCKSTEP", False)
         mp.setattr(sg, "NIPPLE_MORPH_STACK_SPREAD", float(spread))
         tri = sg.generate_armor_tri(
             {n: v.copy() for n, (v, _t) in shapes.items()}, _BV, _osd(),

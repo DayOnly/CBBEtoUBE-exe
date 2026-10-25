@@ -3163,6 +3163,79 @@ def _xml_shape_spellings(xml_names, mesh_names) -> "dict[str, str]":
         taken[t] = taken.get(t, 0) + 1
     return {n: t for n, t in cand.items() if taken[t] == 1}
 
+# #xml-body-repoint (DEFAULT ON since 2026-10-21; CBBE2UBE_NO_XML_BODY_REPOINT=1 off): the body swap replaces the
+# source body (`3BA`, a placeholder body) with the injected `BaseShape`, and the prune dropped the AUTHOR'S
+# per-triangle collider block for that body -- the simulated cloth that bounced off it then passed through the body
+# (audit 2026-10-20 F02: a top's sleeves, 2 pieces). The block is re-pointed at `BaseShape` instead, the author's own
+# settings unchanged, but only when a simulated (per-vertex) shape really collides with it under FSMP's tag rule: a
+# body block whose only partner is the ground is inert and stays pruned (a full-body collider nothing uses costs
+# frames, and #breast-collider showed an INVENTED one can destabilise the sim).
+XML_BODY_REPOINT = not _flag("CBBE2UBE_NO_XML_BODY_REPOINT", False)
+
+
+def _xml_blocks(lines):
+    """[(kind, name, tags, can_tags, no_tags)] of an HDT-SMP XML's shape blocks."""
+    text = "\n".join(lines)
+    out = []
+    for m in re.finditer(r'<per-(triangle|vertex)-shape\s+name="([^"]+)"(.*?)</per-(?:triangle|vertex)-shape>',
+                         text, re.S):
+        body = m.group(3)
+        grab = lambda tag: {x.strip() for x in re.findall(r"<%s>([^<]+)</%s>" % (tag, tag), body) if x.strip()}
+        out.append((m.group(1), m.group(2), grab("tag"), grab("can-collide-with-tag"), grab("no-collide-with-tag")))
+    return out
+
+
+def _fsmp_collide(a, b) -> bool:
+    """FSMP's tag rule, both directions: neither excludes the other's tags, and each can-collide list (when given)
+    names one of the other's tags."""
+    _, _, ta, ca, na = a
+    _, _, tb, cb, nb = b
+    return (not (ta & nb) and not (tb & na)
+            and (not ca or bool(tb & ca)) and (not cb or bool(ta & cb)))
+
+
+def _xml_body_repoint(lines, shape_names) -> "dict[str, str]":
+    """#xml-body-repoint: {source body block name: 'BaseShape'} for the one per-triangle block that names a source
+    body the mesh no longer has, when the mesh has the injected BaseShape, no block names BaseShape already, and a
+    per-vertex shape collides with it. Empty otherwise."""
+    if not XML_BODY_REPOINT or "BaseShape" not in shape_names:
+        return {}
+    blocks = _xml_blocks(lines)
+    if any(name == "BaseShape" for _, name, *_ in blocks):
+        return {}
+    cands = [b for b in blocks if b[0] == "triangle" and b[1] not in shape_names and _nc()._is_inline_body_name(b[1])]
+    if len(cands) != 1:
+        return {}
+    sims = [b for b in blocks if b[0] == "vertex" and b[1] in shape_names]
+    if not any(_fsmp_collide(cands[0], s) for s in sims):
+        return {}
+    return {cands[0][1]: "BaseShape"}
+
+
+def _xml_declare_body_bones(lines, nif, resolvable_bones, xml_path=None):
+    """#xml-body-repoint: declare the bones the injected BaseShape carries that the XML does not, so FSMP can
+    resolve every vertex of the re-pointed body collider. The author declared their own body's bones; the UBE body
+    carries a few more (the rear calves: 2 pieces, 2026-10-22 run, `registered_shape_undeclared_bones`). Added
+    self-closing (kinematic, like the author's own body bones), just before the first existing declaration."""
+    body = next((s for s in nif.shapes if s.name == "BaseShape"), None)
+    if body is None:
+        return lines
+    carried = [b for b, w in (getattr(body, "bone_weights", None) or {}).items() if any(x for _, x in w)]
+    declared = {m.group(1) for m in (re.search(r'<bone\s+name="([^"]+)"', x) for x in lines) if m}
+    missing = sorted(b for b in carried if b not in declared and b.lower() in resolvable_bones)
+    if not missing:
+        return lines
+    at = next((i for i, x in enumerate(lines) if re.search(r'<bone\s+name="', x)), None)
+    if at is None:
+        at = next((i for i, x in enumerate(lines) if _HDT_SHAPE_OPEN_RE.search(x)), None)
+    if at is None:
+        return lines
+    indent = re.match(r"\s*", lines[at]).group(0)
+    _note_pass_effect("#xml-body-repoint", f"{Path(str(xml_path)).name if xml_path else ''}: declared "
+                      + ", ".join(repr(b) for b in missing), xml_path)
+    return lines[:at] + [f'{indent}<bone name="{b}"/>' for b in missing] + lines[at:]
+
+
 def _hdt_shape_prune(lines, shape_names):
     """Walk an HDT-SMP XML's lines as `_harden_hdt_xml_for_fsmp` prunes shape
     blocks, yielding (line, dropped, opened) for each: `dropped` when the line
@@ -3182,6 +3255,7 @@ def _hdt_shape_prune(lines, shape_names):
     spell = _xml_shape_spellings(
         {m.group(1) for m in (_HDT_SHAPE_OPEN_RE.search(x) for x in lines) if m},
         shape_names)
+    spell.update(_xml_body_repoint(lines, shape_names))      # #xml-body-repoint
     drop_block = False
     for line in lines:
         m = _HDT_SHAPE_OPEN_RE.search(line)
@@ -3362,7 +3436,11 @@ def _ensure_cloth_body_collider(xml_path: Path, nif) -> bool:
         _note_pass_failure("_ensure_cloth_body_collider/xml-write", _we, xml_path)
         return False
 
-def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
+# #xml-drop-triage (DEFAULT ON since 2026-10-21; CBBE2UBE_NO_XML_DROP_TRIAGE=1 = every pruned block is a failure).
+XML_DROP_TRIAGE = not _flag("CBBE2UBE_NO_XML_DROP_TRIAGE", False)
+
+
+def _harden_hdt_xml_for_fsmp(xml_path: Path, nif, src_shapes=None) -> None:
     """FSMP-compatibility hardening of an output HDT-SMP XML. Prunes
     references the engine can't resolve so Faster HDT-SMP never loads
     a dangling shape/bone:
@@ -3406,6 +3484,13 @@ def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
     renamed = _xml_shape_spellings(
         {m.group(1) for m in (_HDT_SHAPE_OPEN_RE.search(x) for x in src_lines)
          if m}, nif_shapes)
+    repointed = _xml_body_repoint(src_lines, nif_shapes)
+    if repointed:
+        changed = True
+        _note_pass_effect(
+            "#xml-body-repoint",
+            f"{xml_path.name}: " + ", ".join(f"{a!r} -> {b!r}" for a, b in sorted(repointed.items())),
+            xml_path)
     if renamed:
         changed = True
         _note_pass_effect(
@@ -3426,6 +3511,8 @@ def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
                 dropped_bones += 1
                 continue
         out.append(line)
+    if repointed:
+        out = _xml_declare_body_bones(out, nif, resolvable_bones, xml_path)
 
     # SAY WHAT WAS DELETED. This pruning is correct -- FSMP cannot attach to a
     # shape that is not there -- but a dropped `<per-triangle-shape>` is a
@@ -3455,20 +3542,34 @@ def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
         def _norm(s: str) -> str:
             return re.sub(r"[^a-z0-9]", "", s.lower()).rstrip("s")
 
-        parts = []
+        # #xml-drop-triage: a block is a LOSS only when the source mesh had that shape and the converter neither
+        # replaced it with its own collision proxy (`<name>Col`) nor swapped it for the injected body. The rest is
+        # noise -- a shared author XML naming shapes this mesh never had, a proxy that took the block's place -- and
+        # buried the real losses: 146 "PASS FAILED" reports for 4 NIFs that lost a partner (audit 2026-10-20 F01).
+        parts, noise = [], []
         for kind, name in dropped_shapes:
+            if XML_DROP_TRIAGE and src_shapes is not None:
+                if name not in src_shapes:
+                    noise.append(f"{name!r} (not in the source mesh)"); continue
+                if f"{name}{_nc()._BUST_SPLIT_COL_SUFFIX}" in nif_shapes:
+                    noise.append(f"{name!r} (replaced by the converter's proxy)"); continue
+                if _nc()._is_inline_body_name(name) and "BaseShape" in nif_shapes:
+                    noise.append(f"{name!r} (source body, swapped for the injected body)"); continue
             hits = [s for s in nif_shapes if _norm(s) == _norm(name)]
             near = f" [NEAR-MATCH in mesh: {hits[0]!r}]" if len(hits) == 1 else ""
             parts.append(f"{kind} {name!r}{near}")
-        _note_pass_failure(
-            "hdt_xml_shape_dropped",
-            RuntimeError(
-                f"{xml_path.name}: {len(dropped_shapes)} shape block(s) pruned "
-                f"because the converted NIF has no such shape -- "
-                + "; ".join(parts)
-                + (f"; plus {dropped_bones} unresolvable weight-threshold "
-                   f"bone(s)" if dropped_bones else "")),
-            xml_path)
+        if noise:
+            _note_pass_effect("#xml-drop-triage", f"{xml_path.name}: pruned " + "; ".join(noise), xml_path)
+        if parts:
+            _note_pass_failure(
+                "hdt_xml_shape_dropped",
+                RuntimeError(
+                    f"{xml_path.name}: {len(parts)} shape block(s) pruned "
+                    f"because the converted NIF has no such shape -- "
+                    + "; ".join(parts)
+                    + (f"; plus {dropped_bones} unresolvable weight-threshold "
+                       f"bone(s)" if dropped_bones else "")),
+                xml_path)
     if changed:
         try:
             atomic_write_bytes(xml_path,
@@ -4288,7 +4389,11 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
         # FSMP-compatibility hardening: prune XML so FSMP never sees an unresolved
         # shape/bone. Runs after proxy re-import so re-imported shapes count.
         try:
-            _harden_hdt_xml_for_fsmp(dst_xml_disk, nf)
+            try:                                         # #xml-drop-triage: what the source mesh had
+                _src_names = {x.name for x in _nc()._pynifly().NifFile(filepath=str(src_nif_path)).shapes}
+            except Exception:
+                _src_names = None
+            _harden_hdt_xml_for_fsmp(dst_xml_disk, nf, src_shapes=_src_names)
         except Exception as _he:
             _note_pass_failure("_harden_hdt_xml_for_fsmp", _he, dst_path)
         # Optional: make chains static (CBBE2UBE_STATIC_CHAINS=1).

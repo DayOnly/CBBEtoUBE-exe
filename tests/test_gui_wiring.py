@@ -115,6 +115,24 @@ _CHILD = textwrap.dedent(r'''
     pf.run_checks = fake_checks
     gui.tool_folder = lambda: TOOL
 
+    class _Conn:
+        def __init__(self):
+            self.msgs = []
+        def send(self, m):
+            self.msgs.append(m)
+
+    def fake_scan_child(kind, settings, out_dir, on_progress, *,
+                        mark_ube_native=True, register=None, **kw):
+        """The scan's child entry, run here, so the recorders above see what
+        a child would run under. #mod-scan-child"""
+        rec("scan child", kind=kind)
+        conn = _Conn()
+        gui._mod_scan_entry(conn, kind, settings, out_dir, mark_ube_native)
+        done = [m for m in conn.msgs if m[0] == "done"][-1]
+        return done[1], done[2], done[3]
+
+    gui.run_mod_scan_child = fake_scan_child
+
     import subprocess
     _real_popen = subprocess.Popen
 
@@ -388,6 +406,20 @@ def test_refresh_leaves_out_what_the_run_drops(wiring):
 
 def test_the_exclusions_list_rescans_too(wiring):
     assert _one(wiring, "list_convertible_mods", "armor exclusions")["rescan"] is True
+
+
+# --- #mod-scan-child -----------------------------------------------------------------
+
+def test_every_mod_list_scan_runs_in_a_child_process(wiring):
+    """By default each scan goes through the child's entry, not this thread."""
+    for step, kind in (("refresh", "armor"), ("overlay refresh", "overlay"),
+                       ("armor exclusions", "armor"), ("overlay exclusions", "overlay")):
+        assert _one(wiring, "scan child", step)["kind"] == kind
+
+
+def test_the_exclusions_scan_does_not_mark_ube_native(wiring):
+    """As before the move: only the Select list leaves those mods out."""
+    assert _one(wiring, "list_convertible_mods", "armor exclusions")["mark_ube_native"] is False
 
 
 # --- #dry-run-keeps-the-run-log, #gui-session-log-kept ------------------------------

@@ -53,11 +53,14 @@ PROMOTED_2026_08_22 = {
     "per_anchor_seed": ("PER_ANCHOR_ANCHOR_SEED", True),
     "panel_rigidity": ("PANEL_RIGIDITY", 0.75),
 }
+# Promoted once, DEMOTED since (`nif_convert._DEFAULTS_DEMOTED_2026_10_18`): the history above stays as it was, the
+# checks below -- which pin what is ON by default NOW -- leave these out.
+DEMOTED_2026_10_18 = {"panel_rigidity": ("PANEL_RIGIDITY", 0.0)}
 # The union every check below is parametrized over. Named per promotion first,
 # because the 2026-08-22 record used to be derived by SUBTRACTING the later
 # dicts from this union -- so adding a fourth promotion broke the FIRST record's
 # test, which is a fragility, not a finding.
-PROMOTED = dict(PROMOTED_2026_08_22)
+PROMOTED = {k: v for k, v in PROMOTED_2026_08_22.items() if k not in DEMOTED_2026_10_18}
 
 # #defaults-promoted-2026-08-26 -- the two BUG-15(a)/(b) fixes, plus
 # `ride_body_floor` (see its own note below). Pinned in the
@@ -391,3 +394,11 @@ def test_a_promoted_constant_is_read_from_the_module_that_binds_it():
         "two ways to reach one constant")
     assert _const("FIELD_SCREEN_PHYSICAL") is True
     assert _const("AUTHORED_INFLATE") is nc.AUTHORED_INFLATE
+
+
+def test_the_demotion_record_matches_and_the_default_is_off():
+    """#defaults-demoted-2026-10-18: panel rigidity, promoted 2026-08-22, is 0 by default in code AND in the GUI."""
+    assert set(nc._DEFAULTS_DEMOTED_2026_10_18) == {attr for attr, _ in DEMOTED_2026_10_18.values()}
+    for key, (attr, want) in DEMOTED_2026_10_18.items():
+        assert getattr(nc, attr) == want
+        assert gs.defaults()[key] == want

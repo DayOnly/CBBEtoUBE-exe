@@ -219,6 +219,13 @@ def main():
     except Exception:
         alt_tex = set()
 
+    # #zap-fp-armature: the batch's answer to "is this a first-person-only model", from the same plugins.
+    try:
+        first_person = (ac._weight_base_key(rel_for_slots)
+                        in ube_patcher.build_first_person_bases(ac._find_source_esps(mod_dir)))
+    except Exception:
+        first_person = False
+
     ref = ac._find_ube_body_ref()
     ref = str(ref) if ref else None
     srcd = mod_dir / "meshes" / subdir.replace("/", os.sep)
@@ -245,7 +252,7 @@ def main():
         # THE work item the batch builds -- same tuple, same worker, so there
         # is exactly one conversion path. #single-vs-batch-parity
         item = (src, dst_dir / f"{stem}{w}.nif", ref, int(slots), alt_tex,
-                variant_sources)
+                variant_sources, first_person)
         r = ac._nif_convert_worker(item)
         _say(f"  {stem}{w}: {getattr(r, 'status', r)}"
              + (f"  -- {r.reason}" if getattr(r, "reason", "") else ""))

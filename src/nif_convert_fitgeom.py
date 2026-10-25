@@ -439,9 +439,9 @@ CONFORM_BLEND_TIGHT = _knob("CBBE2UBE_CONFORM_BLEND_TIGHT", 0.3)
 # (-7.5%) and inverted (-24%) and loses two BUST rows, and the levers that
 # address the bust had no handles.
 #
-# Defaults are the literals they replace, so this is a no-op until an arm names
-# one (`tests/test_conform_knobs.py` pins that, and no call site passes any of
-# them -- checked, all three call sites take the defaults).
+# Defaults are the literals they replaced, except max_pull (below); no call site
+# passes any of them -- checked, all three call sites take the defaults
+# (`tests/test_conform_knobs.py` pins both).
 #
 #   tight_standoff  source clearance at or below which a vert counts as
 #                   SKIN-HUGGING and is reeled toward its authored standoff.
@@ -452,7 +452,11 @@ CONFORM_BLEND_TIGHT = _knob("CBBE2UBE_CONFORM_BLEND_TIGHT", 0.3)
 #                   the pull is clipped to it in `_relax_conform_field`.
 CONFORM_TIGHT_STANDOFF = _knob("CBBE2UBE_CONFORM_TIGHT_STANDOFF", 1.0)
 CONFORM_LOOSE_STANDOFF = _knob("CBBE2UBE_CONFORM_LOOSE_STANDOFF", 4.0)
-CONFORM_MAX_PULL = _knob("CBBE2UBE_CONFORM_MAX_PULL", 4.0)
+# max_pull 4.0 -> 0.6 (10-17/18): conform reeled hugging cloth up to 4u INWARD toward
+# the source standoff, collapsing drape; capped at 0.6u the fit sample moved closer to
+# the authors (median distance 0.421 -> 0.405u, with #warp-tan-smooth) and Natural
+# crotch exposure fell 2326 -> 2055.
+CONFORM_MAX_PULL = _knob("CBBE2UBE_CONFORM_MAX_PULL", 0.6)
 
 # Floor the authored fit may reach in a fully static zone. Not 0: coincident
 # surfaces z-fight, and the warp's own error is not zero either.
@@ -1692,7 +1696,7 @@ def conform_to_source_standoff(
         # when it reshapes and carries b outward relative to the vert covering
         # it. Take the worst such residual over every slider and demand it on
         # top of `req`, so the fit that is tight at bind stays covered morphed.
-        if _nc().BUST_MORPH_RESIDUAL:
+        if _nc().BUST_MORPH_RESIDUAL and not _nc()._zap_lean():   # #zap-lean
             _stack = _cached_body_morph_stack(_find_ube_body_osd(),
                                               len(ube_body_verts))
             if _stack is not None and len(_stack):
@@ -1724,7 +1728,7 @@ def conform_to_source_standoff(
         in_back = np.zeros(len(ui), dtype=bool)
         req_back = None
         w_back = None
-        if _nc().BACK_MORPH_RESIDUAL:
+        if _nc().BACK_MORPH_RESIDUAL and not _nc()._zap_lean():   # #zap-lean
             _bx = ube_body_verts[ui][:, 0]
             in_back = ((body_z >= _nc().BACK_RESIDUAL_Z[0])
                        & (body_z <= _nc().BACK_RESIDUAL_Z[1])

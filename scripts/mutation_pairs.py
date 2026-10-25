@@ -735,14 +735,14 @@ PAIRS = (
     ),
     Pair('G7-i', 'a comment contradicts the polarity of a flag the audit now reads',
          edits=(
-             ('src/nif_convert.py', 'SELFINT_REPAIR = not _flag("CBBE2UBE_NO_SELFINT_REPAIR", False)\n', '# Opt-in: default OFF.\nSELFINT_REPAIR = not _flag("CBBE2UBE_NO_SELFINT_REPAIR", False)\n', 1),
+             ('src/nif_convert.py', 'PHASE2_CONFORM = not _flag("CBBE2UBE_NO_PHASE2_CONFORM", False)\n', '# Opt-in: default OFF.\nPHASE2_CONFORM = not _flag("CBBE2UBE_NO_PHASE2_CONFORM", False)\n', 1),
          ),
          tests=('tests/test_raw_env_reads.py', 'tests/test_comment_audit.py', 'tests/test_gui_settings.py', 'tests/test_incremental_config_floor.py'),
          expect=('test_the_polarity_check_finds_nothing',),
     ),
     Pair('G7-j', 'a raw boolean read returns to a converter module',
          edits=(
-             ('src/nif_convert.py', 'SELFINT_REPAIR = not _flag("CBBE2UBE_NO_SELFINT_REPAIR", False)\n', 'SELFINT_REPAIR = not _flag("CBBE2UBE_NO_SELFINT_REPAIR", False)\n_PLANTED_RAW = os.environ.get("CBBE2UBE_PLANTED_RAW", "") == "1"\n', 1),
+             ('src/nif_convert.py', 'PHASE2_CONFORM = not _flag("CBBE2UBE_NO_PHASE2_CONFORM", False)\n', 'PHASE2_CONFORM = not _flag("CBBE2UBE_NO_PHASE2_CONFORM", False)\n_PLANTED_RAW = os.environ.get("CBBE2UBE_PLANTED_RAW", "") == "1"\n', 1),
          ),
          tests=('tests/test_raw_env_reads.py', 'tests/test_comment_audit.py', 'tests/test_gui_settings.py', 'tests/test_incremental_config_floor.py'),
          expect=('test_only_the_listed_paths_and_strings_are_read_raw', 'test_every_gui_env_is_read_by_src', 'test_env_prefix_scan_covers_the_real_converter_surface'),
@@ -10397,8 +10397,8 @@ PAIRS = (
     Pair('BLW-e', 'a listing is adopted across a different plugin order',
          edits=(
              ('src/auto_convert.py',
-              '                tuple(str(p).lower() for p in (self._plugin_order or ())))\n',
-              '                ())  # MUTATED\n', 1),
+              '                tuple(str(p).lower() for p in (self._plugin_order or ())),\n',
+              '                (),  # MUTATED\n', 1),
          ),
          tests=('tests/test_bsa_load_order_winner.py',),
          expect=('test_a_listing_is_adopted_only_under_the_same_plugin_order',),
@@ -10580,8 +10580,8 @@ PAIRS = (
     Pair('DXS-k', 'the re-author copies shapes with the fallback',
          edits=(
              ('src/nif_convert_writer.py',
-              '                            xml_stem_scan=_dss, repair_body=_rb)',
-              '                            repair_body=_rb)  # MUTATED', 1),
+              '                            xml_stem_scan=_dss, repair_body=_rb,',
+              '                            repair_body=_rb,  # MUTATED', 1),
          ),
          tests=('tests/test_dst_xml_no_stem_scan.py',),
          expect=('test_a_reauthor_reads_the_chain_bones_of_its_own_nif_without_the_fallback',),
@@ -10599,8 +10599,8 @@ PAIRS = (
     Pair('DXS-m', 'the shape copy drops the caller\'s choice',
          edits=(
              ('src/nif_convert_writer.py',
-              '                      xml_stem_scan=xml_stem_scan)',
-              '                      )  # MUTATED', 2),
+              '                      xml_stem_scan=xml_stem_scan,\n',
+              '                      # MUTATED\n', 2),
          ),
          tests=('tests/test_dst_xml_no_stem_scan.py',),
          expect=('test_the_shape_copy_passes_the_choice_down_to_the_chain_read',
@@ -12313,9 +12313,8 @@ PAIRS = (
     Pair('GRW-a', 'Refresh lists without rescan or the UBE-native mark',
          edits=(
              ('src/gui.py',
-              'Path(od) if od else None, rescan=True,\n'
-              '                        mark_ube_native=True)',
-              'Path(od) if od else None)  # MUTATED', 1),
+              '                        rescan=True, mark_ube_native=mark_ube_native)',
+              '                        )  # MUTATED', 1),
          ),
          tests=('tests/test_gui_wiring.py',),
          expect=('test_refresh_reads_the_mods_again',
@@ -12342,10 +12341,8 @@ PAIRS = (
     Pair('GRW-d', 'Refresh mod list runs without the saved settings',
          edits=(
              ('src/gui.py',
-              '                with gui_settings.SettingsOverlay(state["settings"]):\n'
-              '                    items = auto_convert.list_convertible_mods(\n',
-              '                with gui_settings.SettingsOverlay({}):  # MUTATED\n'
-              '                    items = auto_convert.list_convertible_mods(\n', 1),
+              '                kind, state.get("settings") or {}, out_dir,\n',
+              '                kind, {}, out_dir,  # MUTATED\n', 1),
          ),
          tests=('tests/test_gui_wiring.py',),
          expect=('test_refresh_mod_list_runs_under_the_saved_settings',),
@@ -12353,10 +12350,8 @@ PAIRS = (
     Pair('GRW-e', 'the overlay list runs without the saved settings',
          edits=(
              ('src/gui.py',
-              '                with gui_settings.SettingsOverlay(state["settings"]):\n'
-              '                    items = auto_convert.list_overlay_mods()\n',
-              '                with gui_settings.SettingsOverlay({}):  # MUTATED\n'
-              '                    items = auto_convert.list_overlay_mods()\n', 1),
+              '                kind, state.get("settings") or {}, out_dir,\n',
+              '                kind, {}, out_dir,  # MUTATED\n', 1),
          ),
          tests=('tests/test_gui_wiring.py',),
          expect=('test_the_overlay_list_runs_under_the_saved_settings',),
@@ -12375,10 +12370,8 @@ PAIRS = (
     Pair('GRW-g', 'the exclusions lister runs without the saved settings',
          edits=(
              ('src/gui.py',
-              '                with gui_settings.SettingsOverlay(state["settings"]):\n'
-              '                    if domain == "armor":\n',
-              '                with gui_settings.SettingsOverlay({}):  # MUTATED\n'
-              '                    if domain == "armor":\n', 1),
+              '                kind, state.get("settings") or {}, out_dir,\n',
+              '                kind, {}, out_dir,  # MUTATED\n', 1),
          ),
          tests=('tests/test_gui_wiring.py',),
          expect=('test_the_exclusions_listers_run_under_the_saved_settings',),
@@ -12397,8 +12390,8 @@ PAIRS = (
     Pair('GRW-i', 'the Exclusions list returns the first scan of the session',
          edits=(
              ('src/gui.py',
-              '                            rescan=True)          # #mod-scan-rescan\n',
-              '                            )  # MUTATED\n', 1),
+              '                        rescan=True, mark_ube_native=mark_ube_native)',
+              '                        )  # MUTATED', 1),
          ),
          tests=('tests/test_gui_wiring.py',),
          expect=('test_the_exclusions_list_rescans_too',),
@@ -12411,6 +12404,64 @@ PAIRS = (
          ),
          tests=('tests/test_gui_wiring.py',),
          expect=('test_refresh_leaves_out_what_the_run_drops',),
+    ),
+    # 2026-10-22: #mod-scan-child -- since then GRW-a/d/e/g/i anchor on the one
+    # scan path all four lists share (the child's entry and `_scan_mods`).
+    Pair('GRW-k', 'the mod-list scans run inside the window again',
+         edits=(
+             ('src/gui.py',
+              '        if (state.get("settings") or {}).get("window_mod_scan_child", True):\n',
+              '        if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_gui_wiring.py',),
+         expect=('test_every_mod_list_scan_runs_in_a_child_process',),
+    ),
+    # #readable-run-log
+    Pair('RLG-a', "a unit's pass lines stay in the run log",
+         edits=(
+             ('src/run_log.py',
+              '    d = digest(text)\n    detail(text)\n',
+              '    d = digest(text)\n    sys.stdout.write(text)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_readable_run_log.py',),
+         expect=('test_the_run_log_is_readable_and_the_detail_log_is_whole',),
+    ),
+    Pair('RLG-c', 'the window lays itself out on every step of a divider drag',
+         edits=(
+             ('src/gui.py',
+              '    panes = tk.PanedWindow(root, orient="vertical", opaqueresize=False,\n',
+              '    panes = tk.PanedWindow(root, orient="vertical", opaqueresize=True,  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_gui_run_display.py',),
+         expect=('test_dragging_moves_nothing_until_release',),
+    ),
+    Pair('RLG-d', 'a short upper pane cuts off the Run tab instead of scrolling it',
+         edits=(
+             ('src/gui.py',
+              '    return max(view, body), body > view\n',
+              '    return view, False  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_gui_run_display.py',),
+         expect=('test_a_tall_log_leaves_the_buttons_and_a_scrollable_run_tab',
+                 'test_the_run_tab_fills_or_scrolls'),
+    ),
+    Pair('RLG-e', 'the divider notch is only a picture, not a handle',
+         edits=(
+             ('src/gui.py',
+              '        _grip.bind(_kind, _forward(_kind))\n',
+              '        pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_gui_run_display.py',),
+         expect=('test_the_divider_has_a_notch_that_is_a_handle',),
+    ),
+    Pair('RLG-b', 'the window reads past the end marker',
+         edits=(
+             ('src/gui.py',
+              '            self.ended = True\n            return s[:m.start()]\n',
+              '            return s  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_readable_run_log.py',),
+         expect=('test_the_window_does_not_read_past_the_end_marker',),
     ),
     # #settings-source-line: the window's child is who applied the settings,
     # not a skipped settings file.
@@ -17845,8 +17896,8 @@ PAIRS = (
     Pair('SG-d', 'the repair stops handing the hold its groups',
          edits=(
              ('src/nif_convert_writer.py',
-              '            groups=_members if _members else None), repaired\n',
-              '            groups=None), repaired\n', 1),
+              '            groups=_members if _members else None, tris=tris), repaired\n',
+              '            groups=None, tris=tris), repaired\n', 1),
          ),
          tests=('tests/test_coherence_repair_group_aware.py',),
          expect=('test_the_repair_hands_the_hold_its_groups',),
@@ -18079,8 +18130,8 @@ PAIRS = (
     Pair('RBH-a', 'the rebuild hands no body to a shape given new verts',
          edits=(
              ('src/nif_convert_writer.py',
-              '                            xml_stem_scan=_dss, repair_body=_rb)\n',
-              '                            xml_stem_scan=_dss, repair_body=None)\n', 1),
+              '                            xml_stem_scan=_dss, repair_body=_rb,\n',
+              '                            xml_stem_scan=_dss, repair_body=None,\n', 1),
          ),
          tests=('tests/test_coherence_repair_rebuild_hold.py',),
          expect=('test_a_shape_given_new_verts_is_handed_the_body', ),
@@ -19078,8 +19129,8 @@ PAIRS = (
     Pair('MSS-a', 'the surface sample is computed but never used',
          edits=(
              ('src/sliderset_gen.py',
-              '                if _by is not None:\n                    nearest_delta = np.einsum(',
-              '                if False:  # MUTATED\n                    nearest_delta = np.einsum(', 1),
+              '                elif _by is not None:\n                    nearest_delta = np.einsum(',
+              '                elif False:  # MUTATED\n                    nearest_delta = np.einsum(', 1),
          ),
          tests=('tests/test_morph_surface_sample.py',),
          expect=('test_garment_follows_the_skin_under_it',),

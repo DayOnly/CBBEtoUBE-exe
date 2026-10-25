@@ -37,12 +37,14 @@ application, so users only need to ship the TRI + ESP patch rather than
 """
 from __future__ import annotations
 
+import functools
+import os
 
 import numpy as np
 from scipy.spatial import cKDTree
 
 from .envflags import flag as _flag, knob as _knob
-from .osd import OsdFile
+from .osd import OsdFile, OsdMorph
 from .tri import TriFile, TriShape, TriMorph
 
 
@@ -108,6 +110,53 @@ _BODY_MOTION_MATCH = not _flag("CBBE2UBE_NO_BODY_MOTION_MATCH", False)
 _MATCH_NEAR = _knob("CBBE2UBE_MATCH_NEAR", 4.0)
 # Stand-off at/above which we fall back to the smoothed IDW average (drape cloth).
 _MATCH_FAR = _knob("CBBE2UBE_MATCH_FAR", 10.0)
+# #match-idw-kernel: a matched (hugging) vert samples IDW over its K nearest body
+# verts at 1/d (Outfit Studio's conform default) instead of the closest surface
+# point. Over 949 author-built UBE pieces the authors' morphs follow that kernel:
+# error vs the authors 0.052 (all sliders) against 0.076 for the surface copy.
+# DEFAULT 10 since 2026-10-17 (full builds, 120 pairs, with #breast-field and
+# #morph-layer-lockstep: morph error vs the authors 0.089 -> 0.072, breast-shape
+# 0.356 -> 0.098). CBBE2UBE_MATCH_IDW_K=0 = the closest-surface sample.
+MATCH_IDW_K = _knob("CBBE2UBE_MATCH_IDW_K", 10)
+# #match-idw-floor -- with the kernel: a matched vert never moves OUTWARD less
+# than the skin it covers (the closest-surface sample) along that skin's normal.
+# The plain average lets thigh-hugging cloth fall behind the leg -- the in-game
+# 0.59-0.81x dilution #body-motion-match was built against. Kernel alone over 188
+# piece-weights vs the surface copy: bust exposure under Natural 2288 -> 937, but
+# thigh 628 -> 741 (two physics skirts +261/+200). Off with
+# CBBE2UBE_NO_MATCH_IDW_FLOOR=1.
+MATCH_IDW_FLOOR = not _flag("CBBE2UBE_NO_MATCH_IDW_FLOOR", False)
+# Where the floor acts. DEFAULT 1 (2026-10-17): after the surface tracker, which
+# otherwise smooths the correction back below the skin (inside the match step, 0:
+# bust exposure under Natural 939 vs 763 over 188 piece-weights). 2 = normal part =
+# the skin's own, sign-safe, but it loses the averaging's bridging (bust 1557): no.
+MATCH_IDW_FLOOR_MODE = _knob("CBBE2UBE_MATCH_IDW_FLOOR_MODE", 1, int)
+# The floor's normal. DEFAULT 1: interpolated at the covered surface point;
+# 0 = the nearest body vertex's (points across a crease).
+MATCH_IDW_FLOOR_NORMAL = _knob("CBBE2UBE_MATCH_IDW_FLOOR_NORMAL", 1, int)
+# What the floor clears. DEFAULT 1: the covered surface point AND the most outward-
+# moving skin vertex under it (the covered triangle's corners, the nearest vertex).
+# Over 188 piece-weights, exposed skin under Natural bust/torso/crotch/thigh
+# 763/719/2523/545 -> 685/505/2249/154 (Too Big thigh 3338 -> 1908), crossings flat;
+# the cost is extra morph room the authors do not give (all-slider error vs the
+# authors 0.074 -> 0.103). 2 = the nearest vertex only (493 thigh, 0.079). 0 = the
+# surface point only.
+MATCH_IDW_FLOOR_COV = _knob("CBBE2UBE_MATCH_IDW_FLOOR_COV", 1, int)
+
+
+def _vertex_normals(verts, tris, n):
+    """Area-weighted unit vertex normals of the body, or None without usable tris."""
+    if tris is None:
+        return None
+    T = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+    if not len(T) or int(T.max()) >= n:
+        return None
+    V = np.asarray(verts, dtype=np.float64)
+    fn = np.cross(V[T[:, 1]] - V[T[:, 0]], V[T[:, 2]] - V[T[:, 0]])
+    N = np.zeros_like(V)
+    for j in range(3):
+        np.add.at(N, T[:, j], fn)
+    return N / (np.linalg.norm(N, axis=1, keepdims=True) + 1e-12)
 
 
 # ---- #surface-morph-track (default ON) -----------------------
@@ -612,7 +661,7 @@ _NIPPLE_MORPH_STACK = not _flag("CBBE2UBE_NO_NIPPLE_MORPH_STACK", False)
 NIPPLE_MORPH_STACK_GAP = 3.0   # a layer counts as "beneath" within this (u)
 # lateral reach from an apex: the bridge works out to R_OUT and the envelope
 # lifts whole triangles that touch its ENV_R zone, so the stack must reach past both
-NIPPLE_MORPH_STACK_R = 6.0
+NIPPLE_MORPH_STACK_R = _knob("CBBE2UBE_NIPPLE_MORPH_STACK_R", 6.0)
 # The lift a floor needs is spread over the upper layer's own surface out to this
 # radius (smooth falloff, max-combined), so it rises as a broad rounded dome over
 # the bulge under it instead of tracing it: without it the outer layer drew the
@@ -887,6 +936,11 @@ def _nipple_morph_envelope_apply(prop, prep, delta_buf, local_idx, far_idx):
 # Blended in over _MATCH_NEAR.._MATCH_FAR so hugging cloth keeps the exact copy.
 # Off with CBBE2UBE_NO_DRAPE_MORPH_HEADROOM=1 (scratch control only).
 _DRAPE_MORPH_HEADROOM = not _flag("CBBE2UBE_NO_DRAPE_MORPH_HEADROOM", False)
+
+
+def _zap_lean() -> bool:
+    from .body_zap import lean
+    return lean()
 _DRAPE_CONTACT_CLEAR = _knob("CBBE2UBE_DRAPE_CONTACT_CLEAR", 0.5)
 
 
@@ -910,6 +964,273 @@ def _motion_match_weight(nearest_dist: np.ndarray) -> np.ndarray:
     return np.clip((_MATCH_FAR - np.asarray(nearest_dist)) / span, 0.0, 1.0)
 
 
+# ---- #collider-footprint-morph (DEFAULT ON since 2026-10-21; CBBE2UBE_NO_COLLIDER_FOOTPRINT_MORPH=1 off) ----
+# An SMP collider (a HIDDEN per-triangle shape of the piece's XML) is a coarse proxy: each of its verts stands for a
+# patch of skin, and copying the motion of the ONE nearest skin point lets the skin between the verts grow through
+# its faces under a preset -- the cloth resting on it then falls into the bigger thigh / belly / butt (audit
+# 2026-10-20 F14). A collider vert also moves OUTWARD at least as far as any skin in its footprint (the body verts it
+# is nearest to, within COLLIDER_FOOTPRINT_R, facing its way). The room is added after the layer lockstep and kept
+# from every cloth layer, so visible cloth morphs exactly as with the rule off. 71 walk/run pieces, skin outside the
+# collider: ShyGirl 30,647 -> 28,720, Too Big 30,505 -> 27,741 (the authors 19,368 / 20,343).
+_COLLIDER_FOOTPRINT_MORPH = not _flag("CBBE2UBE_NO_COLLIDER_FOOTPRINT_MORPH", False)
+COLLIDER_FOOTPRINT_R = 6.0
+COLLIDER_FOOTPRINT_MAX = 256
+COLLIDER_FOOTPRINT_FACING = 0.5    # a footprint vert's skin normal . the collider vert's outward normal, at least
+
+
+def _collider_footprint_prep(av, tris, body_verts, nearest, body_normals=None):
+    """(candidate body verts (n, k), outward unit normals (n, 3)) for one collider shape: each vert's footprint
+    (the body verts within COLLIDER_FOOTPRINT_R whose nearest collider vert it is, closest first, capped), padded
+    with its own nearest body vert."""
+    av = np.asarray(av, dtype=np.float64); tris = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+    fn = np.cross(av[tris[:, 1]] - av[tris[:, 0]], av[tris[:, 2]] - av[tris[:, 0]])
+    vn = np.zeros_like(av)
+    for k in range(3):
+        np.add.at(vn, tris[:, k], fn)
+    vn /= np.maximum(np.linalg.norm(vn, axis=1, keepdims=True), 1e-12)
+    # Outward = the BODY's outward at the skin each vert stands for. "Away from the nearest skin" is inward for a
+    # collider that sits UNDER the skin (a body-shaped proxy), and the room then shrank it under a preset (one skirt
+    # family's body proxy, 2026-10-21). Without body normals, fall back to away-from-the-skin.
+    ref = (np.asarray(body_normals)[nearest] if body_normals is not None and len(body_normals) == len(body_verts)
+           else av - body_verts[nearest])
+    if ((vn * ref).sum(1) < 0).mean() > 0.5:           # the winding faces the other way
+        vn = -vn
+    db, jb = cKDTree(av).query(body_verts)
+    sel = np.flatnonzero(db < COLLIDER_FOOTPRINT_R)
+    if body_normals is not None and len(body_normals) == len(body_verts):
+        # Only skin FACING the way the collider vert does: a proxy vert between the thighs must not take room from
+        # the far leg's skin (it faces the other way) -- that sheared skirt proxies in walk/run (2026-10-21).
+        sel = sel[(np.asarray(body_normals)[sel] * vn[jb[sel]]).sum(1) >= COLLIDER_FOOTPRINT_FACING]
+    order = sel[np.lexsort((db[sel], jb[sel]))]
+    owner = jb[order]
+    starts = np.searchsorted(owner, np.arange(len(av)))
+    ends = np.searchsorted(owner, np.arange(len(av)), side="right")
+    k = int(min(max(int((ends - starts).max()) if len(av) else 0, 0) + 1, COLLIDER_FOOTPRINT_MAX + 1))
+    cand = np.repeat(np.asarray(nearest, dtype=np.int64)[:, None], k, axis=1)
+    for i in np.flatnonzero(ends > starts):
+        c = order[starts[i]:min(ends[i], starts[i] + k - 1)]
+        cand[i, 1:1 + len(c)] = c
+    return cand, vn
+
+
+def _collider_footprint_apply(propagated, prep, delta_buf):
+    """`propagated` plus the OUTWARD room its footprint needs: along the vert's outward normal, up to the most outward
+    skin motion in the footprint. Its own sideways motion is kept -- taking a neighbour's whole motion sheared dense,
+    body-like colliders (one skirt family +6-11% skin outside them in walk/run, 2026-10-21)."""
+    cand, vn = prep
+    s = np.einsum("nkj,nj->nk", delta_buf[cand], vn).max(axis=1)
+    lack = np.maximum(s - (propagated * vn).sum(1), 0.0)
+    return propagated + vn * lack[:, None]
+
+
+# ---- #extremity-morph (DEFAULT ON since 2026-10-21; CBBE2UBE_NO_EXTREMITY_MORPH=1 = damp them to 0 again) ----
+# Finger / toe verts (their skin weight on hand / foot bones, `armor_vert_extremity_fractions`) had their morph damped
+# toward 0 because the body has no hand or foot to follow. UBE ships both (BodySlide ShapeData `<set> Hands` /
+# `<set> Feet`, with their own slider data), and the bare hands and feet DO grow under a preset: a glove or boot that
+# stayed put let the wrist / ankle through and changed the hand's size when put on (audit 2026-10-20 F13: Too Big
+# 430 pieces, ShyGirl 217). Now the extremity share of a vert follows the nearest UBE hand / foot vertex (within
+# EXTREMITY_REACH), the limb share the body as before; sliders only the hands / feet carry get rows too.
+_EXTREMITY_MORPH = not _flag("CBBE2UBE_NO_EXTREMITY_MORPH", False)
+EXTREMITY_REACH = 3.0
+
+
+def _extremity_prep(armor_shapes, fractions, refs):
+    """{shape: (vert idx, ref vert idx, share)} for the extremity verts within EXTREMITY_REACH of a UBE hand / foot
+    vertex, and [(prefix, offset, n)] for the refs stacked in that index space."""
+    if not refs or not fractions:
+        return {}, []
+    stack, layout, off = [], [], 0
+    for pre, V, _ in refs:
+        V = np.asarray(V, dtype=np.float64); stack.append(V); layout.append((pre, off, len(V))); off += len(V)
+    tree = cKDTree(np.concatenate(stack))
+    out = {}
+    for name, av in armor_shapes.items():
+        ef = fractions.get(name)
+        if ef is None or len(ef) != len(av):
+            continue
+        ef = np.clip(np.asarray(ef, dtype=np.float64), 0.0, 1.0)
+        idx = np.flatnonzero(ef > 0)
+        if not len(idx):
+            continue
+        d, j = tree.query(np.asarray(av, dtype=np.float64)[idx])
+        ok = d <= EXTREMITY_REACH
+        if ok.any():
+            out[name] = (idx[ok], j[ok], ef[idx[ok]])
+    return out, layout
+
+
+def _extremity_delta(slider, refs, layout):
+    """The slider's motion over the stacked UBE hand / foot verts (zeros where a ref lacks it), or None."""
+    full, any_ = None, False
+    for (pre, off, n), (_, _, osd) in zip(layout, refs):
+        m = osd.by_name().get(pre + slider)
+        if m is None or not len(m):
+            continue
+        if full is None:
+            full = np.zeros((layout[-1][1] + layout[-1][2], 3))
+        i = m.idx.astype(np.int64); ok = i < n
+        full[off + i[ok]] = m.delta[ok]; any_ = True
+    return full if any_ else None
+
+
+# ---- #breast-field (DEFAULT ON when the local table is present) -----------
+# THE TABLE IS LOCAL ONLY. It is derived from other authors' built outputs, so it
+# is never bundled with the exe nor committed (.gitignore): the converter looks
+# for `CBBEtoUBE_breast_field.npz` in the tool folder (paths.tool_dir(), beside
+# the exe) or at CBBE2UBE_BREAST_FIELD, and without it this step does nothing.
+# CBBE2UBE_NO_BREAST_FIELD=1 turns it off even when the table is there.
+# The body motion that ARMOUR follows under the breast-shape sliders
+# (Juicy_breasts, Big_SaggyBreasts, BreastsTBD) is not the body's own. Over the
+# 949 same-topology author-built UBE pieces, skin-tight cloth in the cleavage and
+# the centre of the underbust (|x| < 6, z 89-102) moves 1.0-1.4u further than the
+# body there, the same at every piece (spread 0.06-0.09u): the authors' cloth
+# moves with the breasts across the cleavage instead of sinking into it, while
+# everywhere else it copies the body exactly. A correction field over the body
+# verts (path in CBBE2UBE_BREAST_FIELD, an .npz of per-slider (n_body, 3) arrays
+# plus `nb`) is added to the body delta the transfer reads; the body's own morphs
+# are emitted from the OSD and are untouched. Held-out (field from half the
+# pairs, scored on the other half): breast-shape morph error vs the authors
+# 0.226 -> 0.055, outward lag > 0.5u 18.7% -> 2.3%.
+BREAST_FIELD_NAME = "CBBEtoUBE_breast_field.npz"
+_BREAST_FIELD_OFF = _flag("CBBE2UBE_NO_BREAST_FIELD", False)
+
+
+def breast_field_path():
+    """The local table's path, or None when it is off or absent."""
+    if _BREAST_FIELD_OFF:
+        return None
+    p = os.environ.get("CBBE2UBE_BREAST_FIELD", "").strip()
+    if not p:
+        from .paths import tool_dir
+        p = str(tool_dir() / BREAST_FIELD_NAME)
+    return p if os.path.isfile(p) else None
+
+
+def _breast_field(body_n: int):
+    """{slider: (body_n, 3) correction} for this body, or None (off, missing, other topology)."""
+    path = breast_field_path()
+    if not path:
+        return None
+    try:
+        return _load_breast_field(path, os.path.getmtime(path), int(body_n))
+    except OSError:
+        return None
+
+
+@functools.lru_cache(maxsize=4)
+def _load_breast_field(path: str, _mtime: float, body_n: int):
+    """Read once per (file, its mtime, body size); None if it is for another body.
+    `_mtime` is only part of the cache key: a rewritten table is read again."""
+    try:
+        z = np.load(path)
+        if int(z["nb"]) != body_n:
+            return None
+        return {k: np.asarray(z[k], dtype=np.float64) for k in z.files if k != "nb"}
+    except Exception as _e:
+        from .nif_convert_telemetry import _note_pass_failure
+        _note_pass_failure("breast-field", _e)
+        return None
+
+
+# #morph-layer-lockstep -- DEFAULT ON since 2026-10-17, on every slider: an outer
+# layer's vert moves outward at least as far as the point of the layer beneath it
+# (first other-shape surface along its inward normal within REACH). Over 157
+# layered author-pair pieces (310 piece-weights), with #breast-field and
+# #match-idw-kernel: bust order flips N/FP/TB 13528/10155/17396 -> 13048/10156/15579.
+# Reach 1.5u beat 3.0u (13339/10235/15734: a longer cast ties layers to straps and
+# plates not really under them) and 1.0u (12999/10169/15778). Off with
+# CBBE2UBE_NO_MORPH_LAYER_LOCKSTEP=1.
+_MORPH_LAYER_LOCKSTEP = not _flag("CBBE2UBE_NO_MORPH_LAYER_LOCKSTEP", False)
+MORPH_LAYER_LOCKSTEP_REACH = _knob("CBBE2UBE_MORPH_LAYER_LOCKSTEP_REACH", 1.5)   # inward cast to the layer beneath (u)
+
+
+def _layer_lockstep_prep(shapes_av, shapes_tris, body_verts, reach=None):
+    """#morph-layer-lockstep: per shape, (rows, under shape, corners (m,3), bary (m,3),
+    outward normals) -- the point of the layer directly beneath each vert (first
+    other-shape surface along the vert's inward normal within `reach`), and the
+    shapes ordered innermost first by median stand-off. None if no layering."""
+    if reach is None:
+        reach = MORPH_LAYER_LOCKSTEP_REACH
+    from src import fit_metrics as _fm
+    names = [n for n in shapes_av if n in shapes_tris]
+    if len(names) < 2:
+        return None
+    B = np.asarray(body_verts, dtype=np.float64)
+    btree = cKDTree(B)
+    V = {n: np.asarray(shapes_av[n], dtype=np.float64) for n in names}
+    T = {n: np.asarray(shapes_tris[n], dtype=np.int64).reshape(-1, 3) for n in names}
+    order = sorted(names, key=lambda n: float(np.median(btree.query(V[n])[0])))
+    vn = {}
+    for n in names:
+        nn = np.zeros_like(V[n])
+        fn = np.cross(V[n][T[n][:, 1]] - V[n][T[n][:, 0]], V[n][T[n][:, 2]] - V[n][T[n][:, 0]])
+        for j in range(3):
+            np.add.at(nn, T[n][:, j], fn)
+        nn /= np.linalg.norm(nn, axis=1, keepdims=True) + 1e-12
+        _, jb = btree.query(V[n])
+        bn = V[n] - B[jb]
+        flip = (nn * bn).sum(1) < 0
+        nn[flip] = -nn[flip]
+        vn[n] = nn
+    testers = {n: _fm._ClipTester(V[n], T[n], tmax=float(reach)) for n in names if len(T[n])}
+    out = {}
+    for n in names:
+        O, D = V[n] - 1e-3 * vn[n], -vn[n]
+        best_t = np.full(len(O), np.inf); best_s = np.full(len(O), -1); best_tri = np.full(len(O), -1)
+        for m, tst in testers.items():
+            if m == n:
+                continue
+            ri, ti = tst._pairs(O)
+            t, who = tst._cast(O, D, ri, ti, len(O), want_tri=True)
+            better = np.isfinite(t) & (t < best_t)
+            best_t[better] = t[better]; best_s[better] = names.index(m); best_tri[better] = who[better]
+        rows = np.flatnonzero(best_s >= 0)
+        if not len(rows):
+            continue
+        under = [names[i] for i in best_s[rows]]
+        corners, bary = [], []
+        for r, u, tri in zip(rows, under, best_tri[rows]):
+            c = T[u][tri]
+            P = O[r] + best_t[r] * D[r]
+            a, b_, cc = V[u][c]
+            v0, v1, v2 = b_ - a, cc - a, P - a
+            d00, d01, d11 = v0 @ v0, v0 @ v1, v1 @ v1
+            d20, d21 = v2 @ v0, v2 @ v1
+            den = d00 * d11 - d01 * d01 or 1e-12
+            w1 = (d11 * d20 - d01 * d21) / den; w2 = (d00 * d21 - d01 * d20) / den
+            corners.append(c); bary.append((1 - w1 - w2, w1, w2))
+        out[n] = (rows, under, np.asarray(corners), np.asarray(bary), vn[n])
+    # REJECTED 2026-10-16/17 (#lockstep-faces): also casting each layer's verts
+    # OUTWARD and lifting the face above them by its barycentric share. Over 157
+    # layered pieces it ADDED bust order flips, once (Natural 13048 -> 15816) and
+    # iterated to settle the stack (3 passes: 9405 -> 11958 over 205 piece-weights).
+    return (order, out) if out else None
+
+
+def _layer_lockstep_apply(pending, prep):
+    """Innermost layer first: each vert of an outer layer moves outward at least as
+    far as the point of the layer beneath it does. Only adds outward motion."""
+    order, info = prep
+    for n in order:
+        if n not in info or n not in pending:
+            continue
+        rows, under, corners, bary, vn = info[n]
+        cur = pending[n]
+        lift = np.zeros(len(cur))
+        for u in set(under):
+            if u not in pending:
+                continue
+            m = np.array([x == u for x in under])
+            du = (pending[u][corners[m]] * bary[m][:, :, None]).sum(1)
+            want = (du * vn[rows[m]]).sum(1)
+            have = (cur[rows[m]] * vn[rows[m]]).sum(1)
+            lift[rows[m]] = np.maximum(lift[rows[m]], want - have)
+        lift = np.clip(lift, 0.0, None)
+        if (lift > 0).any():
+            pending[n] = cur + vn * lift[:, None]
+    return pending
+
+
 def generate_armor_tri(
     armor_shapes: dict[str, np.ndarray],
     body_verts: np.ndarray,
@@ -926,6 +1247,8 @@ def generate_armor_tri(
     body_track_mask: "np.ndarray | None" = None,
     nipple_bridge: "list | None" = None,
     body_tris: "np.ndarray | None" = None,
+    collider_tris: "dict[str, np.ndarray] | None" = None,
+    extremity_refs: "list | None" = None,
 ) -> TriFile:  # noqa: docstring continues below
     """Build a BODYTRI for the armor by propagating UBE body slider deltas.
 
@@ -1063,6 +1386,9 @@ def generate_armor_tri(
     # once per slider (~40x on a real body OSD) to produce identical numbers
     # every time.
     shape_w: dict[str, np.ndarray] = {}
+    shape_wk: dict = {}
+    shape_kn: dict = {}
+    _body_vn = None
     for armor_shape_name, (neighbors, dists, nearest_dist) in shape_knn.items():
         # Continuous adaptive IDW: exponent p eases from 2 (body-hugging,
         # nearest dominates) to 1 (stand-off/drape, wide average). This avoids
@@ -1072,6 +1398,25 @@ def generate_armor_tri(
         _w = 1.0 / (np.power(dists, _p[:, None]) + 1e-9)
         _w /= _w.sum(axis=1, keepdims=True)
         shape_w[armor_shape_name] = _w
+        # #match-idw-kernel: what a matched (hugging) vert samples
+        if int(MATCH_IDW_K) > 0:
+            _k = min(int(MATCH_IDW_K), dists.shape[1])
+            _wk = 1.0 / np.maximum(dists[:, :_k], 1e-4)
+            shape_wk[armor_shape_name] = (neighbors[:, :_k], _wk / _wk.sum(axis=1, keepdims=True))
+            if MATCH_IDW_FLOOR:
+                if _body_vn is None:
+                    _body_vn = _vertex_normals(body_verts_arr, body_tris, body_n)
+                _kn = (_body_vn[neighbors[:, 0]] if _body_vn is not None
+                       else shape_outward[armor_shape_name])
+                # the normal AT the covered surface point the floor compares with
+                # (the nearest VERTEX's normal points across a crease: the crotch
+                # midline sat 0.2u inside its skin with it)
+                _byk = shape_bary.get(armor_shape_name)
+                if _byk is not None and _body_vn is not None and int(MATCH_IDW_FLOOR_NORMAL) == 1:
+                    _kb = np.einsum("nk,nkj->nj", _byk[1], _body_vn[_byk[0]])
+                    _kl = np.linalg.norm(_kb, axis=1, keepdims=True)
+                    _kn = np.where(_kl > 1e-6, _kb / np.maximum(_kl, 1e-12), _kn)
+                shape_kn[armor_shape_name] = _kn
 
     # #surface-morph-track: per-shape system, built once (see the constants).
     # Needs the triangles and a region; without them it is a no-op.
@@ -1147,18 +1492,60 @@ def generate_armor_tri(
             stack_prep = []
             stack_spread = {}
 
-    for body_m in body_osd.morphs:
-        if not len(body_m):
-            continue
+    # #collider-footprint-morph: per collider shape, its footprint on the body.
+    coll_prep: dict = {}
+    coll_morphs: dict = {}
+    _coll_bn = None
+    if _COLLIDER_FOOTPRINT_MORPH and collider_tris:
+        for _cn, _ct in collider_tris.items():
+            if _cn in shape_knn:
+                try:
+                    if _coll_bn is None and body_tris is not None and len(body_tris):
+                        _coll_bn = _vertex_normals(body_verts_arr, body_tris, body_n)
+                    coll_prep[_cn] = _collider_footprint_prep(
+                        armor_shapes[_cn], _ct, body_verts_arr, shape_knn[_cn][0][:, 0], _coll_bn)
+                except Exception as _e:
+                    from .nif_convert_telemetry import _note_pass_failure
+                    _note_pass_failure("collider-footprint-morph", _e)
+    lock_prep = None
+    if _MORPH_LAYER_LOCKSTEP and armor_shape_tris:
+        try:
+            lock_prep = _layer_lockstep_prep({n: armor_shapes[n] for n in shape_knn},
+                                             armor_shape_tris, body_verts)
+        except Exception:
+            lock_prep = None
+    # #extremity-morph: glove / boot verts over the UBE hands / feet; sliders only those carry are added below.
+    ext_prep, ext_layout = ({}, [])
+    if _EXTREMITY_MORPH and extremity_refs and armor_vert_extremity_fractions:
+        try:
+            ext_prep, ext_layout = _extremity_prep(armor_shapes, armor_vert_extremity_fractions, extremity_refs)
+        except Exception as _e:
+            from .nif_convert_telemetry import _note_pass_failure
+            _note_pass_failure("extremity-morph", _e)
+            ext_prep, ext_layout = {}, []
+    _morph_list = list(body_osd.morphs)
+    if ext_prep:
+        _have = {m.name[len(prefix):] if m.name.startswith(prefix) else m.name for m in _morph_list}
+        _extra = sorted({m.name[len(pre):] for pre, _, osd in extremity_refs for m in osd.morphs
+                         if m.name.startswith(pre)} - _have)
+        _morph_list += [OsdMorph(prefix + s, np.zeros(0, np.int64), np.zeros((0, 3))) for s in _extra]
+    for body_m in _morph_list:
         slider_name = (body_m.name[len(prefix):]
                        if body_m.name.startswith(prefix)
                        else body_m.name)
+        _ext_d = _extremity_delta(slider_name, extremity_refs, ext_layout) if ext_prep else None
+        if not len(body_m) and _ext_d is None:
+            continue
 
         idxs = body_m.idx.astype(np.int64)
         deltas = body_m.delta.astype(np.float64)
         valid = (idxs >= 0) & (idxs < body_n)
         morph_delta_buf.fill(0.0)
         morph_delta_buf[idxs[valid]] = deltas[valid]
+        # #breast-field: the cloth-side body motion for the breast-shape sliders
+        _bf = _breast_field(body_n)
+        if _bf is not None and slider_name in _bf:
+            morph_delta_buf += _bf[slider_name]
 
         pending: dict = {}          # this slider's delta per shape, stored below
         for armor_shape_name, (neighbors, dists, nearest_dist) in shape_knn.items():
@@ -1176,7 +1563,18 @@ def generate_armor_tri(
             match_w = shape_match.get(armor_shape_name)
             if match_w is not None:
                 _by = shape_bary.get(armor_shape_name)
-                if _by is not None:
+                _wk = shape_wk.get(armor_shape_name)
+                if _wk is not None:
+                    nearest_delta = np.einsum(
+                        "nk,nkj->nj", _wk[1], morph_delta_buf[_wk[0]])
+                    # #match-idw-floor: never less OUTWARD than the skin it covers
+                    _kn = shape_kn.get(armor_shape_name)
+                    if _kn is not None and int(MATCH_IDW_FLOOR_MODE) == 0:
+                        _cov = (np.einsum("nk,nkj->nj", _by[1], morph_delta_buf[_by[0]])
+                                if _by is not None else morph_delta_buf[neighbors[:, 0]])
+                        _short = np.einsum("ij,ij->i", _cov - nearest_delta, _kn)
+                        nearest_delta = nearest_delta + _kn * np.clip(_short, 0.0, None)[:, None]
+                elif _by is not None:
                     nearest_delta = np.einsum(
                         "nk,nkj->nj", _by[1], morph_delta_buf[_by[0]])
                 else:
@@ -1184,7 +1582,7 @@ def generate_armor_tri(
                 propagated = match_w * nearest_delta + (1.0 - match_w) * propagated
             # #drape-morph-headroom (see the constant): drape cloth moves only
             # by the body growth that actually reaches it.
-            if _DRAPE_MORPH_HEADROOM:
+            if _DRAPE_MORPH_HEADROOM and not _zap_lean():   # #zap-lean
                 _od = shape_outward.get(armor_shape_name)
                 if _od is not None:
                     propagated = propagated * _drape_headroom_scale(
@@ -1205,6 +1603,34 @@ def generate_armor_tri(
                 # one coupled solve over the three axes (the rim lock couples them)
                 _corr = _solve(np.ascontiguousarray(_rhs.T.ravel())).reshape(3, -1).T
                 propagated[_fi] += _corr
+            # #match-idw-floor, late modes: after the tracker (which smooths the
+            # correction back below the skin), before the nipple steps (which only
+            # lift). 1 = outward floor; 2 = the normal part is the skin's own
+            # (sign-safe: a preset applying the slider negatively gets the skin's
+            # motion too), the tangential part keeps the 10-neighbour average.
+            if int(MATCH_IDW_FLOOR_MODE) and match_w is not None:
+                _kn = shape_kn.get(armor_shape_name)
+                if _kn is not None:
+                    _by = shape_bary.get(armor_shape_name)
+                    _cov = (np.einsum("nk,nkj->nj", _by[1], morph_delta_buf[_by[0]])
+                            if _by is not None else morph_delta_buf[neighbors[:, 0]])
+                    _short = np.einsum("ij,ij->i", _cov - propagated, _kn)
+                    if int(MATCH_IDW_FLOOR_COV) == 2:
+                        # the nearest skin vertex only
+                        _co = np.einsum("ij,ij->i", morph_delta_buf[neighbors[:, 0]], _kn)
+                        _short = np.maximum(_short, _co - np.einsum("ij,ij->i", propagated, _kn))
+                    if int(MATCH_IDW_FLOOR_COV) == 1:
+                        # clear the most outward-moving skin VERTEX under the
+                        # cloth too: the covered triangle's corners and the
+                        # nearest vertex (a crotch panel cleared its surface
+                        # point while the mound vertex beside it outgrew it 0.16u)
+                        _cv = [neighbors[:, 0:1]] + ([_by[0]] if _by is not None else [])
+                        _ci = np.concatenate(_cv, axis=1)
+                        _co = np.einsum("nkj,nj->nk", morph_delta_buf[_ci], _kn).max(axis=1)
+                        _short = np.maximum(_short, _co - np.einsum("ij,ij->i", propagated, _kn))
+                    if int(MATCH_IDW_FLOOR_MODE) == 1:
+                        _short = np.clip(_short, 0.0, None)
+                    propagated = propagated + _kn * (_short * match_w[:, 0])[:, None]
             _nb = shape_nmb.get(armor_shape_name)
             if _nb is not None:
                 propagated = _nipple_morph_bridge_apply(
@@ -1223,11 +1649,29 @@ def generate_armor_tri(
                     propagated = propagated * np.clip(
                         1.0 - np.asarray(ef, dtype=np.float64), 0.0, 1.0
                     )[:, None]
+                    # #extremity-morph: the extremity share follows the UBE hand / foot it covers
+                    _xp = ext_prep.get(armor_shape_name)
+                    if _xp is not None and _ext_d is not None:
+                        _vi, _ri, _sh = _xp
+                        propagated[_vi] += _sh[:, None] * _ext_d[_ri]
             pending[armor_shape_name] = propagated
+        if lock_prep is not None:
+            pending = _layer_lockstep_apply(pending, lock_prep)
         # #nipple-morph-stack: a layer rises at least as far as the layer under it
         if stack_prep and _nipple_local(morph_delta_buf, _nmb_local, _nmb_breast):
             pending = _nipple_morph_stack_apply(pending, stack_prep, spread=stack_spread)
         for armor_shape_name, propagated in pending.items():
+            # #collider-footprint-morph: the room goes on AFTER the lockstep / stack and is held back from the
+            # morphs the overlay sync reads, so no cloth layer sees it. Fed to the lockstep, robes rose over it and
+            # billowed off the skin (zap holes on mage robes); taking colliders out of the layering instead changed
+            # how every robe over one followed (torso poke under Too Big). Both 2026-10-21.
+            _cp = coll_prep.get(armor_shape_name)
+            if _cp is not None:
+                _cf = _collider_footprint_apply(propagated, _cp, morph_delta_buf)
+                _ck = np.where(np.linalg.norm(_cf, axis=1) >= min_delta)[0]
+                if len(_ck):
+                    coll_morphs.setdefault(armor_shape_name, []).append(
+                        TriMorph(name=slider_name, idx=_ck, delta=_cf[_ck]))
             magnitudes = np.linalg.norm(propagated, axis=1)
             keep = np.where(magnitudes >= min_delta)[0]
             if len(keep) == 0:
@@ -1341,8 +1785,12 @@ def generate_armor_tri(
                     new_morphs.append(TriMorph(name=sl, idx=keep, delta=arr[keep]))
             if new_morphs:
                 shape_morphs[A] = new_morphs
+                coll_morphs.pop(A, None)    # a synced band keeps the sync
     except Exception:
         pass
+    # #collider-footprint-morph: only now do the colliders take their room (see the pending loop).
+    for _cn, _cm in coll_morphs.items():
+        shape_morphs[_cn] = _cm
 
     # Order: carrier first (NiStringExtraData convention), then cloth by
     # descending morph magnitude, then rigid props, then weapon/jewelry attachments.

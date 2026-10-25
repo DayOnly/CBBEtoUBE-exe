@@ -55,6 +55,8 @@ import time
 from pathlib import Path
 
 _DONE = object()  # sentinel; the worker pushes (_DONE, exit_code) when finished
+# (_STATUS, text): a worker thread's status-line text, set on the Tk thread.
+_STATUS = object()
 
 # Where a diagnostics zip is meant to go. The exe is built without `ssl`, so it
 # can't submit anything itself -- the intake is a human pasting into an issue,
@@ -306,6 +308,169 @@ def _nif_status(mod: dict, nif_done: int, nif_total: int, run_eta: str,
     if mod["n"] == 1:
         return head + left
     return head + f"{left} for this mod" + (f" — {run_eta}" if run_eta else "")
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    s = int(max(0, round(seconds)))
+    h, rem = divmod(s, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}h{m:02d}m" if h else (f"{m}m{s:02d}s" if m else f"{s}s")
+
+
+class RunPhase:
+    """What a run is doing, read from the lines it prints: the phase, the mod
+    being planned, the mods finished, how long it has run and the problems
+    printed so far. Only lines the log already carries; nothing is added to the
+    run for the window. #run-phase-display
+
+    The batch-wide schedule (the default) printed no window marker while it
+    planned every mod (the bar spun under "Converting..."), nor after its
+    meshes; and a problem line showed only if you scrolled past it."""
+
+    _PLAN = re.compile(r"^--- \[(\d+)/(\d+)\] planning '(.*)' ---\s*$")
+    _NIF = re.compile(r"^=== NIF conversion: (\d+) file")
+    _MOD_DONE = re.compile(r"^\s+\[(\d+)/(\d+)\] '.*': \d+ NIF\(s\) converted")
+    _STEPS = (
+        (re.compile(r"^=== NIF conversion done"), "Finishing the mods (patches, reports)"),
+        (re.compile(r"^--- sanitizing vertex-color"), "Checking the output meshes"),
+        (re.compile(r"^--- stale-output sweep"), "Sweeping old output"),
+        (re.compile(r"^--- unified coverage"), "Coverage: armour without a converted mesh"),
+        (re.compile(r"^--- auto-merging"), "Merging the plugins"),
+        (re.compile(r"^=== (\d+ failure\(s\)|all clear)"), "Finishing up"),
+    )
+
+    def __init__(self, clock=time.time):
+        self._clock = clock
+        self.t0 = clock()
+        self.name = ""
+        self.i = self.n = 0
+        self.mod = ""
+        self.mods_done = 0
+        self.problems = 0
+        self._carry = ""
+
+    def feed(self, text: str) -> bool:
+        """Read printed text; True when the phase or the mod changed."""
+        s = self._carry + (text or "")
+        *lines, self._carry = s.split("\n")
+        changed = False
+        for ln in lines:
+            changed |= self._line(ln.rstrip("\r"))
+        return changed
+
+    def _line(self, ln: str) -> bool:
+        st = ln.strip()
+        if st.startswith("!!") or "PASS FAILED:" in st:
+            self.problems += 1
+        m = self._PLAN.match(st)
+        if m:
+            self.name, self.i, self.n, self.mod = ("Planning", int(m.group(1)),
+                                                   int(m.group(2)), m.group(3))
+            return True
+        if self._NIF.match(st):
+            self.name, self.mod = "Converting armour pieces", ""
+            return True
+        m = self._MOD_DONE.match(ln)
+        if m:
+            self.mods_done, self.n = int(m.group(1)), int(m.group(2))
+            return False
+        for rx, label in self._STEPS:
+            if rx.match(st):
+                self.name, self.mod = label, ""
+                return True
+        return False
+
+    def tail(self) -> str:
+        """' — 12m04s so far · 2 problem(s) printed' for any status line."""
+        bits = [f"{_fmt_elapsed(self._clock() - self.t0)} so far"]
+        if self.name == "Converting armour pieces" and self.mods_done:
+            bits.append(f"{self.mods_done}/{self.n} mods done")
+        if self.problems:
+            bits.append(f"{self.problems} problem(s) printed (search the log for '!!')")
+        return " — " + " · ".join(bits)
+
+    def status(self, eta: str = "") -> str:
+        if self.name == "Planning":
+            head = f"Planning mod {self.i}/{self.n}: {self.mod}"
+            if eta:
+                head += f" — planning {eta}"
+            return head + self.tail()
+        return (self.name or "Starting") + self.tail()
+
+
+# The notch drawn in the middle of the log divider: (width, height) in pixels;
+# the height is the divider's own. #log-pane-divider
+LOG_GRIP_SIZE = (44, 8)
+
+
+def grip_dots(width: int, height: int, step: int = 4) -> "list[tuple[int, int]]":
+    """The top-left corners of the notch's 2x2 dots: two staggered rows,
+    centred, like the themed divider's grip. #log-pane-divider"""
+    top, bottom = height // 2 - 2, height // 2 + 1
+    xs = list(range(2, width - 2, step))
+    pad = (width - (xs[-1] + 2 - xs[0])) // 2 - xs[0] if xs else 0
+    return ([(x + pad, top) for x in xs]
+            + [(x + pad + step // 2, bottom) for x in xs[:-1]])
+
+
+# The least each side of the log divider keeps: the tab headers, part of a tab
+# and the button row above; a few log lines below. #log-pane-divider
+LOG_DIVIDER_MIN_TOP = 220
+LOG_DIVIDER_MIN_LOG = 60
+
+
+def run_body_fit(view_height: int, body_height: int) -> "tuple[int, bool]":
+    """(height to give the Run tab's body, whether its scroll bar shows): the
+    body fills the view when it fits, keeps its own height and scrolls when it
+    does not. #log-pane-divider"""
+    view, body = max(0, int(view_height)), max(0, int(body_height))
+    return max(view, body), body > view
+
+
+def log_pane_start_height(saved_log_height) -> "int | None":
+    """The log pane's height at launch from the remembered one, at least a few
+    lines; None = nothing remembered or unreadable (the log's own 12 lines).
+    The paned window keeps the tabs' minimum when the window is too short.
+    #log-pane-divider"""
+    try:
+        h = int(saved_log_height)
+    except (TypeError, ValueError):
+        return None
+    return max(LOG_DIVIDER_MIN_LOG, h) if h > 0 else None
+
+
+def mod_report_path(output_dir, source: str) -> "Path | None":
+    """The file that explains a failures-file entry, when it exists: the
+    source mod's conversion_report_<mod>.txt (named as auto_convert names it),
+    or the coverage list for an entry from the coverage step. #results-problems"""
+    if not output_dir or not source:
+        return None
+    od = Path(output_dir)
+    if source == "unified coverage":
+        cands = [od / "coverage_gaps.tsv", od / "conversion_summary.txt"]
+    else:
+        name = f"conversion_report_{source}.txt"
+        for bad in '<>:"/\\|?*':
+            name = name.replace(bad, "_")
+        cands = [od / name]
+    return next((p for p in cands if p.is_file()), None)
+
+
+def read_run_problems(path) -> "list[dict]":
+    """The last run's failures file as a list; [] when absent or unreadable.
+    Failures first, then warnings, each in the order the run recorded them."""
+    import json as _json
+    try:
+        data = _json.loads(Path(path).read_text(encoding="utf-8"))
+        rows = [r for r in (data.get("failures") or []) if isinstance(r, dict)]
+    except Exception:
+        return []
+    return sorted(rows, key=lambda r: r.get("severity", "failure") != "failure")
+
+
+def problem_text(row: dict) -> str:
+    n = f" (x{row['count']})" if row.get("count") else ""
+    return f"{row.get('kind', '?')}{n} — {row.get('source', '')}: {row.get('item', '')}"
 
 
 def _unfinished_run_text(rep: dict) -> str:
@@ -671,6 +836,9 @@ def start_run(build_argv, lock, start, unlock) -> "tuple[bool, str]":
 # cbbe_to_ube_main._log_target, which the child applies. #dry-run-keeps-the-run-log
 RUN_LOG_NAME = "CBBEtoUBE_last_run.log"
 DRY_LOG_NAME = "CBBEtoUBE_cli.log"
+# The run's detail log (src/run_log.py) and its failures file. #readable-run-log
+DETAIL_LOG_NAME = "CBBEtoUBE_last_run_detail.log"
+FAILURES_NAME = "CBBEtoUBE_last_failures.json"
 
 
 def run_log_plan(dry_run: bool) -> "tuple[str, bool]":
@@ -771,6 +939,38 @@ def no_log_message(log_path) -> str:
             "the usual cause is a tool folder that cannot be written. ***\n")
 
 
+class LogEndCut:
+    """Pass a log's chunks through up to the run's end-marker line, then
+    nothing. The run then rewrites its log with the summary on top, which
+    shifts every byte: a reader that went on would show the shifted tail twice.
+    Holds back only a partial last line that could be the start of the marker,
+    so ordinary streaming is unchanged. #readable-run-log"""
+
+    def __init__(self, marker: str):
+        self._rx = re.compile(r"(?m)^" + re.escape(marker) + r"\r?\n")
+        self._marker = marker
+        self._carry = ""
+        self.ended = False
+
+    def feed(self, chunk: str, final: bool = False) -> str:
+        if self.ended:
+            return ""
+        s = self._carry + (chunk or "")
+        self._carry = ""
+        m = self._rx.search(s)
+        if m:
+            self.ended = True
+            return s[:m.start()]
+        if final:
+            return s
+        cut = s.rfind("\n") + 1
+        tail = s[cut:]
+        if tail and self._marker.startswith(tail):
+            self._carry = tail
+            return s[:cut]
+        return s
+
+
 def tail_child_log(proc, log_path, put, *, wait_s: float = 10.0,
                    poll_s: float = 0.15, sleep=time.sleep) -> bool:
     """Stream the child's log file to `put` until the child exits. True when
@@ -778,7 +978,11 @@ def tail_child_log(proc, log_path, put, *, wait_s: float = 10.0,
     appeared. The windowed frozen exe's stdout is a null sink, but its `_Tee`
     always writes the run log, so tailing the file captures output for both
     frozen and source runs; a log that never appeared used to leave only
-    '=== finished (exit N) ===' with nothing to explain it."""
+    '=== finished (exit N) ===' with nothing to explain it.
+
+    Reading stops at the run's end marker (see LogEndCut). #readable-run-log"""
+    from .run_log import END_MARKER
+    cut = LogEndCut(END_MARKER)
     f = None
     try:
         waited = 0.0
@@ -793,15 +997,15 @@ def tail_child_log(proc, log_path, put, *, wait_s: float = 10.0,
                     f = open(log_path, "r", encoding="utf-8", errors="replace")
                 except Exception:
                     f = None
-            if f is not None:
-                chunk = f.read()
-                if chunk:
-                    put(chunk)
+            if f is not None and not cut.ended:
+                text = cut.feed(f.read())
+                if text:
+                    put(text)
             if proc.poll() is not None:
-                if f is not None:               # final drain after exit
-                    chunk = f.read()
-                    if chunk:
-                        put(chunk)
+                if f is not None and not cut.ended:   # final drain after exit
+                    text = cut.feed(f.read(), final=True)
+                    if text:
+                        put(text)
                 break
             sleep(poll_s)
     finally:
@@ -814,6 +1018,96 @@ def tail_child_log(proc, log_path, put, *, wait_s: float = 10.0,
         put(no_log_message(log_path))
         return False
     return True
+
+
+# ---- the mod-list scan, in a child process (#mod-scan-child) -----------------
+# MEASURED 2026-10-22 on the live modlist (3,343 mods): Refresh mod list ran the
+# run's own discovery for 153 s INSIDE the window's process. The window froze
+# 67 times for over 100 ms (the longest 1.3 s) while the scan held the GIL, and
+# the window kept 330 MB more for the rest of its life. In a child process the
+# window stays responsive and the memory goes back when the scan ends; the scan
+# itself is the same call with the same settings, so the list is the same.
+
+def _mod_scan_entry(conn, kind: str, settings: dict, out_dir: str,
+                    mark_ube_native: bool = True) -> None:
+    """The child: run one scan under the window's settings and send
+    ("progress", text)* then ("done", items, printed_text, error_or_None).
+    Module level so the spawn start method can pickle it."""
+    import contextlib
+    import io
+    buf = io.StringIO()
+    items, err = [], None
+    try:
+        from . import auto_convert, gui_settings
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            with gui_settings.SettingsOverlay(settings or {}):
+                if kind == "armor":
+                    items = auto_convert.list_convertible_mods(
+                        Path(out_dir) if out_dir else None,
+                        progress=lambda t: conn.send(("progress", str(t))),
+                        rescan=True, mark_ube_native=mark_ube_native)
+                else:
+                    items = auto_convert.list_overlay_mods()
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+    try:
+        conn.send(("done", items, buf.getvalue(), err))
+    except Exception:
+        pass
+
+
+def run_mod_scan_child(kind: str, settings: dict, out_dir: str, on_progress,
+                       *, mark_ube_native: bool = True, register=None, ctx=None,
+                       poll_s: float = 0.2):
+    """Run the mod-list scan in a child process and wait for it (call from a
+    worker thread). Returns (items, printed_text, error_or_None).
+    `register(process)` receives the child, so closing the window can stop it.
+    #mod-scan-child"""
+    import multiprocessing as mp
+    ctx = ctx or mp.get_context("spawn")
+    recv_end, send_end = ctx.Pipe(duplex=False)
+    proc = ctx.Process(target=_mod_scan_entry,
+                       args=(send_end, kind, dict(settings or {}), out_dir or "",
+                             bool(mark_ube_native)),
+                       daemon=True)
+    proc.start()
+    send_end.close()
+    if register is not None:
+        register(proc)
+    def _ready(timeout):
+        # On Windows a pipe whose writer is gone raises BrokenPipeError from
+        # poll() as well as recv(): let recv() below report it.
+        try:
+            return recv_end.poll(timeout)
+        except (EOFError, OSError):
+            return True
+
+    items, printed, err = [], "", None
+    try:
+        while True:
+            if _ready(poll_s):
+                try:
+                    msg = recv_end.recv()
+                except (EOFError, OSError):
+                    proc.join(5)
+                    err = f"the mod scan stopped (exit {proc.exitcode})"
+                    break
+                if msg and msg[0] == "progress":
+                    on_progress(msg[1])
+                elif msg and msg[0] == "done":
+                    items, printed, err = list(msg[1] or []), msg[2] or "", msg[3]
+                    break
+            elif not proc.is_alive() and not _ready(0):
+                err = f"the mod scan stopped (exit {proc.exitcode})"
+                break
+    finally:
+        proc.join(5)
+        if proc.is_alive():
+            proc.terminate()
+        recv_end.close()
+        if register is not None:
+            register(None)
+    return items, printed, err
 
 
 def tk_error_reporter(put, stream=None):
@@ -1295,26 +1589,54 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         else:
             status.set("No convertible mods found (or layout not detected).")
 
+    def _scan_mods(kind, *, out_dir="", progress=None, mark_ube_native=True):
+        """One mod-list scan, from a worker thread. Under the saved settings,
+        as the run will be (the vanilla sweep switch decides whether 'vanilla'
+        is listed). #settings-everywhere
+
+        In a child process unless the window_mod_scan_child setting is off,
+        then in this thread as before. #mod-scan-child"""
+        if (state.get("settings") or {}).get("window_mod_scan_child", True):
+            items, printed, err = run_mod_scan_child(
+                kind, state.get("settings") or {}, out_dir,
+                progress or (lambda _t: None), mark_ube_native=mark_ube_native,
+                register=lambda p: state.__setitem__("scan_proc", p))
+            if printed:
+                try:
+                    sys.stdout.write(printed)   # the window's session log, as before
+                except Exception:
+                    pass
+            if err:
+                raise RuntimeError(err)
+            return items
+        with gui_settings.SettingsOverlay(state["settings"]):
+            if kind == "armor":
+                return auto_convert.list_convertible_mods(
+                    Path(out_dir) if out_dir else None, progress=progress,
+                    rescan=True, mark_ube_native=mark_ube_native)
+            return auto_convert.list_overlay_mods()
+
     def _refresh_mods():
-        status.set("Scanning mods (this can take a few seconds)...")
+        if state.get("scan_busy"):
+            return                      # a scan is already running
+        state["scan_busy"] = True
+        status.set("Scanning mods: the whole modlist is read, which takes a few "
+                   "minutes on a large one. The window stays usable.")
 
         def work():
             try:
                 od = _path_text(out_var)
-                # Under the saved settings, as the run will be (the vanilla
-                # sweep switch decides whether 'vanilla' is listed).
-                # #settings-everywhere
                 # rescan: a mod updated in MO2 since the last list is read
                 # again (#mod-scan-rescan). mark_ube_native: the run drops
                 # those before --only-mods, so the list must not offer them
                 # (#select-list-ube-native).
-                with gui_settings.SettingsOverlay(state["settings"]):
-                    items = auto_convert.list_convertible_mods(
-                        Path(od) if od else None, rescan=True,
-                        mark_ube_native=True)
+                items = _scan_mods("armor", out_dir=od, mark_ube_native=True,
+                                   progress=lambda t: q.put((_STATUS, f"Scanning mods: {t}")))
             except Exception as e:
                 items = []
                 q.put(f"\n[mod scan failed: {e}]\n")
+            finally:
+                state["scan_busy"] = False
             items, hidden = select_list_split(items)
             if hidden:
                 q.put(select_list_hidden_note(hidden))
@@ -1375,8 +1697,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
 
         def work():
             try:
-                with gui_settings.SettingsOverlay(state["settings"]):
-                    items = auto_convert.list_overlay_mods()
+                items = _scan_mods("overlay")       # #mod-scan-child
             except Exception as e:
                 items = []
                 q.put(f"\n[overlay mod scan failed: {e}]\n")
@@ -1418,16 +1739,104 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     _theme_row = ttk.Frame(root)
     _theme_row.pack(side="top", fill="x", padx=8, pady=(2, 0))
 
-    # ---- notebook (tabs) + persistent bottom strip ----
-    nb = ttk.Notebook(root)
+    # ---- notebook (tabs) + persistent bottom strip, above a draggable divider
+    # with the log below it. The log was a fixed 12 lines and every extra pixel
+    # of window went to the tabs; now the divider decides, and is remembered
+    # (log_pane_height). #log-pane-divider
+    #
+    # A classic Tk PanedWindow with opaqueresize OFF: while the divider is
+    # dragged only a line follows the mouse, and the window lays itself out
+    # once, on release. MEASURED 2026-10-22: a live re-layout cost 30-38 ms per
+    # drag step (17.5 ms for a bare notebook + log at this size), so the button
+    # row visibly trailed the divider; no trimming makes that go away. The
+    # minimum sizes keep the tab headers and the button row on screen and a few
+    # log lines below; the Run tab scrolls when it does not fit.
+    panes = tk.PanedWindow(root, orient="vertical", opaqueresize=False,
+                           sashwidth=8, sashrelief="flat", bd=0)
+    panes.pack(side="top", fill="both", expand=True)
+    upper = ttk.Frame(panes)
+    log_frame = ttk.Frame(panes)
+    panes.add(upper, stretch="always", minsize=LOG_DIVIDER_MIN_TOP)
+    panes.add(log_frame, stretch="never", minsize=LOG_DIVIDER_MIN_LOG)
+    # Where the divider was left: the log pane's own height, which every
+    # layout pass honours (a sash placed after the first resize was undone by
+    # the next one). Nothing remembered = the log's own 12 lines.
+    _log_h = log_pane_start_height(state["settings"].get("log_pane_height", 0))
+    if _log_h is not None:
+        panes.paneconfigure(log_frame, height=_log_h)
+
+    # A dotted notch in the middle of the divider says it can be dragged (the
+    # themed divider drew one; this one does not). It is a handle too: a press
+    # on it is handed to the divider, which starts the same line drag.
+    _grip = tk.Canvas(panes, width=LOG_GRIP_SIZE[0], height=LOG_GRIP_SIZE[1],
+                      highlightthickness=0, bd=0, cursor="sb_v_double_arrow")
+
+    def _draw_grip(bg, fg):
+        _grip.configure(bg=bg)
+        _grip.delete("all")
+        for gx, gy in grip_dots(*LOG_GRIP_SIZE):
+            _grip.create_rectangle(gx, gy, gx + 1, gy + 1, outline=fg, fill=fg)
+
+    def _place_grip(_e=None):
+        try:
+            y = panes.sash_coord(0)[1]
+        except Exception:
+            return
+        _grip.place(x=panes.winfo_width() // 2,
+                    y=y + int(panes.cget("sashwidth")) // 2, anchor="center")
+        tk.Misc.lift(_grip)     # the window, not Canvas.lift (canvas items)
+
+    def _forward(kind):
+        def _go(e):
+            panes.event_generate(kind, x=_grip.winfo_x() + e.x,
+                                 y=_grip.winfo_y() + e.y)
+            if kind == "<ButtonRelease-1>":
+                panes.after_idle(_place_grip)
+        return _go
+    for _kind in ("<ButtonPress-1>", "<B1-Motion>", "<ButtonRelease-1>"):
+        _grip.bind(_kind, _forward(_kind))
+    # The divider moves when either pane is laid out again, not only when the
+    # whole window resizes.
+    panes.bind("<Configure>", _place_grip, add="+")
+    upper.bind("<Configure>", _place_grip, add="+")
+    panes.bind("<ButtonRelease-1>", lambda e: panes.after_idle(_place_grip), add="+")
+    _draw_grip("#808080", "#c0c0c0")            # themed by _apply_theme
+
+    # The button strip is packed FIRST, so a short upper pane shrinks the tabs,
+    # never the buttons.
+    bottom = ttk.Frame(upper)
+    bottom.pack(side="bottom", fill="both", expand=False)
+    nb = ttk.Notebook(upper)
     nb.pack(side="top", fill="both", expand=True, padx=8, pady=(8, 0))
-    run_tab = ttk.Frame(nb)
-    nb.add(run_tab, text="Run")
+    run_tab_frame = ttk.Frame(nb)
+    nb.add(run_tab_frame, text="Run")
     # Armor / Overlays / Paths / Diagnostics tabs are added later, in order,
     # once their builder helpers exist (see the tab-assembly block below).
 
-    bottom = ttk.Frame(root)
-    bottom.pack(side="bottom", fill="both", expand=False)
+    # The Run tab scrolls when the divider leaves it too little room; with
+    # room to spare its body still fills the tab, as before. `run_tab` is the
+    # body every Run-tab section is packed into. #log-pane-divider
+    _run_cv = tk.Canvas(run_tab_frame, highlightthickness=0)
+    _run_sb = ttk.Scrollbar(run_tab_frame, orient="vertical", command=_run_cv.yview)
+    run_tab = ttk.Frame(_run_cv)
+    _run_win = _run_cv.create_window((0, 0), window=run_tab, anchor="nw")
+    _run_cv.configure(yscrollcommand=_run_sb.set)
+    _run_cv.pack(side="left", fill="both", expand=True)
+
+    def _fit_run_tab(_e=None):
+        cw, ch = _run_cv.winfo_width(), _run_cv.winfo_height()
+        need = run_tab.winfo_reqheight()
+        h, show = run_body_fit(ch, need)
+        _run_cv.itemconfigure(_run_win, width=cw, height=h)
+        _run_cv.configure(scrollregion=(0, 0, cw, h))
+        if show and not _run_sb.winfo_ismapped():
+            _run_sb.pack(side="right", fill="y", before=_run_cv)
+        elif not show and _run_sb.winfo_ismapped():
+            _run_sb.pack_forget()
+            _run_cv.yview_moveto(0)
+    _run_cv.bind("<Configure>", _fit_run_tab)
+    run_tab.bind("<Configure>", _fit_run_tab)
+    state["_canvases"].append(_run_cv)          # themed with the others
 
     # ---- options (Run tab) -- WHAT to convert. The "how" (armor mesh fixes,
     #      overlay options) lives on the Armor / Overlays tabs. ----
@@ -1551,19 +1960,27 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         if d:
             var.set(d)
 
-    def _bind_mousewheel(canvas):
+    def _bind_mousewheel(canvas, parent=None):
         # Scroll the canvas with the mouse wheel while the pointer is over it.
         # A plain Canvas ignores the wheel; bind it app-wide on Enter (so the
         # event reaches us even over child widgets) and release it on Leave.
+        # A canvas inside another scrolling canvas (`parent`, the Run tab's)
+        # hands the wheel back to it on Leave. #log-pane-divider
         def _on_wheel(e):
             try:
                 canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
             except Exception:
                 pass
+
+        def _leave(_e):
+            canvas.unbind_all("<MouseWheel>")
+            outer = getattr(parent, "_wheel_handler", None)
+            if outer is not None:
+                parent.bind_all("<MouseWheel>", outer)
+        canvas._wheel_handler = _on_wheel
         canvas.bind("<Enter>",
                     lambda e: canvas.bind_all("<MouseWheel>", _on_wheel))
-        canvas.bind("<Leave>",
-                    lambda e: canvas.unbind_all("<MouseWheel>"))
+        canvas.bind("<Leave>", _leave)
 
     _SEMI = ("Segoe UI Semibold", 10)
 
@@ -1625,6 +2042,14 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         st.configure("TNotebook", background=p["bg"], bordercolor=p["border"])
         st.configure("TNotebook.Tab", background=p["tab"], foreground=p["fg"],
                      padding=(16, 7))
+        # The log divider (a classic Tk PanedWindow, so not a ttk style): the
+        # sash takes the widget's background; the line shown while dragging,
+        # the accent. #log-pane-divider
+        try:
+            panes.configure(bg=p["field"], proxybackground=p["accent"])
+            _draw_grip(p["field"], p["hint"])
+        except Exception:
+            pass
         st.map("TNotebook.Tab", background=[("selected", p["bg"])],
                foreground=[("selected", p["tabselfg"])])
         st.configure("TProgressbar", background=p["accent"],
@@ -2038,6 +2463,11 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     file_menu = tk.Menu(menubar, tearoff=0)
     file_menu.add_command(label="Open output folder",
                           command=lambda: _open_output_folder())
+    # The run's two logs (#readable-run-log): the one to read, the one to grep.
+    file_menu.add_command(label="Open run log",
+                          command=lambda: _open_tool_file(RUN_LOG_NAME))
+    file_menu.add_command(label="Open detail log",
+                          command=lambda: _open_tool_file(DETAIL_LOG_NAME))
     file_menu.add_separator()
     file_menu.add_command(label="Exit", command=lambda: root.destroy())
     menubar.add_cascade(label="File", menu=file_menu)
@@ -2228,8 +2658,9 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     _canvas.configure(yscrollcommand=_sb.set)
     _canvas.pack(side="left", fill="both", expand=True)
     _sb.pack(side="right", fill="y")
-    _bind_mousewheel(_canvas)
+    _bind_mousewheel(_canvas, parent=_run_cv)
     state["_canvases"].append(_canvas)
+    _bind_mousewheel(_run_cv)        # the Run tab's own scroll  #log-pane-divider
 
     # ---- Convert overlays ----
     overlay_sec = ttk.LabelFrame(run_tab, text="Convert overlays")
@@ -2283,7 +2714,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     ov_canvas.configure(yscrollcommand=ov_sb.set)
     ov_canvas.pack(side="left", fill="both", expand=True)
     ov_sb.pack(side="right", fill="y")
-    _bind_mousewheel(ov_canvas)
+    _bind_mousewheel(ov_canvas, parent=_run_cv)
     state["_canvases"].append(ov_canvas)
 
     prog = ttk.Progressbar(bottom, mode="indeterminate")
@@ -2291,7 +2722,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     status = tk.StringVar(value="Idle. Pick options and press Convert.")
     ttk.Label(bottom, textvariable=status).pack(anchor="w", padx=8)
 
-    log = scrolledtext.ScrolledText(bottom, height=12, wrap="word",
+    # Below the divider (#log-pane-divider); 12 lines until it is dragged.
+    log = scrolledtext.ScrolledText(log_frame, height=12, wrap="word",
                                     state="disabled", font=("Consolas", 9))
     log.pack(fill="both", expand=True, padx=8, pady=(4, 8))
 
@@ -2371,6 +2803,14 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             os.startfile(str(p))    # Windows shell open
         except Exception as e:
             _append(f"\n[could not open {p}: {e}]\n")
+
+    def _open_tool_file(name):
+        """Open a file from the tool folder (File > Open run log)."""
+        p = Path(tool_folder()) / name
+        if p.is_file():
+            _open_path(p)
+        else:
+            status.set(f"No {name} yet: run a conversion first.")
 
     def _open_url(url):
         """Open a link in the default browser (the Help menu's web entries)."""
@@ -2637,22 +3077,16 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         ttk.Button(btns, text="Cancel", command=win.destroy).pack(
             side="right", padx=6)
 
-        lister = (auto_convert.list_convertible_mods if domain == "armor"
-                  else auto_convert.list_overlay_mods)
-
         def work():
             try:
-                # Under the saved settings, as the run will be.
-                # #settings-everywhere
-                with gui_settings.SettingsOverlay(state["settings"]):
-                    if domain == "armor":
-                        # Live progress into the status line (first scan walks
-                        # the whole modlist; without this the dialog looks hung).
-                        items = lister(progress=lambda t: root.after(
-                            0, lambda s=t: _cfg(status_lbl, text=s)),
-                            rescan=True)          # #mod-scan-rescan
-                    else:
-                        items = lister()
+                # Live progress into the status line (first scan walks the
+                # whole modlist; without this the dialog looks hung). In a
+                # child process like Refresh (#mod-scan-child); rescan as
+                # before (#mod-scan-rescan).
+                items = _scan_mods(
+                    domain, mark_ube_native=False,
+                    progress=lambda t: root.after(
+                        0, lambda s=t: _cfg(status_lbl, text=s)))
             except Exception as e:
                 items = []
                 q.put(f"\n[exclusion scan failed: {e}]\n")
@@ -3049,12 +3483,43 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                     ttk.Label(content, text=f"  … and {len(names) - 20} more",
                               style="Hint.TLabel").pack(anchor="w", padx=6)
 
+        # The last run's failures and warnings -- the list the end-of-run popup
+        # showed once -- each with the report that explains it. #results-problems
+        _probs = read_run_problems(Path(tool_folder()) / FAILURES_NAME)
+        ttk.Label(content, text=f"Problems in the last run: {len(_probs) or 'none'}",
+                  font=_SEMI).pack(anchor="w", padx=6, pady=(10, 0))
+        for _p in _probs[:30]:
+            _row = ttk.Frame(content)
+            _row.pack(anchor="w", fill="x", padx=6, pady=(2, 0))
+            _st = "fail" if _p.get("severity", "failure") == "failure" else "warn"
+            ttk.Label(_row, text=_PF_ICON.get(_st, ""), width=2,
+                      foreground=_PF_COLOR.get(_st)).pack(side="left")
+            ttk.Label(_row, text=problem_text(_p), wraplength=440,
+                      justify="left").pack(side="left")
+            _rp = mod_report_path(od, _p.get("source", ""))
+            if _rp is not None:
+                ttk.Button(_row, text="Report",
+                           command=lambda x=_rp: _open_path(x)).pack(side="left", padx=6)
+            if _p.get("detail"):
+                ttk.Label(content, text="      " + str(_p["detail"]),
+                          style="Hint.TLabel", wraplength=520,
+                          justify="left").pack(anchor="w", padx=6)
+        if len(_probs) > 30:
+            ttk.Label(content, text=f"  … and {len(_probs) - 30} more (Open run log)",
+                      style="Hint.TLabel").pack(anchor="w", padx=6)
+
         # The tab's own buttons are rebuilt on every render (cleared at the top
         # of this function), so "Open summary" appears the moment a run produces
         # one -- it used to depend on whether the file happened to exist when
         # you opened the modal.
         ttk.Button(_res_btns, text="Re-verify output",
                    command=lambda: _verify_results()).pack(side="left")
+        for _label, _name in (("Open run log", RUN_LOG_NAME),
+                              ("Open detail log", DETAIL_LOG_NAME)):
+            _lp = Path(tool_folder()) / _name
+            if _lp.is_file():
+                ttk.Button(_res_btns, text=_label,
+                           command=lambda p=_lp: _open_path(p)).pack(side="left", padx=6)
         _sumtxt = Path(od) / "conversion_summary.txt"
         if _sumtxt.is_file():
             ttk.Button(_res_btns, text="Open summary (.txt)",
@@ -3309,6 +3774,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         state["_eta"] = {"last_t": None, "rate": None}   # reset per-mod ETA
         state["_mod"] = None
         state["cancelled"] = False
+        state["phase"] = RunPhase()                       # #run-phase-display
+        state["_plan_eta"] = {"last_t": None, "rate": None}
         prog.configure(mode="indeterminate", value=0)
         prog.start(12)
         status.set("Converting... this can take many minutes; the window stays responsive.")
@@ -3433,8 +3900,35 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             prog.configure(value=_bar_value(m["i"], nif_done, nif_total))
         except Exception:
             pass
+        ph = state.get("phase")
         status.set(_nif_status(m, nif_done, nif_total,
-                               state.get("_eta_text") or "", time.time()))
+                               state.get("_eta_text") or "", time.time())
+                   + (ph.tail() if ph is not None else ""))
+
+    def _update_phase(text):
+        """The status line and bar from the run's own lines, where no marker
+        drives them: planning each mod, and the steps after the meshes.
+        #run-phase-display"""
+        ph = state.get("phase")
+        if ph is None or not state["running"]:
+            return
+        if not ph.feed(text):
+            return
+        try:
+            if ph.name == "Planning":
+                eta = _eta_step(state["_plan_eta"], ph.i, ph.n, time.time())
+                if str(prog.cget("mode")) != "determinate":
+                    prog.stop()
+                    prog.configure(mode="determinate")
+                prog.configure(maximum=max(1, ph.n), value=max(0, ph.i - 1))
+                status.set(ph.status(eta))
+            elif ph.name != "Converting armour pieces":
+                if str(prog.cget("mode")) != "indeterminate":
+                    prog.configure(mode="indeterminate", value=0)
+                    prog.start(12)
+                status.set(ph.status())
+        except Exception:
+            pass
 
     def _poll():
         if not root.winfo_exists():
@@ -3444,6 +3938,9 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                 item = q.get_nowait()
                 if isinstance(item, tuple) and item and item[0] is _DONE:
                     _finish(item[1])
+                elif isinstance(item, tuple) and item and item[0] is _STATUS:
+                    if not state["running"]:
+                        status.set(item[1])
                 elif isinstance(item, str):
                     # Pull per-mod progress markers -> determinate bar + ETA, then
                     # strip them so the machine markers don't clutter the log.
@@ -3455,6 +3952,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                     text = _NIF_RX.sub("", _PROG_RX.sub("", item))
                     if text:
                         _append(text)
+                        _update_phase(text)
                 else:
                     _append(item)
         except queue.Empty:
@@ -3470,15 +3968,26 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             _settings_set("window_geometry",
                           f"{root.winfo_width()}x{root.winfo_height()}",
                           report=False)   # no popup while quitting
+            # ... and where the log divider was left. #log-pane-divider
+            _settings_set("log_pane_height",
+                          int(log_frame.winfo_height()),
+                          report=False)
         except Exception:
             pass                   # never block a quit on a cosmetic preference
         # Child-process launch means we can actually stop the run on quit
         # (the old in-process thread couldn't be killed cleanly). Tree-kill so
         # the ProcessPoolExecutor workers don't orphan and lock the exe.
         _kill_proc_tree(state.get("proc"))
+        _scan = state.get("scan_proc")          # a mod-list scan  #mod-scan-child
+        if _scan is not None:
+            try:
+                _scan.terminate()
+            except Exception:
+                pass
         root.destroy()
 
     _apply_theme(state["settings"].get("theme", "standard"))  # after all widgets exist
+
     _sync_run()  # initial checklist visibility + Convert-button gating
     _run_preflight(_pf_auto)  # background setup check on launch
     # A tool folder that cannot be written keeps no run log (the only way this

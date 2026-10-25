@@ -229,7 +229,6 @@ def raw_env_kill_switches() -> "list[tuple[str, str]]":
 #: Coverage measured 2026-09-16 (docs / maintainer notes / tests):
 AWAITING_VERDICT = {
     "BUST_SURFACE_REQ": "CHANGELOG + the 2026-09-01 audit; no note, no test",
-    "GROOVE_SMOOTH_ENABLED": "two maintainer notes + the 2026-09-01 audit; no test",
     "PROXY_ENCLOSE_GUARD": "one maintainer note + the 2026-09-01 audit; no test",
     "STATIC_AUTHORED_FIT": "CHANGELOG + one maintainer note + the audit; no test",
     "_TIGHT_SOFTBODY_GATE": "one maintainer note + the 2026-09-01 audit; no test",

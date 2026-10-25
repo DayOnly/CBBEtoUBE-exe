@@ -107,6 +107,10 @@ def _run(on, inputs=True, plate=None, tris=True):
     nb = [(_APEX, np.array([0.0, 1.0, 0.0]), sg._vertex_areas(_BV, _BT))]
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(sg, "_NIPPLE_MORPH_BRIDGE", bool(on))
+        # this step is judged in isolation, on the closest-surface kernel without
+        # layer lockstep (both default ON since 2026-10-17; see test_morph_defaults_1017)
+        mp.setattr(sg, "MATCH_IDW_K", 0)
+        mp.setattr(sg, "_MORPH_LAYER_LOCKSTEP", False)
         tri = sg.generate_armor_tri(
             {"Plate": pv.copy()}, _BV, _osd(), body_shape_name="BaseShape",
             include_body_shapes=False, nipple_bridge=nb if inputs else None,

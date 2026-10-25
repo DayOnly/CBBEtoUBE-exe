@@ -145,7 +145,7 @@ def test_the_quiet_switch_is_left_out_and_the_diagnostics_are_not():
     assert classify("CBBE2UBE_ANTIPOKE_SURFACE_QUIET",
                     pop["CBBE2UBE_ANTIPOKE_SURFACE_QUIET"]) == "plumbing"
     assert classify("CBBE2UBE_PASS_TRACE", pop["CBBE2UBE_PASS_TRACE"]) == "diagnostic"
-    assert classify("CBBE2UBE_NO_CONFORM", pop["CBBE2UBE_NO_CONFORM"]) == "switch"
+    assert classify("CBBE2UBE_CONFORM_FITTED", pop["CBBE2UBE_CONFORM_FITTED"]) == "switch"
 
 
 def test_the_schedule_switch_is_hashed_for_the_files_it_keeps_not_the_maths(monkeypatch):

@@ -55,7 +55,9 @@ VERSION_FILE = "VERSION.txt"
 # This file is on it because the spec imports it.
 BUILD_INPUTS = ("src", "cbbe_to_ube_main.py", "CBBEtoUBE.spec", ".pynifly",
                 "LICENSE", "THIRD-PARTY-NOTICES.md", "USING.md", "REPORTING.md",
-                "assets", "scripts/build_identity.py")
+                "assets", "scripts/build_identity.py",
+                # the #body-zap renderer: built from native/zraster.c, shipped as native/zraster.dll
+                "native")
 
 
 def _git(repo, *args) -> "str | None":

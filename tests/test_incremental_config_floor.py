@@ -196,7 +196,8 @@ def test_env_prefix_scan_covers_the_real_converter_surface():
     # tests/test_raw_env_reads.py, restricted to the modules scanned here), so
     # the check is an equality, not a floor a migration would have to lower.
     assert raw == {"CBBE2UBE_BACK_DUMP_DISP", "CBBE2UBE_STAGE_DUMP",
-                   "CBBE2UBE_STANDOFF_LOG", "CBBE2UBE_UBE_BODY"}, (
+                   "CBBE2UBE_STANDOFF_LOG", "CBBE2UBE_UBE_BODY",
+                   "CBBE2UBE_WARP_FIELD"}, (
         f"the raw os.environ idiom over the converter modules found {sorted(raw)}: "
         f"a new raw read belongs in envflags, a regex that went blind must be "
         f"widened")

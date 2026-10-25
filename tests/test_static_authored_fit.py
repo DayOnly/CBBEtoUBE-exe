@@ -64,8 +64,8 @@ def _run(src_off, cur_off, amp, **kw):
     src_cloth = bV + bN * src_off
     cur_cloth = bV + bN * cur_off
     amp_arr = None if amp is None else np.full(len(bV), float(amp))
-    out = nc.conform_to_source_standoff(
-        src_cloth, bV, bN, cur_cloth, bV, bN,
+    out = nc.conform_to_source_standoff(  # max_pull=4.0: pre-10-18 cap (default now 0.6)
+        src_cloth, bV, bN, cur_cloth, bV, bN, max_pull=4.0,
         morph_amplitude=amp_arr, **kw)
     return float(np.median((np.asarray(out, dtype=np.float64) - bV)[:, 1]))
 
@@ -140,8 +140,8 @@ def test_a_wrong_length_morph_map_is_ignored_not_misapplied():
     bV, bN = _flat_body()
     src_cloth = bV + bN * 0.15
     cur_cloth = bV + bN * 0.90
-    out = nc.conform_to_source_standoff(
-        src_cloth, bV, bN, cur_cloth, bV, bN,
+    out = nc.conform_to_source_standoff(  # max_pull=4.0: pre-10-18 cap (default now 0.6)
+        src_cloth, bV, bN, cur_cloth, bV, bN, max_pull=4.0,
         morph_amplitude=np.zeros(len(bV) // 2))
     got = float(np.median((np.asarray(out, dtype=np.float64) - bV)[:, 1]))
     assert got > 0.25, "a mismatched map must not enable the static path"

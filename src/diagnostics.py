@@ -35,6 +35,8 @@ from pathlib import Path
 
 # Beside the exe (the tool folder): what the last run and the one before left.
 TOOL_FILES = ("CBBEtoUBE_last_run.log", "CBBEtoUBE_previous_run.log",
+              # Every line those runs printed (src/run_log.py). #readable-run-log
+              "CBBEtoUBE_last_run_detail.log", "CBBEtoUBE_previous_run_detail.log",
               "CBBEtoUBE_last_failures.json", "CBBEtoUBE_previous_failures.json")
 # At the output mod root: what the last run wrote. Both are written before the
 # first source, and the report again after every source, so a run that died
