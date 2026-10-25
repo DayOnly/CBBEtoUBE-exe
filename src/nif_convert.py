@@ -13251,6 +13251,26 @@ PANEL_RIGIDITY = _knob("CBBE2UBE_PANEL_RIGIDITY", 0.0)
 # -24/-14/-17% (zapped) and -15/-15/-22% (without the zap); drift from the source layer spacing 0.249 -> 0.121u /
 # 0.134 -> 0.100u (authors keep it to 0.04u); conversion time -35..-49%; walk/run about neutral.
 _ZAP_WARP_ONLY = not _flag("CBBE2UBE_NO_ZAP_WARP_ONLY", False)
+# #min-push-zap-nipple (ON with #zap-lean; CBBE2UBE_NO_MIN_PUSH_ZAP_NIPPLE=1 judges it): on a zapped piece #min-push
+# does not judge skin within body_zap.ZAP_NIPPLE_R of a nipple apex -- the zap deletes the nipple that pokes through
+# cover cloth (#zap-nipple-poke), so lifting the cloth over it only drew a cone at every coarse tip (in game 10-22:
+# ~+1u on the apex vertex; the source and the authors' builds run the plate under the breast's tip).
+_MIN_PUSH_ZAP_NIPPLE = not _flag("CBBE2UBE_NO_MIN_PUSH_ZAP_NIPPLE", False)
+
+
+def _min_push_region(body_verts, body_shape):
+    """#min-push's skin band with the zapped nipples left out (see _MIN_PUSH_ZAP_NIPPLE)."""
+    region = fit_metrics.push_region_mask(body_verts)
+    if not (_MIN_PUSH_ZAP_NIPPLE and _zap_lean()) or body_shape is None:
+        return region
+    from . import body_zap
+    BV = np.asarray(body_verts, np.float64)
+    T = np.asarray(body_shape.tris, np.int64).reshape(-1, 3)
+    if len(getattr(body_shape, "verts", ())) != len(BV) or not len(T):
+        return region
+    for a in body_zap._nipple_apexes(body_shape, T):
+        region &= np.linalg.norm(BV - BV[a], axis=1) >= body_zap.ZAP_NIPPLE_R
+    return region
 
 
 def _warp_only() -> bool:
@@ -15020,7 +15040,8 @@ def _fit_shapes_swap(ctx) -> None:
                     np.asarray(ube_base_for_pass1.tris,
                                dtype=np.int64).reshape(-1, 3),
                     body_norms_for_p2,
-                    is_chain=_mp_chain)
+                    is_chain=_mp_chain,
+                    region=_min_push_region(body_verts_for_p2, ube_base_for_pass1))
                 if _mp_st.get("moved"):
                     # Apply only the DISPLACEMENT, added back onto the array the
                     # rest of phase 2 owns. Never assign the aligned-frame verts

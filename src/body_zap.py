@@ -94,6 +94,24 @@ ZAP_NIPPLE_ENVELOPE = not _flag("CBBE2UBE_NO_ZAP_NIPPLE_ENVELOPE", False)
 # 0.42/0.24/0.23/0.47/0.63u; bust skin better on 27 piece-weights, worse on none; crossings and fit unchanged.
 ZAP_NIPPLE_HIDE = not _flag("CBBE2UBE_NO_ZAP_NIPPLE_HIDE", False)
 ZAP_HIDE_CORE_R = 2.5
+# The lowering never brings the cloth within ZAP_HIDE_KEEP_GAP of skin the zap keeps (nor closer than it already was).
+ZAP_HIDE_KEEP_GAP = 0.1
+# #zap-nipple-poke (CBBE2UBE_NO_ZAP_NIPPLE_POKE=1 off): within ZAP_NIPPLE_R of an apex, skin seen only because it pokes
+# THROUGH cover cloth -- cloth within ZAP_POKE_DEPTH under it along its own normal (or level with it) -- counts as
+# covered. In game 10-22: pointed nipples on coarse plates at rest, one plate vertex over the apex 1-2u above its ring.
+# The source and the authors' UBE builds run the plate straight over the breast, 0.5-2.6u UNDER its tip, the poking
+# nipple deleted; ours kept that skin (seen from oblique views) and #min-push lifted the plate over it (~+1u, the warp
+# another 0.2-0.6u). With the skin gone the view sees the cloth that lay just under it. Pairs with #min-push-zap-nipple.
+# REJECTED 10-22: lowering a coarse plate's point onto its ring after the fact (ring fits 0.6-1.25 edges wide, or the
+# body's breast + the ring's stand-off): vertex for vertex against 240 author tips it traded points for dents at every
+# width (points > 0.3u 141 -> 89..124, dents 1 -> 17..55).
+ZAP_NIPPLE_POKE = not _flag("CBBE2UBE_NO_ZAP_NIPPLE_POKE", False)
+ZAP_POKE_DEPTH = 4.0      # Too Big pushes the tip 3.1-3.7u through a plate that clears it by 0.5u at rest
+ZAP_POKE_LEVEL = 0.3      # cloth this far ABOVE the skin still counts: level with it, seen edge-on
+# #zap-nipple-hide-covered (CBBE2UBE_NO_ZAP_NIPPLE_HIDE_COVERED=1 = the whole ring must go): a nipple core no pose shows
+# is hidden too when skin in its ring is kept. A cup edge 4-5u from the apex keeps the skin above it (visible, right)
+# plus its ZAP_BAND, and that alone refused the lowering: the witch top kept a +0.4u bump over a nipple no pose sees.
+ZAP_NIPPLE_HIDE_COVERED = not _flag("CBBE2UBE_NO_ZAP_NIPPLE_HIDE_COVERED", False)
 # #zap-alpha (DEFAULT ON since 2026-10-20; CBBE2UBE_NO_ZAP_ALPHA=1 off): an alpha-tested or alpha-blended cover shape hides the
 # skin only where its texture is opaque (in game: a strap sleeve over the upper arm, transparent between the straps,
 # and the arm skin behind it deleted -- the arms missing; 76% of that skin sat behind alpha 0). Archive-only textures:
@@ -537,12 +555,13 @@ def _envelope_kept_nipples(tf, loaded, kept, collider_names) -> int:
     return lifted
 
 
-def _flatten_cloth_bump(V, T, BV, full, apexes):
+def _flatten_cloth_bump(V, T, BV, full, apexes, kept_skin=None):
     """#zap-nipple-hide: over each hidden nipple, lower a cloth shape's own bump onto the quadric its ring (2.5-5u from
     the apex, along the apex normal) continues over the core -- `nif_convert_fitgeom._nipple_bridge`'s shape without its
     morph-demand lift (the skin it made room for is deleted). Lower only, smoothstep-faded out by 2.5u, outward-facing
-    wall only, and only a garment fine enough to draw a nipple (median core edge <= NIPPLE_BRIDGE_MAX_EDGE). Returns the
-    new verts or None."""
+    wall only, and only a garment fine enough to draw a nipple (median core edge <= NIPPLE_BRIDGE_MAX_EDGE); a coarse
+    plate gets no point to lower once #min-push leaves the zapped nipple alone (#min-push-zap-nipple). The lowering is
+    cut back where it would bring the cloth onto `kept_skin` (body points the zap keeps). Returns the new verts or None."""
     from . import nif_convert as nc
     V = np.array(V, np.float64, copy=True); T = np.asarray(T, np.int64).reshape(-1, 3)
     bn = np.zeros_like(BV); fn = np.cross(BV[full[:, 1]] - BV[full[:, 0]], BV[full[:, 2]] - BV[full[:, 0]])
@@ -580,9 +599,86 @@ def _flatten_cloth_bump(V, T, BV, full, apexes):
         target = q(u[core], w[core]) @ coef
         t = np.clip((r_in - r[core]) / max(r_in - r_full, 1e-6), 0.0, 1.0)
         dh = t * t * (3.0 - 2.0 * t) * (np.minimum(target, h[core]) - h[core])
+        ci = np.flatnonzero(core)
+        if kept_skin is not None and len(kept_skin) and float(np.abs(dh).max(initial=0.0)) > 1e-4:
+            dh = dh * _keep_skin_scale(V, T, ci, dh, nA, A, ea, eb, kept_skin, ZAP_NIPPLE_R + 2.0)
         if float(np.abs(dh).max(initial=0.0)) > 1e-4:
-            V[core] += nA[None, :] * dh[:, None]; changed = True
+            V[ci] += nA[None, :] * dh[:, None]; changed = True
     return V if changed else None
+
+
+def _keep_edge_band(de, bind_vis, Vref, poked=None) -> np.ndarray:
+    """Un-delete the skin within ZAP_BAND of skin visible at bind (a margin round every opening). Skin let go for
+    poking through cloth (`poked`, #zap-nipple-poke) stays deleted: that cloth lies just under it, not a hole -- the
+    band brought it back beside visible skin and it poked through again (357 replay: 5 pieces, up to 48 u^2)."""
+    if not (bind_vis.any() and de.any() and float(ZAP_BAND) > 0):
+        return de
+    dk, _ = cKDTree(Vref[bind_vis]).query(Vref[de])
+    band = np.flatnonzero(de)[dk < float(ZAP_BAND)]
+    if poked is not None:
+        band = band[~poked[band]]
+    de = de.copy(); de[band] = False
+    return de
+
+
+def _poking_through(B, BT, Gvs, Gts, idx, n) -> np.ndarray:
+    """Bool per body vertex: the vertices `idx` that have cover cloth within ZAP_POKE_DEPTH UNDER them along their own
+    outward normal (the skin pokes through that cloth) -- #zap-nipple-poke."""
+    B = np.asarray(B, np.float64); BT = np.asarray(BT, np.int64)
+    fn = np.cross(B[BT[:, 1]] - B[BT[:, 0]], B[BT[:, 2]] - B[BT[:, 0]])
+    vn = np.zeros_like(B)
+    for k in range(3):
+        np.add.at(vn, BT[:, k], fn)
+    vn /= np.linalg.norm(vn, axis=1, keepdims=True) + 1e-12
+    if ((B[BT].mean(1) - B.mean(0)) * fn).sum(1).mean() < 0:
+        vn = -vn                                          # outward
+    out = np.zeros(n, bool)
+    idx = np.asarray(idx, np.int64)
+    O = B[idx] + float(ZAP_POKE_LEVEL) * vn[idx]; D = -vn[idx]
+    for V, T in zip(Gvs, Gts):
+        if not len(T):
+            continue
+        tst = _fm().ClipTester(np.asarray(V, np.float64), np.asarray(T, np.int64), tmax=float(ZAP_POKE_DEPTH + ZAP_POKE_LEVEL) + 1.0)
+        t = tst.cast(O, D)
+        out[idx[np.isfinite(t) & (t <= float(ZAP_POKE_DEPTH + ZAP_POKE_LEVEL))]] = True
+    return out
+
+
+def _keep_skin_scale(V, T, ci, dh, nA, A, ea, eb, kept_skin, reach) -> float:
+    """Largest share (1, 1/2, 1/4 ... or 0) of the lowering `dh` on verts `ci` that keeps the cloth, measured along
+    `nA` over each kept skin point under a moved triangle, ZAP_HIDE_KEEP_GAP above it -- or no closer than it already
+    was where it started closer."""
+    P = np.asarray(kept_skin, np.float64)
+    rel = P - A; pu, pw, ph = rel @ ea, rel @ eb, rel @ nA
+    sel = np.hypot(pu, pw) < reach
+    if not sel.any():
+        return 1.0
+    pu, pw, ph = pu[sel], pw[sel], ph[sel]
+    moved = np.zeros(len(V), bool); moved[ci] = True
+    tm = T[moved[T].any(axis=1)]
+    gu, gw = (V - A) @ ea, (V - A) @ eb
+    x1, y1, x2, y2, x3, y3 = gu[tm[:, 0]], gw[tm[:, 0]], gu[tm[:, 1]], gw[tm[:, 1]], gu[tm[:, 2]], gw[tm[:, 2]]
+    den = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
+    ok = np.abs(den) > 1e-9; den = np.where(ok, den, 1.0)
+    # barycentric of every (skin point, moved triangle) pair in the apex-plane projection
+    l1 = ((y2 - y3)[None] * (pu[:, None] - x3[None]) + (x3 - x2)[None] * (pw[:, None] - y3[None])) / den[None]
+    l2 = ((y3 - y1)[None] * (pu[:, None] - x3[None]) + (x1 - x3)[None] * (pw[:, None] - y3[None])) / den[None]
+    l3 = 1.0 - l1 - l2
+    pi, ti = np.nonzero(ok[None] & (l1 >= 0) & (l2 >= 0) & (l3 >= 0))
+    if not len(pi):
+        return 1.0
+    L = np.stack([l1[pi, ti], l2[pi, ti], l3[pi, ti]], 1)
+    H = (V - A) @ nA
+    D = np.zeros(len(V)); D[ci] = dh
+    tri = tm[ti]
+    gap0 = (L * H[tri]).sum(1) - ph[pi]; dd = (L * D[tri]).sum(1)
+    floor = np.minimum(gap0, ZAP_HIDE_KEEP_GAP)
+    s = 1.0
+    for _ in range(8):
+        if np.all(gap0 + s * dd >= floor - 1e-6):
+            return s
+        s *= 0.5
+    return 0.0
 
 
 def _fm():
@@ -918,7 +1014,7 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
     tri = {s.name: s for s in tf.shapes} if tf is not None else {}
     presets = preset_paths()
     loaded, need, bind_vis = {}, None, None
-    apexes, nip_local, gverts = None, set(), {}
+    apexes, nip_local, gverts, poked = None, set(), {}, None
     # #zap-fp-armature: the planner's answer (an ARMA uses this mesh only as a first-person model) or the name rule
     first_person = bool(first_person) and ZAP_FP_ARMATURE; arm = None
     for w, p in files.items():
@@ -964,10 +1060,17 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
         # nipple-local sliders left out: #zap-nipple-flat drops them from the cloth afterwards, and the answer must
         # not depend on whether that already happened (a re-run reads the flattened .tri)
         poses = [()] + [tuple(kv for kv in _preset(pp, w != "_0") if kv[0] not in nip_local) for pp in presets]
+        zone = None
+        if ZAP_NIPPLE_POKE and apexes and not first_person:
+            zone = np.min([np.linalg.norm(BV - BV[a], axis=1) for a in apexes], axis=0) < ZAP_NIPPLE_R
         for k, sl in enumerate(poses):
             Bp = _morphed(BV, tri.get(BODY_NAME), sl)
             Gp = [_morphed(V, tri.get(nm), sl) for nm, V, T in G]
             nd = needed(Bp, BT, Gp, [T for _, _, T in G], dirs).astype(bool)
+            if zone is not None and (nd & zone).any():
+                pk = _poking_through(Bp, BT, Gp, [T for _, _, T in G], np.flatnonzero(nd & zone), len(BV))
+                poked = pk if poked is None else (poked | pk)
+                nd &= ~pk
             need = nd if need is None else (need | nd)
             if k == 0:
                 bind_vis = nd if bind_vis is None else (bind_vis | nd)
@@ -987,16 +1090,17 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
                 need = need.copy(); need[far] = False
         need = need | (Vref[:, 2] < float(ZAP_LEG_Z))
         de = ~need
-        if bind_vis.any() and de.any() and float(ZAP_BAND) > 0:
-            dk, _ = cKDTree(Vref[bind_vis]).query(Vref[de])
-            de[np.flatnonzero(de)[dk < float(ZAP_BAND)]] = False
+        de = _keep_edge_band(de, bind_vis, Vref, poked)
     hide_apex = []
     if ZAP_NIPPLE_HIDE and not first_person and apexes:
         for a in apexes:
             d = np.linalg.norm(Vref - Vref[a], axis=1)
             ring = (d >= ZAP_HIDE_CORE_R) & (d < ZAP_NIPPLE_R)
+            core = d < ZAP_HIDE_CORE_R
             if ring.any() and de[ring].all():
-                de = de.copy(); de[d < ZAP_HIDE_CORE_R] = True; hide_apex.append(int(a))
+                de = de.copy(); de[core] = True; hide_apex.append(int(a))
+            elif ZAP_NIPPLE_HIDE_COVERED and core.any() and not need[core].any():
+                de = de.copy(); de[core] = True; hide_apex.append(int(a))
     gone = de[full].sum(1) >= 2
     kept = full[~gone]
     out = {"files": len(loaded), "deleted_tris": int(gone.sum()), "kept_tris": int(len(kept)),
@@ -1027,6 +1131,7 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
             body = next(s for s in nf.shapes if s.name == BODY_NAME)
             fw, _ = full_body_tris(w or "_1")
             BV = np.asarray(body.verts, np.float64)
+            kept_skin = BV[np.unique(np.asarray(kept, np.int64).ravel())] if len(kept) else BV[:0]
             for s in nf.shapes:
                 if s.name in nc.UBE_BODY_INJECT_NAMES or s.name in coll or not len(s.tris):
                     continue
@@ -1036,7 +1141,7 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
                 except Exception:
                     pass
                 new = _flatten_cloth_bump(np.asarray(s.verts, np.float64), np.asarray(s.tris, np.int64), BV, fw,
-                                          hide_apex)
+                                          hide_apex, kept_skin=kept_skin)
                 if new is not None:
                     vert_over.setdefault(w, {})[s.name] = new
         out["nipples_hidden"] = len(hide_apex)

@@ -98,11 +98,96 @@ def test_a_fine_cloth_bump_is_lowered_onto_its_ring():
     assert np.allclose(out[far], G[far]), "the ring and beyond are untouched"
 
 
-def test_coarse_cloth_is_left_alone():
+def test_the_lowering_stops_short_of_kept_skin():
+    # #zap-nipple-hide-covered hides a nipple whose ring skin is partly KEPT (a cup edge nearby): the lowered cloth
+    # must not come down onto that skin
     BV, BT, apex = _body()
-    G, GT = _sheet(5, 6.0, 0.6, bump=0.5, r_bump=4.0)             # 3u edges cannot draw a nipple
-    assert bz._flatten_cloth_bump(G, GT, BV, BT, [apex]) is None
+    G, GT = _sheet(25, 6.0, 0.6, bump=0.5)
+    skin = np.array([[0.3, 0.75, 0.3]])                           # kept skin just under where the bump would land
+    out = bz._flatten_cloth_bump(G, GT, BV, BT, [apex], kept_skin=skin)
+    c = int(np.argmin(np.hypot(G[:, 0], G[:, 2])))
+    assert out is not None and out[c, 1] < G[c, 1], "still lowered as far as the skin allows"
+    near = np.hypot(G[:, 0] - 0.3, G[:, 2] - 0.3) < 0.6
+    assert np.all(out[near, 1] >= 0.75 + bz.ZAP_HIDE_KEEP_GAP - 0.05), out[near, 1]
 
 
-def test_both_are_on_by_default():
-    assert bz.ZAP_ALPHA and bz.ZAP_NIPPLE_HIDE
+# #zap-nipple-poke. In game 10-22: pointed nipples on coarse plates -- the zap kept nipple skin poking through the
+# plate (seen from the side) and #min-push lifted the plate over it; the authors' plates run under the breast's tip.
+def _sphere(R, n=48):
+    """a closed lat-long sphere of radius R about the origin (outward-wound), its +y pole a vertex"""
+    th = np.linspace(0.0, np.pi, n // 2 + 1)[1:-1]; ph = np.linspace(0.0, 2 * np.pi, n, endpoint=False)
+    T_, P_ = np.meshgrid(th, ph, indexing="ij")
+    V = np.c_[R * np.sin(T_.ravel()) * np.cos(P_.ravel()), R * np.cos(T_.ravel()), R * np.sin(T_.ravel()) * np.sin(P_.ravel())]
+    V = np.vstack([V, [0.0, R, 0.0], [0.0, -R, 0.0]]); top, bot = len(V) - 2, len(V) - 1
+    rows, F = len(th), []
+    for i in range(rows - 1):
+        for j in range(n):
+            a, b, c, d = i * n + j, i * n + (j + 1) % n, (i + 1) * n + j, (i + 1) * n + (j + 1) % n
+            F += [[a, b, c], [b, d, c]]
+    F += [[top, (j + 1) % n, j] for j in range(n)] + [[bot, (rows - 1) * n + j, (rows - 1) * n + (j + 1) % n] for j in range(n)]
+    F = np.asarray(F, np.int64)
+    fn = np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]])
+    if ((V[F].mean(1)) * fn).sum() < 0:
+        F = F[:, [0, 2, 1]]
+    return V, F, top
+
+
+def _cap(R, half=6.0, n=13):
+    """a cloth patch on the sphere of radius R over the +y pole"""
+    xs = np.linspace(-half, half, n); X, Z = np.meshgrid(xs, xs)
+    Y = np.sqrt(np.clip(R * R - X ** 2 - Z ** 2, 0.0, None))
+    V = np.c_[X.ravel(), Y.ravel(), Z.ravel()]
+    _, T = _sheet(n, half, 0.0)
+    return V, T
+
+
+def test_skin_poking_through_cloth_just_under_it_counts_as_covered():
+    B, BT, top = _sphere(10.0)
+    G, GT = _cap(9.0)                                              # the cloth 1u under the skin at the pole
+    out = bz._poking_through(B, BT, [G], [GT], np.array([top]), len(B))
+    assert out[top]
+
+
+def test_cloth_above_the_skin_or_far_under_it_does_not():
+    B, BT, top = _sphere(10.0)
+    for R in (11.0, 10.0 - bz.ZAP_POKE_DEPTH - 1.0):               # over the skin (seen around it) / far inside
+        G, GT = _cap(R)
+        assert not bz._poking_through(B, BT, [G], [GT], np.array([top]), len(B))[top], R
+
+
+def test_cloth_level_with_the_skin_counts():
+    B, BT, top = _sphere(10.0)
+    G, GT = _cap(10.0 + 0.5 * bz.ZAP_POKE_LEVEL)
+    assert bz._poking_through(B, BT, [G], [GT], np.array([top]), len(B))[top]
+
+
+def test_the_edge_band_does_not_bring_back_skin_that_poked_through():
+    V = np.c_[np.arange(6, dtype=float), np.zeros(6), np.zeros(6)]  # verts 1u apart in a row
+    vis = np.array([True, False, False, False, False, False])        # vert 0 seen at bind
+    de = ~vis
+    kept = bz._keep_edge_band(de, vis, V)
+    assert not kept[1] and kept[3], "the band keeps the skin next to an opening"
+    poked = np.zeros(6, bool); poked[1] = True
+    assert bz._keep_edge_band(de, vis, V, poked)[1], "skin that poked through cloth stays deleted"
+
+
+def test_min_push_leaves_the_zapped_nipple_alone(monkeypatch):
+    from src import nif_convert as nc
+    B, BT, top = _sphere(10.0)
+    B = B + np.array([0.0, 0.0, 100.0])                          # into the push band (z 90-125)
+    shape = SimpleNamespace(verts=B, tris=BT)
+    monkeypatch.setattr(bz, "_nipple_apexes", lambda body, full: [top])
+    monkeypatch.setattr(nc, "_zap_lean", lambda: True)
+    reg = nc._min_push_region(B, shape)
+    base = nc.fit_metrics.push_region_mask(B)
+    near = np.linalg.norm(B - B[top], axis=1) < bz.ZAP_NIPPLE_R
+    assert base[near].any() and not reg[near].any()
+    assert np.array_equal(reg[~near], base[~near])
+    monkeypatch.setattr(nc, "_zap_lean", lambda: False)            # not a zapped piece: the whole band is judged
+    assert np.array_equal(nc._min_push_region(B, shape), base)
+
+
+def test_all_are_on_by_default():
+    from src import nif_convert as nc
+    assert bz.ZAP_ALPHA and bz.ZAP_NIPPLE_HIDE and bz.ZAP_NIPPLE_POKE and bz.ZAP_NIPPLE_HIDE_COVERED
+    assert nc._MIN_PUSH_ZAP_NIPPLE
