@@ -916,7 +916,12 @@ def _unit_table(timed, workers: int, t_start: float, t_end: float, path) -> "lis
     if not timed:
         return []
     rows = []
+    by_pass: "dict[str, int]" = {}       # ray pairs per asking pass, over the whole run
     for u, tm, statuses in timed:
+        att = {k.split("@", 1)[1]: int(v) for k, v in (tm.get("work") or {}).items()
+               if k.startswith("ray_pairs@")}
+        for k, v in att.items():
+            by_pass[k] = by_pass.get(k, 0) + v
         mode = next((m for m in ("body-swap", "copy") if any(m in s for s in statuses)),
                     (statuses[0].split(" ")[0] if statuses else "?"))
         dst = Path(str(u.items[0][1])).as_posix()
@@ -925,7 +930,9 @@ def _unit_table(timed, workers: int, t_start: float, t_end: float, path) -> "lis
                      "start_s": tm["start"] - t_start, "end_s": tm["end"] - t_start,
                      "wall_s": tm["end"] - tm["start"], "cpu_s": tm["cpu"], "pid": tm["pid"],
                      "peak_mb": tm.get("peak_mb") or 0.0,
-                     **{k: int((tm.get("work") or {}).get(k, 0)) for k in _UNIT_WORK_KEYS}})
+                     **{k: int((tm.get("work") or {}).get(k, 0)) for k in _UNIT_WORK_KEYS},
+                     "pairs_by": "; ".join(f"{k}={v / 1e6:.1f}M" for k, v in
+                                           sorted(att.items(), key=lambda kv: -kv[1])[:3])})
     cols = list(rows[0])
     text = "\t".join(cols) + "\n" + "".join(
         "\t".join(f"{r[c]:.1f}" if isinstance(r[c], float) else str(r[c]) for c in cols) + "\n"
@@ -958,6 +965,11 @@ def _unit_table(timed, workers: int, t_start: float, t_end: float, path) -> "lis
         out.append(f"      {r['wall_s']:7.0f} {r['cpu_s']:7.0f} {r['peak_mb'] / 1024:5.1f} "
                    f"{r['ray_pairs'] / 1e6:8.1f}M {r['zap_views']:6d} {r['nif_saves']:4d} "
                    f"{r['nif_rebuilds']:3d}  {r['unit']} ({r['mode']}, ended {r['end_s']:.0f}s)")
+    tot = sum(by_pass.values())
+    if tot:
+        out.append(f"    ray pairs by the pass that asked ({tot / 1e9:.1f} G in all):")
+        for k, v in sorted(by_pass.items(), key=lambda kv: -kv[1])[:8]:
+            out.append(f"      {v / 1e9:7.2f} G  {100 * v / tot:4.1f}%  {k}")
     return out
 
 

@@ -62,7 +62,7 @@ import os
 
 from .envflags import flag as _flag, knob as _knob
 from .atomic_io import append_whole
-from .work_counts import WORK
+from .work_counts import add_attributed
 from pathlib import Path
 
 import numpy as np
@@ -294,7 +294,7 @@ class _ClipTester:
                 ti.append(b[keep])
         if not ri:
             return np.empty(0, np.int64), np.empty(0, np.int64)
-        WORK["ray_pairs"] += sum(len(x) for x in ri)
+        add_attributed("ray_pairs", sum(len(x) for x in ri))
         return np.concatenate(ri), np.concatenate(ti)
 
     def cast(self, O, D, tmin: float = 1e-4):
@@ -350,7 +350,7 @@ class _ClipTester:
                 ti.append(b[keep])
         if not ri:
             return np.empty(0, np.int64), np.empty(0, np.int64)
-        WORK["ray_pairs"] += sum(len(x) for x in ri)
+        add_attributed("ray_pairs", sum(len(x) for x in ri))
         return np.concatenate(ri), np.concatenate(ti)
 
     def _cast(self, O, D, ray_i, tri_i, n_rays, want_tri=False, tmin=1e-4):

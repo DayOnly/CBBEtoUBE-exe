@@ -19,6 +19,9 @@ new code (15 files).
   Python dictionary entry; a many-layer fur piece made 14.6 million and held 11.3 GB. The floors are now numpy
   columns built one layer pair at a time, with the same first-entry-wins and the same order: 3.1 GB, and the piece
   converts at 4.6 GB instead of 11.7 GB with identical files.
+- The coincident-skin pass tested every pair of welded parts for touching with a nearest-point query. Pairs whose
+  bounding boxes are already farther apart than the touching distance are now skipped before the query (they could
+  never touch); on a many-part fur 43.9 million pairs needed 2.5 million queries, with identical files.
 - New: every run writes `CBBEtoUBE_last_run_units.tsv` beside the run log -- one row per piece pair with its start,
   end, CPU seconds, peak memory and work counts (ray pairs, zap views, NIF saves, rebuilds) -- and the run log says
   how busy the workers were, how long the pool sat partly idle at the end, and which pieces were slowest.

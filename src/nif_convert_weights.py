@@ -3811,11 +3811,26 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None,
                     e["src"], idx, _nc()._PART_PAIR_BILATERAL_FRAC))
                 _pmean.append((k, idx, dict(mo), dict(ma),
                                cKDTree(e["wv"][idx]), bil))
+            # #part-pair-bbox: two parts whose bounding boxes are farther apart
+            # than _PART_PAIR_NEAR cannot have verts that close, so the query
+            # below would skip them anyway; skip them without it. The box gap is
+            # a lower bound on the closest approach and the margin covers its
+            # rounding, so every pair the query would keep is still queried. A
+            # many-part fur spent 75% of its conversion on those queries.
+            from .work_counts import WORK as _WORK
+            _WORK["part_pairs"] += len(_pmean) * (len(_pmean) - 1) // 2
+            _lo = np.array([ents[k]["wv"][idx].min(0) for k, idx, *_r in _pmean])
+            _hi = np.array([ents[k]["wv"][idx].max(0) for k, idx, *_r in _pmean])
             for _i in range(len(_pmean)):
                 ki, ii, moi, mai, ti, bi = _pmean[_i]
+                _gap = np.maximum(0.0, np.maximum(_lo[_i + 1:] - _hi[_i], _lo[_i] - _hi[_i + 1:]))
+                _far = np.sqrt((_gap * _gap).sum(1)) > _nc()._PART_PAIR_NEAR + 1e-6
                 for _j in range(_i + 1, len(_pmean)):
+                    if _far[_j - _i - 1]:
+                        continue
                     kj, ij, moj, maj, tj, bj = _pmean[_j]
                     # adjacency, cheapest test first
+                    _WORK["part_pair_queries"] += 1          # #unit-timing
                     d, _q = ti.query(ents[kj]["wv"][ij])
                     if d.min() > _nc()._PART_PAIR_NEAR:
                         continue
