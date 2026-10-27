@@ -738,99 +738,133 @@ def _nipple_morph_stack_prep(shapes_av, shapes_tris, body_verts, nb):
             height[n].extend(h[near].tolist())
         frames.append((nA, loc))
     med = {n: (float(np.median(height[n])) if height[n] else np.inf) for n in names}
-    for nA, loc in frames:
-        for out_n in names:
-            ou, ow, oh = loc[out_n]
-            rows = np.flatnonzero((np.hypot(ou, ow) < NIPPLE_MORPH_STACK_R)
-                                  & (oh > -1.0) & (oh < 6.0))
-            if not len(rows):
+    # #stack-prep-columns: the floors are kept as numpy columns, ONE (outer,
+    # inner) pair at a time, not as a dict of tuples over every pair. A
+    # many-layer fur piece made 14.6 M entries here and held 11.3 GB. Pairs never
+    # share a key, so building them one after another changes nothing; within a
+    # pair the entries are made in the same order as before (frame, then the
+    # three rules in turn), the FIRST entry of a key is the one kept (as
+    # `setdefault` kept it), and keys sort as the tuples did -- (row, corners),
+    # with a crossing key after the plain key it extends.
+    groups = []
+    for out_n in names:
+        for in_n in names:
+            if in_n == out_n:
                 continue
-            ot = np.asarray(shapes_tris[out_n], dtype=np.int64).reshape(-1, 3)
-            otsel = ot[np.hypot(ou[ot].mean(1), ow[ot].mean(1)) < NIPPLE_MORPH_STACK_R + 3.0]
-            ofr = _stack_tri_frame(ou[otsel], ow[otsel]) if len(otsel) else None
-            for in_n in names:
-                if in_n == out_n:
-                    continue
-                iu, iw, ih = loc[in_n]
-                t = np.asarray(shapes_tris[in_n], dtype=np.int64).reshape(-1, 3)
-                tsel = t[np.hypot(iu[t].mean(1), iw[t].mean(1)) < NIPPLE_MORPH_STACK_R + 3.0]
-                # an outer vert over an inner triangle
-                if len(tsel):
-                    x, y, z = iu[tsel], iw[tsel], ih[tsel]
-                    fr = _stack_tri_frame(x, y)
-                    for r in rows:
-                        wa, wb, wc, inside = _stack_bary(ou[r], ow[r], x, y, fr)
-                        if not inside.any():
-                            continue
-                        hz = wa * z[:, 0] + wb * z[:, 1] + wc * z[:, 2]
-                        below = inside & (oh[r] - hz >= 0.0) & (oh[r] - hz <= gap)
-                        if not below.any():
-                            continue
-                        # the layer surface nearest under the vert
-                        k = int(np.flatnonzero(below)[np.argmin(np.abs(oh[r] - hz[below]))])
-                        found.setdefault((out_n, in_n, int(r), tuple(tsel[k])),
-                                         ((wa[k], wb[k], wc[k]), nA))
-                # an inner vert under an outer triangle: every corner clears it
-                if ofr is not None:
-                    x, y, z = ou[otsel], ow[otsel], oh[otsel]
-                    irows = np.flatnonzero((np.hypot(iu, iw) < NIPPLE_MORPH_STACK_R)
-                                           & (ih > -1.0) & (ih < 6.0))
-                    for j in irows:
-                        wa, wb, wc, inside = _stack_bary(iu[j], iw[j], x, y, ofr)
-                        if not inside.any():
-                            continue
-                        hz = wa * z[:, 0] + wb * z[:, 1] + wc * z[:, 2]
-                        above = inside & (hz - ih[j] >= 0.0) & (hz - ih[j] <= gap)
-                        for k in np.flatnonzero(above):
-                            for c in otsel[k]:
-                                found.setdefault((out_n, in_n, int(c), (int(j),) * 3),
-                                                 ((1.0, 0.0, 0.0), nA))
-                # an inner EDGE crossing an outer edge: the lifted inner layer
-                # peaks along its edges, and a flat outer face spanning such a
-                # ridge dips below it between the points held above. Both outer
-                # endpoints clear the inner edge where the two edges cross.
-                if len(tsel) and ofr is not None:
-                    ie = np.unique(np.sort(tsel[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), 1), axis=0)
-                    oe = np.unique(np.sort(otsel[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), 1), axis=0)
-                    p0 = np.c_[ou[oe[:, 0]], ow[oe[:, 0]]]
-                    p1 = np.c_[ou[oe[:, 1]], ow[oe[:, 1]]]
-                    r_ = p1 - p0
-                    for c, d in ie:
-                        q0 = np.array([iu[c], iw[c]])
-                        s_ = np.array([iu[d], iw[d]]) - q0
-                        den = r_[:, 0] * s_[1] - r_[:, 1] * s_[0]
-                        ok = np.abs(den) > 1e-12
-                        safe = np.where(ok, den, 1.0)
-                        qp = q0 - p0
-                        t_ = (qp[:, 0] * s_[1] - qp[:, 1] * s_[0]) / safe        # along outer
-                        u_ = (qp[:, 0] * r_[:, 1] - qp[:, 1] * r_[:, 0]) / safe  # along inner
-                        hit = ok & (t_ > 1e-6) & (t_ < 1 - 1e-6) & (u_ > 1e-6) & (u_ < 1 - 1e-6)
-                        for k in np.flatnonzero(hit):
-                            a_, b_ = oe[k]
-                            ho = (1 - t_[k]) * oh[a_] + t_[k] * oh[b_]
-                            hi = (1 - u_[k]) * ih[c] + u_[k] * ih[d]
-                            if ho - hi < 0.0 or ho - hi > gap:
-                                continue
-                            # keyed by the crossing (the outer edge too): one
-                            # outer vert's edges can cross one inner edge at
-                            # several points, and each is a separate floor
-                            for o in (a_, b_):
-                                found.setdefault((out_n, in_n, int(o), (int(c), int(d), int(d)),
-                                                  (int(a_), int(b_))),
-                                                 ((1.0 - u_[k], u_[k], 0.0), nA))
-    if not found:
+            g = _nipple_stack_pair(frames, out_n, in_n, shapes_tris, gap)
+            if g is not None:
+                groups.append(((out_n, in_n), g))
+    if not groups:
         return []
-    groups: dict = {}
-    for key, (bary, nrm) in sorted(found.items()):
-        out_n, in_n, r, corners = key[:4]
-        g = groups.setdefault((out_n, in_n), ([], [], [], []))
-        g[0].append(r); g[1].append(corners); g[2].append(bary); g[3].append(nrm)
-    prep = []
-    for (out_n, in_n), (rows, corners, bary, nrm) in sorted(
-            groups.items(), key=lambda kv: (med[kv[0][0]], kv[0])):
-        prep.append((out_n, np.asarray(rows), in_n, np.asarray(corners),
-                     np.asarray(bary), np.asarray(nrm)))
-    return prep
+    groups.sort(key=lambda kv: (med[kv[0][0]], kv[0]))
+    return [(out_n, rows, in_n, corners, bary, nrm)
+            for (out_n, in_n), (rows, corners, bary, nrm) in groups]
+
+
+def _nipple_stack_pair(frames, out_n, in_n, shapes_tris, gap):
+    """One (outer, inner) pair of `_nipple_morph_stack_prep`: (rows, corners,
+    bary, normals) in key order, or None. #stack-prep-columns"""
+    cols = {k: [] for k in ("r", "c0", "c1", "c2", "hx", "xa", "xb", "b0", "b1", "b2", "f")}
+
+    def put(r, c0, c1, c2, b0, b1, b2, f, hx=0, xa=0, xb=0):
+        n = len(r)
+        for k, v in (("r", r), ("c0", c0), ("c1", c1), ("c2", c2), ("b0", b0), ("b1", b1), ("b2", b2)):
+            cols[k].append(np.broadcast_to(np.asarray(v), (n,)).copy())
+        for k, v in (("hx", hx), ("xa", xa), ("xb", xb), ("f", f)):
+            cols[k].append(np.broadcast_to(np.asarray(v, dtype=np.int64), (n,)).copy())
+
+    ot_all = np.asarray(shapes_tris[out_n], dtype=np.int64).reshape(-1, 3)
+    t_all = np.asarray(shapes_tris[in_n], dtype=np.int64).reshape(-1, 3)
+    for fi, (nA, loc) in enumerate(frames):
+        ou, ow, oh = loc[out_n]
+        rows = np.flatnonzero((np.hypot(ou, ow) < NIPPLE_MORPH_STACK_R)
+                              & (oh > -1.0) & (oh < 6.0))
+        if not len(rows):
+            continue
+        otsel = ot_all[np.hypot(ou[ot_all].mean(1), ow[ot_all].mean(1)) < NIPPLE_MORPH_STACK_R + 3.0]
+        ofr = _stack_tri_frame(ou[otsel], ow[otsel]) if len(otsel) else None
+        iu, iw, ih = loc[in_n]
+        tsel = t_all[np.hypot(iu[t_all].mean(1), iw[t_all].mean(1)) < NIPPLE_MORPH_STACK_R + 3.0]
+        # an outer vert over an inner triangle
+        if len(tsel):
+            x, y, z = iu[tsel], iw[tsel], ih[tsel]
+            fr = _stack_tri_frame(x, y)
+            for r in rows:
+                wa, wb, wc, inside = _stack_bary(ou[r], ow[r], x, y, fr)
+                if not inside.any():
+                    continue
+                hz = wa * z[:, 0] + wb * z[:, 1] + wc * z[:, 2]
+                below = inside & (oh[r] - hz >= 0.0) & (oh[r] - hz <= gap)
+                if not below.any():
+                    continue
+                # the layer surface nearest under the vert
+                k = int(np.flatnonzero(below)[np.argmin(np.abs(oh[r] - hz[below]))])
+                put([int(r)], tsel[k, 0], tsel[k, 1], tsel[k, 2], wa[k], wb[k], wc[k], fi)
+        # an inner vert under an outer triangle: every corner clears it
+        if ofr is not None:
+            x, y, z = ou[otsel], ow[otsel], oh[otsel]
+            irows = np.flatnonzero((np.hypot(iu, iw) < NIPPLE_MORPH_STACK_R)
+                                   & (ih > -1.0) & (ih < 6.0))
+            for j in irows:
+                wa, wb, wc, inside = _stack_bary(iu[j], iw[j], x, y, ofr)
+                if not inside.any():
+                    continue
+                hz = wa * z[:, 0] + wb * z[:, 1] + wc * z[:, 2]
+                above = inside & (hz - ih[j] >= 0.0) & (hz - ih[j] <= gap)
+                if above.any():
+                    cs = otsel[np.flatnonzero(above)].ravel()     # k ascending, corners in order
+                    put(cs, int(j), int(j), int(j), 1.0, 0.0, 0.0, fi)
+        # an inner EDGE crossing an outer edge: the lifted inner layer
+        # peaks along its edges, and a flat outer face spanning such a
+        # ridge dips below it between the points held above. Both outer
+        # endpoints clear the inner edge where the two edges cross.
+        if len(tsel) and ofr is not None:
+            ie = np.unique(np.sort(tsel[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), 1), axis=0)
+            oe = np.unique(np.sort(otsel[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), 1), axis=0)
+            p0 = np.c_[ou[oe[:, 0]], ow[oe[:, 0]]]
+            p1 = np.c_[ou[oe[:, 1]], ow[oe[:, 1]]]
+            r_ = p1 - p0
+            for c, d in ie:
+                q0 = np.array([iu[c], iw[c]])
+                s_ = np.array([iu[d], iw[d]]) - q0
+                den = r_[:, 0] * s_[1] - r_[:, 1] * s_[0]
+                ok = np.abs(den) > 1e-12
+                safe = np.where(ok, den, 1.0)
+                qp = q0 - p0
+                t_ = (qp[:, 0] * s_[1] - qp[:, 1] * s_[0]) / safe        # along outer
+                u_ = (qp[:, 0] * r_[:, 1] - qp[:, 1] * r_[:, 0]) / safe  # along inner
+                hit = ok & (t_ > 1e-6) & (t_ < 1 - 1e-6) & (u_ > 1e-6) & (u_ < 1 - 1e-6)
+                ks = np.flatnonzero(hit)
+                if not len(ks):
+                    continue
+                a_, b_ = oe[ks, 0], oe[ks, 1]
+                ho = (1 - t_[ks]) * oh[a_] + t_[ks] * oh[b_]
+                hi = (1 - u_[ks]) * ih[c] + u_[ks] * ih[d]
+                keep = (ho - hi >= 0.0) & (ho - hi <= gap)
+                if not keep.any():
+                    continue
+                ks, a_, b_ = ks[keep], a_[keep], b_[keep]
+                # keyed by the crossing (the outer edge too): one outer vert's
+                # edges can cross one inner edge at several points, and each is a
+                # separate floor. Both endpoints of each crossing, in that order.
+                o = np.stack([a_, b_], 1).ravel()
+                ab_a, ab_b = np.repeat(a_, 2), np.repeat(b_, 2)
+                uu = np.repeat(u_[ks], 2)
+                put(o, int(c), int(d), int(d), 1.0 - uu, uu, 0.0, fi, hx=1, xa=ab_a, xb=ab_b)
+    if not cols["r"]:
+        return None
+    C = {k: np.concatenate(v) for k, v in cols.items()}
+    seq = np.arange(len(C["r"]))
+    order = np.lexsort((seq, C["xb"], C["xa"], C["hx"], C["c2"], C["c1"], C["c0"], C["r"]))
+    key = np.stack([C[k][order] for k in ("r", "c0", "c1", "c2", "hx", "xa", "xb")], 1)
+    first = np.ones(len(order), bool)
+    first[1:] = (key[1:] != key[:-1]).any(1)
+    sel = order[first]
+    nA_all = np.asarray([nA for nA, _loc in frames])
+    return (C["r"][sel].astype(np.int64),
+            np.stack([C["c0"][sel], C["c1"][sel], C["c2"][sel]], 1).astype(np.int64),
+            np.stack([C["b0"][sel], C["b1"][sel], C["b2"][sel]], 1).astype(np.float64),
+            nA_all[C["f"][sel]])
 
 
 def _nipple_morph_stack_spread_prep(shapes_av, prep, radius=None):

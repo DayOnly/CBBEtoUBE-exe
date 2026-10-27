@@ -15,6 +15,10 @@ new code (15 files).
   pair in the output; it now sums each bone's weights with numpy, giving the same counts (297.9 s -> 121.8 s over a
   4036-file output).
 - First-person pieces no longer render the body zap's views: their result was always replaced by "keep the arms".
+- The nipple layer-stack step of the morph file (`_nipple_morph_stack_prep`) kept every layer-over-layer floor as a
+  Python dictionary entry; a many-layer fur piece made 14.6 million and held 11.3 GB. The floors are now numpy
+  columns built one layer pair at a time, with the same first-entry-wins and the same order: 3.1 GB, and the piece
+  converts at 4.6 GB instead of 11.7 GB with identical files.
 - New: every run writes `CBBEtoUBE_last_run_units.tsv` beside the run log -- one row per piece pair with its start,
   end, CPU seconds, peak memory and work counts (ray pairs, zap views, NIF saves, rebuilds) -- and the run log says
   how busy the workers were, how long the pool sat partly idle at the end, and which pieces were slowest.
