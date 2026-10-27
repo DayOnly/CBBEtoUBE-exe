@@ -11,6 +11,10 @@ new code (15 files).
   them all on the efficiency cores: 15 workers shared 8 cores for the whole run, and half the machine sat idle.
   The workers now opt out of Windows power throttling, so they run on every core (7.5 -> 14.9 cores in use, measured
   on the live pool).
+- Every ray cast now looks for triangles only around the stretch of ray it can actually hit, instead of in a ball
+  around the ray's start: the clipping measure, minimum push, limb-motion and gap-aware follow, the layer and
+  clearance measures, and the zap's cloth lookups. Same hits and the same hit triangle on every ray (a ray's
+  candidates keep their order, so ties break the same way); 517 M -> 178 M candidate pairs over six sampled pieces.
 - The ray cast behind the bust push's opening-edge check (`_opening_rim_edges`) built the candidate pairs of every
   ray at once. On a dense piece that held 28.8 GB; it now works in chunks of rays like the clipping measure already
   did (peak 1.77 GB on the same piece), and searches around the middle of each ray's short segment instead of its

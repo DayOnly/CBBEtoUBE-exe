@@ -1241,7 +1241,7 @@ def _hold_repair_surface(b4, out, tris, B, BN, rounds: int = 3):
         new = idx[cov1 & ~cov0]
         if not len(new):
             break
-        ri, ti = tst._pairs(B[new])
+        ri, ti = tst._pairs_segment(B[new], -BN[new])   # #cast-segment-ball
         _t, who = tst._cast(B[new], -BN[new], ri, ti, len(new), want_tri=True)
         c = np.unique(T[who[who >= 0]].ravel())
         c = c[is_moved[c]]

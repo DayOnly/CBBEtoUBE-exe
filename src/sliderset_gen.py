@@ -1214,7 +1214,7 @@ def _layer_lockstep_prep(shapes_av, shapes_tris, body_verts, reach=None):
         for m, tst in testers.items():
             if m == n:
                 continue
-            ri, ti = tst._pairs(O)
+            ri, ti = tst._pairs_segment(O, D)   # #cast-segment-ball
             t, who = tst._cast(O, D, ri, ti, len(O), want_tri=True)
             better = np.isfinite(t) & (t < best_t)
             best_t[better] = t[better]; best_s[better] = names.index(m); best_tri[better] = who[better]

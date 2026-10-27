@@ -513,7 +513,7 @@ def _envelope_kept_nipples(tf, loaded, kept, collider_names) -> int:
             # the vertex envelope's reach, and its flat interior is what the nipple comes through)
             tst = _fm().ClipTester(av, T, tmax=6.0)
             O = BV[sk] - 0.5 * bn[sk]
-            ri, ti = tst._pairs(O)
+            ri, ti = tst._pairs_segment(O, bn[sk])   # #cast-segment-ball
             t, who = tst._cast(O, bn[sk], ri, ti, len(O), want_tri=True)
             hit = np.flatnonzero(np.isfinite(t))
             if not len(hit):

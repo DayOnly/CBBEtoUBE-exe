@@ -326,7 +326,10 @@ class _ClipTester:
         and the hit triangle's centroid within its own radius of the hit. Searching around the midpoint at half the
         reach instead of around O at the full reach admits ~1/6 of the pairs. `_pairs`' own test (centroid within
         tmax + radius of O) is then applied as well, so the result is a SUBSET of `_pairs` that keeps every pair able
-        to hit -- the hits, and so the nearest hit per ray, are the same."""
+        to hit -- the hits, and so the nearest hit per ray, are the same.
+
+        The slack is 1e-6 plus 1e-5 of the triangle's radius: the hit test accepts barycentrics down to -1e-6, so a
+        hit can sit just outside its triangle's radius ball, by at most a few millionths of that radius."""
         if not len(O) or not len(self.gT):
             return np.empty(0, np.int64), np.empty(0, np.int64)
         half = 0.5 * self.tmax * np.linalg.norm(D, axis=1)
@@ -336,12 +339,12 @@ class _ClipTester:
         ri, ti = [], []
         for sel, ktree, reach in self.tiers():
             rmax = reach - self.tmax                  # this tier's largest triangle radius
-            m = mtree.sparse_distance_matrix(ktree, hmax + rmax + 1e-6, output_type="ndarray")
+            m = mtree.sparse_distance_matrix(ktree, hmax + rmax * (1 + 1e-5) + 1e-6, output_type="ndarray")
             if not len(m):
                 continue
             a = m["i"].astype(np.int64, copy=False)
             b = sel[m["j"].astype(np.int64, copy=False)]
-            keep = m["v"] <= half[a] + self.trad[b] + 1e-6
+            keep = m["v"] <= half[a] + self.trad[b] * (1 + 1e-5) + 1e-6
             a, b = a[keep], b[keep]
             w = self.cent[b] - O[a]
             keep = np.sqrt(np.einsum("ij,ij->i", w, w)) <= self.tmax + self.trad[b]
@@ -456,18 +459,16 @@ class _ClipTester:
                 ts.append(_t)
             return np.concatenate(masks), np.concatenate(ts)
         O, N = np.asarray(bV)[idx], np.asarray(bN)[idx]
-        ray_i, tri_i = self._pairs(O)
-        o = self._cast(O, N, ray_i, tri_i, len(O))
+        # Each direction searches around its own segment (#cast-segment-ball). Exact for the hit TRIANGLE too: a
+        # ray's candidates come out of the triangle tree in that tree's own order whichever other rays are queried
+        # with it, so the last-tied-hit-wins choice in `_cast` sees them in the same order as the old shared set.
+        o = self._cast(O, N, *self._pairs_segment(O, N), len(O))
         i_t = np.full(len(O), np.inf)
         who = np.full(len(O), -1, np.int64)
         esc = ~np.isfinite(o)
-        if esc.any() and len(ray_i):
-            sel = esc[ray_i]
-            eidx = np.flatnonzero(esc)
-            remap = np.full(len(O), -1, np.int64)
-            remap[eidx] = np.arange(len(eidx))
+        if esc.any():
             i_t[esc], who[esc] = self._cast(
-                O[esc], -N[esc], remap[ray_i[sel]], tri_i[sel], len(eidx),
+                O[esc], -N[esc], *self._pairs_segment(O[esc], -N[esc]), int(esc.sum()),
                 want_tri=True)
         same = np.ones(len(idx), bool)
         if oriented:
@@ -850,7 +851,7 @@ def minimum_push(garment_verts, garment_tris, garment_normals,
             # #push-tri: lift the TRIANGLE under the skin point -- all three corners by what it lacks, so the surface
             # point itself clears. The nearest verts alone raise thin tents that pass this very test (the outward ray
             # now meets a tent) while the surface between them stays inside the skin.
-            _ri, _ti = tester._pairs(bV[bad])
+            _ri, _ti = tester._pairs_segment(bV[bad], -bN[bad])   # #cast-segment-ball
             _t, _who = tester._cast(bV[bad], -bN[bad], _ri, _ti, len(bad), want_tri=True)
             _ok = _who >= 0
             if _ok.any():
@@ -1425,7 +1426,7 @@ def cast_chunked(tester, O, N, chunk: int = 0, finite_only: bool = True):
     out = []
     for i in range(0, len(O), n):
         o, d = O[i:i + n], N[i:i + n]
-        t = tester._cast(o, d, *tester._pairs(o), len(o))
+        t = tester._cast(o, d, *tester._pairs_segment(o, d), len(o))  # #cast-segment-ball
         out.append(t[np.isfinite(t)] if finite_only else t)
     return np.concatenate(out) if out else np.empty(0)
 

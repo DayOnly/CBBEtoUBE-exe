@@ -5136,7 +5136,7 @@ def _gap_aware_follow(dst_path, biped_slots: int = 0) -> int:
             if len(bsel):
                 tester = fit_metrics._ClipTester(V, T, tmax=loose)
                 O, D = bV[bsel], bN[bsel]
-                ri, ti = tester._pairs(O)
+                ri, ti = tester._pairs_segment(O, D)   # #cast-segment-ball
                 tt, who = tester._cast(O, D, ri, ti, len(O), want_tri=True)
                 hit = np.isfinite(tt) & (who >= 0)
                 if hit.any():
