@@ -258,6 +258,8 @@ def needed(B, BT, Gvs, Gts, dirs, acc=None):
     vn = np.ascontiguousarray(vn / (np.linalg.norm(vn, axis=1, keepdims=True) + 1e-12) * front_sign, np.float32)
     if acc is None:
         acc = np.zeros(len(B), np.uint8)
+    from .work_counts import WORK
+    WORK["zap_views"] += len(dirs)         # #unit-timing
     rc = dll.zr_needed(B, len(B), BT, len(BT), GV, len(GV), GT, len(GT), mats, off, len(dirs), nx,
                        np.float32(SELFTOL / px), acc, int(front_sign), vn.ctypes.data,
                        np.ascontiguousarray(dirs, np.float32), np.float32(np.cos(np.radians(float(ZAP_VIEW_ANGLE)))))
@@ -1033,6 +1035,11 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
         if apexes is None:
             apexes = _nipple_apexes(body, full) if ZAP_NIPPLE_FLAT else []
             nip_local = _nipple_local_names(tri.get(BODY_NAME), np.asarray(Vref, np.float64), apexes)
+        if first_person:
+            # A first-person piece keeps the arms and drops the rest whatever the views see (below), so the
+            # cloth set and the per-pose renders are never consulted. #zap-fp-no-render
+            gverts.update({s.name: np.asarray(s.verts, np.float64) for s in nf.shapes if s.name not in gverts})
+            continue
         try:
             coll = set(nc._hdt_collider_shape_names(p, nif=nf, stem_scan=nc._dst_xml_stem_scan()))
         except Exception:

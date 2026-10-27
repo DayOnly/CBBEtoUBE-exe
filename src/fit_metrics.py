@@ -62,6 +62,7 @@ import os
 
 from .envflags import flag as _flag, knob as _knob
 from .atomic_io import append_whole
+from .work_counts import WORK
 from pathlib import Path
 
 import numpy as np
@@ -293,6 +294,7 @@ class _ClipTester:
                 ti.append(b[keep])
         if not ri:
             return np.empty(0, np.int64), np.empty(0, np.int64)
+        WORK["ray_pairs"] += sum(len(x) for x in ri)
         return np.concatenate(ri), np.concatenate(ti)
 
     def cast(self, O, D, tmin: float = 1e-4):
@@ -304,11 +306,52 @@ class _ClipTester:
         BODY_EPS, which steps over the origin's own triangles. An inward garment
         hit beyond the returned wall is on the far side of the body, not a
         poke-through. `clipping` itself stays gate-free (AUDIT A8; see
-        tests/test_push_region_stays_thick.py) -- a caller applies the wall."""
+        tests/test_push_region_stays_thick.py) -- a caller applies the wall.
+
+        CHUNKED over rays like `clipping`: each ray's nearest hit depends on that
+        ray alone. Unchunked, the candidate pairs of every ray were built at once;
+        on a dense shape (`_opening_rim_edges`, reach 3u) that held 28.8 GB."""
         O = np.asarray(O, np.float64)
         D = np.asarray(D, np.float64)
-        ray_i, tri_i = self._pairs(O)
+        if RAY_CHUNK > 0 and len(O) > RAY_CHUNK:
+            return np.concatenate([self.cast(O[i:i + RAY_CHUNK], D[i:i + RAY_CHUNK], tmin)
+                                   for i in range(0, len(O), RAY_CHUNK)])
+        ray_i, tri_i = self._pairs_segment(O, D)
         return self._cast(O, D, ray_i, tri_i, len(O), tmin=tmin)
+
+    def _pairs_segment(self, O, D):
+        """`_pairs` for rays that stop at tmax: the candidates of `_pairs` that can still be hit. #cast-segment-ball
+
+        A hit at 0 < t < tmax lies on the segment O..O+tmax*D, so it is within tmax*|D|/2 of the segment's MIDPOINT,
+        and the hit triangle's centroid within its own radius of the hit. Searching around the midpoint at half the
+        reach instead of around O at the full reach admits ~1/6 of the pairs. `_pairs`' own test (centroid within
+        tmax + radius of O) is then applied as well, so the result is a SUBSET of `_pairs` that keeps every pair able
+        to hit -- the hits, and so the nearest hit per ray, are the same."""
+        if not len(O) or not len(self.gT):
+            return np.empty(0, np.int64), np.empty(0, np.int64)
+        half = 0.5 * self.tmax * np.linalg.norm(D, axis=1)
+        M = O + 0.5 * self.tmax * D
+        mtree = cKDTree(M)
+        hmax = float(half.max())
+        ri, ti = [], []
+        for sel, ktree, reach in self.tiers():
+            rmax = reach - self.tmax                  # this tier's largest triangle radius
+            m = mtree.sparse_distance_matrix(ktree, hmax + rmax + 1e-6, output_type="ndarray")
+            if not len(m):
+                continue
+            a = m["i"].astype(np.int64, copy=False)
+            b = sel[m["j"].astype(np.int64, copy=False)]
+            keep = m["v"] <= half[a] + self.trad[b] + 1e-6
+            a, b = a[keep], b[keep]
+            w = self.cent[b] - O[a]
+            keep = np.sqrt(np.einsum("ij,ij->i", w, w)) <= self.tmax + self.trad[b]
+            if keep.any():
+                ri.append(a[keep])
+                ti.append(b[keep])
+        if not ri:
+            return np.empty(0, np.int64), np.empty(0, np.int64)
+        WORK["ray_pairs"] += sum(len(x) for x in ri)
+        return np.concatenate(ri), np.concatenate(ti)
 
     def _cast(self, O, D, ray_i, tri_i, n_rays, want_tri=False, tmin=1e-4):
         out = np.full(n_rays, np.inf)

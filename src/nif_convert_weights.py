@@ -5695,6 +5695,19 @@ def _sync_weight_partner_jiggle(path0, path1) -> int:
             nif_io.release_nif(_f)
 
 
+def _bone_column(prs, n: int) -> np.ndarray:
+    """One bone's weight per vertex as `_rows` holds it: in-range, positive entries summed in list order
+    (np.add.at is unbuffered and in order, so a repeated vertex sums exactly as the dict did). #tail-fold-columns"""
+    a = np.zeros(n)
+    if prs is None or not len(prs):
+        return a
+    pl = np.asarray(prs.tolist() if hasattr(prs, "tolist") else prs, dtype=np.float64).reshape(-1, 2)
+    i, w = pl[:, 0].astype(np.int64), pl[:, 1]
+    k = (i >= 0) & (i < n) & (w > 0)
+    np.add.at(a, i[k], w[k])
+    return a
+
+
 def _sync_weight_partner_jiggle_loaded(path0, path1, nf) -> int:
     """The pass proper, on an OPEN pair. The caller owns `nf` and releases it
     after the return; nothing here may keep a shape past that."""
@@ -5722,17 +5735,24 @@ def _sync_weight_partner_jiggle_loaded(path0, path1, nf) -> int:
         try:
             if len(s0.verts) != len(s1.verts) or not len(s0.verts):
                 continue
-            r0, r1 = _rows(s0), _rows(s1)
+            n = len(s0.verts)
+            bw0, bw1 = (s0.bone_weights or {}), (s1.bone_weights or {})
+            # Each bone's column of `_rows`, summed in the same order: only the
+            # scale bones are counted, so the per-vertex dicts are built for a
+            # shape that gets a graft, never for detection. #tail-fold-columns
+            cols = {bn: (_bone_column(bw0.get(bn), n), _bone_column(bw1.get(bn), n))
+                    for bn in {b for b in list(bw0) + list(bw1) if _is_scale_bone(b)}}
         except Exception as _re:
             _note_pass_failure("_sync_weight_partner_jiggle/rows", _re)
             continue
         cand = {b for b in (list(s0.bone_names or []) + list(s1.bone_names or []))
                 if _is_scale_bone(b)}
+        zero = np.zeros(n)
         for bn in sorted(cand):
-            c0 = sum(1 for r in r0 if r.get(bn, 0.0) > _nc()._WRITE_MIN)
-            c1 = sum(1 for r in r1 if r.get(bn, 0.0) > _nc()._WRITE_MIN)
-            p0 = max((r.get(bn, 0.0) for r in r0), default=0.0)
-            p1 = max((r.get(bn, 0.0) for r in r1), default=0.0)
+            a0, a1 = cols.get(bn, (zero, zero))
+            c0 = int((a0 > _nc()._WRITE_MIN).sum())
+            c1 = int((a1 > _nc()._WRITE_MIN).sum())
+            p0, p1 = float(a0.max()), float(a1.max())
             # Same rule as the detector: substantially present on one side,
             # effectively absent on the other, and actually MOVING the mesh.
             if (c0 >= _nc()._WP_JIGGLE_PRESENT_MIN and c1 <= _nc()._WP_JIGGLE_ABSENT_MAX

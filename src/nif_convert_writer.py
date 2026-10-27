@@ -2830,6 +2830,8 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
     shader, textures, alpha, partitions, Hidden flags, and the BODYTRI /
     root-HDT extra-data. Returns True if the NIF was rewritten.
     """
+    from .work_counts import WORK
+    WORK["nif_rebuilds"] += 1              # #unit-timing
     try:
         pyn = _nc()._pynifly()
         # Re-author from an already-open NIF when the caller passes one (the fitted

@@ -289,6 +289,7 @@ class _UnitResults(list):
     them (`output`). Still a list, so every caller that iterates results is
     unchanged. #worker-output"""
     output = ""
+    timing = None             # #unit-timing: set by `_run_unit`
 
 
 def _captured(call):
@@ -341,9 +342,18 @@ def _run_unit(fn, unit: "list[tuple]") -> list:
         if fn is _nif_convert_worker:
             _prune_zapped_morphs(vals)
         return vals
+    from .work_counts import WORK
+    WORK.clear()
+    t0, c0 = time.time(), time.process_time()
     values, text = _captured(_go)
     results = _UnitResults(values)
     results.output = text
+    # #unit-timing: what this unit cost, for the run's unit table. Epoch seconds, so units from
+    # different workers share one timeline; the peak is this worker's lifetime peak commit as the
+    # unit ended, so a unit that raised it shows.
+    results.timing = {"start": t0, "end": time.time(), "cpu": time.process_time() - c0,
+                      "pid": os.getpid(), "peak_mb": _process_private_mb(peak=True),
+                      "work": dict(WORK)}
     return results
 
 
@@ -773,6 +783,8 @@ class _GlobalNifSchedule:
         self.memory_retries = 0
         self.crash_retries = 0
         self.peak_heavy = 0          # most heavy units ever in flight at once
+        self.timed: list = []        # #unit-timing: (unit, timing, statuses) as each unit lands
+        self.t_start = time.time()
 
     def _heavy(self, u) -> bool:
         return u.peak_gb > self.budget_gb
@@ -827,6 +839,7 @@ class _GlobalNifSchedule:
         pending = sorted(self.units, key=lambda u: (-u.mb, u.seq))
         in_flight: dict = {}
         retry: list = []
+        self.t_start = time.time()
         broken = False
         self._advance()                   # sources with nothing to convert
         while pending or in_flight or retry:
@@ -874,6 +887,9 @@ class _GlobalNifSchedule:
                     broken = True
                     continue
                 _echo_worker_output(getattr(results, "output", ""), results)
+                if getattr(results, "timing", None):
+                    self.timed.append((u, results.timing,
+                                       [str(getattr(r, "status", "")) for r in results]))
                 if any(_ran_out_of_memory(r) for r in results):
                     self.memory_retries += 1
                     print(f"  out of memory converting "
@@ -886,6 +902,63 @@ class _GlobalNifSchedule:
                     self.deliver(u.source, r)
                 self.left[u.source] -= 1
             self._advance()
+
+
+_UNIT_WORK_KEYS = ("ray_pairs", "zap_views", "nif_saves", "nif_rebuilds")
+
+
+def _unit_table(timed, workers: int, t_start: float, t_end: float, path) -> "list[str]":
+    """#unit-timing: write one row per unit of the NIF phase to `path` (TSV) and return the run-log summary.
+
+    Every run is then its own profile: which units set the length of the phase, how much of the pool sat idle
+    at the end, and what the units cost in work that does not drift with machine load (`work_counts`)."""
+    from .atomic_io import atomic_write_bytes
+    if not timed:
+        return []
+    rows = []
+    for u, tm, statuses in timed:
+        mode = next((m for m in ("body-swap", "copy") if any(m in s for s in statuses)),
+                    (statuses[0].split(" ")[0] if statuses else "?"))
+        dst = Path(str(u.items[0][1])).as_posix()
+        name = dst.split("/meshes/", 1)[-1]
+        rows.append({"unit": name, "mode": mode, "items": len(u.items), "src_mb": round(u.mb, 2),
+                     "start_s": tm["start"] - t_start, "end_s": tm["end"] - t_start,
+                     "wall_s": tm["end"] - tm["start"], "cpu_s": tm["cpu"], "pid": tm["pid"],
+                     "peak_mb": tm.get("peak_mb") or 0.0,
+                     **{k: int((tm.get("work") or {}).get(k, 0)) for k in _UNIT_WORK_KEYS}})
+    cols = list(rows[0])
+    text = "\t".join(cols) + "\n" + "".join(
+        "\t".join(f"{r[c]:.1f}" if isinstance(r[c], float) else str(r[c]) for c in cols) + "\n"
+        for r in sorted(rows, key=lambda r: r["start_s"]))
+    atomic_write_bytes(Path(path), text.encode("utf-8"))
+
+    span = max(t_end - t_start, 1e-9)
+    busy = sum(r["wall_s"] for r in rows)
+    # The last moment every worker had a unit: after it the pool only drained.
+    ev = sorted([(r["start_s"], 1) for r in rows] + [(r["end_s"], -1) for r in rows])
+    run, last_full = 0, 0.0
+    for t, d in ev:
+        run += d
+        if d > 0 and run >= workers:
+            last_full = t
+    tail_busy = sum(max(0.0, r["end_s"] - max(r["start_s"], last_full)) for r in rows)
+    idle_tail = workers * (span - last_full) - tail_busy
+    out = [f"\n  unit table: {len(rows)} unit(s) on {workers} worker(s); workers busy {100 * busy / (workers * span):.0f}% "
+           f"of the phase; the pool was last full at {last_full:.0f}s of {span:.0f}s, and the {span - last_full:.0f}s "
+           f"after it left {idle_tail / 60:.0f} worker-minute(s) idle",
+           f"    full table (one row per unit, with work counts): {path}"]
+    for mode in ("copy", "body-swap"):
+        sel = [r for r in rows if r["mode"] == mode]
+        if sel:
+            w = sum(r["wall_s"] for r in sel)
+            out.append(f"    {mode:9}: {len(sel)} unit(s), {w / 3600:.1f} worker-hour(s), "
+                       f"mean {w / len(sel):.1f}s, {100 * w / max(busy, 1e-9):.0f}% of busy time")
+    out.append("    slowest units (wall s / CPU s / peak GB / ray pairs / zap views / saves / rebuilds):")
+    for r in sorted(rows, key=lambda r: -r["wall_s"])[:8]:
+        out.append(f"      {r['wall_s']:7.0f} {r['cpu_s']:7.0f} {r['peak_mb'] / 1024:5.1f} "
+                   f"{r['ray_pairs'] / 1e6:8.1f}M {r['zap_views']:6d} {r['nif_saves']:4d} "
+                   f"{r['nif_rebuilds']:3d}  {r['unit']} ({r['mode']}, ended {r['end_s']:.0f}s)")
+    return out
 
 
 def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
@@ -1062,6 +1135,12 @@ def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
               f"once: up to {sched.peak_heavy}; re-run alone: "
               f"{sched.memory_retries} after running out of memory, "
               f"{sched.crash_retries} after a worker died ===")
+        try:
+            for _ln in _unit_table(sched.timed, workers, sched.t_start, time.time(),
+                                   _failures_file_path().with_name("CBBEtoUBE_last_run_units.tsv")):
+                print(_ln)
+        except Exception as _ue:        # a report, never a reason to stop the run
+            print(f"  (unit table not written: {plain_error(_ue)})")
 
 
 def _incremental_code_mtime() -> float:
@@ -10574,10 +10653,11 @@ COMMIT_PLAN_FRACTION = 0.9
 
 
 
-def _process_private_mb() -> "float | None":
+def _process_private_mb(peak: bool = False) -> "float | None":
     """This process's commit charge (PrivateUsage) in MB; None off Windows or
     if the probe fails. The figure the end-of-run line and PARENT_COMMIT_GB
-    talk about, measured the way the memory notes measure it."""
+    talk about, measured the way the memory notes measure it. `peak`: the
+    lifetime peak commit (PeakPagefileUsage) instead. #unit-timing"""
     try:
         import ctypes
         from ctypes import wintypes
@@ -10603,7 +10683,7 @@ def _process_private_mb() -> "float | None":
         c.cb = ctypes.sizeof(_PMC)
         if not fn(k32.GetCurrentProcess(), ctypes.byref(c), c.cb):
             return None
-        return c.PrivateUsage / 2**20
+        return (c.PeakPagefileUsage if peak else c.PrivateUsage) / 2**20
     except Exception:
         return None
 
