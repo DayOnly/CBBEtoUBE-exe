@@ -37,6 +37,8 @@ new code (15 files).
 - New: every run writes `CBBEtoUBE_last_run_units.tsv` beside the run log -- one row per piece pair with its start,
   end, CPU seconds, peak memory and work counts (ray pairs, zap views, NIF saves, rebuilds) -- and the run log says
   how busy the workers were, how long the pool sat partly idle at the end, and which pieces were slowest.
+  The peak memory is each piece's own: exact where the piece set its worker's highest point so far ("new-high"),
+  otherwise the highest of readings taken every 50 ms ("sampled"); the run log also lists the five heaviest pieces.
 
 ### Fixed — the thin and heavy files of one armour no longer end up with different skeleton nodes (#33)
 

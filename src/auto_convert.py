@@ -331,6 +331,39 @@ def _prune_zapped_morphs(results) -> None:
             nif_convert._note_pass_failure("zap-prune-morphs", e, dst)
 
 
+class _UnitPeak:
+    """#unit-peak: the most commit (PrivateUsage) one unit held, in MB, and how it was found.
+
+    Windows keeps only a process's LIFETIME peak and cannot reset it, so a unit after a heavy one used to show that
+    one's peak. If the lifetime peak rose during the unit, the new peak is this unit's, exactly ("new-high");
+    otherwise a thread reads the current commit every `PERIOD` s and the highest reading stands ("sampled" -- it
+    can miss a spike shorter than the period). Read-only: never touches what the unit computes."""
+    PERIOD = 0.05
+
+    def __init__(self):
+        import threading
+        self.before = _process_private_mb(peak=True)
+        self.top = _process_private_mb() or 0.0
+        self._stop = threading.Event()
+        self._t = threading.Thread(target=self._poll, name="unit-peak", daemon=True)
+        self._t.start()
+
+    def _poll(self):
+        while not self._stop.wait(self.PERIOD):
+            mb = _process_private_mb()
+            if mb is not None and mb > self.top:
+                self.top = mb
+
+    def finish(self) -> "tuple[float | None, str]":
+        self._stop.set()
+        self._t.join()
+        after = _process_private_mb(peak=True)
+        if after is not None and self.before is not None and after > self.before:
+            return after, "new-high"
+        mb = _process_private_mb()
+        return (max(self.top, mb or 0.0) or None), "sampled"
+
+
 def _run_unit(fn, unit: "list[tuple]") -> list:
     """One worker, one unit, in order: one result per item. Module-level so the
     spawn-mode pool can pickle it. #pair-unit-dispatch
@@ -345,14 +378,17 @@ def _run_unit(fn, unit: "list[tuple]") -> list:
     from .work_counts import WORK
     WORK.clear()
     t0, c0 = time.time(), time.process_time()
-    values, text = _captured(_go)
+    peak = _UnitPeak()
+    try:
+        values, text = _captured(_go)
+    finally:
+        peak_mb, peak_how = peak.finish()
     results = _UnitResults(values)
     results.output = text
     # #unit-timing: what this unit cost, for the run's unit table. Epoch seconds, so units from
-    # different workers share one timeline; the peak is this worker's lifetime peak commit as the
-    # unit ended, so a unit that raised it shows.
+    # different workers share one timeline; the peak is this unit's own (#unit-peak).
     results.timing = {"start": t0, "end": time.time(), "cpu": time.process_time() - c0,
-                      "pid": os.getpid(), "peak_mb": _process_private_mb(peak=True),
+                      "pid": os.getpid(), "peak_mb": peak_mb, "peak_how": peak_how,
                       "work": dict(WORK)}
     return results
 
@@ -931,7 +967,7 @@ def _unit_table(timed, workers: int, t_start: float, t_end: float, path) -> "lis
         rows.append({"unit": name, "mode": mode, "items": len(u.items), "src_mb": round(u.mb, 2),
                      "start_s": tm["start"] - t_start, "end_s": tm["end"] - t_start,
                      "wall_s": tm["end"] - tm["start"], "cpu_s": tm["cpu"], "pid": tm["pid"],
-                     "peak_mb": tm.get("peak_mb") or 0.0,
+                     "peak_mb": tm.get("peak_mb") or 0.0, "peak_how": tm.get("peak_how") or "?",
                      **{k: int((tm.get("work") or {}).get(k, 0)) for k in _UNIT_WORK_KEYS},
                      "pairs_by": "; ".join(f"{k}={v / 1e6:.1f}M" for k, v in
                                            sorted(att.items(), key=lambda kv: -kv[1])[:3])})
@@ -967,6 +1003,9 @@ def _unit_table(timed, workers: int, t_start: float, t_end: float, path) -> "lis
         out.append(f"      {r['wall_s']:7.0f} {r['cpu_s']:7.0f} {r['peak_mb'] / 1024:5.1f} "
                    f"{r['ray_pairs'] / 1e6:8.1f}M {r['zap_views']:6d} {r['nif_saves']:4d} "
                    f"{r['nif_rebuilds']:3d}  {r['unit']} ({r['mode']}, ended {r['end_s']:.0f}s)")
+    out.append("    heaviest units (peak GB, how it was found / wall s):")
+    for r in sorted(rows, key=lambda r: -r["peak_mb"])[:5]:
+        out.append(f"      {r['peak_mb'] / 1024:5.1f} {r['peak_how']:8} {r['wall_s']:7.0f}  {r['unit']} ({r['mode']})")
     tot = sum(by_pass.values())
     if tot:
         out.append(f"    ray pairs by the pass that asked ({tot / 1e9:.1f} G in all):")
