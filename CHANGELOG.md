@@ -7,6 +7,10 @@
 Output is unchanged: byte-identical on 27 sampled pieces (88 files) and on a batch of one mod run with the old and
 new code (15 files).
 
+- On CPUs with performance and efficiency cores, Windows treated the conversion workers as background work and ran
+  them all on the efficiency cores: 15 workers shared 8 cores for the whole run, and half the machine sat idle.
+  The workers now opt out of Windows power throttling, so they run on every core (7.5 -> 14.9 cores in use, measured
+  on the live pool).
 - The ray cast behind the bust push's opening-edge check (`_opening_rim_edges`) built the candidate pairs of every
   ray at once. On a dense piece that held 28.8 GB; it now works in chunks of rays like the clipping measure already
   did (peak 1.77 GB on the same piece), and searches around the middle of each ray's short segment instead of its

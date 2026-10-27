@@ -70,6 +70,48 @@ def tie_children_to_this_process() -> bool:
     return _STATE
 
 
+def run_at_full_speed() -> bool:
+    """Opt this process out of Windows power throttling (EcoQoS). #no-ecoqos
+
+    MEASURED 2026-10-27 on an i9-12900K (8 performance + 8 efficiency cores):
+    Windows judged the windowless pool workers to be background work and ran all
+    15 of them on the 8 efficiency cores alone -- CPUs 16-23 pinned at 100%, the
+    16 performance threads near idle, the pool getting 7.5 cores from the first
+    unit of the NIF phase to the last (CPU/wall 0.53 in two full runs, with 9 GB
+    of RAM still free, so not paging). Clearing EXECUTION_SPEED throttling on
+    the live workers took the same pool to 14.9 cores, spread over every CPU.
+
+    Scheduling only: which core runs a worker never changes what it computes.
+    Called in the conversion process and as every pool worker's initializer
+    (the worker is its own process, so the parent's setting does not carry).
+    Never raises; False where the call does not exist (before Windows 10 1709,
+    or not Windows)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _PowerThrottlingState(ctypes.Structure):
+            _fields_ = [("Version", wintypes.ULONG),
+                        ("ControlMask", wintypes.ULONG),
+                        ("StateMask", wintypes.ULONG)]
+
+        process_power_throttling = 4                  # PROCESS_INFORMATION_CLASS
+        power_throttling_execution_speed = 0x1
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.SetProcessInformation.restype = wintypes.BOOL
+        k32.SetProcessInformation.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                              ctypes.c_void_p, wintypes.DWORD]
+        # Control bit set, state bit clear = "never throttle", not "let Windows decide".
+        st = _PowerThrottlingState(1, power_throttling_execution_speed, 0)
+        return bool(k32.SetProcessInformation(k32.GetCurrentProcess(), process_power_throttling,
+                                              ctypes.byref(st), ctypes.sizeof(st)))
+    except Exception:
+        return False
+
+
 def _create_kill_on_close_job_and_join():
     """Create the job, set kill-on-close, and assign the current process to it.
     Returns the job handle; raises OSError on any refusal."""

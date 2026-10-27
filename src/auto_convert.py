@@ -412,7 +412,9 @@ class _NifPool:
         # rebuilt after a crash included -- is born inside the job and dies
         # with this process however it ends. #workers-die-with-parent
         child_lifetime.tie_children_to_this_process()
-        return ProcessPoolExecutor(max_workers=self.max_workers)
+        child_lifetime.run_at_full_speed()   # #no-ecoqos
+        return ProcessPoolExecutor(max_workers=self.max_workers,
+                                   initializer=child_lifetime.run_at_full_speed)
 
     def _ensure(self):
         if self.pool is None:
