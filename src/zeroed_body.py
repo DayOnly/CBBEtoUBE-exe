@@ -209,13 +209,63 @@ def _may_have_dir(base: Path, head: str) -> bool:
         return True     # cannot tell: the plain probe decides
 
 
+def _listing(d: Path) -> "dict | None":
+    """#zeroed-probe-listing: {UPPER-CASED name: (is a dir, is a file)} of folder `d`, read once per `probe_memo` scope, or None
+    when the listing cannot stand in for `stat`. Inside a scope the folders are already taken as unchanging (see
+    #zeroed-probe-memo); a stat per path component per mod folder was still 1.15M stats, ~56 s of the preamble.
+
+    None (the caller stats as before) when: no scope is open, the folder cannot be listed, or any name in it is
+    not plain ASCII or differs from another only by case -- Windows matches names with its own upcase table,
+    which agrees with `str.upper` on ASCII alone. `DirEntry.is_dir`/`is_file` follow links like `Path`'s do."""
+    memo = _PROBE_MEMO
+    if memo is None or os.name != "nt":
+        return None
+    lists = memo.setdefault("#listings", {})
+    key = str(d)
+    if key not in lists:
+        out: "dict | None" = {}
+        try:
+            with os.scandir(d) as it:
+                for e in it:
+                    if not e.name.isascii():
+                        out = None
+                        break
+                    up = e.name.upper()
+                    if up in out:
+                        out = None
+                        break
+                    out[up] = (e.is_dir(), e.is_file())
+        except OSError:
+            out = None
+        lists[key] = out
+    return lists[key]
+
+
+def _listed_kind(cur: Path, part: str) -> "tuple[bool, bool] | None":
+    """(is a dir, is a file) of `cur/part` from the folder's listing; (False, False) when the listing has no such
+    name; None when the listing cannot answer and `stat` must. A name Windows would rewrite or expand (a trailing
+    dot or space, a `~` short name, a non-ASCII or wildcard character) always goes to `stat`."""
+    if (not part.isascii() or part[-1:] in (".", " ") or any(c in part for c in '~*?<>|":')
+            or part in (".", "..")):
+        return None
+    lst = _listing(cur)
+    if lst is None:
+        return None
+    return lst.get(part.upper(), (False, False))
+
+
 def _ci_join(base: Path, parts: "list[str]", want_dir: bool = False) -> "Path | None":
     """Join `parts` onto `base` matching each component case-insensitively."""
     cur = base
     for i, part in enumerate(parts):
         cand = cur / part
         last = i == len(parts) - 1
-        if (cand.is_dir() if (want_dir or not last) else cand.is_file()):
+        kind = _listed_kind(cur, part)
+        if kind is not None:
+            ok = kind[0] if (want_dir or not last) else kind[1]
+        else:
+            ok = cand.is_dir() if (want_dir or not last) else cand.is_file()
+        if ok:
             cur = cand
             continue
         if os.name == "nt":

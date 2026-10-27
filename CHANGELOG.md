@@ -11,6 +11,10 @@ new code (15 files).
   them all on the efficiency cores: 15 workers shared 8 cores for the whole run, and half the machine sat idle.
   The workers now opt out of Windows power throttling, so they run on every core (7.5 -> 14.9 cores in use, measured
   on the live pool).
+- The check that finds BodySlide's zeroed builds at the start of a run read each mod folder one path piece at a
+  time from disk (1.15 million file checks); it now reads each folder's listing once and looks names up in it,
+  falling back to the disk for any name the listing cannot answer for exactly. Same answers on all 163,168
+  lookups of a real run; that check went from 124 s to 73 s.
 - Every ray cast now looks for triangles only around the stretch of ray it can actually hit, instead of in a ball
   around the ray's start: the clipping measure, minimum push, limb-motion and gap-aware follow, the layer and
   clearance measures, and the zap's cloth lookups. Same hits and the same hit triangle on every ray (a ray's
