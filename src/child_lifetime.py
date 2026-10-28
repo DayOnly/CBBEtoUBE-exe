@@ -112,6 +112,14 @@ def run_at_full_speed() -> bool:
         return False
 
 
+def worker_init() -> None:
+    """Every pool worker's initializer: full speed (#no-ecoqos) and, when switched on, the numpy block cache
+    (#numpy-block-cache) -- a worker is its own process, so neither carries over from the parent."""
+    run_at_full_speed()
+    from . import numpy_block_cache
+    numpy_block_cache.install()
+
+
 def _create_kill_on_close_job_and_join():
     """Create the job, set kill-on-close, and assign the current process to it.
     Returns the job handle; raises OSError on any refusal."""

@@ -562,6 +562,10 @@ if __name__ == "__main__":
     # here to clobber the log). Robust fix for the run output being lost when
     # the console window closes before it can be read.
     _install_log_tee()
+    # #numpy-block-cache: this process reuses its freed large numpy blocks (off unless
+    # CBBE2UBE_NUMPY_BLOCK_CACHE_MB is set); pool workers install it in their initializer.
+    from src import numpy_block_cache
+    numpy_block_cache.install()
     rc = 0
     try:
         rc = _run()

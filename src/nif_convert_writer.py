@@ -863,13 +863,13 @@ def sanitize_output_vertex_color_flags(meshes_root, workers: "int | None" = None
     # and a name bound inside the try is not available to its own handler.
     from concurrent.futures import ProcessPoolExecutor
     from concurrent.futures.process import BrokenProcessPool
-    from .child_lifetime import run_at_full_speed, tie_children_to_this_process
+    from .child_lifetime import tie_children_to_this_process, worker_init
     # A fresh pool at the very end of a run: its workers must die with this
     # process too, or a kill during the sweep leaves them running.
     # #workers-die-with-parent
     tie_children_to_this_process()
     try:
-        with ProcessPoolExecutor(max_workers=workers, initializer=run_at_full_speed) as ex:  # #no-ecoqos
+        with ProcessPoolExecutor(max_workers=workers, initializer=worker_init) as ex:  # #no-ecoqos #numpy-block-cache
             for n in ex.map(_sanitize_one_nif_worker, files_list, chunksize=16):
                 if n:
                     files_changed += 1

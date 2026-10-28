@@ -39,6 +39,11 @@ new code (15 files).
   how busy the workers were, how long the pool sat partly idle at the end, and which pieces were slowest.
   The peak memory is each piece's own: exact where the piece set its worker's highest point so far ("new-high"),
   otherwise the highest of readings taken every 50 ms ("sampled"); the run log also lists the five heaviest pieces.
+- New, off by default: `CBBE2UBE_NUMPY_BLOCK_CACHE_MB=<MB>` lets each conversion process reuse the large blocks of
+  memory it frees instead of handing them back to Windows, which zero-fills every new block page by page (2.87
+  billion page faults in a full run, about a tenth of its CPU). At 256 MB the page faults halve on sampled pieces and
+  on a batch, with identical files. Each process holds up to that much more memory, and empties the cache while free
+  RAM or free commit is under `CBBE2UBE_NUMPY_BLOCK_CACHE_LOW_MB` (default 3072).
 
 ### Fixed — the thin and heavy files of one armour no longer end up with different skeleton nodes (#33)
 

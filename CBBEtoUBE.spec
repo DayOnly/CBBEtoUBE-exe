@@ -85,7 +85,10 @@ a = Analysis(
     pathex=[".", ".pynifly"],
     binaries=[(".pynifly/NiflyDLL.dll", "."),
               # the body-zap visibility rasteriser (native/zraster.c, built by native/build_zraster.bat)
-              ("native/zraster.dll", ".")],
+              ("native/zraster.dll", "."),
+              # the numpy large-block cache (native/npcache.c, built by native/build_npcache.bat;
+              # #numpy-block-cache, off unless CBBE2UBE_NUMPY_BLOCK_CACHE_MB is set)
+              ("native/npcache.pyd", ".")],
     # The exe is what end users actually receive, so the GPL requires the
     # licence travel WITH it (GPLv3 §4/§5) -- shipping it only in the repo is
     # not enough. Third-party notices ride along for the same reason.

@@ -450,7 +450,7 @@ class _NifPool:
         child_lifetime.tie_children_to_this_process()
         child_lifetime.run_at_full_speed()   # #no-ecoqos
         return ProcessPoolExecutor(max_workers=self.max_workers,
-                                   initializer=child_lifetime.run_at_full_speed)
+                                   initializer=child_lifetime.worker_init)   # #numpy-block-cache
 
     def _ensure(self):
         if self.pool is None:
@@ -1363,9 +1363,12 @@ _FINGERPRINT_HASHED_GROUPS = {
                "fit that no test proves byte-neutral"},
     "not proven neutral": {
         "names": ("CBBE2UBE_RAY_CHUNK", "CBBE2UBE_CAST_PAIR_CHUNK",
-                  "CBBE2UBE_NO_ZEROED_PROBE_MEMO"),
-        "why": "how the ray casts are batched and whether a body probe is "
-               "remembered: no test proves the NIF bytes the same"},
+                  "CBBE2UBE_NO_ZEROED_PROBE_MEMO",
+                  "CBBE2UBE_NUMPY_BLOCK_CACHE_MB",
+                  "CBBE2UBE_NUMPY_BLOCK_CACHE_LOW_MB"),
+        "why": "how the ray casts are batched, whether a body probe is "
+               "remembered and whether freed numpy blocks are reused: no test "
+               "proves the NIF bytes the same"},
     # Read through `_flag`, but the mesh maths is the same either way: proven
     # byte-identical NIF for NIF (#global-schedule parity runs).
     "which files stay": {
