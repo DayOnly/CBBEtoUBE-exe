@@ -1265,6 +1265,24 @@ def _layer_lockstep_apply(pending, prep):
     return pending
 
 
+def _live_rows(idx, live, fn, shape):
+    """Rows of a per-slider gather: `fn(sel)` for the rows `sel` that reach a LIVE (non-zero) body delta through
+    `idx` (n, k), zeros for the rest -- which the full gather would have filled with sums of zeros. All rows live:
+    `fn` on every row, the expression exactly as before. #tri-live-rows
+
+    WHY. Each slider moves a few body verts (median 8% of 29,298 on the UBE OSD), so only 15-18% of the armour
+    verts of a piece reach a moved vert among their neighbours; the gather + einsum over the other 82-85% added up
+    zeros for every slider of every shape. Row by row the arithmetic is the same, so the live rows are bit-identical
+    and the rest are zero (the sign of a zero aside, which the int16 TRI cannot store)."""
+    act = live[idx].any(axis=1)
+    if act.all():
+        return fn(slice(None))
+    out = np.zeros(shape)
+    if act.any():
+        out[act] = fn(act)
+    return out
+
+
 def generate_armor_tri(
     armor_shapes: dict[str, np.ndarray],
     body_verts: np.ndarray,
@@ -1580,6 +1598,8 @@ def generate_armor_tri(
         _bf = _breast_field(body_n)
         if _bf is not None and slider_name in _bf:
             morph_delta_buf += _bf[slider_name]
+        _live = morph_delta_buf.any(axis=1)      # body verts this slider moves (#breast-field included) #tri-live-rows
+        _buf = morph_delta_buf
 
         pending: dict = {}          # this slider's delta per shape, stored below
         for armor_shape_name, (neighbors, dists, nearest_dist) in shape_knn.items():
@@ -1587,7 +1607,8 @@ def generate_armor_tri(
             # einsum fuses the weight-multiply and the sum. The previous form
             # built an (n, K, 3) temporary for the product and then reduced it,
             # so it allocated the gathered array twice over.
-            propagated = np.einsum("nkj,nk->nj", morph_delta_buf[neighbors], w)
+            propagated = _live_rows(neighbors, _live, lambda s: np.einsum(
+                "nkj,nk->nj", _buf[neighbors[s]], w[s]), (len(neighbors), 3))
             # Body-motion match: blend toward the delta of the body vertex this
             # armor vert COVERS, so hugging armor moves exactly as that surface
             # does (clearance preserved -> the body can't poke through, and the
@@ -1599,18 +1620,19 @@ def generate_armor_tri(
                 _by = shape_bary.get(armor_shape_name)
                 _wk = shape_wk.get(armor_shape_name)
                 if _wk is not None:
-                    nearest_delta = np.einsum(
-                        "nk,nkj->nj", _wk[1], morph_delta_buf[_wk[0]])
+                    nearest_delta = _live_rows(_wk[0], _live, lambda s: np.einsum(
+                        "nk,nkj->nj", _wk[1][s], _buf[_wk[0][s]]), (len(_wk[0]), 3))
                     # #match-idw-floor: never less OUTWARD than the skin it covers
                     _kn = shape_kn.get(armor_shape_name)
                     if _kn is not None and int(MATCH_IDW_FLOOR_MODE) == 0:
-                        _cov = (np.einsum("nk,nkj->nj", _by[1], morph_delta_buf[_by[0]])
+                        _cov = (_live_rows(_by[0], _live, lambda s: np.einsum(
+                                    "nk,nkj->nj", _by[1][s], _buf[_by[0][s]]), (len(_by[0]), 3))
                                 if _by is not None else morph_delta_buf[neighbors[:, 0]])
                         _short = np.einsum("ij,ij->i", _cov - nearest_delta, _kn)
                         nearest_delta = nearest_delta + _kn * np.clip(_short, 0.0, None)[:, None]
                 elif _by is not None:
-                    nearest_delta = np.einsum(
-                        "nk,nkj->nj", _by[1], morph_delta_buf[_by[0]])
+                    nearest_delta = _live_rows(_by[0], _live, lambda s: np.einsum(
+                        "nk,nkj->nj", _by[1][s], _buf[_by[0][s]]), (len(_by[0]), 3))
                 else:
                     nearest_delta = morph_delta_buf[neighbors[:, 0]]
                 propagated = match_w * nearest_delta + (1.0 - match_w) * propagated
@@ -1646,7 +1668,8 @@ def generate_armor_tri(
                 _kn = shape_kn.get(armor_shape_name)
                 if _kn is not None:
                     _by = shape_bary.get(armor_shape_name)
-                    _cov = (np.einsum("nk,nkj->nj", _by[1], morph_delta_buf[_by[0]])
+                    _cov = (_live_rows(_by[0], _live, lambda s: np.einsum(
+                                "nk,nkj->nj", _by[1][s], _buf[_by[0][s]]), (len(_by[0]), 3))
                             if _by is not None else morph_delta_buf[neighbors[:, 0]])
                     _short = np.einsum("ij,ij->i", _cov - propagated, _kn)
                     if int(MATCH_IDW_FLOOR_COV) == 2:
@@ -1660,7 +1683,8 @@ def generate_armor_tri(
                         # point while the mound vertex beside it outgrew it 0.16u)
                         _cv = [neighbors[:, 0:1]] + ([_by[0]] if _by is not None else [])
                         _ci = np.concatenate(_cv, axis=1)
-                        _co = np.einsum("nkj,nj->nk", morph_delta_buf[_ci], _kn).max(axis=1)
+                        _co = _live_rows(_ci, _live, lambda s: np.einsum(
+                            "nkj,nj->nk", _buf[_ci[s]], _kn[s]).max(axis=1), (len(_ci),))
                         _short = np.maximum(_short, _co - np.einsum("ij,ij->i", propagated, _kn))
                     if int(MATCH_IDW_FLOOR_MODE) == 1:
                         _short = np.clip(_short, 0.0, None)
