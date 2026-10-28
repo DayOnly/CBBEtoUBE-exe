@@ -1241,24 +1241,46 @@ def _layer_lockstep_prep(shapes_av, shapes_tris, body_verts, reach=None):
     return (order, out) if out else None
 
 
-def _layer_lockstep_apply(pending, prep):
+def _layer_lockstep_groups(prep):
+    """{outer layer: [(under layer, rows, corners, bary[..., None], normals at rows)]} -- the row selections of
+    `_layer_lockstep_apply`, which depend only on the prep, built ONCE per TRI instead of once per slider (the
+    per-row name comparison ran 202 times over every row). Within a layer the rows keep their order. #lockstep-groups"""
+    if prep is None:
+        return None
+    _order, info = prep
+    groups = {}
+    for n, (rows, under, corners, bary, vn) in info.items():
+        names = np.asarray(under, dtype=object)
+        groups[n] = []
+        for u in sorted(set(under)):
+            m = names == u
+            groups[n].append((u, rows[m], corners[m], bary[m][:, :, None], vn[rows[m]]))
+    return groups
+
+
+def _layer_lockstep_apply(pending, prep, groups=None):
     """Innermost layer first: each vert of an outer layer moves outward at least as
-    far as the point of the layer beneath it does. Only adds outward motion."""
+    far as the point of the layer beneath it does. Only adds outward motion.
+
+    The per-row lift is a running maximum over the layers beneath, so the order the
+    layers are visited in cannot change it. `groups`: `_layer_lockstep_groups(prep)`,
+    built once by the caller."""
     order, info = prep
+    if groups is None:
+        groups = _layer_lockstep_groups(prep)
     for n in order:
         if n not in info or n not in pending:
             continue
-        rows, under, corners, bary, vn = info[n]
+        vn = info[n][4]
         cur = pending[n]
         lift = np.zeros(len(cur))
-        for u in set(under):
+        for u, rows_m, corners_m, bary_m, vn_m in groups[n]:
             if u not in pending:
                 continue
-            m = np.array([x == u for x in under])
-            du = (pending[u][corners[m]] * bary[m][:, :, None]).sum(1)
-            want = (du * vn[rows[m]]).sum(1)
-            have = (cur[rows[m]] * vn[rows[m]]).sum(1)
-            lift[rows[m]] = np.maximum(lift[rows[m]], want - have)
+            du = (pending[u][corners_m] * bary_m).sum(1)
+            want = (du * vn_m).sum(1)
+            have = (cur[rows_m] * vn_m).sum(1)
+            lift[rows_m] = np.maximum(lift[rows_m], want - have)
         lift = np.clip(lift, 0.0, None)
         if (lift > 0).any():
             pending[n] = cur + vn * lift[:, None]
@@ -1566,6 +1588,7 @@ def generate_armor_tri(
                                              armor_shape_tris, body_verts)
         except Exception:
             lock_prep = None
+    lock_groups = _layer_lockstep_groups(lock_prep)      # once per TRI, not per slider #lockstep-groups
     # #extremity-morph: glove / boot verts over the UBE hands / feet; sliders only those carry are added below.
     ext_prep, ext_layout = ({}, [])
     if _EXTREMITY_MORPH and extremity_refs and armor_vert_extremity_fractions:
@@ -1714,7 +1737,7 @@ def generate_armor_tri(
                         propagated[_vi] += _sh[:, None] * _ext_d[_ri]
             pending[armor_shape_name] = propagated
         if lock_prep is not None:
-            pending = _layer_lockstep_apply(pending, lock_prep)
+            pending = _layer_lockstep_apply(pending, lock_prep, lock_groups)
         # #nipple-morph-stack: a layer rises at least as far as the layer under it
         if stack_prep and _nipple_local(morph_delta_buf, _nmb_local, _nmb_breast):
             pending = _nipple_morph_stack_apply(pending, stack_prep, spread=stack_spread)
