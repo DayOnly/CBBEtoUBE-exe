@@ -55,6 +55,10 @@ new code (15 files).
   - the nipple layer stack tests each point only against the triangles that can hold it, and each edge only
     against the edges it can cross, instead of against all of them (up to 1.5 billion edge pairs on a
     many-layer piece) -- triangles and edges that rounding could tip either way are always tested in full.
+- When memory is tight the heaviest pieces can only run one at a time, and they used to start biggest file first,
+  which can leave the longest one running alone at the end. They now start in order of their largest shape (a
+  much better guide to how long they take); replaying a full run's real timings, this removed a 5-minute wait at
+  the end on a machine short of free RAM. Only those few pieces' files are read for it, and the output is unchanged.
 
 ### Fixed — the thin and heavy files of one armour no longer end up with different skeleton nodes (#33)
 

@@ -112,7 +112,7 @@ def _worker(pool):
 
 
 def _schedule(per_source, pool, *, workers=4, sizes=None, memory=None,
-              budget_gb=2.0, reclaim=None):
+              budget_gb=2.0, reclaim=None, largest_shape=None):
     """Run the batch-wide schedule over `per_source` ([items] per source).
     Returns (events, delivered): events is the ordered ('deliver', k, name) /
     ('finish', k) log; delivered maps source -> [ConvertResult]."""
@@ -130,7 +130,8 @@ def _schedule(per_source, pool, *, workers=4, sizes=None, memory=None,
         mgr, units, len(per_source), _deliver,
         lambda k: events.append(("finish", k)), fn=_worker(pool),
         memory=memory or (lambda: {"avail_gb": 64.0, "commit_free_gb": 64.0}),
-        budget_gb=budget_gb, reclaim=reclaim)
+        budget_gb=budget_gb, reclaim=reclaim,
+        largest_shape=largest_shape or (lambda _p: 0))
     sched.run()
     return events, delivered, sched
 
@@ -192,6 +193,31 @@ def test_what_each_source_receives_does_not_depend_on_the_pool(workers):
                                   sizes={"b": 4.0, "e": 2.0, "c_1": 1.0})
     got = {k: sorted(r.src_path for r in v) for k, v in delivered.items()}
     assert got == {0: ["a_0", "a_1", "b"], 1: ["a_0", "c_1", "d_1"], 2: ["e"]}
+
+
+def test_heavy_units_start_by_their_largest_shape_not_their_file_size():
+    """#heavy-shape-order: when memory lets one heavy unit run at a time, the one with the largest shape (the
+    longest-running) goes first even with the smallest file; light units keep largest-file-first after them."""
+    sizes = {"h_big_file": 20.0, "h_mid": 18.0, "h_dense": 16.0, "l1": 1.0, "l2": 0.5}
+    shapes = {"h_big_file": 18000, "h_mid": 32000, "h_dense": 51000}
+    read = []
+
+    def largest_shape(path):
+        read.append(path)
+        return shapes.get(path, 0)
+    pool = _Pool()
+    _schedule([[_item(n) for n in sizes]], pool, workers=1, sizes=sizes, largest_shape=largest_shape,
+              memory=lambda: {"avail_gb": 3.0, "commit_free_gb": 60.0})
+    assert [names[0] for _k, names, _r in pool.submits] == ["h_dense", "h_mid", "h_big_file", "l1", "l2"]
+    assert sorted(read) == ["h_big_file", "h_dense", "h_mid"], "only heavy units' files are read"
+
+
+def test_a_heavy_unit_whose_file_cannot_be_read_keeps_its_file_size_place():
+    sizes = {"h1": 20.0, "h2": 18.0, "h3": 16.0}
+    pool = _Pool()
+    _schedule([[_item(n) for n in sizes]], pool, workers=1, sizes=sizes,
+              largest_shape=lambda p: {"h3": 40000}.get(p, 0))
+    assert [names[0] for _k, names, _r in pool.submits] == ["h3", "h1", "h2"]
 
 
 def test_largest_units_start_first():

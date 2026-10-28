@@ -746,6 +746,17 @@ def _source_mb(path) -> float:
         return 0.0
 
 
+def _largest_shape_vert_count(path) -> int:
+    """Vertex count of the largest shape in a work item's source NIF; 0 when it cannot be read (the unit then
+    keeps its file-size place). #heavy-shape-order"""
+    try:
+        from . import nif_convert as _nc
+        nf = _nc._pynifly().NifFile(filepath=str(path))
+        return max((len(s.verts) for s in nf.shapes), default=0)
+    except Exception:
+        return 0
+
+
 class _SchedUnit:
     """One unit of the batch-wide schedule: the weight variants of one base
     that ONE source planned, in list order (`_global_units`)."""
@@ -825,7 +836,7 @@ class _GlobalNifSchedule:
     `memory()` is `_memory_status` (injectable for tests)."""
 
     def __init__(self, nif_pool, units, n_sources, deliver, finish, *,
-                 fn=None, memory=None, budget_gb=None, reclaim=None):
+                 fn=None, memory=None, budget_gb=None, reclaim=None, largest_shape=None):
         self.nif_pool = nif_pool
         self.units = list(units)
         self.n_sources = int(n_sources)
@@ -834,6 +845,7 @@ class _GlobalNifSchedule:
         self.fn = fn or _nif_convert_worker
         self.memory = memory or _memory_status
         self.reclaim = reclaim or self._cached_blocks_gb
+        self.largest_shape = largest_shape or _largest_shape_vert_count
         self.budget_gb = _worker_budget_gb() if budget_gb is None else budget_gb
         self.left = [0] * self.n_sources
         for u in self.units:
@@ -847,6 +859,21 @@ class _GlobalNifSchedule:
 
     def _heavy(self, u) -> bool:
         return u.peak_gb > self.budget_gb
+
+    def _start_order(self) -> list:
+        """Heavy units first, longest-running first; the rest largest file first. #heavy-shape-order
+
+        WHY. When memory is tight the heavy units run one at a time after the first few, so the order they start
+        in decides the end of the run. File size is a poor guide to how long one takes: on a 10-28 full run the
+        longest (1117 s) and fourth-longest heavy units were started last of the six, and the last of them ran
+        alone for 330 s after every other unit had finished. The vertex count of a unit's LARGEST shape ranked
+        all six by runtime (much of the per-shape work grows faster than the shape), and replaying that run's
+        real durations, starting heavies by it ended the run at its ideal end. Read from the source NIFs of the
+        heavy units only -- a handful of files; a unit whose file cannot be read keeps its file-size place."""
+        shape = {u.seq: max((self.largest_shape(it[0]) for it in u.items), default=0)
+                 for u in self.units if self._heavy(u)}
+        return sorted(self.units, key=lambda u: ((0, -shape[u.seq], -u.mb, u.seq) if u.seq in shape
+                                                 else (1, 0, -u.mb, u.seq)))
 
     def _cached_blocks_gb(self) -> float:
         """What the running workers hold in their numpy block caches: freed by itself before free RAM reaches the
@@ -902,7 +929,7 @@ class _GlobalNifSchedule:
 
     def run(self):
         from concurrent.futures import FIRST_COMPLETED, wait
-        pending = sorted(self.units, key=lambda u: (-u.mb, u.seq))
+        pending = self._start_order()
         in_flight: dict = {}
         retry: list = []
         self.t_start = time.time()
