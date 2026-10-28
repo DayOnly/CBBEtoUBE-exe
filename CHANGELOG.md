@@ -46,6 +46,15 @@ new code (15 files).
   RAM or free commit is under `CBBE2UBE_NUMPY_BLOCK_CACHE_LOW_MB` (default 3072). It never holds a heavy piece back:
   a worker empties its cache when it finishes a piece, and the scheduler counts what the busy workers hold as free
   memory (it is freed by itself before free RAM reaches the scheduler's reserve).
+- Building each armour's morph file (`generate_armor_tri`, about a sixth of a run's CPU) takes about half as long
+  (133 s -> 72 s over 13 captured real calls), with every morph identical bit for bit:
+  - each body slider moves only a few body verts, so most armour verts reach none of them; the slider loop now
+    computes only the verts that do and leaves the rest at zero, instead of summing zeros for them;
+  - the layer lockstep picks out its rows once per morph file instead of once per slider;
+  - the overlap sync copies the layer underneath in one step per layer instead of vert by vert;
+  - the nipple layer stack tests each point only against the triangles that can hold it, and each edge only
+    against the edges it can cross, instead of against all of them (up to 1.5 billion edge pairs on a
+    many-layer piece) -- triangles and edges that rounding could tip either way are always tested in full.
 
 ### Fixed — the thin and heavy files of one armour no longer end up with different skeleton nodes (#33)
 

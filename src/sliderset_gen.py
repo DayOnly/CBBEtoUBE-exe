@@ -689,15 +689,6 @@ def _stack_tri_frame(x, y):
     return d0x, d0y, d1x, d1y, ok, np.where(ok, den, 1.0)
 
 
-def _stack_bary(px, py, x, y, fr):
-    d0x, d0y, d1x, d1y, ok, safe = fr
-    qx, qy = px - x[:, 0], py - y[:, 0]
-    wb = (qx * d1y - qy * d1x) / safe
-    wc = (d0x * qy - d0y * qx) / safe
-    wa = 1.0 - wb - wc
-    return wa, wb, wc, ok & (wa >= -1e-6) & (wb >= -1e-6) & (wc >= -1e-6)
-
-
 def _nipple_morph_stack_prep(shapes_av, shapes_tris, body_verts, nb):
     """[(outer name, rows, inner name, corners (k,3), bary (k,3), normals (k,3))]
     in innermost-first order of the outer layer, or [] when nothing is stacked.
@@ -762,7 +753,7 @@ def _nipple_morph_stack_prep(shapes_av, shapes_tris, body_verts, nb):
 
 
 def _stack_cand_tris(px, py, x, y, fr):
-    """(point, triangle) pairs of `_nipple_stack_pair` that CAN pass `_stack_bary`'s inside test, in
+    """(point, triangle) pairs of `_nipple_stack_pair` that CAN pass the inside test of `_stack_pair_bary`, in
     (point, triangle) order. #stack-prep-culled
 
     A point inside a triangle (barycentrics >= -1e-6) is within (1 + 6e-6) of the triangle's radius from its
@@ -805,7 +796,8 @@ def _stack_cand_tris(px, py, x, y, fr):
 
 
 def _stack_pair_bary(px, py, x, y, fr, t):
-    """`_stack_bary` for the pairs (px[i], py[i]) x triangle t[i]: the same expressions, element by element."""
+    """Barycentrics and the inside test (each >= -1e-6) of point (px[i], py[i]) in triangle t[i], element by element
+    -- the expressions the stack prep used per point against every triangle before #stack-prep-culled."""
     d0x, d0y, d1x, d1y, ok, safe = fr
     qx, qy = px - x[t, 0], py - y[t, 0]
     wb = (qx * d1y[t] - qy * d1x[t]) / safe[t]

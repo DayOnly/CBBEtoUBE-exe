@@ -13,10 +13,19 @@ import numpy as np
 import pytest
 
 from src import sliderset_gen as sg
-from src.sliderset_gen import NIPPLE_MORPH_STACK_R, _stack_bary, _stack_tri_frame  # noqa: F401 (used by the reference)
+from src.sliderset_gen import NIPPLE_MORPH_STACK_R, _stack_tri_frame  # noqa: F401 (used by the reference)
 
 
 # ------------------------------------------------------------------ the replaced code, verbatim
+
+def _stack_bary(px, py, x, y, fr):
+    d0x, d0y, d1x, d1y, ok, safe = fr
+    qx, qy = px - x[:, 0], py - y[:, 0]
+    wb = (qx * d1y - qy * d1x) / safe
+    wc = (d0x * qy - d0y * qx) / safe
+    wa = 1.0 - wb - wc
+    return wa, wb, wc, ok & (wa >= -1e-6) & (wb >= -1e-6) & (wc >= -1e-6)
+
 
 def _old_nipple_stack_pair(frames, out_n, in_n, shapes_tris, gap):
     """One (outer, inner) pair of `_nipple_morph_stack_prep`: (rows, corners,

@@ -19175,8 +19175,8 @@ PAIRS = (
     Pair('MSS-a', 'the surface sample is computed but never used',
          edits=(
              ('src/sliderset_gen.py',
-              '                elif _by is not None:\n                    nearest_delta = np.einsum(',
-              '                elif False:  # MUTATED\n                    nearest_delta = np.einsum(', 1),
+              '                elif _by is not None:\n                    nearest_delta = _live_rows(',
+              '                elif False:  # MUTATED\n                    nearest_delta = _live_rows(', 1),
          ),
          tests=('tests/test_morph_surface_sample.py',),
          expect=('test_garment_follows_the_skin_under_it',),
@@ -19243,8 +19243,8 @@ PAIRS = (
     Pair('NMS-b', 'a vert slightly BELOW another layer is lifted to it',
          edits=(
              ('src/sliderset_gen.py',
-              '                below = inside & (oh[r] - hz >= 0.0) & (oh[r] - hz <= gap)\n',
-              '                below = inside & (oh[r] - hz >= -0.5) & (oh[r] - hz <= gap)  # MUTATED\n', 1),
+              '                below = inside & (dh >= 0.0) & (dh <= gap)\n',
+              '                below = inside & (dh >= -0.5) & (dh <= gap)  # MUTATED\n', 1),
          ),
          tests=('tests/test_nipple_morph_stack.py',),
          expect=('test_a_layer_below_is_never_lifted',),
@@ -19252,8 +19252,8 @@ PAIRS = (
     Pair('NMS-c', 'one outer vert keeps only its first crossing of an inner edge',
          edits=(
              ('src/sliderset_gen.py',
-              '                put(o, int(c), int(d), int(d), 1.0 - uu, uu, 0.0, fi, hx=1, xa=ab_a, xb=ab_b)\n',
-              '                put(o, int(c), int(d), int(d), 1.0 - uu, uu, 0.0, fi, hx=0, xa=0, xb=0)  # MUTATED\n', 1),
+              '                            hx=1, xa=ab_a, xb=ab_b)\n',
+              '                            hx=0, xa=0, xb=0)  # MUTATED\n', 1),
          ),
          tests=('tests/test_nipple_morph_stack.py',),
          expect=('test_a_layer_clearly_apart_clears_the_ridges_under_it',),
@@ -19270,8 +19270,8 @@ PAIRS = (
     Pair('NMS-e', 'the face cover rule lifts a layer that is below',
          edits=(
              ('src/sliderset_gen.py',
-              '                above = inside & (hz - ih[j] >= 0.0) & (hz - ih[j] <= gap)\n',
-              '                above = inside & (hz - ih[j] >= -0.5) & (hz - ih[j] <= gap)  # MUTATED\n', 1),
+              '                above = inside & (dh >= 0.0) & (dh <= gap)\n',
+              '                above = inside & (dh >= -0.5) & (dh <= gap)  # MUTATED\n', 1),
          ),
          tests=('tests/test_nipple_morph_stack.py',),
          expect=('test_a_layer_below_is_never_lifted',),
