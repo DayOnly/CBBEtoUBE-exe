@@ -13488,11 +13488,21 @@ PAIRS = (
     Pair('GSC-e', 'smallest units start first',
          edits=(
              ('src/auto_convert.py',
-              'pending = sorted(self.units, key=lambda u: (-u.mb, u.seq))',
-              'pending = sorted(self.units, key=lambda u: (u.mb, u.seq))  # MUTATED', 1),
+              'else (1, 0, -u.mb, u.seq)))',
+              'else (1, 0, u.mb, u.seq)))  # MUTATED', 1),
          ),
          tests=('tests/test_global_schedule.py',),
          expect=('test_largest_units_start_first',),
+    ),
+    # #heavy-shape-order (2026-10-28): heavy units started biggest file first left the longest running last.
+    Pair('HSO-a', 'heavy units start by file size again',
+         edits=(
+             ('src/auto_convert.py',
+              'key=lambda u: ((0, -shape[u.seq], -u.mb, u.seq) if u.seq in shape',
+              'key=lambda u: ((0, 0, -u.mb, u.seq) if u.seq in shape  # MUTATED', 1),
+         ),
+         tests=('tests/test_global_schedule.py',),
+         expect=('test_heavy_units_start_by_their_largest_shape_not_their_file_size',),
     ),
     Pair('GSC-f', 'a heavy unit starts whatever the memory',
          edits=(
