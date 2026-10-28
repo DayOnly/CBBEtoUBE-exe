@@ -1849,6 +1849,16 @@ def generate_armor_tri(
             for Bn in dense:
                 all_sliders |= set(dense[Bn])
             new_morphs = []
+            # Each synced vert's under-layer row, grouped by under-layer ONCE (not per slider, vert by vert).
+            # A vert is synced once, so the rows written never overlap and the grouping changes no value.
+            # #overlap-sync-vectorised
+            by_layer: dict = {}
+            for vi in sync_idx:
+                Bn, Bi = under_tag[idu[vi]]
+                by_layer.setdefault(Bn, ([], []))
+                by_layer[Bn][0].append(vi)
+                by_layer[Bn][1].append(Bi)
+            by_layer = {Bn: (np.asarray(v, np.int64), np.asarray(b, np.int64)) for Bn, (v, b) in by_layer.items()}
             for sl in sorted(all_sliders):  # sorted: #deterministic-set-iteration
                 base_arr = own_dense.get(sl)
                 arr = (base_arr.copy() if base_arr is not None
@@ -1856,10 +1866,9 @@ def generate_armor_tri(
                 # MERGE: sync ONLY the overlapping verts to the under-layer
                 # (lockstep); a vert whose under-layer lacks this slider follows
                 # it to zero. Non-overlapping verts keep A's own morph.
-                for vi in sync_idx:
-                    Bn, Bi = under_tag[idu[vi]]
+                for Bn, (vis, bis) in by_layer.items():
                     da = dense.get(Bn, {}).get(sl)
-                    arr[vi] = da[Bi] if da is not None else 0.0
+                    arr[vis] = da[bis] if da is not None else 0.0
                 mag = np.linalg.norm(arr, axis=1)
                 keep = np.where(mag >= min_delta)[0]
                 if len(keep):
