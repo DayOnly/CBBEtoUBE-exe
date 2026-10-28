@@ -761,6 +761,119 @@ def _nipple_morph_stack_prep(shapes_av, shapes_tris, body_verts, nb):
             for (out_n, in_n), (rows, corners, bary, nrm) in groups]
 
 
+def _stack_cand_tris(px, py, x, y, fr):
+    """(point, triangle) pairs of `_nipple_stack_pair` that CAN pass `_stack_bary`'s inside test, in
+    (point, triangle) order. #stack-prep-culled
+
+    A point inside a triangle (barycentrics >= -1e-6) is within (1 + 6e-6) of the triangle's radius from its
+    centroid, so a 2D ball query around each point (radius: the largest triangle radius, then each triangle's own,
+    with 0.1% + 1e-3 to spare) keeps every pair that can pass. Thin or tiny triangles, whose barycentrics a rounding
+    error could swing, are paired with every point -- they are never culled. Triangles that are degenerate for the
+    test (not `ok`) can never pass and are left out."""
+    from scipy.spatial import cKDTree
+    d0x, d0y, d1x, d1y, ok, _safe = fr
+    nt, npnt = len(x), len(px)
+    if not nt or not npnt:
+        return np.empty(0, np.int64), np.empty(0, np.int64)
+    gx, gy = x.mean(axis=1), y.mean(axis=1)
+    trad = np.sqrt(((x - gx[:, None]) ** 2 + (y - gy[:, None]) ** 2).max(axis=1))
+    e2 = np.stack([d0x ** 2 + d0y ** 2, d1x ** 2 + d1y ** 2, (x[:, 2] - x[:, 1]) ** 2 + (y[:, 2] - y[:, 1]) ** 2], 1)
+    lmax2 = e2.max(axis=1)
+    den = d0x * d1y - d0y * d1x
+    fragile = ok & ((np.abs(den) <= 1e-3 * lmax2) | (lmax2 < 1e-4))
+    sound = ok & ~fragile
+    reach = trad * (1 + 1e-3) + 1e-3
+    pi, ti = [], []
+    si = np.flatnonzero(sound)
+    if len(si):
+        tree = cKDTree(np.c_[gx[si], gy[si]])
+        hits = tree.query_ball_point(np.c_[px, py], r=float(reach[si].max()))
+        cnt = np.fromiter((len(h) for h in hits), np.int64, npnt)
+        if cnt.sum():
+            p = np.repeat(np.arange(npnt), cnt)
+            t = si[np.fromiter((j for h in hits for j in h), np.int64, int(cnt.sum()))]
+            near = np.hypot(px[p] - gx[t], py[p] - gy[t]) <= reach[t]
+            pi.append(p[near]); ti.append(t[near])
+    fi_ = np.flatnonzero(fragile)
+    if len(fi_):
+        pi.append(np.repeat(np.arange(npnt), len(fi_))); ti.append(np.tile(fi_, npnt))
+    if not pi:
+        return np.empty(0, np.int64), np.empty(0, np.int64)
+    p, t = np.concatenate(pi), np.concatenate(ti)
+    o = np.lexsort((t, p))
+    return p[o], t[o]
+
+
+def _stack_pair_bary(px, py, x, y, fr, t):
+    """`_stack_bary` for the pairs (px[i], py[i]) x triangle t[i]: the same expressions, element by element."""
+    d0x, d0y, d1x, d1y, ok, safe = fr
+    qx, qy = px - x[t, 0], py - y[t, 0]
+    wb = (qx * d1y[t] - qy * d1x[t]) / safe[t]
+    wc = (d0x[t] * qy - d0y[t] * qx) / safe[t]
+    wa = 1.0 - wb - wc
+    return wa, wb, wc, ok[t] & (wa >= -1e-6) & (wb >= -1e-6) & (wc >= -1e-6)
+
+
+def _stack_size_tiers(h):
+    """Index groups of `h` by size (median / 90th / 99th percentile cuts), so a few long edges do not set the search
+    radius of every short one."""
+    if len(h) < 64:
+        return [np.arange(len(h))]
+    cuts = np.unique(np.quantile(h, [0.5, 0.9, 0.99]))
+    tier = np.searchsorted(cuts, h, side="right")
+    return [np.flatnonzero(tier == t) for t in range(len(cuts) + 1) if (tier == t).any()]
+
+
+_STACK_PARALLEL = 1e-5     # radians: edge pairs this close to parallel are never culled
+
+
+def _stack_cand_edges(iu, iw, ie, ou, ow, oe):
+    """(inner edge, outer edge) pairs that CAN pass the crossing test, sorted (inner, outer). #stack-prep-culled
+
+    A true crossing strictly inside both edges puts their midpoints no farther apart than their half lengths add up
+    to; pairs within that (+0.1% + 1e-3) are found with a tiered 2D pair search. Rounding can make the test pass
+    for pairs that do not cross only when the two edges are nearly parallel (its denominator is |r||s| sin of their
+    angle): for any pair at least `_STACK_PARALLEL` from parallel the error stays orders of magnitude inside the
+    margin, so EVERY pair within `_STACK_PARALLEL` of parallel is kept as well, near or far."""
+    from scipy.spatial import cKDTree
+    ni, no = len(ie), len(oe)
+    if not ni or not no:
+        return np.empty(0, np.int64), np.empty(0, np.int64)
+    idx_, idy = iu[ie[:, 1]] - iu[ie[:, 0]], iw[ie[:, 1]] - iw[ie[:, 0]]
+    odx, ody = ou[oe[:, 1]] - ou[oe[:, 0]], ow[oe[:, 1]] - ow[oe[:, 0]]
+    im = np.c_[(iu[ie[:, 0]] + iu[ie[:, 1]]) / 2, (iw[ie[:, 0]] + iw[ie[:, 1]]) / 2]
+    om = np.c_[(ou[oe[:, 0]] + ou[oe[:, 1]]) / 2, (ow[oe[:, 0]] + ow[oe[:, 1]]) / 2]
+    ih_, oh_ = np.hypot(idx_, idy) / 2, np.hypot(odx, ody) / 2
+    keys = []
+    for A in _stack_size_tiers(ih_):
+        ta = cKDTree(im[A])
+        for Bk in _stack_size_tiers(oh_):
+            r = (float(ih_[A].max()) + float(oh_[Bk].max())) * (1 + 1e-3) + 1e-3
+            m = ta.sparse_distance_matrix(cKDTree(om[Bk]), r, output_type="ndarray")
+            if not len(m):
+                continue
+            e, k = A[m["i"].astype(np.int64)], Bk[m["j"].astype(np.int64)]
+            near = m["v"] <= (ih_[e] + oh_[k]) * (1 + 1e-3) + 1e-3
+            keys.append(e[near] * no + k[near])
+    # nearly parallel pairs, by direction angle in [0, pi)
+    pi_ = np.mod(np.arctan2(idy, idx_), np.pi)
+    po = np.mod(np.arctan2(ody, odx), np.pi)
+    order = np.argsort(po, kind="stable")
+    ps = po[order]
+    for shift in (0.0, np.pi, -np.pi):          # the window may wrap round 0 / pi
+        lo = np.searchsorted(ps, pi_ + shift - _STACK_PARALLEL, side="left")
+        hi = np.searchsorted(ps, pi_ + shift + _STACK_PARALLEL, side="right")
+        cnt = np.maximum(hi - lo, 0)
+        if cnt.sum():
+            e = np.repeat(np.arange(ni), cnt)
+            off = np.arange(int(cnt.sum())) - np.repeat(np.cumsum(cnt) - cnt, cnt)
+            keys.append(e * no + order[np.repeat(lo, cnt) + off])
+    if not keys:
+        return np.empty(0, np.int64), np.empty(0, np.int64)
+    u = np.unique(np.concatenate(keys))           # sorted: (inner, outer) order
+    return u // no, u % no
+
+
 def _nipple_stack_pair(frames, out_n, in_n, shapes_tris, gap):
     """One (outer, inner) pair of `_nipple_morph_stack_prep`: (rows, corners,
     bary, normals) in key order, or None. #stack-prep-columns"""
@@ -785,35 +898,42 @@ def _nipple_stack_pair(frames, out_n, in_n, shapes_tris, gap):
         ofr = _stack_tri_frame(ou[otsel], ow[otsel]) if len(otsel) else None
         iu, iw, ih = loc[in_n]
         tsel = t_all[np.hypot(iu[t_all].mean(1), iw[t_all].mean(1)) < NIPPLE_MORPH_STACK_R + 3.0]
-        # an outer vert over an inner triangle
+        # an outer vert over an inner triangle. #stack-prep-culled: each row only against the triangles that can
+        # hold it (`_stack_cand_tris`), with the same arithmetic per pair; one entry per row, in row order.
         if len(tsel):
             x, y, z = iu[tsel], iw[tsel], ih[tsel]
             fr = _stack_tri_frame(x, y)
-            for r in rows:
-                wa, wb, wc, inside = _stack_bary(ou[r], ow[r], x, y, fr)
-                if not inside.any():
-                    continue
-                hz = wa * z[:, 0] + wb * z[:, 1] + wc * z[:, 2]
-                below = inside & (oh[r] - hz >= 0.0) & (oh[r] - hz <= gap)
-                if not below.any():
-                    continue
-                # the layer surface nearest under the vert
-                k = int(np.flatnonzero(below)[np.argmin(np.abs(oh[r] - hz[below]))])
-                put([int(r)], tsel[k, 0], tsel[k, 1], tsel[k, 2], wa[k], wb[k], wc[k], fi)
-        # an inner vert under an outer triangle: every corner clears it
+            pr, tk = _stack_cand_tris(ou[rows], ow[rows], x, y, fr)
+            if len(pr):
+                wa, wb, wc, inside = _stack_pair_bary(ou[rows][pr], ow[rows][pr], x, y, fr, tk)
+                hz = wa * z[tk, 0] + wb * z[tk, 1] + wc * z[tk, 2]
+                dh = oh[rows][pr] - hz
+                below = inside & (dh >= 0.0) & (dh <= gap)
+                if below.any():
+                    # the layer surface nearest under the vert: per row the FIRST triangle with the smallest |dh|
+                    bp, bt, bd = pr[below], tk[below], np.abs(dh[below])
+                    o = np.lexsort((bt, bd, bp))
+                    first = np.ones(len(o), bool)
+                    first[1:] = bp[o][1:] != bp[o][:-1]
+                    sel = np.flatnonzero(below)[o[first]]
+                    k = tk[sel]
+                    put(rows[pr[sel]], tsel[k, 0], tsel[k, 1], tsel[k, 2], wa[sel], wb[sel], wc[sel], fi)
+        # an inner vert under an outer triangle: every corner clears it (culled like the rule above; pairs in
+        # (vert, triangle) order are the old order, corners in order)
         if ofr is not None:
             x, y, z = ou[otsel], ow[otsel], oh[otsel]
             irows = np.flatnonzero((np.hypot(iu, iw) < NIPPLE_MORPH_STACK_R)
                                    & (ih > -1.0) & (ih < 6.0))
-            for j in irows:
-                wa, wb, wc, inside = _stack_bary(iu[j], iw[j], x, y, ofr)
-                if not inside.any():
-                    continue
-                hz = wa * z[:, 0] + wb * z[:, 1] + wc * z[:, 2]
-                above = inside & (hz - ih[j] >= 0.0) & (hz - ih[j] <= gap)
+            pj, tk = _stack_cand_tris(iu[irows], iw[irows], x, y, ofr)
+            if len(pj):
+                wa, wb, wc, inside = _stack_pair_bary(iu[irows][pj], iw[irows][pj], x, y, ofr, tk)
+                hz = wa * z[tk, 0] + wb * z[tk, 1] + wc * z[tk, 2]
+                dh = hz - ih[irows][pj]
+                above = inside & (dh >= 0.0) & (dh <= gap)
                 if above.any():
-                    cs = otsel[np.flatnonzero(above)].ravel()     # k ascending, corners in order
-                    put(cs, int(j), int(j), int(j), 1.0, 0.0, 0.0, fi)
+                    jj = irows[pj[above]]
+                    put(otsel[tk[above]].ravel(), np.repeat(jj, 3), np.repeat(jj, 3), np.repeat(jj, 3),
+                        1.0, 0.0, 0.0, fi)
         # an inner EDGE crossing an outer edge: the lifted inner layer
         # peaks along its edges, and a flat outer face spanning such a
         # ridge dips below it between the points held above. Both outer
@@ -824,33 +944,36 @@ def _nipple_stack_pair(frames, out_n, in_n, shapes_tris, gap):
             p0 = np.c_[ou[oe[:, 0]], ow[oe[:, 0]]]
             p1 = np.c_[ou[oe[:, 1]], ow[oe[:, 1]]]
             r_ = p1 - p0
-            for c, d in ie:
-                q0 = np.array([iu[c], iw[c]])
-                s_ = np.array([iu[d], iw[d]]) - q0
-                den = r_[:, 0] * s_[1] - r_[:, 1] * s_[0]
+            # #stack-prep-culled: each inner edge only against the outer edges it can cross; the crossings in
+            # (inner edge, outer edge) order are the old order. Per pair the same expressions as before.
+            ei, ks = _stack_cand_edges(iu, iw, ie, ou, ow, oe)
+            if len(ks):
+                c, d = ie[ei, 0], ie[ei, 1]
+                q0x, q0y = iu[c], iw[c]
+                s0, s1 = iu[d] - q0x, iw[d] - q0y
+                den = r_[ks, 0] * s1 - r_[ks, 1] * s0
                 ok = np.abs(den) > 1e-12
                 safe = np.where(ok, den, 1.0)
-                qp = q0 - p0
-                t_ = (qp[:, 0] * s_[1] - qp[:, 1] * s_[0]) / safe        # along outer
-                u_ = (qp[:, 0] * r_[:, 1] - qp[:, 1] * r_[:, 0]) / safe  # along inner
+                qp0, qp1 = q0x - p0[ks, 0], q0y - p0[ks, 1]
+                t_ = (qp0 * s1 - qp1 * s0) / safe                    # along outer
+                u_ = (qp0 * r_[ks, 1] - qp1 * r_[ks, 0]) / safe      # along inner
                 hit = ok & (t_ > 1e-6) & (t_ < 1 - 1e-6) & (u_ > 1e-6) & (u_ < 1 - 1e-6)
-                ks = np.flatnonzero(hit)
-                if not len(ks):
-                    continue
-                a_, b_ = oe[ks, 0], oe[ks, 1]
-                ho = (1 - t_[ks]) * oh[a_] + t_[ks] * oh[b_]
-                hi = (1 - u_[ks]) * ih[c] + u_[ks] * ih[d]
-                keep = (ho - hi >= 0.0) & (ho - hi <= gap)
-                if not keep.any():
-                    continue
-                ks, a_, b_ = ks[keep], a_[keep], b_[keep]
-                # keyed by the crossing (the outer edge too): one outer vert's
-                # edges can cross one inner edge at several points, and each is a
-                # separate floor. Both endpoints of each crossing, in that order.
-                o = np.stack([a_, b_], 1).ravel()
-                ab_a, ab_b = np.repeat(a_, 2), np.repeat(b_, 2)
-                uu = np.repeat(u_[ks], 2)
-                put(o, int(c), int(d), int(d), 1.0 - uu, uu, 0.0, fi, hx=1, xa=ab_a, xb=ab_b)
+                if hit.any():
+                    ks, c, d, t_, u_ = ks[hit], c[hit], d[hit], t_[hit], u_[hit]
+                    a_, b_ = oe[ks, 0], oe[ks, 1]
+                    ho = (1 - t_) * oh[a_] + t_ * oh[b_]
+                    hi = (1 - u_) * ih[c] + u_ * ih[d]
+                    keep = (ho - hi >= 0.0) & (ho - hi <= gap)
+                    if keep.any():
+                        c, d, a_, b_, u_ = c[keep], d[keep], a_[keep], b_[keep], u_[keep]
+                        # keyed by the crossing (the outer edge too): one outer vert's
+                        # edges can cross one inner edge at several points, and each is a
+                        # separate floor. Both endpoints of each crossing, in that order.
+                        o = np.stack([a_, b_], 1).ravel()
+                        ab_a, ab_b = np.repeat(a_, 2), np.repeat(b_, 2)
+                        uu = np.repeat(u_, 2)
+                        put(o, np.repeat(c, 2), np.repeat(d, 2), np.repeat(d, 2), 1.0 - uu, uu, 0.0, fi,
+                            hx=1, xa=ab_a, xb=ab_b)
     if not cols["r"]:
         return None
     C = {k: np.concatenate(v) for k, v in cols.items()}
