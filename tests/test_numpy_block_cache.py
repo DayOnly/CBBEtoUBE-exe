@@ -116,12 +116,100 @@ def test_a_missing_module_changes_nothing(monkeypatch):
     assert nbc.install(64, 3072) is False
 
 
-def test_every_pool_worker_installs_it(monkeypatch):
+def test_every_pool_worker_installs_it_into_the_parents_tally(monkeypatch):
     seen = []
     monkeypatch.setattr(child_lifetime, "run_at_full_speed", lambda: seen.append("speed") or True)
-    monkeypatch.setattr(nbc, "install", lambda *a, **k: seen.append("cache") or False)
-    child_lifetime.worker_init()
-    assert seen == ["speed", "cache"]
+    monkeypatch.setattr(nbc, "install", lambda *a, **k: seen.append(("cache", k.get("share"))) or False)
+    child_lifetime.worker_init("Local\tally")
+    assert seen == ["speed", ("cache", "Local\tally")]
+
+
+_HOLDER = """
+nbc.install(64, 0, share=sys.argv[1])
+a = np.empty(10**6); del a                        # 8 MB now cached
+print(json.dumps(nbc.stats()), flush=True)
+cmd = sys.stdin.readline().strip()
+if cmd == "flush":
+    nbc.flush(); print(json.dumps(nbc.stats()), flush=True); sys.stdin.readline()
+"""
+
+
+def _holder(name):
+    import os
+    env = {k: v for k, v in os.environ.items() if not k.startswith("CBBE2UBE_NUMPY_BLOCK_CACHE")}
+    p = subprocess.Popen([sys.executable, "-c", _PRE + _HOLDER, name], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         text=True, env=env)
+    return p, json.loads(p.stdout.readline())
+
+
+def test_workers_publish_what_they_hold_and_the_tally_follows_a_flush():
+    """Two worker-like processes each hold 8 MB; the parent reads both through the shared tally, sees one drop to 0
+    when it flushes (what a worker does at the end of every piece), and counts only the pids it asks for."""
+    name = nbc.share_name() + "-test-a"
+    reader = nbc._load()
+    reader.share(name, 0)
+    p1, s1 = _holder(name)
+    p2, s2 = _holder(name)
+    try:
+        assert s1["cached"] > 0 and s2["cached"] > 0
+        assert reader.shared_cached([p1.pid, p2.pid]) == s1["cached"] + s2["cached"]
+        assert reader.shared_cached([p2.pid]) == s2["cached"]
+        assert reader.shared_cached([]) == 0
+        p1.stdin.write("flush\n"); p1.stdin.flush()
+        assert json.loads(p1.stdout.readline())["cached"] == 0
+        assert reader.shared_cached([p1.pid, p2.pid]) == s2["cached"]
+    finally:
+        for p in (p1, p2):
+            p.kill(); p.wait()
+
+
+def test_a_killed_workers_slot_is_never_counted_and_is_taken_over():
+    """A worker killed while holding blocks leaves its slot behind. The scheduler asks only for the live pool's pids,
+    and the next worker to claim a slot may take the dead one's."""
+    name = nbc.share_name() + "-test-b"
+    reader = nbc._load()
+    reader.share(name, 0)
+    dead, held = _holder(name)
+    dead.kill(); dead.wait()
+    live, s = _holder(name)
+    try:
+        assert reader.shared_cached([live.pid]) == s["cached"]
+        assert reader.shared_cached([dead.pid]) in (0, held["cached"])   # whichever the slot reuse left
+    finally:
+        live.kill(); live.wait()
+
+
+def test_the_scheduler_counts_cached_blocks_only_when_they_are_freed_before_its_reserve(monkeypatch):
+    class _Fake:
+        def shared_cached(self, pids):
+            return (3 << 30) if pids else 0
+    monkeypatch.setattr(nbc, "_MOD", _Fake())
+    monkeypatch.setattr(nbc, "LOW_MB", 3072)
+    assert nbc.reclaimable_gb([1, 2], 2.0) == 3.0
+    assert nbc.reclaimable_gb([], 2.0) == 0.0
+    monkeypatch.setattr(nbc, "LOW_MB", 2048)                  # freed only AT the reserve: too late, not counted
+    assert nbc.reclaimable_gb([1, 2], 2.0) == 0.0
+    monkeypatch.setattr(nbc, "_MOD", None)                    # switched off
+    monkeypatch.setattr(nbc, "LOW_MB", 3072)
+    assert nbc.reclaimable_gb([1, 2], 2.0) == 0.0
+
+
+@pytest.mark.parametrize("runner", ["_run_unit", "_run_one"])
+def test_a_worker_empties_its_cache_at_the_end_of_every_piece(monkeypatch, runner):
+    """An idle worker holds nothing the scheduler could be waiting on -- even when the piece raised."""
+    from src import auto_convert as ac
+    flushed = []
+    monkeypatch.setattr(nbc, "flush", lambda: flushed.append(1))
+    run = getattr(ac, runner)
+    ok = (lambda f: run(f, [1, 2])) if runner == "_run_unit" else (lambda f: run(f, 1))
+    ok(lambda it: it)
+    assert flushed == [1]
+
+    def boom(_it):
+        raise RuntimeError("piece failed")
+    with pytest.raises(RuntimeError):
+        ok(boom)
+    assert flushed == [1, 1]
 
 
 def test_both_switches_keep_an_incremental_run_from_reusing_nifs():

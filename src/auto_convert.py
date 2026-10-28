@@ -383,6 +383,10 @@ def _run_unit(fn, unit: "list[tuple]") -> list:
         values, text = _captured(_go)
     finally:
         peak_mb, peak_how = peak.finish()
+        # An idle worker holds no cached blocks: the scheduler may be holding a heavy unit back on the live free
+        # RAM this worker's cache would otherwise sit on. #numpy-block-cache
+        from . import numpy_block_cache
+        numpy_block_cache.flush()
     results = _UnitResults(values)
     results.output = text
     # #unit-timing: what this unit cost, for the run's unit table. Epoch seconds, so units from
@@ -396,7 +400,11 @@ def _run_unit(fn, unit: "list[tuple]") -> list:
 def _run_one(fn, item):
     """The isolated re-run's form of `_run_unit`: one item, with its printed
     output attached to the result as `worker_output`. #worker-output"""
-    result, text = _captured(lambda: fn(item))
+    try:
+        result, text = _captured(lambda: fn(item))
+    finally:
+        from . import numpy_block_cache
+        numpy_block_cache.flush()             # #numpy-block-cache, as in _run_unit
     try:
         result.worker_output = text
     except AttributeError:
@@ -449,8 +457,20 @@ class _NifPool:
         # with this process however it ends. #workers-die-with-parent
         child_lifetime.tie_children_to_this_process()
         child_lifetime.run_at_full_speed()   # #no-ecoqos
+        # Workers publish their cached numpy blocks in this run's tally, for the scheduler's headroom.
+        # #numpy-block-cache
+        from . import numpy_block_cache
+        share = numpy_block_cache.share_name()
+        numpy_block_cache.open_share(share)
         return ProcessPoolExecutor(max_workers=self.max_workers,
-                                   initializer=child_lifetime.worker_init)   # #numpy-block-cache
+                                   initializer=child_lifetime.worker_init, initargs=(share,))
+
+    def worker_pids(self) -> "list[int]":
+        """The live pool's worker pids; empty with no pool."""
+        try:
+            return list((getattr(self.pool, "_processes", None) or {}).keys())
+        except Exception:
+            return []
 
     def _ensure(self):
         if self.pool is None:
@@ -805,7 +825,7 @@ class _GlobalNifSchedule:
     `memory()` is `_memory_status` (injectable for tests)."""
 
     def __init__(self, nif_pool, units, n_sources, deliver, finish, *,
-                 fn=None, memory=None, budget_gb=None):
+                 fn=None, memory=None, budget_gb=None, reclaim=None):
         self.nif_pool = nif_pool
         self.units = list(units)
         self.n_sources = int(n_sources)
@@ -813,6 +833,7 @@ class _GlobalNifSchedule:
         self.finish = finish
         self.fn = fn or _nif_convert_worker
         self.memory = memory or _memory_status
+        self.reclaim = reclaim or self._cached_blocks_gb
         self.budget_gb = _worker_budget_gb() if budget_gb is None else budget_gb
         self.left = [0] * self.n_sources
         for u in self.units:
@@ -827,13 +848,20 @@ class _GlobalNifSchedule:
     def _heavy(self, u) -> bool:
         return u.peak_gb > self.budget_gb
 
+    def _cached_blocks_gb(self) -> float:
+        """What the running workers hold in their numpy block caches: freed by itself before free RAM reaches the
+        reserve, so it counts as free here. 0 with the cache off. #numpy-block-cache"""
+        from . import numpy_block_cache
+        pids = getattr(self.nif_pool, "worker_pids", lambda: [])()
+        return numpy_block_cache.reclaimable_gb(pids, SCHED_RESERVE_GB)
+
     def _headroom_gb(self):
         st = self.memory()
         if not st:
             return None
         vals = [v for v in (st.get("avail_gb"), st.get("commit_free_gb"))
                 if v is not None]
-        return (min(vals) - SCHED_RESERVE_GB) if vals else None
+        return (min(vals) - SCHED_RESERVE_GB + self.reclaim()) if vals else None
 
     def _pick(self, pending, in_flight):
         """The first unit of `pending` (largest first) that may start now."""

@@ -112,7 +112,7 @@ def _worker(pool):
 
 
 def _schedule(per_source, pool, *, workers=4, sizes=None, memory=None,
-              budget_gb=2.0):
+              budget_gb=2.0, reclaim=None):
     """Run the batch-wide schedule over `per_source` ([items] per source).
     Returns (events, delivered): events is the ordered ('deliver', k, name) /
     ('finish', k) log; delivered maps source -> [ConvertResult]."""
@@ -130,7 +130,7 @@ def _schedule(per_source, pool, *, workers=4, sizes=None, memory=None,
         mgr, units, len(per_source), _deliver,
         lambda k: events.append(("finish", k)), fn=_worker(pool),
         memory=memory or (lambda: {"avail_gb": 64.0, "commit_free_gb": 64.0}),
-        budget_gb=budget_gb)
+        budget_gb=budget_gb, reclaim=reclaim)
     sched.run()
     return events, delivered, sched
 
@@ -228,6 +228,32 @@ def test_commit_bounds_a_heavy_unit_like_ram_does():
               memory=lambda: {"avail_gb": 30.0, "commit_free_gb": 8.0})
     started = {names[0]: running for _k, names, running in pool.submits}
     assert "h1" not in started["h2"]
+
+
+def test_cached_numpy_blocks_count_as_free_for_a_heavy_unit():
+    """#numpy-block-cache: the workers' cached blocks read as used to the live check but are freed by themselves
+    before free RAM reaches the reserve, so they are added back -- the tight case above runs both heavy units."""
+    sizes = {"h1": 20.0, "h2": 18.0, "l1": 1.0, "l2": 0.5}
+    held = _Pool()
+    _schedule([[_item("h1"), _item("l1")], [_item("h2"), _item("l2")]], held,
+              sizes=sizes, reclaim=lambda: 4.0,
+              memory=lambda: {"avail_gb": 8.0, "commit_free_gb": 60.0})
+    started = {names[0]: running for _k, names, running in held.submits}
+    assert "h1" in started["h2"]
+
+
+def test_a_heavy_unit_never_waits_on_memory_with_no_heavy_unit_running():
+    """No free memory at all and nothing to reclaim: every heavy unit still runs, one at a time -- the schedule
+    waits on memory only beside another heavy unit, so a cache holding memory cannot stall it."""
+    sizes = {"h1": 20.0, "h2": 18.0, "h3": 16.0, "l1": 1.0}
+    pool = _Pool()
+    events, delivered, _s = _schedule([[_item("h1"), _item("h2"), _item("h3"), _item("l1")]], pool, sizes=sizes,
+                                      reclaim=lambda: 0.0,
+                                      memory=lambda: {"avail_gb": 0.0, "commit_free_gb": 0.0})
+    started = {names[0]: running for _k, names, running in pool.submits}
+    assert sorted(started) == ["h1", "h2", "h3", "l1"]
+    assert not any(h in started[g] for g in ("h2", "h3") for h in ("h1", "h2", "h3") if h != g)
+    assert len(delivered[0]) == 4 and events[-1] == ("finish", 0)
 
 
 def test_unknown_memory_runs_heavy_units_one_at_a_time():

@@ -43,7 +43,9 @@ new code (15 files).
   memory it frees instead of handing them back to Windows, which zero-fills every new block page by page (2.87
   billion page faults in a full run, about a tenth of its CPU). At 256 MB the page faults halve on sampled pieces and
   on a batch, with identical files. Each process holds up to that much more memory, and empties the cache while free
-  RAM or free commit is under `CBBE2UBE_NUMPY_BLOCK_CACHE_LOW_MB` (default 3072).
+  RAM or free commit is under `CBBE2UBE_NUMPY_BLOCK_CACHE_LOW_MB` (default 3072). It never holds a heavy piece back:
+  a worker empties its cache when it finishes a piece, and the scheduler counts what the busy workers hold as free
+  memory (it is freed by itself before free RAM reaches the scheduler's reserve).
 
 ### Fixed — the thin and heavy files of one armour no longer end up with different skeleton nodes (#33)
 
