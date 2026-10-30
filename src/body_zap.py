@@ -170,15 +170,23 @@ ZAP_NIPPLE_R = 5.0     # = sliderset_gen.NIPPLE_MORPH_BRIDGE_R_OUT: past this a 
 # far from bind-visible skin goes; one whose corners poke through the cloth at a nipple counts as covered
 # (#zap-nipple-poke); and a seen one blocks #zap-nipple-hide.
 ZAP_TRI_VIS = not _flag("CBBE2UBE_NO_ZAP_TRI_VIS", False)
-# #zap-preset-nipples (DEFAULT ON since 2026-10-30; CBBE2UBE_NO_ZAP_PRESET_NIPPLES=1 = the old poses): the zap's presets
-# keep their nipple-local sliders, as the game applies them. Leaving them out judged a body the game never shows: skin
-# a preset's nipple sliders bring into view was deleted. 34 pre-zap snapshots: gap skin -2.5% (7 pieces better / 1
-# worse), strict poke flat, ~70 more kept triangles per piece.
-ZAP_PRESET_NIPPLES = not _flag("CBBE2UBE_NO_ZAP_PRESET_NIPPLES", False)
+# REMOVED 2026-10-30: #zap-preset-nipples (the zap's presets kept their nipple-local sliders). In game it drew a nipple
+# outline through opaque armour (iron cuirass: the cloth's nipple sliders pushed it out 0.35u where they had been
+# flattened to 0); user rule: nipples are ignored on a convert. See #zap-nipple-opaque.
+# #zap-nipple-opaque (DEFAULT ON since 2026-10-30; CBBE2UBE_NO_ZAP_NIPPLE_OPAQUE=1 off): user rule 10-30 -- where no
+# see-through (alpha) cloth lies near a nipple, the nipple is zapped away entirely: every skin vertex within
+# ZAP_NIPPLE_R of the apex that the BIND views do not see is deleted, whatever a preset shows there (the views that
+# keep skin for a preset, a seen triangle, #zap-preset-keep), so #zap-nipple-flat drops the cloth's nipple sliders and
+# #zap-nipple-hide lowers its bump. The edge band still keeps skin beside bind-visible skin, so an opening that shows
+# the nipple at rest keeps it. Alpha near the apex: any alpha-tested / blended cover triangle that is not opaque at
+# every sample (#zap-alpha) within ZAP_NIPPLE_R + ZAP_NIPPLE_ALPHA_PAD of it.
+ZAP_NIPPLE_OPAQUE = not _flag("CBBE2UBE_NO_ZAP_NIPPLE_OPAQUE", False)
+ZAP_NIPPLE_ALPHA_PAD = 2.0
 # #zap-edge-lift (DEFAULT ON since 2026-10-30; CBBE2UBE_NO_ZAP_EDGE_LIFT=1 off): after the zap, a cloth EDGE that sits
 # against kept skin is lifted off it at rest far enough that no single body slider, at +1 or -1, buries the edge in the
 # skin beside it -- capped at ZAP_EDGE_LIFT_CAP, feathered ZAP_EDGE_LIFT_FEATHER into the cloth -- and the skin under the
-# lifted cloth is kept (a lifted edge opens a sight line under it). Morph rows, simulated verts and colliders are left
+# lifted cloth is kept (a lifted edge opens a sight line under it). Cap 1u -> 0.2u 2026-10-30: in game the 1u lift read
+# as a looser fit (hide cuirass: neckline / chest edges 0.72 -> 1.02u off the skin); user set 0.2u. Morph rows, simulated verts and colliders are left
 # alone. Why: the same skin at an edge is a gap when deleted and pokes through the edge when kept; only moving the edge
 # settles it (2026-10-30: any-corner keeping and per-slider band deletion cancelled each other out). 31% of edge verts
 # against kept skin (rest gap ~0.16u) were pierced at +1 AND -1 whatever the transfer. 34 pre-zap snapshots, judged at
@@ -187,7 +195,7 @@ ZAP_PRESET_NIPPLES = not _flag("CBBE2UBE_NO_ZAP_PRESET_NIPPLES", False)
 # (median 0.22u, p90 0.64u); ~2,600 more body triangles kept per piece. Sizing for sliders moving together (RSS) and
 # keeping skin only beside the edge were both measured worse or no better.
 ZAP_EDGE_LIFT = not _flag("CBBE2UBE_NO_ZAP_EDGE_LIFT", False)
-ZAP_EDGE_LIFT_CAP = _knob("CBBE2UBE_ZAP_EDGE_LIFT_CAP", 1.0)
+ZAP_EDGE_LIFT_CAP = _knob("CBBE2UBE_ZAP_EDGE_LIFT_CAP", 0.2)
 ZAP_EDGE_LIFT_FEATHER = _knob("CBBE2UBE_ZAP_EDGE_LIFT_FEATHER", 2.0)
 ZAP_EDGE_LIFT_NEAR = 4.0       # edge verts this close to the body (along its normal) are candidates
 ZAP_EDGE_LIFT_R = 1.5          # kept skin within this of an edge vert's foot point borders it
@@ -1120,6 +1128,7 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
     presets = preset_paths()
     loaded, need, bind_vis = {}, None, None
     apexes, nip_local, gverts, poked = None, set(), {}, None
+    alpha_pts = []                             # #zap-nipple-opaque: centroids of see-through cover triangles
     tri_need = tri_bind = None                 # #zap-tri-vis: triangles seen in any pose / at bind
     # #zap-fp-armature: the planner's answer (an ARMA uses this mesh only as a first-person model) or the name rule
     first_person = bool(first_person) and ZAP_FP_ARMATURE; arm = None
@@ -1163,6 +1172,8 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
             if ZAP_ALPHA and len(T):
                 _om = _opaque_tris(s, T, p)
                 if _om is not None:
+                    if not _om.all():
+                        alpha_pts.append(np.asarray(s.verts, np.float64)[T[~_om]].mean(1))
                     T = T[_om]
             if len(T):
                 G.append((s.name, np.asarray(s.verts, np.float64), T))
@@ -1170,8 +1181,7 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
         BV = np.asarray(body.verts, np.float64); BT = full
         # nipple-local sliders left out: #zap-nipple-flat drops them from the cloth afterwards, and the answer must
         # not depend on whether that already happened (a re-run reads the flattened .tri)
-        poses = [()] + [tuple(kv for kv in _preset(pp, w != "_0") if ZAP_PRESET_NIPPLES or kv[0] not in nip_local)
-                        for pp in presets]
+        poses = [()] + [tuple(kv for kv in _preset(pp, w != "_0") if kv[0] not in nip_local) for pp in presets]
         zone = None
         if ZAP_NIPPLE_POKE and apexes and not first_person:
             zone = np.min([np.linalg.norm(BV - BV[a], axis=1) for a in apexes], axis=0) < ZAP_NIPPLE_R
@@ -1198,6 +1208,7 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
                 if ts is not None:
                     tri_bind = ts if tri_bind is None else (tri_bind | ts)
     full, Vref = full_body_tris(next(iter(files)) or "_1")
+    opaque_apex, nip_zone = [], np.zeros(len(Vref), bool)
     if first_person:
         need = arm >= ZAP_ARM_MIN                       # arms: all kept; the rest: gone
         de = ~need
@@ -1213,10 +1224,21 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
                 need = need.copy(); need[far] = False
         need = need | (Vref[:, 2] < float(ZAP_LEG_Z))
         de = ~need
+        if ZAP_NIPPLE_OPAQUE and apexes:
+            AP = np.concatenate(alpha_pts) if alpha_pts else np.zeros((0, 3))
+            for a in apexes:
+                d = np.linalg.norm(Vref - Vref[a], axis=1)
+                if len(AP) and (np.linalg.norm(AP - Vref[a], axis=1) < ZAP_NIPPLE_R + ZAP_NIPPLE_ALPHA_PAD).any():
+                    continue                               # see-through cloth near this nipple: the views decide
+                z = (d < ZAP_NIPPLE_R) & ~bind_vis
+                if z.any():
+                    de = de.copy(); de[z] = True; nip_zone |= z; opaque_apex.append(int(a))
         de = _keep_edge_band(de, bind_vis, Vref, poked)
     tri_keep = None
     if not first_person and tri_need is not None and tri_need.any():
         tri_keep = _seen_tri_keep(tri_need, tri_bind, bind_vis, full, Vref)
+        if nip_zone.any():                                 # #zap-nipple-opaque: only what the bind views saw stays
+            tri_keep &= ~nip_zone[full].any(1) | (tri_bind if tri_bind is not None else False)
     seen_v = np.zeros(len(Vref), bool)
     if tri_keep is not None:
         seen_v[full[tri_keep].ravel()] = True               # a seen triangle's corners: skin the views showed
@@ -1230,6 +1252,8 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
                 de = de.copy(); de[core] = True; hide_apex.append(int(a))
             elif ZAP_NIPPLE_HIDE_COVERED and core.any() and not need[core].any() and not seen_v[core].any():
                 de = de.copy(); de[core] = True; hide_apex.append(int(a))
+            elif a in opaque_apex and core.any() and not bind_vis[core].any():
+                de = de.copy(); de[core] = True; hide_apex.append(int(a))   # #zap-nipple-opaque
     gone = de[full].sum(1) >= 2
     if tri_keep is not None:
         gone &= ~tri_keep
@@ -1311,6 +1335,10 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
         if moved:
             out["edge_lift_moved"] = moved
         if keep_v is not None:
+            if nip_zone.any() or hide_apex:                # a zapped nipple stays zapped (#zap-nipple-opaque)
+                keep_v = keep_v & ~nip_zone
+                for a in hide_apex:
+                    keep_v &= np.linalg.norm(Vref - Vref[a], axis=1) >= ZAP_HIDE_CORE_R
             gone = gone & ~keep_v[full].any(1)
             kept = full[~gone]
             out["deleted_tris"], out["kept_tris"] = int(gone.sum()), int(len(kept))

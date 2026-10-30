@@ -21,11 +21,18 @@ Holes in the skin under some armours, seen in game.
 
 - After the body zap, a cloth edge that sits against kept skin is lifted off it at rest by what the worst single body
   slider needs, at +1 or -1, so no slider buries the edge in the skin beside it (#zap-edge-lift). The lift is at most
-  1u (`CBBE2UBE_ZAP_EDGE_LIFT_CAP`) and fades out 2u into the cloth; the skin under a lifted edge is kept, so the edge
-  never opens a view into the body. Morph rows, physics cloth and colliders are not touched.
-  `CBBE2UBE_NO_ZAP_EDGE_LIFT=1` turns it off.
-- The zap now judges each preset with its nipple sliders, as the game applies them (#zap-preset-nipples;
-  `CBBE2UBE_NO_ZAP_PRESET_NIPPLES=1` for the old poses).
+  0.2u (`CBBE2UBE_ZAP_EDGE_LIFT_CAP`; 1u at first read as a looser fit in game) and fades out 2u into the cloth; the
+  skin under a lifted edge is kept, so the edge never opens a view into the body. Morph rows, physics cloth and
+  colliders are not touched. `CBBE2UBE_NO_ZAP_EDGE_LIFT=1` turns it off.
+
+### Changed — nipples under opaque armour are zapped away entirely
+
+- Where no see-through (alpha) cloth lies within 7u of a nipple, all skin within 5u of it that the rest-pose views do
+  not see is deleted, whatever a preset shows there, and the cloth over it loses its nipple sliders and bump
+  (#zap-nipple-opaque; `CBBE2UBE_NO_ZAP_NIPPLE_OPAQUE=1` turns it off). Skin under lace or other alpha cloth, and a
+  nipple an opening shows at rest, are left to the zap's views as before. The edge lift never keeps a zapped nipple.
+- The zap ignores the presets' nipple sliders again. Judging the presets with them (briefly the default) kept nipple
+  skin under opaque armour, and the cloth over it kept its nipple sliders: an outline in game (iron cuirass).
 - On 34 pieces replayed from their pre-zap state, judged at rest, under the 12 strongest sliders at +1 and -1 and under
   the presets: cloth edges buried in the skin 210 -> 133 at rest and 7698 -> 5297 under single sliders (1558 -> 1663
   under the presets); hole area -12%; skin poking through cloth unchanged. About 920 cloth vertices move per piece

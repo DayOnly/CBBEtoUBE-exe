@@ -21,6 +21,7 @@ the edge (2026-10-30: 31% of such edge verts at +1 AND -1, whatever the transfer
 skin at rest by what the worst single slider needs, capped, and the skin under the lifted cloth is kept.
 """
 from types import SimpleNamespace
+from pathlib import Path
 
 import numpy as np
 
@@ -67,6 +68,7 @@ def _normals_plus_y(monkeypatch):
 
 def test_an_edge_beside_rising_skin_is_lifted_by_what_it_needs(monkeypatch):
     _normals_plus_y(monkeypatch)
+    monkeypatch.setattr(bz, "ZAP_EDGE_LIFT_CAP", 1.0)     # under the cap: the lift is what the slider needs
     nf, BT, BV, GV, tri = _piece(monkeypatch)
     over = {}
     moved, keep = bz._edge_lift({"_1": (nf, "x")}, BT, tri, over, set())
@@ -117,4 +119,10 @@ def test_seam_duplicates_are_not_an_edge():
 
 
 def test_both_options_are_on_by_default():
-    assert bz.ZAP_EDGE_LIFT and bz.ZAP_PRESET_NIPPLES and bz.ZAP_EDGE_LIFT_CAP == 1.0
+    assert bz.ZAP_EDGE_LIFT and bz.ZAP_NIPPLE_OPAQUE and bz.ZAP_EDGE_LIFT_CAP == 0.2
+
+
+def test_preset_nipples_is_removed():
+    # 2026-10-30: judging the presets with their nipple sliders drew a nipple outline through opaque armour in game
+    assert not hasattr(bz, "ZAP_PRESET_NIPPLES")
+    assert "CBBE2UBE_NO_ZAP_PRESET_NIPPLES" not in Path(bz.__file__).read_text(encoding="utf-8")
