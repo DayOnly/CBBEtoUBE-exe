@@ -490,7 +490,9 @@ run, and every "defaults-only" baseline described an unjudged configuration. The
 `warp_push_shell_cap` was in that same recipe and was **not** promoted: it is
 inert on every large spike measured and regresses two shapes while moving
 geometry by 1.38u (`tests/test_warp_flag_defaults.py`). A general "looks fine so
-far" does not overturn a specific negative measurement.
+far" does not overturn a specific negative measurement. It was removed on
+2026-10-30, along with the disproven opt-in leg-push variants (#zap-leg-push-room,
+-sim, -stack).
 
 **SECOND PROMOTION, 2026-08-26 — AND THE ORDER IS INVERTED.** Three more flags
 went DEFAULT ON: `bust_morph_chord` and `panel_rigid_surface_guard`, both

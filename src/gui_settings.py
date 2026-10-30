@@ -326,19 +326,6 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "genuinely cannot be determined -- too few triangles, or "
                     "triangles that cancel -- which is the case it was written "
                     "for."),
-    Setting("warp_push_shell_cap", "Never push a vertex through its own armour",
-            "Armor", "Fit and clearance", default=False,
-            env="CBBE2UBE_WARP_PUSH_SHELL_CAP", invert=False,
-            hint="Stops the clearance push driving hidden lining out through the outer shell.",
-            tooltip="The clearance push fires on any vertex too close to the "
-                    "body, including ones the author deliberately buried -- a "
-                    "lining, the hidden edge of a flap. Those cannot be where "
-                    "skin shows through, because there is more armour in front "
-                    "of them, so pushing them buys nothing and can drive them "
-                    "out through the outer shell as a spike. This caps the "
-                    "push at the garment's own surface. It only ever binds "
-                    "where armour is already in front of the vertex, so it "
-                    "cannot reopen clipping."),
     Setting("breast_follow_keep", "Keep the author's bust follow",
             "Armor", "Fit and clearance", default=True,
             env="CBBE2UBE_NO_BREAST_FOLLOW_KEEP", invert=True,
@@ -1695,7 +1682,7 @@ LAYOUT: "dict[str, tuple]" = {
         ("Fit and clearance", (
             "drape_xml_gate", "conform_to_body", "conform_fold_guard",
             "warp_shear_limit", "warp_delta_outlier",
-            "warp_delta_outlier_max", "warp_push_shell_cap",
+            "warp_delta_outlier_max",
             "surface_warp_field", "src_normal_fix",
             "strap_scale_uniform", "short_edge_cap", "layer_ride_bary",
             "authored_antipoke",

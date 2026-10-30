@@ -71,7 +71,7 @@ def test_a_clean_run_reports_no_pass_failures(tmp_path):
 
 def test_several_failures_on_ONE_piece_are_all_counted(tmp_path):
     """`reason` joins with '; ' -- the parser must not stop at the first one."""
-    joined = "; ".join([_pf("_cap_weights_map"), _pf("_cap_push_at_own_shell")])
+    joined = "; ".join([_pf("_cap_weights_map"), _pf("_smooth_warp_grooves")])
     txt = _report(tmp_path, [_cr("a.nif", joined)])
     assert "2 across 2 pass(es)" in txt
 

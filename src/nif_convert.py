@@ -108,8 +108,8 @@ from .envflags import flag as _flag, knob as _knob
 # `warp_push_shell_cap` was in the same recipe and was REFUSED: its own test
 # records it inert on every large spike measured and REGRESSING two shapes while
 # moving geometry 1.38u. A general "looks fine so far" does not overturn a
-# specific negative measurement. It is still True in the live recipe and False
-# in code, which is the one remaining recipe/code divergence.
+# specific negative measurement. It was never on in the deployed tool and was
+# removed 2026-10-30.
 _DEFAULTS_PROMOTED_2026_08_22 = (
     "MIXED_CLOTH_CLEARANCE",
     "PANEL_RIGIDITY",
@@ -369,7 +369,7 @@ BELT_OVERLAY_KEYWORDS = (
 # NEITHER default was reachable from the GUI before 2026-08-13, and neither is
 # the same number as `ANTIPOKE_BUST_CLEAR`, which is a different pass.
 BUST_FLAT_CLEARANCE = _knob("CBBE2UBE_BUST_FLAT_CLEAR", 0.12)
-# (split step 5) WARP_PUSH_SHELL_GAP, WARP_DELTA_OUTLIER_MAX, CONFORM_FOLD_GUARD_FEATHER, CONFORM_FOLD_GUARD_MARGIN ... live in nif_convert_fitgeom.py
+# (split step 5) WARP_DELTA_OUTLIER_MAX, CONFORM_FOLD_GUARD_FEATHER, CONFORM_FOLD_GUARD_MARGIN ... live in nif_convert_fitgeom.py
 # since 2026-09-01. Imported BY NAME so `nc.<name>` keeps working everywhere.
 from .nif_convert_fitgeom import (  # noqa: E402
     ADAPTIVE_CLEARANCE_BASE,
@@ -712,7 +712,7 @@ WARP_SHEAR_LIMIT = _flag("CBBE2UBE_WARP_SHEAR_LIMIT", False)
 # A 3.9u spike is a visible broken vertex; 0.05u is not. That asymmetry is the
 # whole argument -- not the count of shapes that moved either way.
 #
-# Its sibling `WARP_PUSH_SHELL_CAP` was measured the same way and STAYS OFF: it
+# Its sibling `WARP_PUSH_SHELL_CAP` (removed 2026-10-30) was measured the same way: it
 # touches ZERO verts on every shape of that cuirass carrying a large spike
 # (Skirt, Pants, Seeves, SteelArmor.012), wins only marginally where it does fire
 # (CuirassFur 5.498 -> 5.491), regresses Corset 5.916 -> 5.978 and HeavyFur 4.034
@@ -840,37 +840,9 @@ STRAP_SCALE_ANCHOR = 0.05
 # differently from each other reads as distortion on a piece whose geometry is
 # unchanged. Fix follow, not form.
 
-# #warp-push-shell-cap -- OPT-IN. Never push a vertex out THROUGH its own
-# garment.
-#
-# The standoff push exists for exactly one reason: stop body skin showing
-# through the garment. It fires on any vertex whose clearance is below the
-# floor, including vertices the author deliberately BURIED -- a lining, the
-# hidden edge of a flap. Those cannot be where skin shows through, because
-# there is more garment in front of them, so pushing them buys nothing; and
-# when the push is large it drives them out THROUGH the outer shell, where they
-# become a visible spike.
-#
-# Measured on one converted cuirass, the three worst fliers (a mirrored pair at
-# the waist plus one more) sat 2.0-2.5u INSIDE the body in the author's own
-# mesh with 10-15 garment triangles outward of them, and the push moved them to
-# +1.3u -- straight through the shell. Their own normals were near
-# PERPENDICULAR to the body normal they were pushed along (-0.03, -0.10), i.e.
-# the correspondence driving the push did not describe them at all.
-#
-# WHY IT CANNOT REOPEN CLIPPING: the cap binds ONLY where the ray from the
-# vertex along its push direction HITS this garment's own surface. Where that
-# ray escapes -- the only case in which skin can actually be seen -- nothing
-# changes. That is a strictly stronger safety argument than the existing
-# smooth-then-revert, which trades a clip for a spike and keeps the spike.
-# STAYS OPT-IN. Considered for promotion 2026-08-22 with the other four
-# recipe flags and REJECTED: `test_the_shell_cap_is_OFF_and_the_
-# measurement_is_why` records that it is INERT on every large spike
-# measured and REGRESSES TWO SHAPES while moving geometry by 1.38u.
-# A general "looks fine so far" does not overturn a specific negative
-# measurement. NOTE: the live user recipe has it ON -- that is worth
-# raising with them, not silently blessing.
-WARP_PUSH_SHELL_CAP = _flag("CBBE2UBE_WARP_PUSH_SHELL_CAP", False)
+# #warp-push-shell-cap -- REMOVED 2026-10-30 (was opt-in): cap the standoff push at the garment's own shell.
+# Refused for promotion 2026-08-22 and never on in the deployed tool: inert on every large spike measured,
+# regressed two shapes while moving geometry 1.38u.
 # (moved to nif_convert_fitgeom.py, 2026-09-01)
 
 # #winding-consistency -- DEFAULT ON. Every written shape leaves CONSISTENTLY

@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Fixed — the body zap no longer deletes skin a camera can see through a gap or under a preset
+
+Holes in the skin under some armours, seen in game.
+
+- The zap judged skin only at triangle corners. A triangle whose middle shows through a slit (between straps, at an
+  opening's edge) while all three corners sit under cloth was deleted. The zap's own views now also record every body
+  triangle seen front-most at some pixel with no cover in front of the body's far side, and a seen triangle is never
+  deleted (#zap-tri-vis, same views, no extra triangles drawn). `CBBE2UBE_NO_ZAP_TRI_VIS=1` turns it off.
+- Skin a preset shows through a real opening (a bigger bust rising past a neckline) is kept wherever it is. The 1u
+  limit (#zap-preset-keep) deleted it when it lay more than 1u from skin seen at rest; `CBBE2UBE_ZAP_PRESET_KEEP_R=<u>`
+  brings the limit back.
+- Judged with 1280 cameras per shape (close perspective orbits included) at rest and under the three zap presets, on
+  34 pieces replayed from their pre-zap state: the worst camera's hole summed over the pieces 339 -> 250 u^2, 23 pieces
+  better, none worse; about 290 more body triangles kept per piece (0.5% of the body).
+
+### Removed — four disproven opt-in options
+
+None was on by default or in the deployed settings, so output is unchanged.
+
+- `CBBE2UBE_WARP_PUSH_SHELL_CAP` (and `CBBE2UBE_WARP_PUSH_SHELL_GAP`, and its row in the settings window): cap the
+  standoff push at the garment's own shell. Refused for promotion 2026-08-22: inert on every large spike measured,
+  two shapes worse, 1.38u of geometry moved.
+- `CBBE2UBE_ZAP_LEG_PUSH_ROOM` (and `CBBE2UBE_ZAP_LEG_PUSH_ROOM_COLLIDERS`): stop the zap's leg lift short of physics
+  cloth and colliders. Hip poke at rest 400 -> 817 u^2.
+- `CBBE2UBE_ZAP_LEG_PUSH_SIM`: lift physics cloth with the rest. Skin in walk/run worse on two pieces.
+- `CBBE2UBE_ZAP_LEG_PUSH_STACK`: layers above a lifted one ride its lift. No measurable effect.
+
 ### Faster — a full conversion no longer waits on one piece running out of memory, and the end of the run is shorter
 
 Output is unchanged: byte-identical on 27 sampled pieces (88 files) and on a batch of one mod run with the old and

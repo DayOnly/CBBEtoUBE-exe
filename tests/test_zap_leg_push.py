@@ -96,27 +96,13 @@ def _dress_over_robe(monkeypatch):
     return nf, BT, GV, DV
 
 
-def test_a_physics_dress_above_rides_the_lift(monkeypatch):
-    # #zap-leg-push-stack: the dress the XML lists as a collider is no cover (the robe still clears the skin) but it
-    # rests above the robe, so it is lifted with it and the two keep their order
-    monkeypatch.setattr(bz, "ZAP_LEG_PUSH_STACK", True)
-    monkeypatch.setattr(bz, "ZAP_LEG_PUSH_SIM", True)
-    nf, BT, GV, DV = _dress_over_robe(monkeypatch)
-    out, _ = bz._push_kept_legs(nf, "_1", BT, {"Dress"}, {})
-    c = int(np.argmin(np.linalg.norm(GV[:, [0, 2]] - [0.0, 30.0], axis=1)))
-    robe, dress = out["Robe"][c, 1] - GV[c, 1], out["Dress"][c, 1] - DV[c, 1]
-    assert robe > 0.3 and dress >= robe - 0.05
-    assert out["Dress"][c, 1] > out["Robe"][c, 1], "the dress stays above"
-
-
-def test_dress_stack_off_by_default(monkeypatch):
+def test_a_physics_dress_listed_as_a_collider_is_never_lifted(monkeypatch):
     nf, BT, GV, DV = _dress_over_robe(monkeypatch)
     out, _ = bz._push_kept_legs(nf, "_1", BT, {"Dress"}, {})
     assert "Robe" in out and "Dress" not in out
 
 
 def test_simulated_cloth_held_still_by_default(monkeypatch):
-    assert not bz.ZAP_LEG_PUSH_SIM and not bz.ZAP_LEG_PUSH_STACK
     nf, BT, GV = _piece(monkeypatch)
     nf.shapes[1].bone_weights = {"Skirt Bone 01": [(i, 1.0) for i in range(len(GV))]}
     nf.shapes[1].bone_names = ["Skirt Bone 01"]
@@ -152,78 +138,3 @@ def test_the_lift_is_capped_for_shallow_poke(monkeypatch):
     out, st = bz._push_kept_legs(nf, "_1", BT, set(), {})
     lift = out["Robe"][:, 1] - GV[:, 1]
     assert lift.max() <= bz.ZAP_LEG_PUSH_MAX_DEPTH + 0.1 + 1e-9
-
-
-
-
-def _room(monkeypatch, y, sim=False, flags=0, name="Skirt", lift=0.5):
-    """#zap-leg-push-room on its own: the robe (0.3u inside the skin) lifted `lift` along +y under a layer at `y`."""
-    monkeypatch.setattr(bz, "ZAP_LEG_PUSH_ROOM", 0.2)
-    nf, BT, GV = _piece(monkeypatch)
-    SV, ST = _sheet(19, 9.0, y)
-    bones = {"Skirt Bone 01": [(i, 1.0) for i in range(len(SV))]} if sim else None
-    nf.shapes.append(_shape(name, SV, ST, bones=bones, flags=flags))
-    d = np.tile([0.0, lift, 0.0], (len(GV), 1))
-    body_bones = set(nf.shapes[0].bone_names)
-    out, n = bz._room_cap(nf, GV, d, np.zeros(len(GV), bool), set(), {}, body_bones)
-    return out[:, 1], n
-
-
-def test_the_lift_leaves_room_under_a_physics_skirt(monkeypatch):
-    # the skirt (simulated, never lifted) 0.4u above the robe: the robe stops ROOM short of it
-    lift, n = _room(monkeypatch, 0.1, sim=True)
-    assert n > 0 and np.allclose(lift, 0.4 - bz.ZAP_LEG_PUSH_ROOM, atol=1e-6)
-
-
-def test_a_layer_far_above_or_a_rigid_one_does_not_cap(monkeypatch):
-    lift, n = _room(monkeypatch, 2.0, sim=True)
-    assert n == 0 and np.allclose(lift, 0.5)
-    lift, n = _room(monkeypatch, 0.1)                         # rigid cloth: #zap-leg-push lifts it too
-    assert n == 0 and np.allclose(lift, 0.5)
-
-
-def test_room_under_colliders_and_its_switch(monkeypatch):
-    lift, n = _room(monkeypatch, 0.1, flags=1, name="PantsCol")
-    assert n > 0 and np.allclose(lift, 0.4 - bz.ZAP_LEG_PUSH_ROOM, atol=1e-6)
-    monkeypatch.setattr(bz, "ZAP_LEG_PUSH_ROOM_COLLIDERS", False)
-    assert _room(monkeypatch, 0.1, flags=1, name="PantsCol")[1] == 0
-
-
-def test_room_is_opt_in_and_off_by_default(monkeypatch):
-    assert bz.ZAP_LEG_PUSH_ROOM == 0.0
-    monkeypatch.setattr(bz, "ZAP_LEG_PUSH_ROOM", 0.2)
-    nf, BT, GV = _piece(monkeypatch)
-    SV, ST = _sheet(19, 9.0, 0.1)
-    nf.shapes.append(_shape("PantsCol", SV, ST, flags=1))
-    capped = bz._push_kept_legs(nf, "_1", BT, set(), {})[1].get("room_capped")
-    monkeypatch.setattr(bz, "ZAP_LEG_PUSH_ROOM", 0.0)
-    st = bz._push_kept_legs(nf, "_1", BT, set(), {})[1]
-    assert capped and "room_capped" not in st
-
-
-def _centre_lift(out, GV):
-    c = int(np.argmin(np.linalg.norm(GV[:, [0, 2]] - [0.0, 30.0], axis=1)))
-    return out["Robe"][c, 1] - GV[c, 1] if "Robe" in out else 0.0
-
-
-def test_physics_cloth_is_lifted_like_any_layer(monkeypatch):
-    # #zap-leg-push-sim (opt-in): a physics skirt just under the skin is lifted (the layer the skin pokes through)
-    monkeypatch.setattr(bz, "ZAP_LEG_PUSH_SIM", True)
-    nf, BT, GV = _piece(monkeypatch)
-    nf.shapes[1].bone_weights = {"Skirt Bone 01": [(i, 1.0) for i in range(len(GV))]}
-    nf.shapes[1].bone_names = ["Skirt Bone 01"]
-    out, st = bz._push_kept_legs(nf, "_1", BT, set(), {})
-    assert st["exposed_after"] == 0 and _centre_lift(out, GV) > 0.3
-
-
-def test_the_skirt_over_a_plate_is_lifted_not_the_plate(monkeypatch):
-    # plate 0.6u inside the skin, physics skirt 0.3u inside it: the skirt (the layer just under the skin) clears the
-    # poke; the plate keeps its place under it, so the two keep their order
-    monkeypatch.setattr(bz, "ZAP_LEG_PUSH_SIM", True)
-    nf, BT, GV = _piece(monkeypatch, cloth_y=-0.6)
-    SV, ST = _sheet(19, 9.0, -0.3)
-    nf.shapes.append(_shape("Skirt", SV, ST, bones={"Skirt Bone 01": [(i, 1.0) for i in range(len(SV))]}))
-    out, st = bz._push_kept_legs(nf, "_1", BT, set(), {})
-    c = int(np.argmin(np.linalg.norm(SV[:, [0, 2]] - [0.0, 30.0], axis=1)))
-    assert "Skirt" in out and out["Skirt"][c, 1] > 0.0
-    assert "Robe" not in out or out["Robe"][c, 1] < out["Skirt"][c, 1]

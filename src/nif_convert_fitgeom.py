@@ -83,7 +83,6 @@ WARP_DELTA_OUTLIER_MAX = _knob("CBBE2UBE_WARP_DELTA_OUTLIER_MAX", 0.5)
 
 # Stop just SHORT of the occluder, so a capped vertex rests inside its own
 # shell instead of landing exactly on it and z-fighting.
-WARP_PUSH_SHELL_GAP = _knob("CBBE2UBE_WARP_PUSH_SHELL_GAP", 0.1)
 
 # ---- Anti-poke pass -----------------------------------------------------
 # clear_armor_outside_body() runs after warp/inflate/conform and pushes armor
@@ -655,58 +654,6 @@ def _smooth_warp_grooves(src_world, warped, ube_body_verts,
         _note_pass_failure("_smooth_warp_grooves", _e)
         return warped
 
-def _cap_push_at_own_shell(verts, tris, dirs, push,
-                          gap=WARP_PUSH_SHELL_GAP, tmax=8.0):
-    """Cap each standoff push so a vertex never emerges through its own garment.
-
-    For every vertex with a pending push, cast a ray from it along the push
-    direction against THIS garment's triangles. A finite hit means there is
-    more garment in front of the vertex: it is not a place skin can show, so
-    the push is capped at (hit distance - `gap`). No hit means the vertex is
-    genuinely exposed and the push is left exactly as it was -- which is what
-    makes this unable to reopen clipping.
-
-    The ray origin is nudged `gap` along the direction so the vertex's OWN
-    incident triangles, which it lies on, are behind the origin and cannot
-    register as an occluder at t~0.
-
-    Returns (push, n_capped).
-    """
-    from src import fit_metrics as _fm
-    p = np.array(push, dtype=np.float64, copy=True)
-    t = np.asarray(tris, dtype=np.int64)
-    if t.ndim != 2 or t.shape[1] != 3 or len(t) == 0:
-        return p, 0
-    idx = np.flatnonzero(p > 1e-6)
-    if not len(idx):
-        return p, 0
-    V = np.asarray(verts, dtype=np.float64)
-    D = np.asarray(dirs, dtype=np.float64)[idx]
-    dl = np.linalg.norm(D, axis=1)
-    ok = dl > 1e-9
-    if not ok.any():
-        return p, 0
-    idx, D, dl = idx[ok], D[ok], dl[ok]
-    D = D / dl[:, None]
-    O = V[idx] + D * float(gap)
-
-    tester = _fm._ClipTester(V, t, tmax=float(tmax))
-    hit = _fm.cast_chunked(tester, O, D, finite_only=False)
-    hit = np.asarray(hit, dtype=np.float64)
-    if len(hit) != len(idx):
-        return p, 0                      # alignment lost -> change nothing
-    finite = np.isfinite(hit)
-    if not finite.any():
-        return p, 0
-    # `hit` is measured from the NUDGED origin, so the vertex-to-occluder
-    # distance is (gap + hit). Stopping `gap` short of the occluder therefore
-    # allows exactly (gap + hit) - gap == hit.
-    allowed = np.maximum(hit[finite], 0.0)
-    target = np.minimum(p[idx[finite]], allowed)
-    capped = int((target < p[idx[finite]] - 1e-9).sum())
-    p[idx[finite]] = target
-    return p, capped
-
 def _cap_short_edge_stretch(src_verts, out_verts, tris):
     """A pair of verts the author placed 0.02u apart may not end up 0.4u apart.
     #short-edge-cap
@@ -1228,19 +1175,6 @@ def warp_armor_by_body_delta(
             push_mag[need_push] = min_standoff - signed[need_push]
             if max_distance is not None and max_distance > 0:
                 push_mag[need_push] *= push_falloff[need_push]
-            # #warp-push-shell-cap, BEFORE `raw_mag` is snapshotted. The
-            # safety clamp below can revert a vertex to the UNSMOOTHED result,
-            # so capping only the smoothed field would let the very spike this
-            # is removing come straight back through that path.
-            if _nc().WARP_PUSH_SHELL_CAP and tris is not None:
-                try:
-                    push_mag, _n_cap = _cap_push_at_own_shell(
-                        warped, tris, near_n, push_mag)
-                except Exception as _e:
-                    # measurement failure must not move geometry -- but record
-                    # it, or a cap that never runs looks like a cap that never
-                    # had anything to do.
-                    _note_pass_failure("_cap_push_at_own_shell", _e)
             raw_mag = push_mag.copy()
             if _nc().WARP_STANDOFF_SMOOTH_ENABLED and tris is not None:
                 # Floored at the raw requirement: smoothing may only ADD push to

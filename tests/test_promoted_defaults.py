@@ -24,9 +24,8 @@ every "defaults-only" baseline described an unjudged configuration. The
 "everything looks as it should", so they were promoted.
 
 `warp_push_shell_cap` was in that same recipe and was deliberately NOT promoted:
-`test_warp_flag_defaults` records that it is inert on every large spike measured
-and REGRESSES TWO SHAPES while moving geometry by 1.38u. A general "looks fine
-so far" does not overturn a specific negative measurement.
+it was inert on every large spike measured and REGRESSED TWO SHAPES while moving
+geometry by 1.38u. It was removed 2026-10-30.
 
 THE TRAP THIS FILE EXISTS TO CATCH. Promoting a bool default to True exposed a
 latent bug in `env_string_for`: its bool branch emitted "1" or None and never
@@ -222,10 +221,10 @@ def test_code_and_gui_agree_on_the_new_default(key):
     assert gs.defaults()[key] == want, f"GUI default for {key} is not {want!r}"
 
 
-def test_the_shell_cap_was_NOT_promoted_and_the_reason_is_recorded():
-    """It was in the same recipe. It stays opt-in because a MEASUREMENT says so."""
-    assert nc.WARP_PUSH_SHELL_CAP is False
-    assert gs.defaults()["warp_push_shell_cap"] is False
+def test_the_shell_cap_is_gone_from_code_and_gui():
+    """Refused for promotion on a measurement, then removed (2026-10-30): no flag, no GUI row."""
+    assert not hasattr(nc, "WARP_PUSH_SHELL_CAP")
+    assert "warp_push_shell_cap" not in gs.defaults()
 
 
 @pytest.mark.parametrize("key", sorted(PROMOTED))

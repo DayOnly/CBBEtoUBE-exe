@@ -148,24 +148,10 @@ ZAP_LEG_PUSH_Z = _knob("CBBE2UBE_ZAP_LEG_PUSH_Z", 80.0)
 # hits are the far side of a hem or an inner layer through the leg, and lifting toward them raised tents that showed
 # MORE skin (2026-10-21: one dress's legs 9 -> 47 u^2 at bind, p50 depth 4.6u).
 ZAP_LEG_PUSH_MAX_DEPTH = _knob("CBBE2UBE_ZAP_LEG_PUSH_MAX_DEPTH", 1.0)
-# #zap-leg-push-room (OPT-IN, CBBE2UBE_ZAP_LEG_PUSH_ROOM=<u>, e.g. 0.2): a lift stops that far short of simulated
-# cloth or a collider above the lifted vert. The lift never moves simulated cloth, so a plate lifted toward a physics
-# skirt / dress (or off a collider) closed the gap and the two swapped order in walk/run (layer flips worse on 4
-# pieces, better on none). NOT ON: the physics cloth and the body-shaped colliders dip to the skin exactly where the
-# hips need the lift -- 0.2u (21 pieces change): flips 3 better / 0 worse but hip poke at bind 400 -> 817 u^2 (12
-# worse); sim cloth only (CBBE2UBE_ZAP_LEG_PUSH_ROOM_COLLIDERS=0): 9 of 21 worse (2026-10-21).
-ZAP_LEG_PUSH_ROOM = _knob("CBBE2UBE_ZAP_LEG_PUSH_ROOM", 0.0)
-# #zap-leg-push-sim (OPT-IN, CBBE2UBE_ZAP_LEG_PUSH_SIM=1): the simulated verts of the lifted cloth move with it.
-# #zap-leg-push-stack (OPT-IN, CBBE2UBE_ZAP_LEG_PUSH_STACK=1): a layer resting above a lifted one rides its lift
-# (#stack-push's rule), physics dresses the XML lists as colliders included (no cover: they swing off the skin).
-# Both tried 2026-10-21 against the walk/run layer flips the lift adds under physics dresses (two steel cuirasses):
-# the flips stayed -- the offline walk/run poses physics cloth on its own still bones while the lifted plate follows
-# the leg, so any plate lift reads as more crossings and only the game can judge it. SIM: hips at bind 400 -> 224 u^2
-# but walk/run skin worse on 2 (one dress 1007 -> 1097); STACK: no measurable effect. Counting the dresses as COVER
-# instead: hips 400 -> 555 (9 worse) -- wrong, they swing off the skin.
-ZAP_LEG_PUSH_SIM = _flag("CBBE2UBE_ZAP_LEG_PUSH_SIM", False)
-ZAP_LEG_PUSH_STACK = _flag("CBBE2UBE_ZAP_LEG_PUSH_STACK", False)
-ZAP_LEG_PUSH_ROOM_COLLIDERS = bool(_knob("CBBE2UBE_ZAP_LEG_PUSH_ROOM_COLLIDERS", 1, int))
+# REMOVED 2026-10-30, disproven 2026-10-21 (all were opt-in): #zap-leg-push-room (stop the lift short of physics
+# cloth / colliders: hip poke at bind 400 -> 817 u^2), #zap-leg-push-sim (lift physics cloth too: walk/run skin worse
+# on 2) and #zap-leg-push-stack (layers above ride the lift: no measurable effect). The walk/run layer flips they
+# targeted come from the offline poses holding physics cloth on still bones -- only the game can judge them.
 # #zap-fp-armature (DEFAULT ON since 2026-10-21; CBBE2UBE_NO_ZAP_FP_ARMATURE=1 = the name rule alone): a mesh the
 # plugins' ARMAs use only as a FIRST-PERSON model (MOD4/MOD5, never MOD2/MOD3) is zapped as a viewmodel (arms kept,
 # the rest of the injected body gone) whatever its file is called. The name rule alone (`1stperson` / `firstperson`,
@@ -928,60 +914,6 @@ def _weld_max_lift(V, d, chain) -> np.ndarray:
     return d
 
 
-def _room_cap(nf, gV, d, chain, coll, cur, body_bones) -> "tuple[np.ndarray, int]":
-    """#zap-leg-push-room: `d` with each lift shortened so the vert stays ZAP_LEG_PUSH_ROOM under the first
-    simulated cloth (any shape's triangles with a simulated vert) or collider shape its lift runs into; the number of
-    verts capped."""
-    from . import nif_convert as nc
-    from . import fit_metrics as fm
-    CV, CT, off = [], [], 0
-    for s in nf.shapes:
-        if s.name in nc.UBE_BODY_INJECT_NAMES or not len(s.tris):
-            continue
-        try:
-            hidden = bool(int(s.flags) & 1)
-        except Exception:
-            hidden = False
-        T = np.asarray(s.tris, np.int64).reshape(-1, 3)
-        if not ((hidden or s.name in coll) and ZAP_LEG_PUSH_ROOM_COLLIDERS):
-            T = T[_free_verts(s, body_bones)[T].any(1)]
-        if len(T):
-            CV.append(np.asarray(cur.get(s.name, s.verts), np.float64)); CT.append(T + off); off += len(CV[-1])
-    L = np.linalg.norm(d, axis=1)
-    lift = np.flatnonzero((L > 1e-4) & ~np.asarray(chain, bool))
-    if not CV or not len(lift):
-        return d, 0
-    room = float(ZAP_LEG_PUSH_ROOM)
-    t = fm._ClipTester(np.concatenate(CV), np.concatenate(CT), tmax=float(L.max()) + room + 0.1).cast(
-        gV[lift], d[lift] / L[lift, None], tmin=1e-3)
-    t = np.nan_to_num(np.asarray(t, np.float64), nan=np.inf, posinf=np.inf)
-    allow = np.clip(t - room, 0.0, None)
-    cap = allow < L[lift]
-    d = d.copy()
-    d[lift[cap]] *= (allow[cap] / L[lift[cap]])[:, None]
-    return d, int(cap.sum())
-
-
-def _stack_lift(Vs, d, chain, BV, BN) -> np.ndarray:
-    """#zap-leg-push-stack: the extra lift (concatenated like `d`) that tops each layer up to the lift of a layer it
-    rests above -- `nif_convert._stack_push_p1` on the per-shape lifts; `chain` verts never move."""
-    from types import SimpleNamespace
-    from . import nif_convert as nc
-    jobs, start = [], 0
-    for V in Vs:
-        dv = d[start:start + len(V)]
-        src = SimpleNamespace()
-        nc._STACK_AP[id(src)] = (V, V + dv, np.asarray(chain[start:start + len(V)], bool))
-        jobs.append({"src": src, "verts": V + dv})
-        start += len(V)
-    try:
-        nc._stack_push_p1(jobs, BV, BN)
-    finally:
-        for j in jobs:
-            nc._STACK_AP.pop(id(j["src"]), None)
-    return np.concatenate([j.get("stack_extra", np.zeros((len(V), 3))) for j, V in zip(jobs, Vs)])
-
-
 def _push_kept_legs(nf, w, kept, coll, cur) -> "tuple[dict, dict]":
     """#zap-leg-push for one weight file: ({shape name: new verts}, stats). `kept` = the body triangles the zap keeps,
     `coll` = collider shapes (never moved), `cur` = verts another zap step already replaced ({name: verts})."""
@@ -1016,27 +948,12 @@ def _push_kept_legs(nf, w, kept, coll, cur) -> "tuple[dict, dict]":
     if not names:
         return {}, {"skipped": "no cloth"}
     gV = np.concatenate(Vs); gT = np.concatenate(Ts); ch = np.concatenate(chain)
-    if ZAP_LEG_PUSH_SIM:
-        ch = np.zeros_like(ch)                          # #zap-leg-push-sim: physics cloth is a layer like any other
     new, st = fm.minimum_push(gV, gT, np.concatenate(Ns), BV, fw, _body_normals(BV, fw), is_chain=ch, region=region,
                               max_depth=float(ZAP_LEG_PUSH_MAX_DEPTH),
                               max_total=float(ZAP_LEG_PUSH_MAX_DEPTH) + 0.1)   # shallow poke needs no more
     if not st.get("moved"):
         return {}, st
     d = new - gV
-    if ZAP_LEG_PUSH_ROOM:
-        d, st["room_capped"] = _room_cap(nf, gV, d, ch, coll, cur, body_bones)
-    if ZAP_LEG_PUSH_STACK and nc._STACK_PUSH:
-        # #zap-leg-push-stack: a visible collider-listed shape (a physics dress) is no cover -- it swings off the skin
-        # -- but where it rests just above a lifted layer it rides the lift, so the two keep their order
-        pas = [(s.name, np.asarray(cur.get(s.name, s.verts), np.float64), _free_verts(s, body_bones))
-               for s in nf.shapes if s.name in coll and len(s.tris) and not (int(getattr(s, "flags", 0) or 0) & 1)]
-        if pas:
-            names = names + [n for n, _, _ in pas]; Vs = Vs + [V for _, V, _ in pas]
-            pch = np.concatenate([np.zeros(len(V), bool) if ZAP_LEG_PUSH_SIM else c for _, V, c in pas])
-            gV = np.concatenate([gV] + [V for _, V, _ in pas]); ch = np.concatenate([ch, pch])
-            d = np.concatenate([d, np.zeros((len(pch), 3))])
-        d = d + _stack_lift(Vs, d, ch, BV, _body_normals(BV, fw))
     d = _weld_max_lift(gV, d, ch)
     out, start = {}, 0
     for nm, V in zip(names, Vs):
@@ -1239,8 +1156,7 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
             if lifted:
                 vert_over.setdefault(w, {}).update(lifted)
                 out.setdefault("leg_push", {})[w] = {k: st.get(k) for k in
-                                                     ("moved", "exposed_before", "exposed_after", "max_push",
-                                                      "room_capped")}
+                                                     ("moved", "exposed_before", "exposed_after", "max_push")}
     for w, (nf, p) in loaded.items():
         cur = next(s for s in nf.shapes if s.name == BODY_NAME)
         if (len(cur.tris) == len(kept) and np.array_equal(np.asarray(cur.tris, np.int64), kept)
