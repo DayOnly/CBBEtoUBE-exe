@@ -170,6 +170,28 @@ ZAP_NIPPLE_R = 5.0     # = sliderset_gen.NIPPLE_MORPH_BRIDGE_R_OUT: past this a 
 # far from bind-visible skin goes; one whose corners poke through the cloth at a nipple counts as covered
 # (#zap-nipple-poke); and a seen one blocks #zap-nipple-hide.
 ZAP_TRI_VIS = not _flag("CBBE2UBE_NO_ZAP_TRI_VIS", False)
+# #zap-preset-nipples (DEFAULT ON since 2026-10-30; CBBE2UBE_NO_ZAP_PRESET_NIPPLES=1 = the old poses): the zap's presets
+# keep their nipple-local sliders, as the game applies them. Leaving them out judged a body the game never shows: skin
+# a preset's nipple sliders bring into view was deleted. 34 pre-zap snapshots: gap skin -2.5% (7 pieces better / 1
+# worse), strict poke flat, ~70 more kept triangles per piece.
+ZAP_PRESET_NIPPLES = not _flag("CBBE2UBE_NO_ZAP_PRESET_NIPPLES", False)
+# #zap-edge-lift (DEFAULT ON since 2026-10-30; CBBE2UBE_NO_ZAP_EDGE_LIFT=1 off): after the zap, a cloth EDGE that sits
+# against kept skin is lifted off it at rest far enough that no single body slider, at +1 or -1, buries the edge in the
+# skin beside it -- capped at ZAP_EDGE_LIFT_CAP, feathered ZAP_EDGE_LIFT_FEATHER into the cloth -- and the skin under the
+# lifted cloth is kept (a lifted edge opens a sight line under it). Morph rows, simulated verts and colliders are left
+# alone. Why: the same skin at an edge is a gap when deleted and pokes through the edge when kept; only moving the edge
+# settles it (2026-10-30: any-corner keeping and per-slider band deletion cancelled each other out). 31% of edge verts
+# against kept skin (rest gap ~0.16u) were pierced at +1 AND -1 whatever the transfer. 34 pre-zap snapshots, judged at
+# rest, under the 12 strongest sliders at +-1 and under the presets: buried edge verts rest 210 -> 133, sliders 7698 ->
+# 5297, presets 1558 -> 1663; gap skin -12% (19 better / 4 worse); strict poke flat; ~920 cloth verts moved per piece
+# (median 0.22u, p90 0.64u); ~2,600 more body triangles kept per piece. Sizing for sliders moving together (RSS) and
+# keeping skin only beside the edge were both measured worse or no better.
+ZAP_EDGE_LIFT = not _flag("CBBE2UBE_NO_ZAP_EDGE_LIFT", False)
+ZAP_EDGE_LIFT_CAP = _knob("CBBE2UBE_ZAP_EDGE_LIFT_CAP", 1.0)
+ZAP_EDGE_LIFT_FEATHER = _knob("CBBE2UBE_ZAP_EDGE_LIFT_FEATHER", 2.0)
+ZAP_EDGE_LIFT_NEAR = 4.0       # edge verts this close to the body (along its normal) are candidates
+ZAP_EDGE_LIFT_R = 1.5          # kept skin within this of an edge vert's foot point borders it
+ZAP_EDGE_LIFT_TOL = 0.05
 _LEAN = [False]
 
 
@@ -914,6 +936,122 @@ def _weld_max_lift(V, d, chain) -> np.ndarray:
     return d
 
 
+def _open_edge_verts(V, T) -> "tuple[np.ndarray, np.ndarray]":
+    """(mask of verts on an open edge, weld map): seam duplicates are welded by position first, so a UV seam is not an
+    edge."""
+    from collections import defaultdict
+    key = np.round(np.asarray(V, np.float64) / 1e-3).astype(np.int64)
+    _, rep_, inv = np.unique(key, axis=0, return_index=True, return_inverse=True)
+    W = rep_[inv.ravel()]
+    cnt = defaultdict(int)
+    for a, b, c in W[np.asarray(T, np.int64)]:
+        for e in ((a, b), (b, c), (c, a)):
+            cnt[(min(e), max(e))] += 1
+    ends = [v for (a, b), n in cnt.items() if n == 1 for v in (a, b)]
+    mask = np.zeros(len(V), bool)
+    if ends:
+        mask[np.isin(W, np.unique(ends))] = True
+    return mask, W
+
+
+def _edge_lift(loaded, kept, tri, vert_over, coll) -> "tuple[int, np.ndarray | None]":
+    """#zap-edge-lift: lift cloth edges off the kept skin they border (updates `vert_over`); returns (verts moved, bool
+    per body vert to keep -- the skin under the lifted cloth, or None)."""
+    from . import nif_convert as nc
+    from . import sliderset_gen as sg
+    bt = tri.get(BODY_NAME)
+    if bt is None:
+        return 0, None
+    sliders = [m for m in bt.morphs if len(m.idx) and "nipple" not in m.name.lower() and "areola" not in m.name.lower()]
+
+    def dense(m, n):
+        D = np.zeros((n, 3))
+        if m is not None:
+            i = np.asarray(m.idx, np.int64); ok = (i >= 0) & (i < n)
+            D[i[ok]] = np.asarray(m.delta, np.float64)[ok]
+        return D
+
+    cap, feather = float(ZAP_EDGE_LIFT_CAP), float(ZAP_EDGE_LIFT_FEATHER)
+    moved, keep_v = 0, None
+    for w, (nf, _p) in loaded.items():
+        body = next((s for s in nf.shapes if s.name == BODY_NAME), None)
+        if body is None:
+            continue
+        full, _ = full_body_tris(w or "_1")
+        full = np.asarray(full, np.int64)
+        BV = np.asarray(body.verts, np.float64)
+        bn = _body_normals(BV, full)
+        keptv = np.zeros(len(BV), bool); keptv[np.asarray(kept, np.int64).ravel()] = True
+        kidx = np.flatnonzero(keptv)
+        if not len(kidx):
+            continue
+        ktree = cKDTree(BV[kidx]); btree = cKDTree(BV)
+        BD = {m.name: dense(m, len(BV)) for m in sliders}
+        body_bones = set(body.bone_names or [])
+        cur = vert_over.get(w) or {}
+        for s in nf.shapes:
+            if s.name in nc.UBE_BODY_INJECT_NAMES or s.name in coll or not len(s.tris):
+                continue
+            try:
+                if int(s.flags) & 1:
+                    continue
+            except Exception:
+                pass
+            ts = tri.get(s.name)
+            V = np.asarray(cur.get(s.name, s.verts), np.float64); T = np.asarray(s.tris, np.int64).reshape(-1, 3)
+            free = _free_verts(s, body_bones)
+            edge, W = _open_edge_verts(V, T)
+            corners, bary = sg._closest_surface_bary(V, BV, full)
+            foot = (BV[corners] * bary[:, :, None]).sum(1)
+            n = (bn[corners] * bary[:, :, None]).sum(1); n /= np.linalg.norm(n, axis=1, keepdims=True) + 1e-12
+            g = np.einsum("ij,ij->i", V - foot, n)
+            ev = np.flatnonzero(edge & (np.abs(g) < ZAP_EDGE_LIFT_NEAR) & ~free)
+            if not len(ev):
+                continue
+            nbrs = ktree.query_ball_point(foot[ev], ZAP_EDGE_LIFT_R)
+            has = np.array([len(x) > 0 for x in nbrs])
+            ev = ev[has]; nbrs = [kidx[np.asarray(x)] for x, h in zip(nbrs, has) if h]
+            if not len(ev):
+                continue
+            cm = {m.name.lower(): m for m in ts.morphs} if ts is not None else {}
+            # the gap each edge vert needs so no single slider at +1 or -1 buries it in the kept skin beside it
+            need = np.zeros(len(ev))
+            for sl in sliders:
+                Db = BD[sl.name]
+                cn = np.einsum("ij,ij->i", dense(cm.get(sl.name.lower()), len(V))[ev], n[ev])
+                for j, ks in enumerate(nbrs):
+                    sk = np.einsum("ij,ij->i", Db[ks], bn[ks])
+                    need[j] = max(need[j], sk.max() - cn[j], cn[j] - sk.min())
+            lift_e = np.clip(need + ZAP_EDGE_LIFT_TOL - g[ev], 0.0, cap)
+            on = lift_e > 1e-4
+            if not on.any():
+                continue
+            grp = {}                                    # seam duplicates take their welded group's largest lift
+            for i, l in zip(ev[on], lift_e[on]):
+                grp[W[i]] = max(grp.get(W[i], 0.0), float(l))
+            src = np.fromiter(grp.keys(), np.int64); amt = np.fromiter(grp.values(), np.float64)
+            lift = np.zeros(len(V))
+            if feather > 0:
+                for vi, cand in enumerate(cKDTree(V[src]).query_ball_point(V, feather)):
+                    if cand:
+                        d = np.linalg.norm(V[src[cand]] - V[vi], axis=1)
+                        lift[vi] = float(np.max(amt[cand] * (1.0 - d / feather)))
+            else:
+                lift = np.array([grp.get(W[i], 0.0) for i in range(len(V))])
+            lift[free] = 0.0
+            mv = lift > 1e-4
+            if not mv.any():
+                continue
+            newV = V.copy(); newV[mv] += lift[mv, None] * n[mv]
+            vert_over.setdefault(w, {})[s.name] = newV
+            moved += int(mv.sum())
+            kb = np.zeros(len(BV), bool)
+            for fi, rr in zip(np.flatnonzero(mv), lift[mv]):
+                kb[btree.query_ball_point(foot[fi], ZAP_EDGE_LIFT_R + float(rr))] = True
+            keep_v = kb if keep_v is None else (keep_v | kb)
+    return moved, keep_v
+
+
 def _push_kept_legs(nf, w, kept, coll, cur) -> "tuple[dict, dict]":
     """#zap-leg-push for one weight file: ({shape name: new verts}, stats). `kept` = the body triangles the zap keeps,
     `coll` = collider shapes (never moved), `cur` = verts another zap step already replaced ({name: verts})."""
@@ -1032,7 +1170,8 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
         BV = np.asarray(body.verts, np.float64); BT = full
         # nipple-local sliders left out: #zap-nipple-flat drops them from the cloth afterwards, and the answer must
         # not depend on whether that already happened (a re-run reads the flattened .tri)
-        poses = [()] + [tuple(kv for kv in _preset(pp, w != "_0") if kv[0] not in nip_local) for pp in presets]
+        poses = [()] + [tuple(kv for kv in _preset(pp, w != "_0") if ZAP_PRESET_NIPPLES or kv[0] not in nip_local)
+                        for pp in presets]
         zone = None
         if ZAP_NIPPLE_POKE and apexes and not first_person:
             zone = np.min([np.linalg.norm(BV - BV[a], axis=1) for a in apexes], axis=0) < ZAP_NIPPLE_R
@@ -1157,6 +1296,24 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
                 vert_over.setdefault(w, {}).update(lifted)
                 out.setdefault("leg_push", {})[w] = {k: st.get(k) for k in
                                                      ("moved", "exposed_before", "exposed_after", "max_push")}
+    if ZAP_EDGE_LIFT and not first_person and tf is not None:
+        coll = set()
+        for _w, (_nf, _p) in loaded.items():
+            try:
+                coll |= set(nc._hdt_collider_shape_names(_p, nif=_nf, stem_scan=nc._dst_xml_stem_scan()))
+            except Exception:
+                pass
+        try:
+            moved, keep_v = _edge_lift(loaded, kept, tri, vert_over, coll)
+        except Exception as e:
+            nc._note_pass_failure("zap-edge-lift", e, dst_path)
+            moved, keep_v = 0, None
+        if moved:
+            out["edge_lift_moved"] = moved
+        if keep_v is not None:
+            gone = gone & ~keep_v[full].any(1)
+            kept = full[~gone]
+            out["deleted_tris"], out["kept_tris"] = int(gone.sum()), int(len(kept))
     for w, (nf, p) in loaded.items():
         cur = next(s for s in nf.shapes if s.name == BODY_NAME)
         if (len(cur.tris) == len(kept) and np.array_equal(np.asarray(cur.tris, np.int64), kept)
