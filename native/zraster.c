@@ -7,6 +7,9 @@
  * slivers thinner than a pixel are never lost. A body vertex is NEEDED in a view when it is the front-most body
  * surface there (within `selftol`) and no garment lies before the body's far side on that line of sight --
  * deleting it would show a hole. `needed` is OR-accumulated: one call per pose gives the union over poses.
+ * #zap-tri-vis (zr_needed_t): the same raster also keeps, per pixel, WHICH front-facing body triangle is nearest; a
+ * triangle is SEEN when it is nearest at some pixel with no garment before the body's far side. The vertex test
+ * alone misses a triangle whose middle shows through a slit while all three of its corners are covered.
  *
  * A pixel missed by the rasteriser leaves a buffer at +/-inf, which reads as "not covered": every approximation
  * here can only mark MORE skin as needed, never less.
@@ -20,7 +23,7 @@
 
 /* kind 0: garment -> g (min). kind 1: body -> front-facing to n (min) and f (max), back-facing to f (max). */
 static void raster(const float *X, const float *Y, const float *Z, const int *tris, int nt, int nx,
-                   float *g, float *n, float *f, int kind, float front_sign)
+                   float *g, float *n, float *f, int kind, float front_sign, int *id)
 {
     const float lim = (float)(nx - 1);
     for (int t = 0; t < nt; ++t) {
@@ -36,7 +39,7 @@ static void raster(const float *X, const float *Y, const float *Z, const int *tr
             if (cx[k] < 0.0f || cy[k] < 0.0f || cx[k] >= nx || cy[k] >= nx) continue;
             const int p = (int)cy[k] * nx + (int)cx[k]; const float z = cz[k];
             if (kind == 0) { if (z < g[p]) g[p] = z; }
-            else { if (z > f[p]) f[p] = z; if (front && z < n[p]) n[p] = z; }
+            else { if (z > f[p]) f[p] = z; if (front && z < n[p]) { n[p] = z; if (id) id[p] = t; } }
         }
         if (area > -1e-12f && area < 1e-12f) continue;
         if (fx0 < 0.0f) fx0 = 0.0f; if (fy0 < 0.0f) fy0 = 0.0f; if (fx1 > lim) fx1 = lim; if (fy1 > lim) fy1 = lim;
@@ -49,12 +52,16 @@ static void raster(const float *X, const float *Y, const float *Z, const int *tr
             float w0 = ((x1 - px0) * (y2 - py) - (x2 - px0) * (y1 - py)) * inv;
             float w1 = ((x2 - px0) * (y0 - py) - (x0 - px0) * (y2 - py)) * inv;
             float *row_g = g + (size_t)iy * nx, *row_n = n + (size_t)iy * nx, *row_f = f + (size_t)iy * nx;
+            int *row_i = id ? id + (size_t)iy * nx : NULL;
             for (int ix = xmin; ix <= xmax; ++ix, w0 += a0x, w1 += a1x) {
                 const float w2 = 1.0f - w0 - w1;
                 if (w0 < -1e-5f || w1 < -1e-5f || w2 < -1e-5f) continue;
                 const float z = w0 * z0 + w1 * z1 + w2 * z2;
                 if (kind == 0) { if (z < row_g[ix]) row_g[ix] = z; }
-                else { if (z > row_f[ix]) row_f[ix] = z; if (front && z < row_n[ix]) row_n[ix] = z; }
+                else {
+                    if (z > row_f[ix]) row_f[ix] = z;
+                    if (front && z < row_n[ix]) { row_n[ix] = z; if (row_i) row_i[ix] = t; }
+                }
             }
         }
     }
@@ -75,10 +82,11 @@ static void project(const float *v, int nv, const float *M, const float *o, floa
  * the body's triangles are wound with outward normals. bn (optional): body vertex normals, outward; dirs: nd x 3
  * view directions (toward the viewer); a view counts for a vertex only when bn.dir >= cmin. Returns 0 or -1
  * (memory). */
-EXPORT int zr_needed(const float *bv, int nbv, const int *bt, int nbt,
-                     const float *gv, int ngv, const int *gt, int ngt,
-                     const float *mats, const float *off, int nd, int nx, float selftol,
-                     unsigned char *needed, int front_sign, const float *bn, const float *dirs, float cmin)
+static int needed_impl(const float *bv, int nbv, const int *bt, int nbt,
+                       const float *gv, int ngv, const int *gt, int ngt,
+                       const float *mats, const float *off, int nd, int nx, float selftol,
+                       unsigned char *needed, int front_sign, const float *bn, const float *dirs, float cmin,
+                       unsigned char *tri_seen, const float *tn)
 {
     const size_t npx = (size_t)nx * nx;
     float *nb = (float *)malloc(npx * sizeof(float)), *fb = (float *)malloc(npx * sizeof(float));
@@ -88,16 +96,27 @@ EXPORT int zr_needed(const float *bv, int nbv, const int *bt, int nbt,
     const int ng1 = ngv > 0 ? ngv : 1;
     float *GX = (float *)malloc(ng1 * sizeof(float)), *GY = (float *)malloc(ng1 * sizeof(float));
     float *GZ = (float *)malloc(ng1 * sizeof(float));
+    int *ib = tri_seen ? (int *)malloc(npx * sizeof(int)) : NULL;
     int rc = 0;
-    if (!nb || !fb || !gb || !BX || !BY || !BZ || !GX || !GY || !GZ) { rc = -1; goto done; }
+    if (!nb || !fb || !gb || !BX || !BY || !BZ || !GX || !GY || !GZ || (tri_seen && !ib)) { rc = -1; goto done; }
     for (int d = 0; d < nd; ++d) {
         const float *M = mats + 9 * d, *o = off + 3 * d;
         for (size_t i = 0; i < npx; ++i) { nb[i] = INFINITY; fb[i] = -INFINITY; gb[i] = INFINITY; }
+        if (ib) for (size_t i = 0; i < npx; ++i) ib[i] = -1;
         project(bv, nbv, M, o, BX, BY, BZ);
-        raster(BX, BY, BZ, bt, nbt, nx, gb, nb, fb, 1, (float)front_sign);
+        raster(BX, BY, BZ, bt, nbt, nx, gb, nb, fb, 1, (float)front_sign, ib);
         if (ngt > 0) {
             project(gv, ngv, M, o, GX, GY, GZ);
-            raster(GX, GY, GZ, gt, ngt, nx, gb, nb, fb, 0, 1.0f);
+            raster(GX, GY, GZ, gt, ngt, nx, gb, nb, fb, 0, 1.0f, NULL);
+        }
+        if (ib) {
+            const float *dd = dirs + 3 * d;
+            for (size_t p = 0; p < npx; ++p) {
+                const int t = ib[p];
+                if (t < 0 || tri_seen[t] || gb[p] < fb[p]) continue;
+                if (tn && tn[3 * t] * dd[0] + tn[3 * t + 1] * dd[1] + tn[3 * t + 2] * dd[2] < cmin) continue;
+                tri_seen[t] = 1;
+            }
         }
         for (int i = 0; i < nbv; ++i) {
             if (needed[i]) continue;
@@ -110,6 +129,27 @@ EXPORT int zr_needed(const float *bv, int nbv, const int *bt, int nbt,
         }
     }
 done:
-    free(nb); free(fb); free(gb); free(BX); free(BY); free(BZ); free(GX); free(GY); free(GZ);
+    free(nb); free(fb); free(gb); free(BX); free(BY); free(BZ); free(GX); free(GY); free(GZ); free(ib);
     return rc;
+}
+
+EXPORT int zr_needed(const float *bv, int nbv, const int *bt, int nbt,
+                     const float *gv, int ngv, const int *gt, int ngt,
+                     const float *mats, const float *off, int nd, int nx, float selftol,
+                     unsigned char *needed, int front_sign, const float *bn, const float *dirs, float cmin)
+{
+    return needed_impl(bv, nbv, bt, nbt, gv, ngv, gt, ngt, mats, off, nd, nx, selftol, needed, front_sign, bn, dirs,
+                       cmin, NULL, NULL);
+}
+
+/* zr_needed plus #zap-tri-vis: OR into tri_seen (uint8 per body triangle) the triangles seen in some view. tn
+ * (optional): outward unit triangle normals; a view counts for a triangle only when tn.dir >= cmin, like bn. */
+EXPORT int zr_needed_t(const float *bv, int nbv, const int *bt, int nbt,
+                       const float *gv, int ngv, const int *gt, int ngt,
+                       const float *mats, const float *off, int nd, int nx, float selftol,
+                       unsigned char *needed, int front_sign, const float *bn, const float *dirs, float cmin,
+                       unsigned char *tri_seen, const float *tn)
+{
+    return needed_impl(bv, nbv, bt, nbt, gv, ngv, gt, ngt, mats, off, nd, nx, selftol, needed, front_sign, bn, dirs,
+                       cmin, tri_seen, tn);
 }

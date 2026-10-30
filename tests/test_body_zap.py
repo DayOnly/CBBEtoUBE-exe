@@ -62,6 +62,43 @@ def test_open_top_shows_the_skin_under_the_opening():
     assert not nd[B[:, 2] < 40.1].any()        # the bottom stays hidden
 
 
+def _slit_lid(h=11, n=10, c=(0, 0, 50)):
+    """a closed shell whose lid has one row of cells cut out across its middle: a slit 2h/n wide."""
+    G, GT = _grid_box(c, h, n)
+    top = (G[GT][:, :, 2] > c[2] + h - 1e-6).all(1)
+    mid = np.abs(G[GT][:, :, 0].mean(1) - c[0]) < h / n
+    return G, GT[~(top & mid)]
+
+
+def test_a_slit_over_a_triangles_middle_is_seen_by_the_triangle_test():
+    # #zap-tri-vis: the body's lid is two big triangles whose corners all sit under the shell; only their middle
+    # shows through the slit. The vertex test sees nothing; the triangle test sees both.
+    B, BT = _box((0, 0, 50), 10)
+    G, GT = _slit_lid()
+    ts = np.zeros(len(BT), np.uint8)
+    nd = bz.needed(B, BT, [G], [GT], bz.fib_dirs(48), tri_acc=ts).astype(bool)
+    lid = (B[BT][:, :, 2] > 59.9).all(1); floor = (B[BT][:, :, 2] < 40.1).all(1)
+    assert not nd.any()
+    assert ts[lid].all() and not ts[floor].any()   # (the slit's ends also show the side faces' tops, down the gap)
+
+
+def test_the_triangle_test_leaves_the_vertex_answer_alone():
+    B, BT = _grid_box((0, 0, 50), 10)
+    G, GT = _slit_lid()
+    a = bz.needed(B, BT, [G], [GT], bz.fib_dirs(48))
+    b = bz.needed(B, BT, [G], [GT], bz.fib_dirs(48), tri_acc=np.zeros(len(BT), np.uint8))
+    assert np.array_equal(a, b)
+
+
+def test_a_seen_triangle_only_under_a_preset_stays_near_bind_skin(monkeypatch):
+    monkeypatch.setattr(bz, "ZAP_PRESET_KEEP_R", 1.0)
+    V = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [5, 0, 0], [6, 0, 0], [5, 1, 0], [0.5, 0, 0]], float)
+    full = np.array([[0, 1, 2], [3, 4, 5], [6, 1, 2]])
+    seen = np.array([True, True, True]); at_bind = np.array([True, False, False])
+    keep = bz._seen_tri_keep(seen, at_bind, np.zeros(len(V), bool), full, V)
+    assert keep.tolist() == [True, False, True]     # the far preset-only one goes, the one touching bind skin stays
+
+
 def test_every_direction_counts_by_default():
     B, BT = _grid_box((0, 0, 6), 5)
     up = np.array([[0, 0, -1.0]])

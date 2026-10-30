@@ -58,7 +58,12 @@ ZAP_FREE_SHARE = 0.3
 # 1.62% of the body; layer crossings unchanged. Unlimited = keep all preset-visible skin (the old rule).
 # 1u since 2026-10-18 (was 3u): on 70 zapped pieces (fit sample + layered) Natural / Too Big bust exposure
 # 580 / 1420 -> 480 / 1291 (authors 367 / 2280), holes 1.91 -> 1.95% of the body.
-ZAP_PRESET_KEEP_R = _knob("CBBE2UBE_ZAP_PRESET_KEEP_R", 1.0)
+# UNLIMITED since 2026-10-30 (user: keep every bit of skin a camera can see, from any angle): the prune deleted skin a
+# preset shows through a real opening (Too Big's breast rising past a neckline) -- holes in game. With #zap-tri-vis, on
+# 34 pre-zap snapshots judged by 1280 cameras: summed worst-camera hole 332 -> 250 u^2, 23 pieces better / 0 worse,
+# +268 kept triangles per piece (0.5% of the body). Skin poking THROUGH cloth was never kept by it (that cloth covers
+# it): only see-through skin is. CBBE2UBE_ZAP_PRESET_KEEP_R=<u> brings the prune back.
+ZAP_PRESET_KEEP_R = _knob("CBBE2UBE_ZAP_PRESET_KEEP_R", float("inf"))
 # #zap-lean (ON with the zap; CBBE2UBE_NO_ZAP_LEAN=1 keeps every pass): on a piece that gets the injected (and so
 # zapped) body, skip the passes whose only job was skin the zap deletes -- post-warp inflate, phase-2 conform and the
 # bust / back / drape morph residuals (the layer ride runs again since 10-19, #zap-keep-ride: layer-over-layer work). Fit sample, 30 zapped pieces: median distance to the
@@ -168,6 +173,17 @@ ZAP_LEG_PUSH_ROOM_COLLIDERS = bool(_knob("CBBE2UBE_ZAP_LEG_PUSH_ROOM_COLLIDERS",
 # `*_1person`, 21 pieces) that kept the whole body: torso and breasts in first-person view (audit 2026-10-20 F05).
 ZAP_FP_ARMATURE = not _flag("CBBE2UBE_NO_ZAP_FP_ARMATURE", False)
 ZAP_NIPPLE_R = 5.0     # = sliderset_gen.NIPPLE_MORPH_BRIDGE_R_OUT: past this a nipple-local slider moves no skin
+# #zap-tri-vis (DEFAULT ON since 2026-10-30; CBBE2UBE_NO_ZAP_TRI_VIS=1 = the vertex test alone): the same views also
+# mark each body TRIANGLE seen front-most at some pixel with no cover before the body's far side, and a seen triangle
+# is never deleted. The vertex test alone deleted triangles whose middle shows through a slit (a strap gap, an
+# opening's edge) while all three corners sit under cloth: the user saw holes in skin in game 10-30. A dense judge
+# (1280 cameras incl. close perspective orbits, bind + 3 presets, head/hands/feet closing the body's rims) on 24
+# pre-zap snapshots: summed worst-camera hole 265 -> 159 u^2, 17 pieces better / 1 worse, +153 kept triangles per
+# piece, no extra views (96 / 192 views: 247 / 240 at 2x / 4x the work; an 85 deg limit or a 3u band: 232 / 222 with
+# 13x more skin kept). Seen triangles obey the vertex rules: when #zap-preset-keep's prune is set, a preset-only one
+# far from bind-visible skin goes; one whose corners poke through the cloth at a nipple counts as covered
+# (#zap-nipple-poke); and a seen one blocks #zap-nipple-hide.
+ZAP_TRI_VIS = not _flag("CBBE2UBE_NO_ZAP_TRI_VIS", False)
 _LEAN = [False]
 
 
@@ -212,6 +228,9 @@ def _dll():
                                     ctypes.c_int, ctypes.c_int, ctypes.c_float, u, ctypes.c_int, ctypes.c_void_p, f,
                                     ctypes.c_float]
             d.zr_needed.restype = ctypes.c_int
+            if hasattr(d, "zr_needed_t"):
+                d.zr_needed_t.argtypes = d.zr_needed.argtypes + [u, ctypes.c_void_p]
+                d.zr_needed_t.restype = ctypes.c_int
             return d
     return None
 
@@ -233,8 +252,9 @@ def _basis(d):
     return u, np.cross(d, u)
 
 
-def needed(B, BT, Gvs, Gts, dirs, acc=None):
-    """OR into `acc` (uint8 per body vertex) the vertices some view sees uncovered in this pose."""
+def needed(B, BT, Gvs, Gts, dirs, acc=None, tri_acc=None):
+    """OR into `acc` (uint8 per body vertex) the vertices some view sees uncovered in this pose; with `tri_acc` (uint8
+    per body triangle) also the triangles seen (#zap-tri-vis)."""
     dll = _dll()
     B = np.ascontiguousarray(B, np.float32); BT = np.ascontiguousarray(BT, np.int32)
     if Gvs:
@@ -260,9 +280,17 @@ def needed(B, BT, Gvs, Gts, dirs, acc=None):
         acc = np.zeros(len(B), np.uint8)
     from .work_counts import WORK
     WORK["zap_views"] += len(dirs)         # #unit-timing
-    rc = dll.zr_needed(B, len(B), BT, len(BT), GV, len(GV), GT, len(GT), mats, off, len(dirs), nx,
-                       np.float32(SELFTOL / px), acc, int(front_sign), vn.ctypes.data,
-                       np.ascontiguousarray(dirs, np.float32), np.float32(np.cos(np.radians(float(ZAP_VIEW_ANGLE)))))
+    args = (B, len(B), BT, len(BT), GV, len(GV), GT, len(GT), mats, off, len(dirs), nx, np.float32(SELFTOL / px), acc,
+            int(front_sign), vn.ctypes.data, np.ascontiguousarray(dirs, np.float32),
+            np.float32(np.cos(np.radians(float(ZAP_VIEW_ANGLE)))))
+    if tri_acc is not None:
+        if not hasattr(dll, "zr_needed_t"):
+            raise RuntimeError("zraster.dll predates #zap-tri-vis (no zr_needed_t)")
+        tn = fn * front_sign
+        tn = np.ascontiguousarray(tn / (np.linalg.norm(tn, axis=1, keepdims=True) + 1e-12), np.float32)
+        rc = dll.zr_needed_t(*args, tri_acc, tn.ctypes.data)
+    else:
+        rc = dll.zr_needed(*args)
     if rc != 0:
         raise MemoryError("zraster: out of memory")
     return acc
@@ -607,6 +635,26 @@ def _flatten_cloth_bump(V, T, BV, full, apexes, kept_skin=None):
         if float(np.abs(dh).max(initial=0.0)) > 1e-4:
             V[ci] += nA[None, :] * dh[:, None]; changed = True
     return V if changed else None
+
+
+def _seen_tri_keep(tri_need, tri_bind, bind_vis, full, Vref) -> np.ndarray:
+    """#zap-tri-vis: the seen triangles that stay, under #zap-preset-keep's rule -- one seen only under a preset stays
+    only when a corner lies within ZAP_PRESET_KEEP_R of skin seen at bind (vertices, or corners of triangles seen)."""
+    keep = tri_need.copy()
+    if not np.isfinite(float(ZAP_PRESET_KEEP_R)):
+        return keep
+    tb = tri_bind if tri_bind is not None else np.zeros(len(full), bool)
+    pre = np.flatnonzero(keep & ~tb)
+    if not len(pre):
+        return keep
+    ref = bind_vis.copy() if bind_vis is not None else np.zeros(len(Vref), bool)
+    ref[full[tb].ravel()] = True
+    if not ref.any():
+        keep[pre] = False
+        return keep
+    dk, _ = cKDTree(Vref[ref]).query(Vref[full[pre].ravel()])
+    keep[pre[dk.reshape(-1, 3).min(1) >= float(ZAP_PRESET_KEEP_R)]] = False
+    return keep
 
 
 def _keep_edge_band(de, bind_vis, Vref, poked=None) -> np.ndarray:
@@ -1017,6 +1065,7 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
     presets = preset_paths()
     loaded, need, bind_vis = {}, None, None
     apexes, nip_local, gverts, poked = None, set(), {}, None
+    tri_need = tri_bind = None                 # #zap-tri-vis: triangles seen in any pose / at bind
     # #zap-fp-armature: the planner's answer (an ARMA uses this mesh only as a first-person model) or the name rule
     first_person = bool(first_person) and ZAP_FP_ARMATURE; arm = None
     for w, p in files.items():
@@ -1073,14 +1122,25 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
         for k, sl in enumerate(poses):
             Bp = _morphed(BV, tri.get(BODY_NAME), sl)
             Gp = [_morphed(V, tri.get(nm), sl) for nm, V, T in G]
-            nd = needed(Bp, BT, Gp, [T for _, _, T in G], dirs).astype(bool)
+            ts = np.zeros(len(BT), np.uint8) if ZAP_TRI_VIS else None
+            nd = needed(Bp, BT, Gp, [T for _, _, T in G], dirs, tri_acc=ts).astype(bool)
+            ts = ts.astype(bool) if ts is not None else None
             if zone is not None and (nd & zone).any():
                 pk = _poking_through(Bp, BT, Gp, [T for _, _, T in G], np.flatnonzero(nd & zone), len(BV))
                 poked = pk if poked is None else (poked | pk)
                 nd &= ~pk
+            if zone is not None and ts is not None and ts.any():
+                tv = np.zeros(len(BV), bool); tv[BT[ts].ravel()] = True; tv &= zone
+                if tv.any():                               # poking through the cloth: covered, as for the vertices
+                    pkt = _poking_through(Bp, BT, Gp, [T for _, _, T in G], np.flatnonzero(tv), len(BV))
+                    ts &= pkt[BT].sum(1) < 2
             need = nd if need is None else (need | nd)
+            if ts is not None:
+                tri_need = ts if tri_need is None else (tri_need | ts)
             if k == 0:
                 bind_vis = nd if bind_vis is None else (bind_vis | nd)
+                if ts is not None:
+                    tri_bind = ts if tri_bind is None else (tri_bind | ts)
     full, Vref = full_body_tris(next(iter(files)) or "_1")
     if first_person:
         need = arm >= ZAP_ARM_MIN                       # arms: all kept; the rest: gone
@@ -1098,17 +1158,25 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
         need = need | (Vref[:, 2] < float(ZAP_LEG_Z))
         de = ~need
         de = _keep_edge_band(de, bind_vis, Vref, poked)
+    tri_keep = None
+    if not first_person and tri_need is not None and tri_need.any():
+        tri_keep = _seen_tri_keep(tri_need, tri_bind, bind_vis, full, Vref)
+    seen_v = np.zeros(len(Vref), bool)
+    if tri_keep is not None:
+        seen_v[full[tri_keep].ravel()] = True               # a seen triangle's corners: skin the views showed
     hide_apex = []
     if ZAP_NIPPLE_HIDE and not first_person and apexes:
         for a in apexes:
             d = np.linalg.norm(Vref - Vref[a], axis=1)
             ring = (d >= ZAP_HIDE_CORE_R) & (d < ZAP_NIPPLE_R)
             core = d < ZAP_HIDE_CORE_R
-            if ring.any() and de[ring].all():
+            if ring.any() and de[ring].all() and not seen_v[ring].any():
                 de = de.copy(); de[core] = True; hide_apex.append(int(a))
-            elif ZAP_NIPPLE_HIDE_COVERED and core.any() and not need[core].any():
+            elif ZAP_NIPPLE_HIDE_COVERED and core.any() and not need[core].any() and not seen_v[core].any():
                 de = de.copy(); de[core] = True; hide_apex.append(int(a))
     gone = de[full].sum(1) >= 2
+    if tri_keep is not None:
+        gone &= ~tri_keep
     kept = full[~gone]
     out = {"files": len(loaded), "deleted_tris": int(gone.sum()), "kept_tris": int(len(kept)),
            "first_person": first_person, "poses": 1 + len(presets), "nipple_rows_dropped": 0}
