@@ -33,7 +33,11 @@ def test_a_unit_that_raises_the_lifetime_peak_reports_it_exactly():
     assert out.returncode == 0, out.stderr
     mb, how, peak = json.loads(out.stdout.strip().splitlines()[-1])
     assert how == "new-high"
-    assert mb == peak
+    # `peak` is read AFTER finish() with the 600 MB still held, so what the interpreter allocates in between (the
+    # result tuple, the probe's own ctypes struct) can lift the lifetime peak by a pymalloc arena or so; it never drops.
+    # Exact equality failed on 2026-10-31 by 1.0 MB (645.25 vs 646.26), about every other run in one checkout.
+    assert mb <= peak < mb + 4.0
+    assert mb > 600.0
 
 
 def test_a_lighter_unit_after_a_heavy_one_reports_its_own_peak():

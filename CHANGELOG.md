@@ -25,18 +25,16 @@ Holes in the skin under some armours, seen in game.
   skin under a lifted edge is kept, so the edge never opens a view into the body. Morph rows, physics cloth and
   colliders are not touched. `CBBE2UBE_NO_ZAP_EDGE_LIFT=1` turns it off.
 
-### Changed — nipples under opaque armour are zapped away entirely
+### Changed — nipples under opaque armour carry no nipple shape
 
-- Where no see-through (alpha) cloth lies within 7u of a nipple, all skin within 5u of it that the rest-pose views do
-  not see is deleted, whatever a preset shows there, and the cloth over it loses its nipple sliders and bump
-  (#zap-nipple-opaque; `CBBE2UBE_NO_ZAP_NIPPLE_OPAQUE=1` turns it off). Skin under lace or other alpha cloth, and a
-  nipple an opening shows at rest, are left to the zap's views as before. The edge lift never keeps a zapped nipple.
+- Where no see-through (alpha) cloth lies within 7u of a nipple, the cloth over it drops its nipple sliders whatever
+  skin the zap keeps there, and a nipple core no view sees is removed (#zap-nipple-opaque;
+  `CBBE2UBE_NO_ZAP_NIPPLE_OPAQUE=1` turns it off). Which skin goes is still the zap's views' answer. Under lace or other
+  alpha cloth the nipple is left as before.
 - The zap ignores the presets' nipple sliders again. Judging the presets with them (briefly the default) kept nipple
   skin under opaque armour, and the cloth over it kept its nipple sliders: an outline in game (iron cuirass).
-- On 34 pieces replayed from their pre-zap state, judged at rest, under the 12 strongest sliders at +1 and -1 and under
-  the presets: cloth edges buried in the skin 210 -> 133 at rest and 7698 -> 5297 under single sliders (1558 -> 1663
-  under the presets); hole area -12%; skin poking through cloth unchanged. About 920 cloth vertices move per piece
-  (median 0.22u).
+- A first version also deleted all nipple-zone skin the rest pose does not see: in game a blatant chest hole under the
+  hide cuirass on a big body. Replaced the same day.
 
 ### Removed — four disproven opt-in options
 
