@@ -21,9 +21,11 @@
 #define MIN3(a, b, c) ((a) < (b) ? ((a) < (c) ? (a) : (c)) : ((b) < (c) ? (b) : (c)))
 #define MAX3(a, b, c) ((a) > (b) ? ((a) > (c) ? (a) : (c)) : ((b) > (c) ? (b) : (c)))
 
-/* kind 0: garment -> g (min). kind 1: body -> front-facing to n (min) and f (max), back-facing to f (max). */
+/* kind 0: garment -> g (min); with `cull`, a triangle whose cull flag is set (a single-sided shape) is drawn only
+ * when it faces the viewer, as the game draws it (#zap-cull). kind 1: body -> front-facing to n (min) and f (max),
+ * back-facing to f (max). */
 static void raster(const float *X, const float *Y, const float *Z, const int *tris, int nt, int nx,
-                   float *g, float *n, float *f, int kind, float front_sign, int *id)
+                   float *g, float *n, float *f, int kind, float front_sign, int *id, const unsigned char *cull)
 {
     const float lim = (float)(nx - 1);
     for (int t = 0; t < nt; ++t) {
@@ -33,6 +35,7 @@ static void raster(const float *X, const float *Y, const float *Z, const int *tr
         if (fx1 < 0.0f || fy1 < 0.0f || fx0 > lim + 1.0f || fy0 > lim + 1.0f) continue;
         const float area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
         const int front = kind == 1 && area * front_sign >= 0.0f;
+        if (kind == 0 && cull && cull[t] && area * front_sign < 0.0f) continue;
         /* corners */
         const float cx[3] = {x0, x1, x2}, cy[3] = {y0, y1, y2}, cz[3] = {z0, z1, z2};
         for (int k = 0; k < 3; ++k) {
@@ -86,7 +89,7 @@ static int needed_impl(const float *bv, int nbv, const int *bt, int nbt,
                        const float *gv, int ngv, const int *gt, int ngt,
                        const float *mats, const float *off, int nd, int nx, float selftol,
                        unsigned char *needed, int front_sign, const float *bn, const float *dirs, float cmin,
-                       unsigned char *tri_seen, const float *tn)
+                       unsigned char *tri_seen, const float *tn, const unsigned char *gcull)
 {
     const size_t npx = (size_t)nx * nx;
     float *nb = (float *)malloc(npx * sizeof(float)), *fb = (float *)malloc(npx * sizeof(float));
@@ -104,10 +107,10 @@ static int needed_impl(const float *bv, int nbv, const int *bt, int nbt,
         for (size_t i = 0; i < npx; ++i) { nb[i] = INFINITY; fb[i] = -INFINITY; gb[i] = INFINITY; }
         if (ib) for (size_t i = 0; i < npx; ++i) ib[i] = -1;
         project(bv, nbv, M, o, BX, BY, BZ);
-        raster(BX, BY, BZ, bt, nbt, nx, gb, nb, fb, 1, (float)front_sign, ib);
+        raster(BX, BY, BZ, bt, nbt, nx, gb, nb, fb, 1, (float)front_sign, ib, NULL);
         if (ngt > 0) {
             project(gv, ngv, M, o, GX, GY, GZ);
-            raster(GX, GY, GZ, gt, ngt, nx, gb, nb, fb, 0, 1.0f, NULL);
+            raster(GX, GY, GZ, gt, ngt, nx, gb, nb, fb, 0, (float)front_sign, NULL, gcull);
         }
         if (ib) {
             const float *dd = dirs + 3 * d;
@@ -139,7 +142,7 @@ EXPORT int zr_needed(const float *bv, int nbv, const int *bt, int nbt,
                      unsigned char *needed, int front_sign, const float *bn, const float *dirs, float cmin)
 {
     return needed_impl(bv, nbv, bt, nbt, gv, ngv, gt, ngt, mats, off, nd, nx, selftol, needed, front_sign, bn, dirs,
-                       cmin, NULL, NULL);
+                       cmin, NULL, NULL, NULL);
 }
 
 /* zr_needed plus #zap-tri-vis: OR into tri_seen (uint8 per body triangle) the triangles seen in some view. tn
@@ -151,5 +154,17 @@ EXPORT int zr_needed_t(const float *bv, int nbv, const int *bt, int nbt,
                        unsigned char *tri_seen, const float *tn)
 {
     return needed_impl(bv, nbv, bt, nbt, gv, ngv, gt, ngt, mats, off, nd, nx, selftol, needed, front_sign, bn, dirs,
-                       cmin, tri_seen, tn);
+                       cmin, tri_seen, tn, NULL);
+}
+
+/* zr_needed_t plus #zap-cull: gcull (optional, uint8 per garment triangle): 1 = the triangle's shape is single-sided,
+ * so it covers only where it faces the viewer (garment winding follows the body's: front_sign). */
+EXPORT int zr_needed_c(const float *bv, int nbv, const int *bt, int nbt,
+                       const float *gv, int ngv, const int *gt, int ngt,
+                       const float *mats, const float *off, int nd, int nx, float selftol,
+                       unsigned char *needed, int front_sign, const float *bn, const float *dirs, float cmin,
+                       unsigned char *tri_seen, const float *tn, const unsigned char *gcull)
+{
+    return needed_impl(bv, nbv, bt, nbt, gv, ngv, gt, ngt, mats, off, nd, nx, selftol, needed, front_sign, bn, dirs,
+                       cmin, tri_seen, tn, gcull);
 }

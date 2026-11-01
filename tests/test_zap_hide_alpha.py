@@ -189,5 +189,6 @@ def test_min_push_leaves_the_zapped_nipple_alone(monkeypatch):
 
 def test_all_are_on_by_default():
     from src import nif_convert as nc
-    assert bz.ZAP_ALPHA and bz.ZAP_NIPPLE_HIDE and bz.ZAP_NIPPLE_POKE and bz.ZAP_NIPPLE_HIDE_COVERED
+    assert bz.ZAP_ALPHA and bz.ZAP_NIPPLE_HIDE and bz.ZAP_NIPPLE_HIDE_COVERED
+    assert not bz.ZAP_NIPPLE_POKE          # off since 2026-11-01: #zap-cull judges the nipple per line of sight
     assert nc._MIN_PUSH_ZAP_NIPPLE

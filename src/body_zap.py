@@ -49,6 +49,13 @@ ZAP_PRESETS_NAME = "CBBEtoUBE_zap_presets.txt"
 ZAP_VIEWS = _knob("CBBE2UBE_ZAP_VIEWS", 48, int)
 ZAP_PIXEL = _knob("CBBE2UBE_ZAP_PIXEL", 0.6)
 ZAP_VIEW_ANGLE = _knob("CBBE2UBE_ZAP_VIEW_ANGLE", 70.0)
+# REJECTED 2026-11-01: spreading the views over elevations >= -20 deg only (where game cameras are, ~1.5x denser): 34
+# pre-zap replays, holes 14 pieces better / 14 worse, poke +6% -- the views from below see skin the cameras see.
+# #zap-cull (DEFAULT ON since 2026-11-01; CBBE2UBE_NO_ZAP_CULL=1 off): a single-sided cover shape covers only where its
+# front faces the view, as the game draws it; a shape flagged double-sided (SLSF2 0x10) covers from both sides. With it,
+# skin seen in front of cloth is deleted only where the cloth behind it is drawn. 34 pre-zap replays vs 092ce26 (with
+# #zap-nipple-poke off): worst-camera holes -27% (15 better / 1 worse), gap skin -16% (30 / 0).
+ZAP_CULL = not _flag("CBBE2UBE_NO_ZAP_CULL", False)
 ZAP_BAND = _knob("CBBE2UBE_ZAP_BAND", 2.0)
 ZAP_LEG_Z = _knob("CBBE2UBE_ZAP_LEG_Z", 45.0)
 ZAP_FREE_SHARE = 0.3
@@ -110,7 +117,11 @@ ZAP_HIDE_KEEP_GAP = 0.1
 # REJECTED 10-22: lowering a coarse plate's point onto its ring after the fact (ring fits 0.6-1.25 edges wide, or the
 # body's breast + the ring's stand-off): vertex for vertex against 240 author tips it traded points for dents at every
 # width (points > 0.3u 141 -> 89..124, dents 1 -> 17..55).
-ZAP_NIPPLE_POKE = not _flag("CBBE2UBE_NO_ZAP_NIPPLE_POKE", False)
+# OFF since 2026-11-01 (CBBE2UBE_ZAP_NIPPLE_POKE=1 on): judged along the skin's own normal it took breast skin that rises
+# over a cuirass edge (hide, 3.5-5u from the apex), and from above the camera then saw the cuirass's undrawn inside --
+# the top of the breast missing in game. #zap-cull makes the views judge it per line of sight instead; a tip in front
+# of drawn cloth still goes.
+ZAP_NIPPLE_POKE = _flag("CBBE2UBE_ZAP_NIPPLE_POKE", False)
 ZAP_POKE_DEPTH = 4.0      # Too Big pushes the tip 3.1-3.7u through a plate that clears it by 0.5u at rest
 ZAP_POKE_LEVEL = 0.3      # cloth this far ABOVE the skin still counts: level with it, seen edge-on
 # #zap-nipple-hide-covered (CBBE2UBE_NO_ZAP_NIPPLE_HIDE_COVERED=1 = the whole ring must go): a nipple core no pose shows
@@ -249,6 +260,9 @@ def _dll():
             if hasattr(d, "zr_needed_t"):
                 d.zr_needed_t.argtypes = d.zr_needed.argtypes + [u, ctypes.c_void_p]
                 d.zr_needed_t.restype = ctypes.c_int
+            if hasattr(d, "zr_needed_c"):
+                d.zr_needed_c.argtypes = d.zr_needed.argtypes + [u, ctypes.c_void_p, ctypes.c_void_p]
+                d.zr_needed_c.restype = ctypes.c_int
             return d
     return None
 
@@ -258,6 +272,14 @@ def fib_dirs(n: int) -> np.ndarray:
     k = np.arange(n) + 0.5
     ph = np.arccos(1 - 2 * k / n); th = np.pi * (1 + 5 ** 0.5) * k
     return np.stack([np.cos(th) * np.sin(ph), np.sin(th) * np.sin(ph), np.cos(ph)], 1)
+
+
+def _single_sided(shape) -> bool:
+    """#zap-cull: the game draws only this shape's front faces (no SLSF2_Double_Sided); unreadable flags: False."""
+    try:
+        return not (int(shape.shader.properties.Shader_Flags_2) & 0x10)
+    except Exception:
+        return False
 
 
 def view_dirs() -> np.ndarray:
@@ -270,9 +292,10 @@ def _basis(d):
     return u, np.cross(d, u)
 
 
-def needed(B, BT, Gvs, Gts, dirs, acc=None, tri_acc=None):
+def needed(B, BT, Gvs, Gts, dirs, acc=None, tri_acc=None, gcull=None):
     """OR into `acc` (uint8 per body vertex) the vertices some view sees uncovered in this pose; with `tri_acc` (uint8
-    per body triangle) also the triangles seen (#zap-tri-vis)."""
+    per body triangle) also the triangles seen (#zap-tri-vis). `gcull` (one bool per cover shape): that shape is
+    single-sided and covers only where it faces the view (#zap-cull)."""
     dll = _dll()
     B = np.ascontiguousarray(B, np.float32); BT = np.ascontiguousarray(BT, np.int32)
     if Gvs:
@@ -306,7 +329,13 @@ def needed(B, BT, Gvs, Gts, dirs, acc=None, tri_acc=None):
             raise RuntimeError("zraster.dll predates #zap-tri-vis (no zr_needed_t)")
         tn = fn * front_sign
         tn = np.ascontiguousarray(tn / (np.linalg.norm(tn, axis=1, keepdims=True) + 1e-12), np.float32)
-        rc = dll.zr_needed_t(*args, tri_acc, tn.ctypes.data)
+        if gcull is not None and any(gcull) and Gvs:
+            if not hasattr(dll, "zr_needed_c"):
+                raise RuntimeError("zraster.dll predates #zap-cull (no zr_needed_c)")
+            gc = np.ascontiguousarray(np.concatenate([np.full(len(T), bool(c), np.uint8) for T, c in zip(Gts, gcull)]))
+            rc = dll.zr_needed_c(*args, tri_acc, tn.ctypes.data, gc.ctypes.data)
+        else:
+            rc = dll.zr_needed_t(*args, tri_acc, tn.ctypes.data)
     else:
         rc = dll.zr_needed(*args)
     if rc != 0:
@@ -1161,7 +1190,7 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
         except Exception:
             coll = set()
         body_bones = set(body.bone_names or [])
-        G = []
+        G, gsingle = [], []
         for s in nf.shapes:
             if s.name in nc.UBE_BODY_INJECT_NAMES or not len(s.tris):
                 continue
@@ -1180,6 +1209,7 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
                     T = T[_om]
             if len(T):
                 G.append((s.name, np.asarray(s.verts, np.float64), T))
+                gsingle.append(ZAP_CULL and _single_sided(s))
         gverts.update({s.name: np.asarray(s.verts, np.float64) for s in nf.shapes if s.name not in gverts})
         BV = np.asarray(body.verts, np.float64); BT = full
         # nipple-local sliders left out: #zap-nipple-flat drops them from the cloth afterwards, and the answer must
@@ -1192,7 +1222,7 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
             Bp = _morphed(BV, tri.get(BODY_NAME), sl)
             Gp = [_morphed(V, tri.get(nm), sl) for nm, V, T in G]
             ts = np.zeros(len(BT), np.uint8) if ZAP_TRI_VIS else None
-            nd = needed(Bp, BT, Gp, [T for _, _, T in G], dirs, tri_acc=ts).astype(bool)
+            nd = needed(Bp, BT, Gp, [T for _, _, T in G], dirs, tri_acc=ts, gcull=gsingle).astype(bool)
             ts = ts.astype(bool) if ts is not None else None
             if zone is not None and (nd & zone).any():
                 pk = _poking_through(Bp, BT, Gp, [T for _, _, T in G], np.flatnonzero(nd & zone), len(BV))

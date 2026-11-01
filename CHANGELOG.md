@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed — the body zap no longer deletes skin in front of cloth the game does not draw
+
+In game: the top of the breasts missing under the hide cuirass, seen from above.
+
+- The zap's views now treat a single-sided cover shape as cover only where its front faces the view, as the game
+  draws it (#zap-cull; `CBBE2UBE_NO_ZAP_CULL=1` turns it off). A shape flagged double-sided still covers from both
+  sides. Skin in front of cloth is deleted only where the cloth behind it is drawn.
+- #zap-nipple-poke is off (`CBBE2UBE_ZAP_NIPPLE_POKE=1` turns it back on). It judged skin within 5u of a nipple along
+  the skin's own normal, so it deleted breast skin rising over the cuirass's edge, and from above the camera then saw
+  the cuirass's undrawn inside. The views now judge each line of sight; a nipple tip in front of drawn cloth still goes.
+- 34 pieces replayed from their pre-zap state vs the previous build: worst-camera holes -27% (15 pieces better, 1
+  worse), gap skin -16% (30 better, none worse). Hide cuirass: the breast-top hole is gone (Too Big 7.2 -> 1.3 u^2);
+  the breast now sits over the cuirass's edges as it does in the source armour.
+- Tried and dropped: spreading the 48 views over game-camera elevations only (half the pieces worse).
+
 ### Fixed — the body zap no longer deletes skin a camera can see through a gap or under a preset
 
 Holes in the skin under some armours, seen in game.

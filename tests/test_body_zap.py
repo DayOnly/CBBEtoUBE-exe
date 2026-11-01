@@ -62,6 +62,25 @@ def test_open_top_shows_the_skin_under_the_opening():
     assert not nd[B[:, 2] < 40.1].any()        # the bottom stays hidden
 
 
+def test_a_lid_seen_from_its_undrawn_side_does_not_cover():
+    """#zap-cull: a single-sided lid wound inside-out shows the viewer its back face, which the game does not draw."""
+    B, BT = _grid_box((0, 0, 50), 10)
+    G, GT = _box((0, 0, 50), 11)
+    lid = np.array([(G[t][:, 2] > 60).all() for t in GT])
+    GT = np.concatenate([GT[~lid], GT[lid][:, ::-1]])            # the lid faces into the box
+    top = B[:, 2] > 59.9
+    run = lambda cull: bz.needed(B, BT, [G], [GT], bz.fib_dirs(48), tri_acc=np.zeros(len(BT), np.uint8),
+                                 gcull=cull).astype(bool)
+    assert not run(None)[top].any()                             # no culling: the lid covers from both sides
+    assert not run([False])[top].any()                          # double-sided: still covers
+    assert run([True])[top].any()                               # single-sided: the top skin is seen
+    assert not run([True])[B[:, 2] < 40.1].any()                # the walls and floor still face out and cover
+
+
+def test_the_nipple_poke_rule_is_off_by_default():
+    assert not bz.ZAP_NIPPLE_POKE and bz.ZAP_CULL
+
+
 def _slit_lid(h=11, n=10, c=(0, 0, 50)):
     """a closed shell whose lid has one row of cells cut out across its middle: a slit 2h/n wide."""
     G, GT = _grid_box(c, h, n)
