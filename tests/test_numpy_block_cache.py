@@ -16,8 +16,30 @@ sys.path.insert(0, str(_REPO))
 from src import child_lifetime  # noqa: E402
 from src import numpy_block_cache as nbc  # noqa: E402
 
-pytestmark = pytest.mark.skipif(sys.platform != "win32" or not (_REPO / "native" / "npcache.pyd").is_file(),
-                                reason="Windows-only; needs native/npcache.pyd (native/build_npcache.bat)")
+def _npcache_loads_here() -> bool:
+    """True only if native/npcache.pyd actually LOADS on the interpreter the tests run under. The .pyd is a CPython
+    extension built for the frozen 3.10 ABI (native/build_npcache.bat), so on 3.11 / 3.12 it is PRESENT but
+    unloadable -- where the block cache is off and these tests have nothing to exercise. Probed in a subprocess on
+    `sys.executable` so the pytest process never imports the extension itself (its docstring: a numpy data handler
+    cannot be taken back out of a process cleanly)."""
+    if sys.platform != "win32" or not (_REPO / "native" / "npcache.pyd").is_file():
+        return False
+    probe = subprocess.run(
+        [sys.executable, "-c",
+         f"import sys; sys.path.insert(0, {str(_REPO)!r})\n"
+         "try:\n"
+         "    from src import numpy_block_cache as n; ok = n._load() is not None\n"
+         "except Exception:\n"
+         "    ok = False\n"
+         "sys.exit(0 if ok else 1)"],
+        capture_output=True, text=True)
+    return probe.returncode == 0
+
+
+pytestmark = pytest.mark.skipif(
+    not _npcache_loads_here(),
+    reason="needs native/npcache.pyd to LOAD on this interpreter; it is built for the frozen 3.10 ABI, so it is "
+           "present but unloadable on 3.11 / 3.12 (where the block cache is off)")
 
 _PRE = f"""
 import json, sys, time
