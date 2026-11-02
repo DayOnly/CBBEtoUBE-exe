@@ -26,7 +26,7 @@ Each `Setting` maps a user-facing feature to a `CBBE2UBE_*` environment variable
   * invert=False -> env is set to "1" when the feature is ON  (default-OFF flag
     that ENABLES something, e.g. CBBE2UBE_CHAIN_TO_SOFTBODY).
   * invert=True  -> env is set to "1" when the feature is OFF (default-ON flag
-    whose var DISABLES it, e.g. CBBE2UBE_NO_CONFORM / CBBE2UBE_EFFECT_RESKIN).
+    whose var DISABLES it, e.g. CBBE2UBE_NO_LEG_BEND_MATCH / CBBE2UBE_EFFECT_RESKIN).
 The env var is otherwise left UNSET so the code's own default applies. Polarity
 and defaults below are each verified against the flag's definition in the source
 (see the line refs in nif_convert.py) -- a wrong mapping silently flips a feature.
@@ -71,8 +71,8 @@ TABS = ("Run", "Armor", "Overlays", "Paths", "Diagnostics")
 SETTINGS: "tuple[Setting, ...]" = (
     # ---- Armor: fit and conform --------------------------------------
     Setting("conform_to_body", "Match fitted cloth's skin weights to the body",
-            "Armor", "Fit and clearance", default=True,
-            env="CBBE2UBE_NO_CONFORM", invert=True,
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_CONFORM_FITTED",
             tooltip="Weights only, moves no vertex: body-hugging cloth takes the "
                     "UBE body's per-vertex skinning so it bends with the body "
                     "instead of pulling away from it. (The GEOMETRY conform that "
@@ -326,19 +326,6 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "genuinely cannot be determined -- too few triangles, or "
                     "triangles that cancel -- which is the case it was written "
                     "for."),
-    Setting("warp_push_shell_cap", "Never push a vertex through its own armour",
-            "Armor", "Fit and clearance", default=False,
-            env="CBBE2UBE_WARP_PUSH_SHELL_CAP", invert=False,
-            hint="Stops the clearance push driving hidden lining out through the outer shell.",
-            tooltip="The clearance push fires on any vertex too close to the "
-                    "body, including ones the author deliberately buried -- a "
-                    "lining, the hidden edge of a flap. Those cannot be where "
-                    "skin shows through, because there is more armour in front "
-                    "of them, so pushing them buys nothing and can drive them "
-                    "out through the outer shell as a spike. This caps the "
-                    "push at the garment's own surface. It only ever binds "
-                    "where armour is already in front of the vertex, so it "
-                    "cannot reopen clipping."),
     Setting("breast_follow_keep", "Keep the author's bust follow",
             "Armor", "Fit and clearance", default=True,
             env="CBBE2UBE_NO_BREAST_FOLLOW_KEEP", invert=True,
@@ -1133,10 +1120,10 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "showing skin, and its at-rest clipping from 1.47%% to "
                     "none, while sitting TIGHTER than before, not further out."),
     Setting("panel_rigidity", "Keep layered armour plates straight",
-            "Armor", "Fit and clearance", kind="float", default=0.75,
+            "Armor", "Fit and clearance", kind="float", default=0.0,
             env="CBBE2UBE_PANEL_RIGIDITY", advanced=True,
             min=0.0, max=1.0, step=0.05,
-            hint="0 = off. 0.75 is the setting confirmed in game.",
+            hint="0 = off (default since 10-18: the authors' plates bend with the body). 0.75 was the old setting.",
             tooltip="Layered armour is often ONE mesh holding many separate "
                     "plates. Fitting it to the new body moves every vertex on "
                     "its own, so a plate that should simply travel gets "
@@ -1565,7 +1552,35 @@ SETTINGS: "tuple[Setting, ...]" = (
             "Diagnostics", "Logging", default=False,
             env="CBBE2UBE_DEBUG_FINALIZE", invert=False,
             tooltip="Verbose physics-finalize logging."),
+    Setting("run_log_verbose", "Write every pass line into the run log",
+            "Diagnostics", "Logging", default=False,
+            env="CBBE2UBE_RUN_LOG_VERBOSE", invert=False,
+            hint="Tick to get the old run log: every line, no summary, no piece lines.",
+            tooltip="Off: CBBEtoUBE_last_run.log is the readable log -- the run summary "
+                    "(failures, warnings, coverage, time, pieces each pass changed) at "
+                    "the top and the bottom, and per mod one line per piece -- and "
+                    "every per-shape pass line goes to CBBEtoUBE_last_run_detail.log, "
+                    "which holds every line the run printed. On: the run log carries "
+                    "every line as before (the detail log is still written)."),
+    Setting("window_mod_scan_child", "Scan the mod list in a separate process",
+            "Diagnostics", "Window", default=True, env=None,
+            hint="Untick to scan inside the window, as before (it freezes while it reads).",
+            tooltip="Refresh mod list and the Exclusions lists read the whole modlist. "
+                    "In a separate process the window stays responsive (measured on a "
+                    "3,343-mod list: 153 s, during which the window froze 67 times, up "
+                    "to 1.3 s, when the scan ran inside it) and the memory the scan "
+                    "used (330 MB) is returned when it ends. The list is the same."),
 
+    Setting("live_steps", "Show each step on the Live steps tab",
+            "Diagnostics", "Window", default=True, env=None,
+            hint="Untick to stop the step pictures (the run then records none).",
+            tooltip="While a run converts, the Live steps tab shows the newest piece "
+                    "as a slowly turning 3D view that steps through source, warp, "
+                    "fit, weights and the body zap, with a red border on a step to "
+                    "check. The workers only copy a few arrays per piece into a "
+                    "folder in the tool folder; the window does the drawing, and "
+                    "only while the tab is on screen. The converted files are the "
+                    "same with this on or off. #live-steps"),
     # ---- UI-only (persisted, no env; not shown in the generated tabs -- the
     #      window renders a dedicated control for it) --------------------------
     Setting("theme", "Window theme", "Appearance", "Appearance",
@@ -1579,6 +1594,12 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "and restored on open. Not shown as a control -- the "
                     "window itself is the control. Clear it (or Reset to "
                     "defaults) to go back to the built-in size."),
+    Setting("log_pane_height", "Remembered log height", "Appearance",
+            "Appearance", kind="int", default=0, env=None, advanced=True,
+            tooltip="The height in pixels of the log below the window's divider, "
+                    "saved on close and restored on open. Not shown as a control "
+                    "-- the divider is the control. 0 = the built-in 12 lines. "
+                    "#log-pane-divider"),
 )
 
 
@@ -1671,7 +1692,7 @@ LAYOUT: "dict[str, tuple]" = {
         ("Fit and clearance", (
             "drape_xml_gate", "conform_to_body", "conform_fold_guard",
             "warp_shear_limit", "warp_delta_outlier",
-            "warp_delta_outlier_max", "warp_push_shell_cap",
+            "warp_delta_outlier_max",
             "surface_warp_field", "src_normal_fix",
             "strap_scale_uniform", "short_edge_cap", "layer_ride_bary",
             "authored_antipoke",

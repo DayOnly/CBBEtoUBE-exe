@@ -33,6 +33,7 @@ from .nif_convert_physics import (  # noqa: E402
 from .nif_convert_skinframe import (  # noqa: E402
     _g2s_is_identity,
     _shape_global_to_skin,
+    _shape_world_verts,
 )
 from .nif_convert_telemetry import _note_pass_effect, _note_pass_failure  # noqa: E402
 from .user_warnings import plain_error, warn  # noqa: E402
@@ -45,6 +46,7 @@ from .nif_convert_weights import (  # noqa: E402
     _strip_jiggle_weights_map,
     _align_scale_bone_stbs_to_verts,
     _adjust_skin_to_bone_baked,
+    _adjust_global_to_skin_baked,
     _is_scale_bone,
 )
 
@@ -64,7 +66,7 @@ def _nc():
 
 def _install_skin(new_shape, dst_nif, src_shape, bone_names, xforms_map,
                   weights_map, use_verts, bake_T, preserve_authored_skin=False,
-                  xml_stem_scan=True):
+                  xml_stem_scan=True, override_partition_tris=None):
     """Install the skin onto a freshly-created shape: bones, skin-to-bone xforms,
     global-to-skin, per-bone weights, and partitions. Shared by both _copy_shape
     skin paths (the M6 override-skin reskin and the verbatim source copy).
@@ -151,13 +153,23 @@ def _install_skin(new_shape, dst_nif, src_shape, bone_names, xforms_map,
         # skinned render but uses it to place the bounding sphere. An identity g2s
         # on an offset-g2s shape puts the cull bound ~120u below the geometry ->
         # frustum-culled when the camera zooms in (invisible torso/body up close).
-        new_shape.set_global_to_skin(src_shape.global_to_skin)
+        # A BAKED shape transform was the other half of that pair, so it moves
+        # into the g2s rather than being dropped. #g2s-bake-pair
+        _g2s_out = src_shape.global_to_skin
+        if bake_T is not None:
+            _g2s_out = _adjust_global_to_skin_baked(_g2s_out, bake_T)
+        new_shape.set_global_to_skin(_g2s_out)
     for bn in surviving:
         pairs = weights_map.get(bn)
         if pairs:
             new_shape.setShapeWeights(bn, [(int(i), float(w)) for i, w in pairs])
-    if src_shape.partitions and src_shape.partition_tris is not None:
-        new_shape.set_partitions(src_shape.partitions, src_shape.partition_tris)
+    # `override_partition_tris`: one partition index per triangle of the NEW
+    # triangle list, when the caller replaced the triangles (#body-zap removes
+    # some; the source list would then name partitions for the wrong triangles).
+    _pt = (override_partition_tris if override_partition_tris is not None
+           else src_shape.partition_tris)
+    if src_shape.partitions and _pt is not None:
+        new_shape.set_partitions(src_shape.partitions, list(_pt))
 
 def validate_dst_nif(dst_path: "Path",
                      tri_path: "Path | None" = None,
@@ -275,13 +287,11 @@ def validate_dst_nif(dst_path: "Path",
             s for s in loaded_nif.shapes
             if (s.textures or {}) and s.name not in _nc().UBE_BODY_INJECT_NAMES
         ]
-        trees = {
-            s.name: cKDTree(np.asarray(s.verts, dtype=np.float64))
-            for s in textured
-        }
+        # World frame: the source side may be a scaled-g2s mesh. #source-world-frame
+        trees = {s.name: cKDTree(_shape_world_verts(s)) for s in textured}
         out: dict[tuple[str, str], int] = {}
         for i, a in enumerate(textured):
-            a_verts = np.asarray(a.verts, dtype=np.float64)
+            a_verts = _shape_world_verts(a)
             for b in textured[i + 1:]:
                 dists, _ = trees[b.name].query(
                     a_verts, k=1, distance_upper_bound=ZFIGHT_THRESHOLD)
@@ -395,10 +405,19 @@ def validate_dst_nif(dst_path: "Path",
                 for ed in snf.rootNode.extra_data():
                     if (hasattr(ed, "string_data")
                             and ed.name == "HDT Skinned Mesh Physics Object"):
-                        warnings.append(
-                            f"{name} :: source declares an HDT physics link "
-                            f"but the converted NIF has NONE (SMP dead -- "
-                            f"extra-data dropped by a rebuild?)")
+                        # #hdt-xml-absent: a link to a file no folder of the
+                        # load order ships was dead in the source too.
+                        _gone = _nc()._hdt_xml_pointer_absent(src_path, nif=snf)
+                        if _gone:
+                            warnings.append(
+                                f"{name} :: source names a physics file no mod "
+                                f"in the load order ships ({_gone}); converted "
+                                f"without physics, as the game loads it")
+                        else:
+                            warnings.append(
+                                f"{name} :: source declares an HDT physics link "
+                                f"but the converted NIF has NONE (SMP dead -- "
+                                f"extra-data dropped by a rebuild?)")
                         break
             except Exception:
                 pass
@@ -539,7 +558,8 @@ def _restore_authored_shape_order(dst_path, src_nif_path) -> int:
     return moved
 
 def _normalize_partitions_on_disk(dst_path: Path,
-                                  src_path: "Path | None" = None) -> int:
+                                  src_path: "Path | None" = None,
+                                  biped_slots: int = 0) -> int:
     """Post-save pass: reload the NIF at `dst_path`, collapse any
     multi-partition cloth shape to a single SBP_32_BODY partition, and
     re-save IF anything changed. Returns the number of shapes collapsed.
@@ -579,7 +599,7 @@ def _normalize_partitions_on_disk(dst_path: Path,
             # An over-cap ACCESSORY (gauntlet=33, boot=37, helmet=30/31, ...) must
             # keep its dismember slot across the split or it goes invisible in its
             # equip region; body-region shapes -> None -> SBP_32_BODY.
-            keep_slot = _nc()._preserved_dismember_slot(s)
+            keep_slot = _nc()._preserved_dismember_slot(s, biped_slots)
             # Over-cap shape: SPLIT into <=cap-bone partitions (keeps every bone,
             # CTD-safe) instead of collapsing to one over-budget partition. Dense
             # dresses/robes that ship 79-81 bones (some armor mods) keep their full
@@ -625,7 +645,7 @@ def _normalize_partitions_on_disk(dst_path: Path,
                         f"{s.name}: {len(s.verts)} verts left in one "
                         "partition"), dst_path)
                 continue
-            if _nc()._normalize_partitions(s):
+            if _nc()._normalize_partitions(s, biped_slots):
                 changed += 1
         if changed:
             # Re-assert the VirtualBody Hidden bit: a pynifly re-save can drop it
@@ -843,13 +863,13 @@ def sanitize_output_vertex_color_flags(meshes_root, workers: "int | None" = None
     # and a name bound inside the try is not available to its own handler.
     from concurrent.futures import ProcessPoolExecutor
     from concurrent.futures.process import BrokenProcessPool
-    from .child_lifetime import tie_children_to_this_process
+    from .child_lifetime import tie_children_to_this_process, worker_init
     # A fresh pool at the very end of a run: its workers must die with this
     # process too, or a kill during the sweep leaves them running.
     # #workers-die-with-parent
     tie_children_to_this_process()
     try:
-        with ProcessPoolExecutor(max_workers=workers) as ex:
+        with ProcessPoolExecutor(max_workers=workers, initializer=worker_init) as ex:  # #no-ecoqos #numpy-block-cache
             for n in ex.map(_sanitize_one_nif_worker, files_list, chunksize=16):
                 if n:
                     files_changed += 1
@@ -1197,8 +1217,42 @@ def _source_coincident_groups(src_verts, tol=1e-4):
     return gid, members
 
 
+def _hold_repair_surface(b4, out, tris, B, BN, rounds: int = 3):
+    """#coherence-hold-surface: the vertex hold below keeps every VERTEX clear, but on a coarse plate the smoothed
+    triangles still sag over skin the input covered (a min-push lift over a nipple, smoothed back flat: 0 -> 528 skin
+    points exposed). Any skin point the repair newly exposes (the validated clip test) gets the corners of the triangle
+    now over it put back where the input had them. A few rounds; never moves a vertex the repair did not move."""
+    from scipy.spatial import cKDTree
+    from . import fit_metrics as _fm
+    T = np.asarray(tris, np.int64).reshape(-1, 3)
+    moved = np.flatnonzero(np.any(np.abs(out - b4) > 1e-6, axis=1))
+    if not len(moved) or not len(T):
+        return out
+    near = cKDTree(B).query_ball_point(out[moved], r=3.0)
+    idx = np.unique(np.fromiter((j for l in near for j in l), np.int64)) if len(near) else np.zeros(0, np.int64)
+    if not len(idx):
+        return out
+    cov0, _ = _fm._ClipTester(b4, T).clipping(B, BN, idx)
+    is_moved = np.zeros(len(out), bool); is_moved[moved] = True
+    out = out.copy()
+    for _ in range(rounds):
+        tst = _fm._ClipTester(out, T)
+        cov1, _ = tst.clipping(B, BN, idx)
+        new = idx[cov1 & ~cov0]
+        if not len(new):
+            break
+        ri, ti = tst._pairs_segment(B[new], -BN[new])   # #cast-segment-ball
+        _t, who = tst._cast(B[new], -BN[new], ri, ti, len(new), want_tri=True)
+        c = np.unique(T[who[who >= 0]].ravel())
+        c = c[is_moved[c]]
+        if not len(c):
+            break
+        out[c] = b4[c]
+    return out
+
+
 def _hold_repair_outside_body(before, after, body_verts, body_normals, *,
-                              groups=None):
+                              groups=None, tris=None):
     """Clamp a repair so it cannot reduce a vertex's clearance past the skin.
 
     `before`/`after` are the pass's own input and output. Only vertices the
@@ -1244,8 +1298,9 @@ def _hold_repair_outside_body(before, after, body_verts, body_normals, *,
         # (0 = the old rule: never past the skin). #coherence-hold-margin
         floor = np.minimum(s0, float(_nc().COHERENCE_HOLD_MARGIN))
         short = np.clip(floor - s1, 0.0, None)
+        _surf = bool(_nc().COHERENCE_HOLD_SURFACE and tris is not None)
         if not np.any(short > 0):
-            return after
+            return _hold_repair_surface(b4, af, tris, B, BN) if _surf else after
         shift = n_at * short[:, None]
         if groups:
             # One hold per group: every moved member takes the member's shift
@@ -1261,7 +1316,7 @@ def _hold_repair_outside_body(before, after, body_verts, body_normals, *,
                     shift[idx] = shift[k]
         out = af.copy()
         out[moved] = af[moved] + shift
-        return out
+        return _hold_repair_surface(b4, out, tris, B, BN) if _surf else out
     except Exception as _e:
         _note_pass_failure("_hold_repair_outside_body", _e)
         return after
@@ -1600,7 +1655,7 @@ def _repair_coherence_collapse(src_verts, out_verts, tris, *,
             return out_verts, 0
         return _hold_repair_outside_body(
             ov, sv + disp, body_verts, body_normals,
-            groups=_members if _members else None), repaired
+            groups=_members if _members else None, tris=tris), repaired
     except Exception as _e:
         # REPORTED, not swallowed. A silent return here is indistinguishable
         # from "no patch qualified", and that is exactly how this pass spent a
@@ -2147,7 +2202,7 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
                 override_skin=None, skip_alpha=False, override_tris=None,
                 preserve_authored_skin=False, override_normals=None,
                 skip_geometry_repair=False, xml_stem_scan=True,
-                repair_body=None):
+                repair_body=None, override_partition_tris=None):
     """Deep-copy a single shape from src NIF to dst NIF via pynifly.
 
     `xml_stem_scan`: pass `_dst_xml_stem_scan()` when `src_shape` lives in a
@@ -2521,7 +2576,8 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         _install_skin(new_shape, dst_nif, src_shape, bone_names,
                       xforms_map, weights_map, use_verts, _bake_T,
                       preserve_authored_skin=preserve_authored_skin,
-                      xml_stem_scan=xml_stem_scan)
+                      xml_stem_scan=xml_stem_scan,
+                      override_partition_tris=override_partition_tris)
     elif src_shape.bone_names:
         # Source shapes can exceed the GPU bone cap (dense skirts ship 79-81).
         # Keep all bones and let _split_oversize_partition split into partitions
@@ -2556,7 +2612,8 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         _install_skin(new_shape, dst_nif, src_shape, bone_names,
                       xforms_map, weights_map, use_verts, _bake_T,
                       preserve_authored_skin=preserve_authored_skin,
-                      xml_stem_scan=xml_stem_scan)
+                      xml_stem_scan=xml_stem_scan,
+                      override_partition_tris=override_partition_tris)
 
     # Alpha: set has_alpha_property=True first (creates dst NiAlphaProperty),
     # then copy flags/threshold. Don't memcpy the whole buf (contains source
@@ -2613,8 +2670,128 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
 
     return new_shape
 
+def _keep_unweighted_nodes(new, old) -> int:
+    """Re-create, in the fresh NIF `new`, every node of `old` that carries no
+    skin weight, at its global transform, flat, BEFORE any shape is copied.
+    #reauthor-keeps-nodes
+
+    The rebuild only add_bones weighted bones, so the NiNodes of everything else
+    (a chain anchor's unweighted ancestors, the root stubs `NPC` / `NPC COM` /
+    `NPC Root`, a bone one weight emptied) vanished, and which of them vanished
+    depended on the weight file. `_0` and `_1` then had different node counts and
+    every shape behind the difference sat at a different position. A bone that is
+    weighted in `old` is left to `add_bone` as before, so no transform it would
+    have created changes. Direct children of the root are re-created, and, with
+    CANONICAL_SKELETON_NODES, unweighted actor-skeleton nodes that have a parent
+    (flat, at their global transform) unless a custom chain hangs below them: a
+    chain's hierarchy belongs to the chain code. Genital
+    anatomy nodes are not kept: the converter strips those weights on purpose.
+    Returns the number of nodes re-created.
+    """
+    try:
+        old_nodes = old.nodes
+    except Exception:
+        return 0
+    if not old_nodes:
+        return 0
+    shape_names = set()
+    weighted = set()
+    for sh in old.shapes:
+        shape_names.add(sh.name)
+        for bn in (sh.bone_names or []):
+            try:
+                live = any(wt > 0.0 for _i, wt in sh.bone_weights[bn])
+            except Exception:
+                live = True            # unreadable -> add_bone's business
+            if live:
+                weighted.add(bn)
+    try:
+        root_name = old.rootNode.name
+    except Exception:
+        root_name = None
+    # #reauthor-keeps-skeleton-nodes: the ancestors of every custom (chain) node.
+    # Those belong to the chain code, which builds them with their parent links.
+    chain_ancestors: "set[str]" = set()
+    keep_skeleton = bool(_nc().CANONICAL_SKELETON_NODES)
+    if keep_skeleton:
+        for n, nd in old_nodes.items():
+            if n in shape_names or _nc()._actor_can_resolve_bone(n):
+                continue
+            cur, seen = getattr(nd, "parent", None), set()
+            while cur is not None and cur.name not in seen:
+                seen.add(cur.name)
+                chain_ancestors.add(cur.name)
+                cur = getattr(cur, "parent", None)
+    existing = set(new.nodes.keys())
+    kept = 0
+    for name in sorted(old_nodes):             # sorted: deterministic order
+        if (name in existing or name in shape_names or name in weighted
+                or name == root_name or name.lower().endswith(".nif")):
+            continue
+        if _nc()._is_genital_anatomy_bone(name):
+            continue                            # stripped on purpose, node and all
+        node = old_nodes[name]
+        par = getattr(node, "parent", None)
+        # A direct child of the root is a flat stub and is always kept. A node
+        # with a real parent is kept, flat at its global transform, only when it
+        # is an actor-SKELETON node no custom chain hangs below: the canonical
+        # set seeds such nodes at the first write with their parents, a rebuild
+        # re-adds the weighted skeleton bones flat anyway, and dropping the
+        # unweighted ones is what made a rebuilt weight carry fewer nodes than
+        # its partner (#reauthor-keeps-skeleton-nodes). A chain node, or a
+        # skeleton node a chain hangs below, belongs to the chain code (it skips
+        # a node that already exists, so a flat copy made here would win that
+        # race and flatten an SMP chain).
+        if par is None or par.name != root_name:
+            if not (keep_skeleton and _nc()._actor_can_resolve_bone(name)
+                    and name not in chain_ancestors):
+                continue
+        try:
+            new.add_node(name, node.global_transform, parent=None)
+            existing.add(name)
+            kept += 1
+        except Exception:
+            pass
+    return kept
+
+
+def _rebuild_repair_body(nif):
+    """(verts, normals) of the piece's own UBE body in body space, for the
+    coherence repair's clearance hold during a rebuild; None when the piece
+    carries no body (the copy path) or it cannot be read. #coherence-repair-rebuild-hold"""
+    if not _nc().COHERENCE_REPAIR_OUTSIDE_BODY:
+        return None
+    try:
+        b = _nc().ube_body_shape(nif)
+        if b is None:
+            return None
+        bv = np.asarray(b.verts, dtype=np.float64)
+        bt = np.asarray(b.tris, dtype=np.int64)
+        if not len(bv) or not len(bt):
+            return None
+        return bv, _nc()._vertex_normals_from_tris(bv, bt)
+    except Exception as _be:
+        _note_pass_failure("_rebuild_repair_body", _be)
+        return None
+
+
+def _repair_body_in_shape_frame(body, shape):
+    """`body` (verts, normals) moved into `shape`'s stored frame: the body minus
+    the shape's checked body offset (`shape_body_offset`), the frame the
+    write-time hold uses. Normals are unchanged (a translation). None on failure."""
+    try:
+        bv, bn = body
+        off = _nc().shape_body_offset(shape, body_verts=bv)
+        return bv - np.asarray(off, dtype=np.float64), bn
+    except Exception as _fe:
+        _note_pass_failure("_repair_body_in_shape_frame", _fe)
+        return None
+
+
 def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
-                        exclude_shapes=None, nif=None, shape_order=None) -> bool:
+                        exclude_shapes=None, nif=None, shape_order=None,
+                        override_skin_by_name=None, override_tris_by_name=None,
+                        override_partition_tris_by_name=None) -> bool:
     """Re-author a NIF from scratch into a fresh NifFile — copy every shape
     via _copy_shape (clean pynifly authoring) instead of leaving the
     source-derived bytes produced by the verbatim `shutil.copy2` path.
@@ -2625,6 +2802,16 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
     re-points every colour-variant swap that names it (BUG-09). Names absent
     from the NIF are ignored; shapes absent from the list keep their current
     relative order and follow the listed ones, so a partial list is safe.
+
+    `override_skin_by_name`: optional {shape_name -> {"bones", "xforms",
+    "weights"}} -- a whole replacement skin for that shape, installed through
+    `_copy_shape`'s override path (so a bone left with no weight is dropped
+    from the skin instead of shipping as a zero-weight palette entry).
+
+    `override_tris_by_name` / `override_partition_tris_by_name`: optional
+    {shape_name -> (M,3) triangles} and {shape_name -> M partition indices}: a
+    NEW triangle list for that shape (verts unchanged) with the partition of
+    each new triangle. Used by #body-zap to drop body triangles the armour hides.
 
     `override_verts_by_name`: optional {shape_name -> (N,3) verts} to write NEW
     vertex positions for those shapes (same count/order). Used by the cross-shape
@@ -2643,6 +2830,8 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
     shader, textures, alpha, partitions, Hidden flags, and the BODYTRI /
     root-HDT extra-data. Returns True if the NIF was rewritten.
     """
+    from .work_counts import WORK
+    WORK["nif_rebuilds"] += 1              # #unit-timing
     try:
         pyn = _nc()._pynifly()
         # Re-author from an already-open NIF when the caller passes one (the fitted
@@ -2746,6 +2935,12 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
             # swallowed. A dropped seed here is what left `_1` 68.91u low, so a
             # silent failure is the one outcome that must not be possible.
             _note_pass_failure("_seed_flat_chain_anchors", _se)
+        # A rebuild may drop a skin binding, never a node. #reauthor-keeps-nodes
+        if _nc().REAUTHOR_KEEPS_NODES:
+            try:
+                _keep_unweighted_nodes(new, old)
+            except Exception as _ke:
+                _note_pass_failure("_keep_unweighted_nodes", _ke)
         copy_failed = []
         _ov = override_verts_by_name or {}
         if _ov and _override_contract_on():
@@ -2763,14 +2958,27 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
                         f"geometry"), dst_path)
                 _ov = {n: v for n, v in _ov.items() if n not in _amb}
         _excl = exclude_shapes or set()
+        # #coherence-repair-rebuild-hold: a shape given new verts here runs the
+        # coherence repair again inside `_copy_shape` -- the third run on a piece
+        # whose conform relaxed a self-intersection -- and that run had no body,
+        # so no clearance hold. Hand it the piece's own UBE body in the shape's
+        # frame, as the write-time run gets it (#coherence-repair-write-hold).
+        _rbody = _rebuild_repair_body(old) if _ov else None
         for s in shapes:
             if s.name in _excl:
                 continue                 # drop this shape from the re-author
             try:
+                _rb = None
+                if _rbody is not None and s.name in _ov:
+                    _rb = _repair_body_in_shape_frame(_rbody, s)
                 _copy_shape(s, new, override_verts=_ov.get(s.name),
+                            override_skin=(override_skin_by_name or {}).get(s.name),
                             preserve_authored_skin=(s.name in _preserve),
                             skip_geometry_repair=(s.name in _colliders),
-                            xml_stem_scan=_dss)
+                            xml_stem_scan=_dss, repair_body=_rb,
+                            override_tris=(override_tris_by_name or {}).get(s.name),
+                            override_partition_tris=(
+                                override_partition_tris_by_name or {}).get(s.name))
             except Exception as _ce:
                 copy_failed.append((s.name, repr(_ce)))
         if copy_failed:

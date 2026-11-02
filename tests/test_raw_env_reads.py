@@ -58,8 +58,12 @@ ALLOWLIST = {
     "CBBE2UBE_GLOW_LOG": "path of the glow debug log",
     "CBBE2UBE_RUN_LOG": "path of the run log, pinned by the window",
     "CBBE2UBE_EXCLUSIONS": "path of the exclusions file",
+    "CBBE2UBE_BREAST_FIELD": "path of the local #breast-field table",
+    "CBBE2UBE_WARP_FIELD": "path of the local #warp-field-table",
+    "CBBE2UBE_ZAP_PRESETS": "paths of the BodySlide presets the #body-zap holds under",
     "CBBE2UBE_STANDOFF_LOG": "path of the standoff audit log",
     "CBBE2UBE_STAGE_DUMP": "folder for stage dumps",
+    "CBBE2UBE_LIVE_STEPS": "folder for the Live steps tab's records",
     "CBBE2UBE_CONFIG": "path of the settings file",
     "CBBE2UBE_BACK_DUMP_DISP": "a display-name filter for the back-residual dump",
     "CBBE2UBE_CBBE_BODY{…}": "path of a CBBE body reference, per weight",
@@ -74,7 +78,7 @@ MIGRATED_SWITCHES = (
     "CBBE2UBE_NO_VANILLA_SWEEP", "CBBE2UBE_NO_WEIGHT_PARITY_CHECK",
     "CBBE2UBE_NO_BODYMATCH_SELECT", "CBBE2UBE_NO_CAST_CULL",
     "CBBE2UBE_NO_CHAIN_GUARD", "CBBE2UBE_NO_MIN_PUSH",
-    "CBBE2UBE_NO_STANDOFF_AUDIT", "CBBE2UBE_NO_SELFINT_REPAIR",
+    "CBBE2UBE_NO_STANDOFF_AUDIT", "CBBE2UBE_SELFINT_REPAIR",
     "CBBE2UBE_NO_BODY_MOTION_MATCH", "CBBE2UBE_NO_MERGE_DEDUP",
 )
 
@@ -198,7 +202,7 @@ DEFAULTS = [
     ("src.fit_metrics", "PUSH_KNN", 3), ("src.fit_metrics", "PUSH_MARGIN", 0.05),
     ("src.fit_metrics", "PUSH_MAX_TOTAL", 2.0), ("src.fit_metrics", "PUSH_REQ_CAP", 1.5),
     ("src.fit_metrics", "CHAIN_TOL", 0),
-    ("src.nif_convert", "SELFINT_REPAIR", True), ("src.nif_convert", "_SELFINT_SMOOTH", 4),
+    ("src.nif_convert", "SELFINT_REPAIR", False), ("src.nif_convert", "_SELFINT_SMOOTH", 4),
     ("src.nif_convert", "_COINCIDENT_SKIN_TOL", 0.15), ("src.nif_convert", "_COINCIDENT_SKIN_GATE", 0.10),
     ("src.nif_convert", "_COINCIDENT_SKIN_MIN_SHARE", 0.75), ("src.nif_convert", "_RIGID_PART_GATE", 0.15),
     ("src.nif_convert", "_RIGID_PART_MIN_VERTS", 8), ("src.nif_convert", "_PART_PAIR_NEAR", 1.0),
@@ -219,7 +223,7 @@ DEFAULTS = [
 
 _ENV_OF = {
     "CAST_CULL": "CBBE2UBE_NO_CAST_CULL", "PUSH_ENABLED": "CBBE2UBE_NO_MIN_PUSH",
-    "CHAIN_GUARD": "CBBE2UBE_NO_CHAIN_GUARD", "SELFINT_REPAIR": "CBBE2UBE_NO_SELFINT_REPAIR",
+    "CHAIN_GUARD": "CBBE2UBE_NO_CHAIN_GUARD", "SELFINT_REPAIR": "CBBE2UBE_SELFINT_REPAIR",
     "_BODY_MOTION_MATCH": "CBBE2UBE_NO_BODY_MOTION_MATCH", "MERGE_DEDUP_ARMAS": "CBBE2UBE_NO_MERGE_DEDUP",
     "SMP_ANTIPOKE_MAX_PUSH": "CBBE2UBE_SMP_ANTIPOKE_PUSH", "ANTIPOKE_BUST_CLEAR": "CBBE2UBE_BUST_CLEAR",
     "WARP_STANDOFF_SMOOTH_ITERS": "CBBE2UBE_WARP_SMOOTH_ITERS",

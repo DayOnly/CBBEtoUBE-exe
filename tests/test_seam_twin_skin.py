@@ -265,3 +265,106 @@ def test_a_unique_name_is_still_a_key(monkeypatch):
 
 def test_the_unique_name_rule_is_on_by_default():
     assert 'not _flag("CBBE2UBE_NO_COINCIDENT_SKIN_UNIQUE_NAMES", False)' in _cs.whole_text()
+
+
+# --------------------------------------------------------------------------
+# #seam-twin-in-weak-cluster: a seam pair inside a cluster the pass skips as weak
+# --------------------------------------------------------------------------
+
+def _weak_cluster(monkeypatch=None):
+    """A pouch seam pair (alike in the source, split by the conversion) that also
+    touches a buckle vertex the author skinned alike; the buckle's converted
+    palette shares no bone with the pouch's, so the cross-shape cluster is weak."""
+    a = {PELV: 0.80, SPINE: 0.20}
+    b = {PELV: 0.99, SPINE: 0.01}
+    buckle = {BELLY: 1.0}
+    src_a = {PELV: 1.0}
+    dst = [_shape("Pouch", [SEAM, SEAM], [a, b]),
+           _shape("Buckle", [SEAM], [buckle], filler={BELLY: 1.0})]
+    src = [_shape("Pouch", [SEAM, SEAM], [src_a, src_a]),
+           _shape("Buckle", [SEAM], [src_a], filler={PELV: 1.0})]
+    return dst, src
+
+
+def test_seam_twins_in_a_cluster_skipped_as_weak_still_share_one_row():
+    dst, src = _weak_cluster()
+    _run(dst, src)
+    r = dst[0]._rows
+    assert r[0] == r[1], "the pair is one point of one shape"
+    assert abs(r[0][PELV] - 0.895) < 1e-3 and abs(r[0][SPINE] - 0.105) < 1e-3
+
+
+def test_the_other_shape_of_a_weak_cluster_is_left_alone():
+    dst, src = _weak_cluster()
+    _run(dst, src)
+    assert dst[1]._rows[0] == {BELLY: 1.0}
+
+
+def test_the_weak_cluster_switch_leaves_the_pair_split(monkeypatch):
+    monkeypatch.setattr(nc, "SEAM_TWIN_IN_WEAK_CLUSTER", False)
+    dst, src = _weak_cluster()
+    _run(dst, src)
+    assert dst[0]._rows[0] != dst[0]._rows[1]
+
+
+def test_the_weak_cluster_switch_is_on_by_default():
+    assert nc.SEAM_TWIN_IN_WEAK_CLUSTER is True
+
+
+def test_seam_twins_in_a_cluster_whose_shared_bones_hold_too_little_still_share_one_row():
+    """The other weak exit: the shapes share a bone (Pelvis), but it holds none
+    of the buckle vertex's row, under the share floor."""
+    a = {PELV: 0.80, SPINE: 0.20}
+    b = {PELV: 0.99, SPINE: 0.01}
+    src_a = {PELV: 1.0}
+    dst = [_shape("Pouch", [SEAM, SEAM], [a, b]),
+           _shape("Buckle", [SEAM], [{BELLY: 1.0}], filler=[{BELLY: 0.5, PELV: 0.5}])]
+    src = [_shape("Pouch", [SEAM, SEAM], [src_a, src_a]),
+           _shape("Buckle", [SEAM], [src_a], filler={PELV: 1.0})]
+    _run(dst, src)
+    r = dst[0]._rows
+    assert r[0] == r[1]
+    assert dst[1]._rows[0] == {BELLY: 1.0}
+
+
+# --------------------------------------------------------------------------
+# #seam-twin-carrier-row: the last-carrier guard and the seam pair
+# --------------------------------------------------------------------------
+
+def _carrier_case():
+    """The joined row caps to four bones and drops `NPC L Thigh`, which only side
+    b carries: the guard hands b its old row back. Belly lives on elsewhere."""
+    a = {PELV: 0.4, SPINE: 0.3, SPINE1: 0.2, BELLY: 0.1}
+    b = {PELV: 0.4, SPINE: 0.3, SPINE1: 0.2, LTHIGH: 0.1}
+    dst, src = _torso([a, b], [SEAM, SEAM], [SEAM, SEAM], [_alike(), _alike()])
+    dst[0]._rows[2] = {PELV: 0.5, BELLY: 0.5}       # Belly has another carrier
+    return dst, src, b
+
+
+def test_a_handed_back_twin_gives_its_row_to_its_twin():
+    dst, src, b = _carrier_case()
+    _run(dst, src)
+    r = dst[0]._rows
+    assert r[0] == r[1] == b, "both sides on the carrier's own row"
+    assert any(w > 1e-4 for _i, w in dst[0].bone_weights[LTHIGH])
+
+
+def test_without_the_carrier_row_the_handed_back_pair_stays_split(monkeypatch):
+    monkeypatch.setattr(nc, "SEAM_TWIN_CARRIER_ROW", False)
+    dst, src, _b = _carrier_case()
+    _run(dst, src)
+    assert dst[0]._rows[0] != dst[0]._rows[1]
+
+
+def test_a_twin_that_would_empty_another_bone_is_handed_back_too():
+    """Belly's ONLY carrier is side a: taking b's row would empty it, so the
+    guard hands a back as well. Safety before the seam: the pair stays split."""
+    dst, src, _b = _carrier_case()
+    dst[0]._rows[2] = {PELV: 1.0}
+    _run(dst, src)
+    assert any(w > 1e-4 for _i, w in dst[0].bone_weights[BELLY])
+    assert any(w > 1e-4 for _i, w in dst[0].bone_weights[LTHIGH])
+
+
+def test_the_carrier_row_switch_is_on_by_default():
+    assert nc.SEAM_TWIN_CARRIER_ROW is True

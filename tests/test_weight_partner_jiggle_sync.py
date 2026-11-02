@@ -286,6 +286,21 @@ def test_a_bone_on_too_few_verts_is_left_alone():
     assert n == 0 and not saved
 
 
+def test_a_bone_in_the_old_dead_zone_is_given_to_the_partner():
+    """4 to 7 vertices used to match neither side (the minimum was the graft's own
+    8), so the bone and its node stayed in one file and every mesh behind the node
+    moved. `#weight-partner-dead-zone`."""
+    for count in (4, 5, 7):
+        s0, s1 = _pair(jiggle_on="1", count=count)
+        n, saved = _run([s0], [s1])
+        assert n > 0 and saved == ["n0.nif"], count
+        assert BELLY in s0.bone_names, count
+
+
+def test_the_minimum_is_four_vertices():
+    assert nc._WP_JIGGLE_PRESENT_MIN == 4
+
+
 def test_shapes_the_converter_rebuilt_are_skipped():
     """Different vert counts cannot be paired by index, and pairing a weight
     variant by proximity would be a guess."""

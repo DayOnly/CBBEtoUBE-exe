@@ -300,6 +300,8 @@ def atomic_nif_save(nif, dst_path) -> None:
     dst_path = Path(dst_path)
     dst_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst_path.with_name(dst_path.name + ".nifsave.tmp")
+    from .work_counts import WORK
+    WORK["nif_saves"] += 1                 # #unit-timing
     try:
         nif.filepath = str(tmp)
         nif.save()

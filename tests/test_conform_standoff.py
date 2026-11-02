@@ -42,13 +42,14 @@ def test_explicit_blend_split_the_difference():
     src = np.array([[0.0, 0.0, 0.5]])
     cur = np.array([[0.0, 0.0, 2.0]])
     # explicit blend=0.5 -> midpoint of source (0.5) and current (2.0) = 1.25
+    # max_pull=4.0: the blend logic itself, under the pre-10-18 cap (the default is now 0.6)
     out = conform_to_source_standoff(src, bv, bn, cur, bv, bn,
-                                     min_clearance=0.25, blend=0.5)
+                                     min_clearance=0.25, blend=0.5, max_pull=4.0)
     assert abs(out[0, 2] - 1.25) < 0.05, out         # split the difference
     assert src[0, 2] < out[0, 2] < cur[0, 2]         # pulled IN, but not all the way
     # explicit blend=1.0 -> all the way to the source clearance
     out1 = conform_to_source_standoff(src, bv, bn, cur, bv, bn,
-                                      min_clearance=0.25, blend=1.0)
+                                      min_clearance=0.25, blend=1.0, max_pull=4.0)
     assert abs(out1[0, 2] - 0.5) < 0.05, out1
 
 
@@ -57,13 +58,14 @@ def test_adaptive_tight_keeps_room_loose_restores_drape():
     # TIGHT vert (source 0.5, over-projected to 2.0): adaptive default keeps ROOM
     # (low blend) -> looser than the 1.25 midpoint -> won't clip the morphed body.
     st = np.array([[0.0, 0.0, 0.5]]); ct = np.array([[0.0, 0.0, 2.0]])
-    ot = conform_to_source_standoff(st, bv, bn, ct, bv, bn)   # default = adaptive
+    # max_pull=4.0: the blend logic itself, under the pre-10-18 cap (the default is now 0.6)
+    ot = conform_to_source_standoff(st, bv, bn, ct, bv, bn, max_pull=4.0)   # default = adaptive
     assert ot[0, 2] > 1.25, ot                         # more room than the midpoint
     assert ot[0, 2] < ct[0, 2]                          # still reeled in a bit
     # LOOSE vert (source 5.0 drape, over-projected to 8.0): adaptive restores it
     # near its source drape (blend -> 1.0) -> closes the forsworn-style float gap.
     sl = np.array([[0.0, 0.0, 5.0]]); cl = np.array([[0.0, 0.0, 8.0]])
-    ol = conform_to_source_standoff(sl, bv, bn, cl, bv, bn, max_body_dist=20.0)
+    ol = conform_to_source_standoff(sl, bv, bn, cl, bv, bn, max_body_dist=20.0, max_pull=4.0)
     assert abs(ol[0, 2] - 5.0) < 0.6, ol               # back to ~source drape
 
 

@@ -1101,6 +1101,64 @@ class _ColliderDeclined(Exception):
     reported as broken teaches you to ignore the one channel that matters.
     Caught separately, logged as a decline, no failure recorded."""
 
+# The fewest simulated verts a proxy source may have.
+_SKIRT_PROXY_SOURCE_MIN = 40
+
+
+def _skirt_proxy_excluded(xml_text, triangle_decls) -> "set[str]":
+    """The shapes the skirt proxy may not be built from: every shape the XML
+    declares -- per-triangle and, under #skirt-proxy-declared-source, per-vertex
+    cloth too (see the note at the call)."""
+    out = set(triangle_decls)
+    if _nc().SKIRT_PROXY_DECLARED_SOURCE:
+        out |= set(re.findall(r'<per-vertex-shape\s+name="([^"]+)"', xml_text or ""))
+    return out
+
+
+def _skirt_proxy_source(shapes, decls, chain_mass, body_z=None):
+    """(shape, simulated vert count) the skirt proxy is built from, or (None, -1).
+
+    Candidates are rendered shapes (not hidden, not an XML collider, not an
+    injected body);
+    a vert is simulated when `chain_mass` (its weight on bones the body lacks)
+    reaches `_SKIRT_PROXY_CHAIN_MIN`. The shape with the most simulated verts at
+    or below the hip top (`body_zones.HIP_Z`) wins when it has at least
+    `_SKIRT_PROXY_SOURCE_MIN` of them; otherwise the shape with the most simulated
+    verts anywhere, as before (#skirt-proxy-below-hip, GitHub #34: shoulder
+    pauldrons outvoted the skirt). Ties keep the first shape in file order.
+
+    `body_z(shape)` gives each vert's height in BODY space. A shape may store its
+    verts in its own frame (the reported pauldrons sit at z -6..5 with a +112
+    transform), so a raw height would call them hip-level. Without `body_z` the
+    stored heights are used."""
+    from .body_zones import HIP_Z
+    src_sh, best = None, -1
+    low_sh, low_best = None, -1
+    for s in shapes:
+        if s.name in decls or s.name in _nc().UBE_BODY_INJECT_NAMES:
+            continue
+        # Rendered only: a hidden shape is a physics stabiliser or a proxy (the
+        # reported robe's hidden `Stabilizer` carries 396 chain verts at the hip).
+        if _nc()._shape_is_hidden(s):
+            continue
+        try:
+            is_cloth = chain_mass(s) >= _nc()._SKIRT_PROXY_CHAIN_MIN
+            n_cloth = int(is_cloth.sum())
+            z = (np.asarray(body_z(s), dtype=np.float64) if body_z is not None
+                 else np.asarray(s.verts, dtype=np.float64)[:, 2])
+            n_low = int((is_cloth & (z <= HIP_Z[1])).sum()) if n_cloth else 0
+        except Exception:
+            continue
+        if n_cloth > best:
+            src_sh, best = s, n_cloth
+        if n_low > low_best:
+            low_sh, low_best = s, n_low
+    if (_nc().SKIRT_PROXY_BELOW_HIP and low_sh is not None
+            and low_best >= _SKIRT_PROXY_SOURCE_MIN):
+        return low_sh, low_best
+    return src_sh, best
+
+
 def _add_skirt_collider_proxy(dst_path) -> int:
     """Add a Fabric collision proxy built from the VISIBLE cloth.
     See #skirt-proxy-rebuild. Returns 1 if a proxy was added."""
@@ -1193,19 +1251,26 @@ def _add_skirt_collider_proxy(dst_path) -> int:
     if donor is None:
         return 0
 
-    # SOURCE: the largest rendered shape that is actually simulated.
-    src_sh, best = None, -1
-    for s in nf.shapes:
-        if s.name in decls or s.name in _nc().UBE_BODY_INJECT_NAMES:
-            continue
-        try:
-            cm = _chain_mass(s)
-            n_cloth = int((cm >= _nc()._SKIRT_PROXY_CHAIN_MIN).sum())
-        except Exception:
-            continue
-        if n_cloth > best:
-            src_sh, best = s, n_cloth
-    if src_sh is None or best < 40:
+    # SOURCE: the largest rendered shape that is actually simulated, counted
+    # below the hip first (#skirt-proxy-below-hip).
+    _base_v = np.asarray(base.verts, dtype=np.float64)
+
+    def _body_z(sh_):
+        v = np.asarray(sh_.verts, dtype=np.float64)
+        return (v + _nc().shape_body_offset(sh_, body_verts=_base_v))[:, 2]
+
+    # #skirt-proxy-declared-source: a shape the XML already declares -- per-
+    # vertex cloth as well as per-triangle -- is in the collision already, and
+    # a proxy built from it rides its own bones under a cloned block's tags.
+    # Reported in game on a robe (#52 had just made the pick land on its skirt):
+    # the per-vertex skirt, tag `skirt`, collides with everything but `skirt`;
+    # the proxy built from it cloned the robe's `robes` block, so the skirt
+    # collided with a copy of itself and the physics broke. The proxy exists
+    # for cloth the physics does NOT represent; that cloth is never declared.
+    src_sh, best = _skirt_proxy_source(nf.shapes, _skirt_proxy_excluded(txt, decls),
+                                       _chain_mass,
+                                       body_z=_body_z)
+    if src_sh is None or best < _SKIRT_PROXY_SOURCE_MIN:
         return 0
 
     try:
@@ -1802,6 +1867,199 @@ def _seed_flat_chain_anchors(dst_nif, src_nif, stem_scan: bool = True) -> int:
         _note_pass_failure("_seed_flat_chain_anchors", _e)
         return 0
 
+def _weight_partner_source(src_nif):
+    """The OTHER weight's source file beside `src_nif` (`x_0.nif` <-> `x_1.nif`,
+    either case), loaded, or None when there is none, it cannot be read, or
+    CANONICAL_PARTNER_UNION is off. #canonical-partner-union"""
+    if not _nc().CANONICAL_PARTNER_UNION:
+        return None
+    try:
+        p = Path(str(getattr(src_nif, "filepath", "") or ""))
+        stem = p.stem
+        if len(stem) < 2 or stem[-2] != "_" or stem[-1] not in "01":
+            return None
+        other = p.with_name(stem[:-1] + ("1" if stem[-1] == "0" else "0") + p.suffix)
+        if not other.is_file():
+            return None
+        return _nc()._pynifly().NifFile(filepath=str(other))
+    except Exception as _pe:
+        _note_pass_failure("_weight_partner_source", _pe)
+        return None
+
+
+def _canonical_skeleton_nodes(src_nif, body_bones=(), partner_nif=None) -> "list[str]":
+    """The skeleton nodes every output weight of this piece should carry, derived
+    from things BOTH weights share: the source file's nodes and the body's bones.
+    #canonical-skeleton-nodes
+
+    nifly writes every NiNode in front of the shapes, so one more node in one
+    weight file moves every mesh behind it to a different position, and which
+    skeleton bones a file ends up with is decided per weight by passes that read
+    that weight's geometry (a jiggle bone grafted on one weight and not the other,
+    a twist bone left on two vertices of one). No per-file gate can be made to
+    agree, so the node set stops depending on them: it is a function of the source.
+
+    Only real skeleton nodes (`_actor_can_resolve_bone`), never genital anatomy
+    (stripped on purpose), the root, a shape, or a node that is an ANCESTOR of a
+    custom chain bone: the chain code builds those with their parent links and
+    skips a node that already exists, so a flat copy made here would flatten an
+    SMP chain. A source with more than `_CANONICAL_NODE_CAP` such nodes (a cloak
+    whose chain nodes pass for skeleton names) gets none: the converter drops
+    those on purpose and the set would resurrect them.
+
+    `partner_nif` (the other weight's source, #canonical-partner-union) is read the
+    same way and its nodes join the set, so both weights get the same nodes even
+    when the author's two files differ.
+    """
+    names = set(body_bones or ())
+    shape_names: "set[str]" = set()
+    root_names: "set[str]" = set()
+    ancestors: "set[str]" = set()
+    for nif in (src_nif, partner_nif):
+        if nif is None:
+            continue
+        try:
+            nodes = dict(nif.nodes)
+        except Exception:
+            nodes = {}
+        try:
+            shapes = {sh.name for sh in nif.shapes}
+        except Exception:
+            shapes = set()
+        try:
+            root_names.add(nif.rootNode.name)
+        except Exception:
+            pass
+        shape_names |= shapes
+        names |= set(nodes)
+        for n, node in nodes.items():
+            if n in shapes or _actor_can_resolve_bone(n):
+                continue
+            cur, seen = getattr(node, "parent", None), set()
+            while cur is not None and cur.name not in seen:
+                seen.add(cur.name)
+                ancestors.add(cur.name)
+                cur = getattr(cur, "parent", None)
+    out = []
+    for n in sorted(names):
+        if (not n or n in root_names or n in shape_names or n in ancestors
+                or n.lower().endswith(".nif")):
+            continue
+        if not _actor_can_resolve_bone(n) or _nc()._is_genital_anatomy_bone(n):
+            continue
+        out.append(n)
+    cap = int(_nc()._CANONICAL_NODE_CAP)
+    if cap > 0 and len(out) > cap:
+        return []
+    return out
+
+
+def _seed_canonical_skeleton_nodes(dst_nif, src_nif, body_bones=()) -> int:
+    """Create the piece's canonical skeleton nodes in a still-EMPTY dst NIF, with
+    the SOURCE's hierarchy, so `_0` and `_1` start from the same node set whatever
+    each weight's passes add later. #canonical-skeleton-nodes
+
+    A node is created parent-first, with its source LOCAL transform and its source
+    parent link, exactly as `_precreate_custom_bone_chains` builds an anchor's
+    ancestors. A first version made them all flat under the root, and on 300 real
+    files that flattened 458 nodes whose parents the existing code had linked
+    (`UpperArm` under `Clavicle`, `Calf` under `Thigh`, ...): the chain code skips a
+    node that already exists, so whoever creates it first decides its parent. A node
+    whose source parent cannot be created is skipped, never flattened; a body bone
+    the source does not have is created flat at identity, which is what `add_bone`
+    makes for one. A node already there (a seeded chain anchor) is left as it is.
+    Returns the number of nodes created."""
+    if not _nc().CANONICAL_SKELETON_NODES:
+        return 0
+    try:
+        partner = _weight_partner_source(src_nif)   # #canonical-partner-union
+        names = _canonical_skeleton_nodes(src_nif, body_bones, partner_nif=partner)
+        if not names:
+            return 0
+        pyn = _nc()._pynifly()
+        # This weight's own node first; a node only the partner has comes with
+        # the partner's transform and parent.
+        src_nodes: dict = {}
+        root_names: "set[str]" = set()
+        for nif in (partner, src_nif):
+            if nif is None:
+                continue
+            try:
+                src_nodes.update(dict(nif.nodes))
+            except Exception:
+                pass
+            try:
+                root_names.add(nif.rootNode.name)
+            except Exception:
+                pass
+        wanted = set(names)
+        existing = set(dst_nif.nodes.keys())
+        added = [0]
+        visiting: "set[str]" = set()
+
+        def _make(name) -> bool:
+            if name in existing:
+                return True
+            if name in visiting:
+                return False                      # a cycle: leave it out
+            visiting.add(name)
+            try:
+                node = src_nodes.get(name)
+                if node is None:
+                    xf = pyn.TransformBuf()
+                    xf.set_identity()
+                    par = None                    # a body bone the source lacks
+                else:
+                    xf = node.transform
+                    pnode = getattr(node, "parent", None)
+                    par = pnode.name if pnode is not None else None
+                    if par in root_names:
+                        par = None
+                if par is not None:
+                    if par not in wanted or not _make(par):
+                        return False              # never flatten what has a parent
+                dst_nif.add_node(name, xf, parent=par)
+                existing.add(name)
+                added[0] += 1
+                return True
+            except Exception:
+                return False
+            finally:
+                visiting.discard(name)
+
+        for n in names:
+            _make(n)
+        return added[0]
+    except Exception as _e:
+        _note_pass_failure("_seed_canonical_skeleton_nodes", _e)
+        return 0
+
+
+def _chain_source_root(src_nif, dst_nif) -> "str | None":
+    """The name of `src_nif`'s root when the chain code should treat it as the
+    written file's root (#chain-source-root): CHAIN_SOURCE_ROOT on, the root
+    named something `dst_nif` does not already have (a file-named root such as
+    `BodyM_0.nif`), and an identity transform. None otherwise."""
+    if not _nc().CHAIN_SOURCE_ROOT:
+        return None
+    try:
+        r = src_nif.rootNode
+        name = r.name
+        if not name or name in set(dst_nif.nodes.keys()):
+            return None
+        xf = r.transform
+        t = xf.translation
+        R = xf.rotation
+        if any(abs(float(c)) > 1e-4 for c in t) or abs(float(xf.scale) - 1.0) > 1e-4:
+            return None
+        if any(abs(float(R[i][j]) - (1.0 if i == j else 0.0)) > 1e-4
+               for i in range(3) for j in range(3)):
+            return None
+        return name
+    except Exception:
+        return None
+
+
 def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names,
                                   stem_scan: bool = True) -> int:
     """Recreate, in `dst_nif`, the node sub-trees for any armor-specific
@@ -1938,6 +2196,22 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names,
             _nc()._reanchor_nif_root_chains(chain, anchors, src_nodes)
         except Exception:
             pass
+    # #chain-source-root: a source whose ROOT node is named after its file
+    # (`BodyM_0.nif`) had that root recreated as an ordinary node by the walks
+    # below, one per weight under two different names, so `_0` and `_1` carried
+    # different node sets (#33). The source root IS the written file's root:
+    # after the pelvis re-anchor above (which needs to see bones hung on it),
+    # what still hangs on it hangs on the written root, and the root itself is
+    # never created. Only for a root the written file does not already have
+    # (a `Scene Root` source is unchanged) and with an identity transform (the
+    # children's local transforms then stay exact).
+    _src_root = _chain_source_root(src_nif, dst_nif)
+    if _src_root is not None:
+        chain.pop(_src_root, None)
+        anchors.discard(_src_root)
+        for _b, (_bxf, _bpar) in list(chain.items()):
+            if _bpar == _src_root:
+                chain[_b] = (_bxf, None)
     # AFTER the re-anchor, so it adds to whatever local transform that left --
     # the two compose, and running first would have the re-anchor overwrite it.
     if _nc().CHAIN_REST_LIFT:
@@ -2009,7 +2283,7 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names,
             # bones required by accessory chains (bag/book off Spine) are present.
             cur = a
             seen2: set[str] = set()
-            while cur and cur not in seen2:
+            while cur and cur not in seen2 and cur != _src_root:
                 seen2.add(cur)
                 src_c = src_nodes.get(cur)
                 if src_c is None:
@@ -2066,13 +2340,15 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names,
         anc: list[tuple] = []  # [(name, local_xform, parent_name)] leaf -> root
         cur = a
         seen2: set[str] = set()
-        while cur and cur not in seen2:
+        while cur and cur not in seen2 and cur != _src_root:
             seen2.add(cur)
             n = src_nodes.get(cur)
             if n is None:
                 break
             p = n.parent
             pn = p.name if p is not None else None
+            if pn is not None and pn == _src_root:
+                pn = None
             anc.append((cur, n.transform, pn))
             if pn is None:
                 break
@@ -2673,6 +2949,35 @@ def _generate_hdt_xml_for_dst(dst_path: "Path", only_loose: bool = False) -> "st
             return "\\".join(parts[i:])
     return None
 
+def _hdt_xml_pointer_absent(src_nif_path, nif=None) -> "str | None":
+    """The physics-XML pointer `src_nif_path` declares, when NO folder of the load
+    order ships that file (#hdt-xml-absent); None when it declares none, the file
+    exists somewhere, or there is no load order to ask (then nobody can say it is
+    absent). Archives are not searched: the converter reads physics XMLs from
+    loose folders only."""
+    try:
+        snf = nif if nif is not None else _nc()._pynifly().NifFile(filepath=str(src_nif_path))
+        rel = None
+        for ed in snf.rootNode.extra_data():
+            if (getattr(ed, "name", None) == "HDT Skinned Mesh Physics Object"
+                    and getattr(ed, "string_data", None)):
+                rel = ed.string_data
+                break
+        if not rel or _nc()._load_order_dirs() is None:
+            return None
+        if _nc()._resolve_data_rel_in_vfs(rel, Path(src_nif_path)) is not None:
+            return None
+        norm = _nc()._safe_data_rel(rel)
+        if norm is None:
+            return None
+        stripped = norm.split("/", 1)[1] if norm.lower().startswith("data/") else norm
+        if _nc()._load_order_file(stripped) is not None:
+            return None
+        return rel
+    except Exception:
+        return None
+
+
 def _read_source_hdt_xml_disk(src_nif_path: Path, nif=None) -> "Path | None":
     """Resolve the source armor NIF's OWN `HDT Skinned Mesh Physics Object`
     extra-data string to a file on disk.
@@ -2830,6 +3135,107 @@ def _decode_xml_roundtrip(raw: bytes) -> "tuple[str, str]":
 _HDT_SHAPE_OPEN_RE = re.compile(r'<per-(?:triangle|vertex)-shape\s+name="([^"]+)"')
 _HDT_SHAPE_CLOSE_RE = re.compile(r'</per-(?:triangle|vertex)-shape>')
 
+def _xml_shape_spellings(xml_names, mesh_names) -> "dict[str, str]":
+    """{XML shape reference: the mesh shape it names} for references that match
+    no shape exactly but exactly ONE shape when letter case is ignored.
+    #xml-shape-name-case
+
+    Left out (so the caller treats them as before): a reference two shapes match
+    that way, and a reference whose shape another reference already names, by
+    its exact spelling or by another case-only one, so two blocks never land on
+    one shape. Empty when XML_SHAPE_NAME_CASE is off."""
+    if not _nc().XML_SHAPE_NAME_CASE:
+        return {}
+    mesh = {m for m in mesh_names if m}
+    by_fold: "dict[str, list[str]]" = {}
+    for m in sorted(mesh):
+        by_fold.setdefault(m.casefold(), []).append(m)
+    refs = {n for n in xml_names if n}
+    cand: "dict[str, str]" = {}
+    for n in sorted(refs):
+        if n in mesh:
+            continue
+        hits = by_fold.get(n.casefold(), [])
+        if len(hits) == 1 and hits[0] not in refs:
+            cand[n] = hits[0]
+    taken: "dict[str, int]" = {}
+    for t in cand.values():
+        taken[t] = taken.get(t, 0) + 1
+    return {n: t for n, t in cand.items() if taken[t] == 1}
+
+# #xml-body-repoint (DEFAULT ON since 2026-10-21; CBBE2UBE_NO_XML_BODY_REPOINT=1 off): the body swap replaces the
+# source body (`3BA`, a placeholder body) with the injected `BaseShape`, and the prune dropped the AUTHOR'S
+# per-triangle collider block for that body -- the simulated cloth that bounced off it then passed through the body
+# (audit 2026-10-20 F02: a top's sleeves, 2 pieces). The block is re-pointed at `BaseShape` instead, the author's own
+# settings unchanged, but only when a simulated (per-vertex) shape really collides with it under FSMP's tag rule: a
+# body block whose only partner is the ground is inert and stays pruned (a full-body collider nothing uses costs
+# frames, and #breast-collider showed an INVENTED one can destabilise the sim).
+XML_BODY_REPOINT = not _flag("CBBE2UBE_NO_XML_BODY_REPOINT", False)
+
+
+def _xml_blocks(lines):
+    """[(kind, name, tags, can_tags, no_tags)] of an HDT-SMP XML's shape blocks."""
+    text = "\n".join(lines)
+    out = []
+    for m in re.finditer(r'<per-(triangle|vertex)-shape\s+name="([^"]+)"(.*?)</per-(?:triangle|vertex)-shape>',
+                         text, re.S):
+        body = m.group(3)
+        grab = lambda tag: {x.strip() for x in re.findall(r"<%s>([^<]+)</%s>" % (tag, tag), body) if x.strip()}
+        out.append((m.group(1), m.group(2), grab("tag"), grab("can-collide-with-tag"), grab("no-collide-with-tag")))
+    return out
+
+
+def _fsmp_collide(a, b) -> bool:
+    """FSMP's tag rule, both directions: neither excludes the other's tags, and each can-collide list (when given)
+    names one of the other's tags."""
+    _, _, ta, ca, na = a
+    _, _, tb, cb, nb = b
+    return (not (ta & nb) and not (tb & na)
+            and (not ca or bool(tb & ca)) and (not cb or bool(ta & cb)))
+
+
+def _xml_body_repoint(lines, shape_names) -> "dict[str, str]":
+    """#xml-body-repoint: {source body block name: 'BaseShape'} for the one per-triangle block that names a source
+    body the mesh no longer has, when the mesh has the injected BaseShape, no block names BaseShape already, and a
+    per-vertex shape collides with it. Empty otherwise."""
+    if not XML_BODY_REPOINT or "BaseShape" not in shape_names:
+        return {}
+    blocks = _xml_blocks(lines)
+    if any(name == "BaseShape" for _, name, *_ in blocks):
+        return {}
+    cands = [b for b in blocks if b[0] == "triangle" and b[1] not in shape_names and _nc()._is_inline_body_name(b[1])]
+    if len(cands) != 1:
+        return {}
+    sims = [b for b in blocks if b[0] == "vertex" and b[1] in shape_names]
+    if not any(_fsmp_collide(cands[0], s) for s in sims):
+        return {}
+    return {cands[0][1]: "BaseShape"}
+
+
+def _xml_declare_body_bones(lines, nif, resolvable_bones, xml_path=None):
+    """#xml-body-repoint: declare the bones the injected BaseShape carries that the XML does not, so FSMP can
+    resolve every vertex of the re-pointed body collider. The author declared their own body's bones; the UBE body
+    carries a few more (the rear calves: 2 pieces, 2026-10-22 run, `registered_shape_undeclared_bones`). Added
+    self-closing (kinematic, like the author's own body bones), just before the first existing declaration."""
+    body = next((s for s in nif.shapes if s.name == "BaseShape"), None)
+    if body is None:
+        return lines
+    carried = [b for b, w in (getattr(body, "bone_weights", None) or {}).items() if any(x for _, x in w)]
+    declared = {m.group(1) for m in (re.search(r'<bone\s+name="([^"]+)"', x) for x in lines) if m}
+    missing = sorted(b for b in carried if b not in declared and b.lower() in resolvable_bones)
+    if not missing:
+        return lines
+    at = next((i for i, x in enumerate(lines) if re.search(r'<bone\s+name="', x)), None)
+    if at is None:
+        at = next((i for i, x in enumerate(lines) if _HDT_SHAPE_OPEN_RE.search(x)), None)
+    if at is None:
+        return lines
+    indent = re.match(r"\s*", lines[at]).group(0)
+    _note_pass_effect("#xml-body-repoint", f"{Path(str(xml_path)).name if xml_path else ''}: declared "
+                      + ", ".join(repr(b) for b in missing), xml_path)
+    return lines[:at] + [f'{indent}<bone name="{b}"/>' for b in missing] + lines[at:]
+
+
 def _hdt_shape_prune(lines, shape_names):
     """Walk an HDT-SMP XML's lines as `_harden_hdt_xml_for_fsmp` prunes shape
     blocks, yielding (line, dropped, opened) for each: `dropped` when the line
@@ -2837,21 +3243,32 @@ def _hdt_shape_prune(lines, shape_names):
 
     LINE-BASED, deliberately the one definition: a line's first
     `<per-*-shape name=...>` decides it, a block whose name is not in
-    `shape_names` (case for case) is dropped from that line to the line holding
-    a closing tag, and each line is dropped or kept WHOLE -- so a kept block, a
-    bone or a constraint that shares a line with a dropped block goes with it.
+    `shape_names` is dropped from that line to the line holding a closing tag,
+    and each line is dropped or kept WHOLE -- so a kept block, a bone or a
+    constraint that shares a line with a dropped block goes with it. A name that
+    differs from one shape only in letter case (`_xml_shape_spellings`) is kept,
+    and its line is yielded with the mesh's spelling (#xml-shape-name-case).
     #zeroed-smp-gain rule e (discovery._smp_gain_verdict) replays the same walk
     through `_hdt_xml_shape_pruned` so its model and the conversion cannot
     disagree about what survives."""
+    lines = list(lines)
+    spell = _xml_shape_spellings(
+        {m.group(1) for m in (_HDT_SHAPE_OPEN_RE.search(x) for x in lines) if m},
+        shape_names)
+    spell.update(_xml_body_repoint(lines, shape_names))      # #xml-body-repoint
     drop_block = False
     for line in lines:
         m = _HDT_SHAPE_OPEN_RE.search(line)
         opened = None
+        name = m.group(1) if m else None
+        if name in spell:                       # #xml-shape-name-case
+            line = line[:m.start(1)] + spell[name] + line[m.end(1):]
+            name = spell[name]
         if m:
-            drop_block = m.group(1) not in shape_names
+            drop_block = name not in shape_names
             if drop_block:
                 opened = ("cloth" if "per-vertex-shape" in line else "collider",
-                          m.group(1))
+                          name)
         if drop_block:
             if _HDT_SHAPE_CLOSE_RE.search(line):
                 drop_block = False
@@ -2866,13 +3283,16 @@ def _hdt_xml_shape_pruned(raw: bytes, shape_names) -> bytes:
     `raw` itself when no block goes, else the kept lines re-joined and encoded
     exactly as that pass writes them."""
     text, codec = _decode_xml_roundtrip(raw)
+    src_lines = text.splitlines()
     kept, dropped = [], False
-    for line, gone, _opened in _hdt_shape_prune(text.splitlines(), shape_names):
+    for line, gone, _opened in _hdt_shape_prune(src_lines, shape_names):
         if gone:
             dropped = True
         else:
             kept.append(line)
-    if not dropped:
+    # A case-only reference rewritten to the mesh's spelling changes a kept line
+    # without dropping one. #xml-shape-name-case
+    if not dropped and kept == src_lines:
         return raw
     return ("\n".join(kept) + "\n").encode(codec)
 
@@ -3016,7 +3436,11 @@ def _ensure_cloth_body_collider(xml_path: Path, nif) -> bool:
         _note_pass_failure("_ensure_cloth_body_collider/xml-write", _we, xml_path)
         return False
 
-def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
+# #xml-drop-triage (DEFAULT ON since 2026-10-21; CBBE2UBE_NO_XML_DROP_TRIAGE=1 = every pruned block is a failure).
+XML_DROP_TRIAGE = not _flag("CBBE2UBE_NO_XML_DROP_TRIAGE", False)
+
+
+def _harden_hdt_xml_for_fsmp(xml_path: Path, nif, src_shapes=None) -> None:
     """FSMP-compatibility hardening of an output HDT-SMP XML. Prunes
     references the engine can't resolve so Faster HDT-SMP never loads
     a dangling shape/bone:
@@ -3054,7 +3478,27 @@ def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
     changed = False
     dropped_shapes: "list[tuple[str, str]]" = []   # (kind, name)
     dropped_bones = 0
-    for line, gone, opened in _hdt_shape_prune(text.splitlines(), nif_shapes):
+    src_lines = text.splitlines()
+    # #xml-shape-name-case: the references the prune keeps under the mesh's
+    # spelling (it rewrites the line); said per piece, like a drop.
+    renamed = _xml_shape_spellings(
+        {m.group(1) for m in (_HDT_SHAPE_OPEN_RE.search(x) for x in src_lines)
+         if m}, nif_shapes)
+    repointed = _xml_body_repoint(src_lines, nif_shapes)
+    if repointed:
+        changed = True
+        _note_pass_effect(
+            "#xml-body-repoint",
+            f"{xml_path.name}: " + ", ".join(f"{a!r} -> {b!r}" for a, b in sorted(repointed.items())),
+            xml_path)
+    if renamed:
+        changed = True
+        _note_pass_effect(
+            "#xml-shape-name-case",
+            f"{xml_path.name}: " + ", ".join(
+                f"{a!r} -> {b!r}" for a, b in sorted(renamed.items())),
+            xml_path)
+    for line, gone, opened in _hdt_shape_prune(src_lines, nif_shapes):
         if opened:
             dropped_shapes.append(opened)
         if gone:
@@ -3067,6 +3511,8 @@ def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
                 dropped_bones += 1
                 continue
         out.append(line)
+    if repointed:
+        out = _xml_declare_body_bones(out, nif, resolvable_bones, xml_path)
 
     # SAY WHAT WAS DELETED. This pruning is correct -- FSMP cannot attach to a
     # shape that is not there -- but a dropped `<per-triangle-shape>` is a
@@ -3085,25 +3531,45 @@ def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
     # or a trailing plural is almost certainly the same part under a re-export,
     # and separating those from genuinely-absent shapes is what tells anyone
     # whether a remap is worth building. Remapping without that measurement
-    # would be attaching physics to a guess.
+    # would be attaching physics to a guess. The measurement came for CASE alone
+    # (2026-10-04): 6 of 34 dropped blocks in one run differed from a mesh shape
+    # only in case, and on the one checked (a skirt's cloth) the author's own
+    # XML and mesh carry that same pair, so case-only references now resolve
+    # before the prune
+    # (#xml-shape-name-case). A NEAR-MATCH left here is a plural or punctuation
+    # difference, or a case match that is not unique.
     if dropped_shapes:
         def _norm(s: str) -> str:
             return re.sub(r"[^a-z0-9]", "", s.lower()).rstrip("s")
 
-        parts = []
+        # #xml-drop-triage: a block is a LOSS only when the source mesh had that shape and the converter neither
+        # replaced it with its own collision proxy (`<name>Col`) nor swapped it for the injected body. The rest is
+        # noise -- a shared author XML naming shapes this mesh never had, a proxy that took the block's place -- and
+        # buried the real losses: 146 "PASS FAILED" reports for 4 NIFs that lost a partner (audit 2026-10-20 F01).
+        parts, noise = [], []
         for kind, name in dropped_shapes:
+            if XML_DROP_TRIAGE and src_shapes is not None:
+                if name not in src_shapes:
+                    noise.append(f"{name!r} (not in the source mesh)"); continue
+                if f"{name}{_nc()._BUST_SPLIT_COL_SUFFIX}" in nif_shapes:
+                    noise.append(f"{name!r} (replaced by the converter's proxy)"); continue
+                if _nc()._is_inline_body_name(name) and "BaseShape" in nif_shapes:
+                    noise.append(f"{name!r} (source body, swapped for the injected body)"); continue
             hits = [s for s in nif_shapes if _norm(s) == _norm(name)]
             near = f" [NEAR-MATCH in mesh: {hits[0]!r}]" if len(hits) == 1 else ""
             parts.append(f"{kind} {name!r}{near}")
-        _note_pass_failure(
-            "hdt_xml_shape_dropped",
-            RuntimeError(
-                f"{xml_path.name}: {len(dropped_shapes)} shape block(s) pruned "
-                f"because the converted NIF has no such shape -- "
-                + "; ".join(parts)
-                + (f"; plus {dropped_bones} unresolvable weight-threshold "
-                   f"bone(s)" if dropped_bones else "")),
-            xml_path)
+        if noise:
+            _note_pass_effect("#xml-drop-triage", f"{xml_path.name}: pruned " + "; ".join(noise), xml_path)
+        if parts:
+            _note_pass_failure(
+                "hdt_xml_shape_dropped",
+                RuntimeError(
+                    f"{xml_path.name}: {len(parts)} shape block(s) pruned "
+                    f"because the converted NIF has no such shape -- "
+                    + "; ".join(parts)
+                    + (f"; plus {dropped_bones} unresolvable weight-threshold "
+                       f"bone(s)" if dropped_bones else "")),
+                xml_path)
     if changed:
         try:
             atomic_write_bytes(xml_path,
@@ -3406,6 +3872,55 @@ def _nif_bone_and_node_names(nf) -> "set[str]":
     return names
 
 
+# #authored-xml-own-mesh (2026-10-06). The guard's second piece on the shipped
+# pack is the SMP mod's heavy chitin cuirass converted from the user's zeroed
+# build: the build is, shape for shape and vertex for vertex, the mesh the SMP mod
+# itself ships at that path beside the XML. Its two "phantom" chains
+# (`SkirtFR  5`/`6`, two spaces, constraint bodies only) are in that mod's own
+# mesh no more than in the build -- the author published this XML with this mesh,
+# and CBBE wearers load exactly that pairing. Declining it shipped a regenerated
+# rig in place of the author's. The #32 cuirass is the other kind: the SMP mod
+# ships ANOTHER mesh at that path (Greaves 3729 against the converted 536), the
+# pointer came along on a mesh the XML was never written for. So the decline is
+# skipped when the mod that ships the XML also ships, at the source's path, a mesh
+# with the source's shapes and vertex counts: the author's own pairing ships as
+# authored, as it did before the guard. CBBE2UBE_NO_AUTHORED_XML_OWN_MESH=1 judges
+# it like any other.
+AUTHORED_XML_OWN_MESH = not _flag("CBBE2UBE_NO_AUTHORED_XML_OWN_MESH", False)
+
+
+def _meshes_split(path) -> "tuple[Path, list[str]] | None":
+    """(the folder holding `meshes`, the parts below it) for a file under a
+    `meshes` folder (any case, the LAST one); None when there is none."""
+    parts = list(Path(path).parts)
+    idx = [i for i, s in enumerate(parts) if s.lower() == "meshes"]
+    if not idx:
+        return None
+    i = idx[-1]
+    return Path(*parts[:i]), parts[i + 1:]
+
+
+def _xml_ships_with_this_mesh(src_xml, src_nif_path) -> bool:
+    """#authored-xml-own-mesh: does the mod (folder) that ships `src_xml` also
+    ship, at the source NIF's path below `meshes`, a mesh with the source's
+    shapes and vertex counts?"""
+    from . import zeroed_body as _zb
+    x, s = _meshes_split(src_xml), _meshes_split(src_nif_path)
+    if x is None or s is None:
+        return False
+    peer = _zb._ci_join(x[0], ["meshes", *s[1]])
+    if peer is None:
+        return False
+    try:
+        if Path(peer).resolve() == Path(src_nif_path).resolve():
+            return True
+        a = _zb._nif_shapes(peer)
+        b = _zb._nif_shapes(src_nif_path)
+    except Exception:
+        return False
+    return {n: len(v) for n, v in a.items()} == {n: len(v) for n, v in b.items()}
+
+
 def _authored_hdt_xml_unshippable(src_xml, nf, src_nif_path) -> "dict | None":
     """The guard. When the authored XML at `src_xml` drives at least
     `_HDT_REGEN_MISSING_BONES` bones in chains no link of which resolves,
@@ -3421,6 +3936,13 @@ def _authored_hdt_xml_unshippable(src_xml, nf, src_nif_path) -> "dict | None":
     chains = _hdt_xml_phantom_chains(txt, nif_bones, src_bones)
     bones = [b for ch in chains for b in ch.bones]
     if len(bones) < _nc()._HDT_REGEN_MISSING_BONES:
+        return None
+    if AUTHORED_XML_OWN_MESH and _xml_ships_with_this_mesh(src_xml, src_nif_path):
+        _note_pass_effect(
+            "#authored-xml-own-mesh",
+            f"{Path(src_xml).name} names {len(bones)} bone(s) of chains this mesh "
+            f"lacks, but its mod ships this very mesh with it -- shipped as authored",
+            src_nif_path)
         return None
     return {"chains": [ch.prefix for ch in chains], "bones": bones,
             "nowhere": len(_hdt_xml_unresolvable_bones(txt, nif_bones, src_bones)),
@@ -3707,6 +4229,17 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
         ptr = next((ed for ed in nf.rootNode.extra_data()
                     if getattr(ed, "name", None) == "HDT Skinned Mesh Physics Object"),
                    None)
+        if ptr is None and not wrote_sibling and _finalize_repoint():
+            # #finalize-stale-sibling: no pointer and this call wrote no sibling,
+            # so nothing in THIS run made `<stem>.xml` -- both generators attach
+            # their own pointer when they write one. The file is an earlier
+            # run's: the output mod is never cleaned between runs. Linking it
+            # gave a piece whose source ships no physics the physics of an old
+            # build (measured 2026-10-14: one cuirass pair in the live output,
+            # rigid in a run into an empty folder with the same code). Leave
+            # the piece as the source has it, and do not let the steps below
+            # read that file either.
+            return False
         if ptr is None:
             from pyn.pynifly import NiStringExtraData  # type: ignore
             NiStringExtraData.New(
@@ -3789,12 +4322,8 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                                 and _col_cbbe_v is not None
                                 and _col_delta is not None):
                             try:
-                                _col_ov = warp_armor_by_body_delta(
-                                    np.asarray(src_shape.verts,
-                                               dtype=np.float64),
-                                    _col_cbbe_v, _col_delta,
-                                    min_standoff=0.0,
-                                )
+                                _col_ov = _warp_collider_to_ube(
+                                    src_shape, _col_cbbe_v, _col_delta)
                             except Exception:
                                 _col_ov = None
                         # Preserve the authored collider/framework skin VERBATIM
@@ -3860,7 +4389,11 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
         # FSMP-compatibility hardening: prune XML so FSMP never sees an unresolved
         # shape/bone. Runs after proxy re-import so re-imported shapes count.
         try:
-            _harden_hdt_xml_for_fsmp(dst_xml_disk, nf)
+            try:                                         # #xml-drop-triage: what the source mesh had
+                _src_names = {x.name for x in _nc()._pynifly().NifFile(filepath=str(src_nif_path)).shapes}
+            except Exception:
+                _src_names = None
+            _harden_hdt_xml_for_fsmp(dst_xml_disk, nf, src_shapes=_src_names)
         except Exception as _he:
             _note_pass_failure("_harden_hdt_xml_for_fsmp", _he, dst_path)
         # Optional: make chains static (CBBE2UBE_STATIC_CHAINS=1).
@@ -3885,6 +4418,23 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
             _tb.print_exc()
         return False
 
+def _warp_collider_to_ube(src_shape, cbbe_v, delta) -> np.ndarray:
+    """A re-imported collider's verts, warped CBBE -> UBE, in its STORED frame.
+
+    The delta is a WORLD field, so lift the stored verts by the shape's g2s,
+    warp, and lower back -- the main fit's pass 1 / pass 2. Warping the stored
+    verts of a x0.045-g2s collider sampled the delta at the FEET and shipped it
+    22x: one HDT cuirass's ColSkirt/ColBelt moved 5.2u rearward, shoving the
+    skirt into the back plate. Identity g2s = the old behaviour, byte for byte.
+    #collider-warp-frame"""
+    g2s = (_shape_global_to_skin(src_shape)
+           if src_shape.has_global_to_skin else None)
+    world = _verts_skin_to_world(
+        np.asarray(src_shape.verts, dtype=np.float64), g2s)
+    return _verts_world_to_skin(
+        warp_armor_by_body_delta(world, cbbe_v, delta, min_standoff=0.0), g2s)
+
+
 def _hdt_softbody_shape_names(src_nif_path: Path, nif=None,
                               stem_scan: bool = True) -> set:
     """Shape names the armor's HDT-SMP XML drives as PER-VERTEX soft-bodies
@@ -3900,7 +4450,43 @@ def _hdt_softbody_shape_names(src_nif_path: Path, nif=None,
     txt = _read_source_hdt_xml_text(src_nif_path, nif=nif, stem_scan=stem_scan)
     if not txt:
         return _hdt_protect_all_or_none(src_nif_path, nif=nif)
-    return set(re.findall(r'<per-vertex-shape\s+name="([^"]+)"', txt))
+    return _with_mesh_spellings(
+        set(re.findall(r'<per-vertex-shape\s+name="([^"]+)"', txt)),
+        src_nif_path, nif)
+
+def _mesh_shape_names(nif_path, nif=None) -> "set[str]":
+    """The shape names of `nif` (when given) or of the NIF at `nif_path`, read
+    once per file state (mtime, size) until the XML memo is cleared. Empty when
+    it cannot be read. #xml-shape-name-case"""
+    if nif is not None:
+        try:
+            return {s.name for s in nif.shapes if s.name}
+        except Exception:
+            return set()
+    try:
+        st = os.stat(nif_path)
+        key = (str(nif_path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return set()
+    cache = _nc()._HDT_MESH_SHAPE_NAMES_CACHE
+    got = cache.get(key)
+    if got is None:
+        try:
+            nf = _nc()._pynifly().NifFile(filepath=str(nif_path))
+            got = frozenset(s.name for s in nf.shapes if s.name)
+        except Exception:
+            got = frozenset()
+        cache[key] = got
+    return set(got)
+
+def _with_mesh_spellings(xml_names: set, nif_path, nif=None) -> set:
+    """`xml_names` plus, for each case-only reference, the mesh's spelling of the
+    shape it names (`_xml_shape_spellings`), so a membership test on a shape's
+    own name finds it. The XML spelling is kept too. #xml-shape-name-case"""
+    if not xml_names or not _nc().XML_SHAPE_NAME_CASE:
+        return xml_names
+    spell = _xml_shape_spellings(xml_names, _mesh_shape_names(nif_path, nif))
+    return xml_names | set(spell.values())
 
 def _hdt_protect_all_or_none(src_nif_path: Path, nif=None) -> set:
     """The FAIL-CLOSED answer when a piece's physics XML cannot be read.
@@ -3931,6 +4517,7 @@ def _hdt_protect_all_or_none(src_nif_path: Path, nif=None) -> set:
 def _hdt_xml_cache_clear() -> None:
     """Drop the per-armor HDT-XML memo. Called at the top of every `convert_nif`."""
     _nc()._HDT_XML_TEXT_CACHE.clear()
+    _nc()._HDT_MESH_SHAPE_NAMES_CACHE.clear()
 
 def _nif_declares_hdt_xml(src_nif_path: Path, nif=None) -> bool:
     """Does this NIF carry an `HDT Skinned Mesh Physics Object` extra-data
@@ -4043,7 +4630,11 @@ def _finalize_repoint() -> bool:
     slot-33/37 piece a physics pointer (found or generated) and the finalize
     skips them, but phase 2 still attached one, which then never met a
     finalize at all.
-    CBBE2UBE_NO_FINALIZE_REPOINT=1 restores both old behaviours."""
+
+    And it covers #finalize-stale-sibling (2026-10-14): a piece that reaches
+    the finalize with no pointer, where the finalize wrote no sibling, gets no
+    pointer -- a `<stem>.xml` already there was left by an earlier run.
+    CBBE2UBE_NO_FINALIZE_REPOINT=1 restores all three old behaviours."""
     return not _flag("CBBE2UBE_NO_FINALIZE_REPOINT", False)
 
 def _pointer_differs(current: str, rel: str) -> bool:
@@ -4149,6 +4740,21 @@ def _read_source_hdt_xml_text_uncached(src_nif_path: Path, nif=None,
             # frozen exe discards ([[feedback_worker_prints_invisible]]), so the
             # one condition that silently disarms every physics protection was
             # unobservable in the runs that mattered.
+            #
+            # #hdt-xml-absent: when the pointer names a file NO folder of the load
+            # order ships, there is nothing to resolve -- the game loads no physics
+            # for this piece either (an author left a pointer to another mod's
+            # file). That is an outcome to report, not a pass that failed: in one
+            # full run all 12 `hdt_xml_unresolved` were this. Same return value,
+            # so every protection still fails closed.
+            _absent = _hdt_xml_pointer_absent(src_nif_path, nif=nif)
+            if _absent:
+                _note_pass_effect(
+                    "#hdt-xml-absent",
+                    f"{Path(src_nif_path).name} names {_absent}, which no mod "
+                    f"folder in the load order ships -- converted without "
+                    f"physics, as the game loads it", src_nif_path)
+                return None
             _note_pass_failure(
                 "hdt_xml_unresolved", RuntimeError(
                     f"{Path(src_nif_path).name} declares an HDT physics XML "
@@ -4194,4 +4800,6 @@ def _hdt_collider_shape_names(src_nif_path: Path, nif=None,
     txt = _read_source_hdt_xml_text(src_nif_path, nif=nif, stem_scan=stem_scan)
     if not txt:
         return _hdt_protect_all_or_none(src_nif_path, nif=nif)
-    return set(re.findall(r'<per-triangle-shape\s+name="([^"]+)"', txt))
+    return _with_mesh_spellings(
+        set(re.findall(r'<per-triangle-shape\s+name="([^"]+)"', txt)),
+        src_nif_path, nif)

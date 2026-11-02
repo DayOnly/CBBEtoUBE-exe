@@ -165,7 +165,7 @@ def test_conform_gate_constants_present():
 
 
 def test_conform_disabled_by_env(monkeypatch):
-    # CBBE2UBE_NO_CONFORM kill switch -> immediate no-op, no body load
+    # CONFORM_FITTED_CLOTH off (the default since 10-18) -> immediate no-op, no body load
     monkeypatch.setattr(nc, "CONFORM_FITTED_CLOTH", False)
     assert nc._conform_fitted_to_body("whatever_1.nif", biped_slots=0) == 0
 

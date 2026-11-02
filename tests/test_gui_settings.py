@@ -39,14 +39,22 @@ def test_defaults_at_rest_emit_no_managed_env():
 
 
 def test_default_on_feature_disables_via_no_flag():
-    # conform: default ON, mapped to NO_CONFORM (invert). Turning it OFF sets =1.
+    # leg_bend_match: default ON, mapped to NO_LEG_BEND_MATCH (invert). Turning it OFF sets =1.
     d = gs.defaults()
-    assert d["conform_to_body"] is True
-    env = gs.apply_env({**d, "conform_to_body": False}, base_env={})
-    assert env["CBBE2UBE_NO_CONFORM"] == "1"
+    assert d["leg_bend_match"] is True
+    env = gs.apply_env({**d, "leg_bend_match": False}, base_env={})
+    assert env["CBBE2UBE_NO_LEG_BEND_MATCH"] == "1"
     # left ON -> var absent
-    env2 = gs.apply_env({**d, "conform_to_body": True}, base_env={})
-    assert "CBBE2UBE_NO_CONFORM" not in env2
+    env2 = gs.apply_env({**d, "leg_bend_match": True}, base_env={})
+    assert "CBBE2UBE_NO_LEG_BEND_MATCH" not in env2
+
+
+def test_weight_conform_is_opt_in_since_10_18():
+    # the fitted-cloth weight conform: default OFF (walk/run identical without it), positive flag
+    d = gs.defaults()
+    assert d["conform_to_body"] is False
+    assert gs.apply_env({**d, "conform_to_body": True}, {})["CBBE2UBE_CONFORM_FITTED"] == "1"
+    assert "CBBE2UBE_CONFORM_FITTED" not in gs.apply_env(d, {})
 
 
 def test_glow_source_skin_maps_to_effect_reskin_inverted():
@@ -79,9 +87,9 @@ def test_default_off_feature_enables_via_positive_flag():
 def test_managed_var_is_authoritative_over_stale_parent_env():
     # A stale parent value for a registry var is REMOVED when the UI is at
     # default, so the user's UI is the source of truth.
-    stale = {"CBBE2UBE_NO_CONFORM": "1", "UNRELATED": "keep"}
+    stale = {"CBBE2UBE_NO_LEG_BEND_MATCH": "1", "UNRELATED": "keep"}
     env = gs.apply_env(gs.defaults(), base_env=stale)
-    assert "CBBE2UBE_NO_CONFORM" not in env      # popped -> default restored
+    assert "CBBE2UBE_NO_LEG_BEND_MATCH" not in env      # popped -> default restored
     assert env["UNRELATED"] == "keep"            # non-registry var untouched
 
 
@@ -112,7 +120,7 @@ def test_tab_and_group_structure():
 def test_persistence_round_trip_only_non_default(tmp_path):
     p = tmp_path / "settings.json"
     vals = gs.defaults()
-    vals["conform_to_body"] = False       # non-default bool
+    vals["leg_bend_match"] = False        # non-default bool
     vals["seam_weld_tol"] = 0.12          # non-default float
     assert gs.save_values(vals, path=p)
     import json
@@ -123,9 +131,9 @@ def test_persistence_round_trip_only_non_default(tmp_path):
     # mistaking it for one deliberately left off (see test_unseen_settings.py).
     baseline = on_disk.pop(gs.KNOWN_KEYS_FIELD)
     assert set(baseline) == {s.key for s in gs.SETTINGS}
-    assert on_disk == {"conform_to_body": False, "seam_weld_tol": 0.12}
+    assert on_disk == {"leg_bend_match": False, "seam_weld_tol": 0.12}
     loaded = gs.load_values(path=p)
-    assert loaded["conform_to_body"] is False
+    assert loaded["leg_bend_match"] is False
     assert loaded["seam_weld_tol"] == 0.12
     assert loaded["glow_source_skin"] is True     # untouched -> default
 

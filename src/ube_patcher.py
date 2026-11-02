@@ -4313,6 +4313,40 @@ def build_nif_slot_map(esp_paths: "list[Path] | tuple[Path, ...]") -> dict[str, 
     return out
 
 
+def build_first_person_bases(esp_paths: "list[Path] | tuple[Path, ...]") -> "set[str]":
+    """#zap-fp-armature: the weight-agnostic mesh bases (lowercase, forward slashes, no `meshes/`, no `.nif`, no
+    `_0`/`_1`) that ARMAs use ONLY as first-person models (MOD4/MOD5) and never as a world model (MOD2/MOD3). The
+    zap keeps just the arms of such a viewmodel; its file name need not say `1stperson`."""
+    first: "set[str]" = set()
+    world: "set[str]" = set()
+
+    def _base(p: str) -> str:
+        s = p.replace("\\", "/").lower().lstrip("/")
+        if s.startswith("meshes/"):
+            s = s[len("meshes/"):]
+        if s.endswith(".nif"):
+            s = s[:-4]
+        if s.endswith("_0") or s.endswith("_1"):
+            s = s[:-2]
+        return s
+
+    for esp_path in esp_paths:
+        try:
+            e = esp.ESP.load_cached(Path(esp_path))
+        except Exception:
+            continue
+        for grp in e.groups:
+            if grp.label != b"ARMA":
+                continue
+            for rec in grp.records:
+                for sig, data in esp.iter_subrecords(rec.payload):
+                    if sig in (b"MOD4", b"MOD5"):
+                        first.add(_base(_model_path_text(data, "utf-8")))
+                    elif sig in (b"MOD2", b"MOD3"):
+                        world.add(_base(_model_path_text(data, "utf-8")))
+    return {b for b in first - world if b}
+
+
 # --------------------------------------------------------------------------
 # Multi-patch merger: combine N UBE patch ESPs into ONE ESL-flagged ESP.
 # --------------------------------------------------------------------------

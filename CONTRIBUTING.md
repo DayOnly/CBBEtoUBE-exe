@@ -23,6 +23,7 @@ In the GUI, choose **Help ▸ Save diagnostics zip**. It writes
 | `REPORT.txt` | The problem report, already filled in |
 | `gui_log.txt` | What the GUI's log panel showed this session (empty after a restart) |
 | `CBBEtoUBE_last_run.log`, `CBBEtoUBE_previous_run.log` | The last run's log, and the one before it — the one that matters if a run died |
+| `CBBEtoUBE_last_run_detail.log`, `CBBEtoUBE_previous_run_detail.log` | The same runs' detail logs: every line each run printed, the per-shape pass lines included (the run log keeps one line per piece and the run summary) |
 | `CBBEtoUBE_last_failures.json`, `CBBEtoUBE_previous_failures.json` | What those runs reported as failures and warnings |
 | `conversion_report.json`, `conversion_settings.json` | The output mod's report, and the settings that run used |
 | `machine.txt` | RAM, commit limit, CPU threads, and whether the page file is system-managed, a fixed size or off |

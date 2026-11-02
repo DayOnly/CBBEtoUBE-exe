@@ -65,6 +65,7 @@ cap_blas_threads()
 
 from . import ube_patcher, nif_convert, paths, discovery, nif_io  # noqa: E402
 from . import child_lifetime  # noqa: E402
+from . import run_log  # noqa: E402
 from .user_warnings import NOTE, plain_error, problem_count, warn  # noqa: E402
 from . import stale_sweep  # noqa: E402
 from .envflags import flag as _flag, knob as _knob  # noqa: E402
@@ -100,14 +101,61 @@ def _nif_convert_worker(item: tuple) -> "nif_convert.ConvertResult":
     src, dst, ube_body_ref_path, biped_slots = item[:4]
     alt_tex = item[4] if len(item) > 4 else None
     variant_sources = item[5] if len(item) > 5 else None
+    first_person = bool(item[6]) if len(item) > 6 else False     # #zap-fp-armature
+    from . import live_steps
+    live_steps.begin()                  # #live-steps
+    _zs = None
     try:
-        return nif_convert.convert_nif(
+        result = nif_convert.convert_nif(
             src, dst,
             ube_body_ref_path=ube_body_ref_path,
             biped_slots=biped_slots,
             alt_texture_shape_names=alt_tex,
             variant_sources=variant_sources,
         )
+        # #body-zap: after each weight is written, zap the pair's injected body
+        # (both weights get the same triangles; a re-run starts from the whole body).
+        from . import body_zap
+        _vs = variant_sources or {}
+        # #pair-weight-parity: once both weights are on disk, `_0` takes `_1`'s skin where the source pair agrees.
+        if (result is not None and result.dst_path is not None
+                and str(result.status).startswith("converted") and _vs.get("_0") and _vs.get("_1")
+                and not body_zap.partner_pending(result.dst_path, True)):
+            try:
+                from . import nif_convert_weights as _ncw
+                _ncw._pair_weight_parity(result.dst_path, _vs)
+            except Exception as _pe:
+                nif_convert._note_pass_failure("pair-weight-parity", _pe, result.dst_path)
+            # #tri-follow: the shared .tri's cloth rows follow the skin at both weights (before the zap reads it)
+            try:
+                from . import tri_follow as _tfo
+                _tf = _tfo.follow_pair(result.dst_path)
+                if _tf and any(_tf.values()):
+                    print(f"  tri-follow: {Path(result.dst_path).name}: cloth slider rows made to follow the skin "
+                          f"(floor at weight 100 {_tf.get('floor_rows', 0)}, edges {_tf.get('edge_rows', 0)}, "
+                          f"chord {_tf.get('chord_rows', 0)})")
+            except Exception as _fe:
+                nif_convert._note_pass_failure("tri-follow", _fe, result.dst_path)
+        if (body_zap.active() and result is not None and result.dst_path is not None
+                and str(result.status).startswith("converted")
+                and not body_zap.partner_pending(result.dst_path, bool(_vs.get("_0") and _vs.get("_1")))):
+            try:
+                _zs = body_zap.zap_pair(result.dst_path, first_person=first_person)
+                if _zs:
+                    print(f"  body-zap: {Path(result.dst_path).name}: {_zs['deleted_tris']} of "
+                          f"{_zs['deleted_tris'] + _zs['kept_tris']} body triangles hidden by the armour removed "
+                          f"({_zs['files']} weight file(s), {_zs['poses']} pose(s)"
+                          f"{', first-person' if _zs['first_person'] else ''})")
+            except Exception as _ze:
+                nif_convert._note_pass_failure("body-zap", _ze, result.dst_path)
+        if live_steps.live_dir() is not None and result is not None:
+            # #live-steps: the window's picture of this piece. Copies only, after the zap.
+            live_steps.flush(
+                result, failures=nif_convert._piece_pass_failures(), zap=_zs,
+                zap_pending=bool(body_zap.active() and result.dst_path is not None
+                                 and body_zap.partner_pending(
+                                     result.dst_path, bool(_vs.get("_0") and _vs.get("_1")))))
+        return result
     except Exception as e:
         # The whole traceback goes to this worker's output, which rides home with
         # the result into the run log; the reason stays one line for the report
@@ -118,12 +166,14 @@ def _nif_convert_worker(item: tuple) -> "nif_convert.ConvertResult":
              consequence="the traceback follows; the piece is counted as an error",
              file=sys.stderr)
         traceback.print_exc()
-        return nif_convert.ConvertResult(
+        result = nif_convert.ConvertResult(
             src_path=src, dst_path=None,
             status="error",
             # Distinct from "skipped" (benign no-op); errors count as failures.
             reason=f"error: {type(e).__name__}: {e}",
         )
+        live_steps.flush(result)                     # #live-steps
+        return result
 
 
 def _warmup_worker(barrier, ube_body_ref_path: "str | None") -> "tuple[int, float]":
@@ -261,6 +311,7 @@ class _UnitResults(list):
     them (`output`). Still a list, so every caller that iterates results is
     unchanged. #worker-output"""
     output = ""
+    timing = None             # #unit-timing: set by `_run_unit`
 
 
 def _captured(call):
@@ -279,22 +330,103 @@ def _captured(call):
     return value, buf.getvalue()
 
 
+def _prune_zapped_morphs(results) -> None:
+    """#zap-prune-morphs at the end of a pair unit: both weights are written and the zap is final."""
+    from . import body_zap
+    if not (body_zap.active() and body_zap.ZAP_PRUNE_MORPHS):
+        return
+    seen = set()
+    for r in results:
+        dst = getattr(r, "dst_path", None)
+        if dst is None or not str(getattr(r, "status", "")).startswith("converted"):
+            continue
+        key = str(Path(dst).with_name(Path(dst).stem[:-2] if Path(dst).stem[-2:] in ("_0", "_1")
+                                      else Path(dst).stem)).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            n = body_zap.prune_undrawn_body_morphs(dst)
+            if n:
+                print(f"  body-zap: {Path(dst).name}: {n} morph rows of undrawn body vertices dropped from the .tri")
+        except Exception as e:
+            nif_convert._note_pass_failure("zap-prune-morphs", e, dst)
+
+
+class _UnitPeak:
+    """#unit-peak: the most commit (PrivateUsage) one unit held, in MB, and how it was found.
+
+    Windows keeps only a process's LIFETIME peak and cannot reset it, so a unit after a heavy one used to show that
+    one's peak. If the lifetime peak rose during the unit, the new peak is this unit's, exactly ("new-high");
+    otherwise a thread reads the current commit every `PERIOD` s and the highest reading stands ("sampled" -- it
+    can miss a spike shorter than the period). Read-only: never touches what the unit computes."""
+    PERIOD = 0.05
+
+    def __init__(self):
+        import threading
+        self.before = _process_private_mb(peak=True)
+        self.top = _process_private_mb() or 0.0
+        self._stop = threading.Event()
+        self._t = threading.Thread(target=self._poll, name="unit-peak", daemon=True)
+        self._t.start()
+
+    def _poll(self):
+        while not self._stop.wait(self.PERIOD):
+            mb = _process_private_mb()
+            if mb is not None and mb > self.top:
+                self.top = mb
+
+    def finish(self) -> "tuple[float | None, str]":
+        self._stop.set()
+        self._t.join()
+        after = _process_private_mb(peak=True)
+        if after is not None and self.before is not None and after > self.before:
+            return after, "new-high"
+        mb = _process_private_mb()
+        return (max(self.top, mb or 0.0) or None), "sampled"
+
+
 def _run_unit(fn, unit: "list[tuple]") -> list:
     """One worker, one unit, in order: one result per item. Module-level so the
     spawn-mode pool can pickle it. #pair-unit-dispatch
 
     What the conversions printed comes back as the list's `.output`.
     #worker-output"""
-    values, text = _captured(lambda: [fn(it) for it in unit])
+    def _go():
+        vals = [fn(it) for it in unit]
+        if fn is _nif_convert_worker:
+            _prune_zapped_morphs(vals)
+        return vals
+    from .work_counts import WORK
+    WORK.clear()
+    t0, c0 = time.time(), time.process_time()
+    peak = _UnitPeak()
+    try:
+        values, text = _captured(_go)
+    finally:
+        peak_mb, peak_how = peak.finish()
+        # An idle worker holds no cached blocks: the scheduler may be holding a heavy unit back on the live free
+        # RAM this worker's cache would otherwise sit on. #numpy-block-cache
+        from . import numpy_block_cache
+        numpy_block_cache.flush()
     results = _UnitResults(values)
     results.output = text
+    # #unit-timing: what this unit cost, for the run's unit table. Epoch seconds, so units from
+    # different workers share one timeline; the peak is this unit's own (#unit-peak).
+    results.timing = {"start": t0, "end": time.time(), "cpu": time.process_time() - c0,
+                      "pid": os.getpid(), "peak_mb": peak_mb, "peak_how": peak_how,
+                      "work": dict(WORK)}
     return results
 
 
 def _run_one(fn, item):
     """The isolated re-run's form of `_run_unit`: one item, with its printed
     output attached to the result as `worker_output`. #worker-output"""
-    result, text = _captured(lambda: fn(item))
+    try:
+        result, text = _captured(lambda: fn(item))
+    finally:
+        from . import numpy_block_cache
+        numpy_block_cache.flush()             # #numpy-block-cache, as in _run_unit
     try:
         result.worker_output = text
     except AttributeError:
@@ -302,14 +434,13 @@ def _run_one(fn, item):
     return result
 
 
-def _echo_worker_output(text) -> None:
-    """Print what a worker printed, here in the parent, where it reaches the log."""
-    if text:
-        sys.stdout.write(text if text.endswith("\n") else text + "\n")
-        try:
-            sys.stdout.flush()
-        except Exception:
-            pass
+def _echo_worker_output(text, results=()) -> None:
+    """Print what a worker printed, here in the parent, where it reaches the log.
+
+    On a run with a detail log, the pass lines go there and the unit becomes
+    one line in its mod's block (`results` are its ConvertResults); the lines a
+    person must see still reach the run log as they happen. #readable-run-log"""
+    run_log.echo_unit(text, results)
 
 
 class _NifPool:
@@ -347,7 +478,21 @@ class _NifPool:
         # rebuilt after a crash included -- is born inside the job and dies
         # with this process however it ends. #workers-die-with-parent
         child_lifetime.tie_children_to_this_process()
-        return ProcessPoolExecutor(max_workers=self.max_workers)
+        child_lifetime.run_at_full_speed()   # #no-ecoqos
+        # Workers publish their cached numpy blocks in this run's tally, for the scheduler's headroom.
+        # #numpy-block-cache
+        from . import numpy_block_cache
+        share = numpy_block_cache.share_name()
+        numpy_block_cache.open_share(share)
+        return ProcessPoolExecutor(max_workers=self.max_workers,
+                                   initializer=child_lifetime.worker_init, initargs=(share,))
+
+    def worker_pids(self) -> "list[int]":
+        """The live pool's worker pids; empty with no pool."""
+        try:
+            return list((getattr(self.pool, "_processes", None) or {}).keys())
+        except Exception:
+            return []
 
     def _ensure(self):
         if self.pool is None:
@@ -414,7 +559,7 @@ class _NifPool:
             except Exception:
                 broken.append(unit)   # worker death: nothing in this unit is certain
                 continue
-            _echo_worker_output(getattr(results, "output", ""))
+            _echo_worker_output(getattr(results, "output", ""), results)
             for r in results:
                 on_result(r)
         if broken:
@@ -440,7 +585,7 @@ class _NifPool:
             self._ensure()
             try:
                 res = self.pool.submit(functools.partial(_run_one, fn), it).result()
-                _echo_worker_output(getattr(res, "worker_output", ""))
+                _echo_worker_output(getattr(res, "worker_output", ""), [res])
                 on_result(res)
                 consec_crashes = 0
             except Exception as e:
@@ -623,6 +768,17 @@ def _source_mb(path) -> float:
         return 0.0
 
 
+def _largest_shape_vert_count(path) -> int:
+    """Vertex count of the largest shape in a work item's source NIF; 0 when it cannot be read (the unit then
+    keeps its file-size place). #heavy-shape-order"""
+    try:
+        from . import nif_convert as _nc
+        nf = _nc._pynifly().NifFile(filepath=str(path))
+        return max((len(s.verts) for s in nf.shapes), default=0)
+    except Exception:
+        return 0
+
+
 class _SchedUnit:
     """One unit of the batch-wide schedule: the weight variants of one base
     that ONE source planned, in list order (`_global_units`)."""
@@ -702,7 +858,7 @@ class _GlobalNifSchedule:
     `memory()` is `_memory_status` (injectable for tests)."""
 
     def __init__(self, nif_pool, units, n_sources, deliver, finish, *,
-                 fn=None, memory=None, budget_gb=None):
+                 fn=None, memory=None, budget_gb=None, reclaim=None, largest_shape=None):
         self.nif_pool = nif_pool
         self.units = list(units)
         self.n_sources = int(n_sources)
@@ -710,6 +866,8 @@ class _GlobalNifSchedule:
         self.finish = finish
         self.fn = fn or _nif_convert_worker
         self.memory = memory or _memory_status
+        self.reclaim = reclaim or self._cached_blocks_gb
+        self.largest_shape = largest_shape or _largest_shape_vert_count
         self.budget_gb = _worker_budget_gb() if budget_gb is None else budget_gb
         self.left = [0] * self.n_sources
         for u in self.units:
@@ -718,9 +876,33 @@ class _GlobalNifSchedule:
         self.memory_retries = 0
         self.crash_retries = 0
         self.peak_heavy = 0          # most heavy units ever in flight at once
+        self.timed: list = []        # #unit-timing: (unit, timing, statuses) as each unit lands
+        self.t_start = time.time()
 
     def _heavy(self, u) -> bool:
         return u.peak_gb > self.budget_gb
+
+    def _start_order(self) -> list:
+        """Heavy units first, longest-running first; the rest largest file first. #heavy-shape-order
+
+        WHY. When memory is tight the heavy units run one at a time after the first few, so the order they start
+        in decides the end of the run. File size is a poor guide to how long one takes: on a 10-28 full run the
+        longest (1117 s) and fourth-longest heavy units were started last of the six, and the last of them ran
+        alone for 330 s after every other unit had finished. The vertex count of a unit's LARGEST shape ranked
+        all six by runtime (much of the per-shape work grows faster than the shape), and replaying that run's
+        real durations, starting heavies by it ended the run at its ideal end. Read from the source NIFs of the
+        heavy units only -- a handful of files; a unit whose file cannot be read keeps its file-size place."""
+        shape = {u.seq: max((self.largest_shape(it[0]) for it in u.items), default=0)
+                 for u in self.units if self._heavy(u)}
+        return sorted(self.units, key=lambda u: ((0, -shape[u.seq], -u.mb, u.seq) if u.seq in shape
+                                                 else (1, 0, -u.mb, u.seq)))
+
+    def _cached_blocks_gb(self) -> float:
+        """What the running workers hold in their numpy block caches: freed by itself before free RAM reaches the
+        reserve, so it counts as free here. 0 with the cache off. #numpy-block-cache"""
+        from . import numpy_block_cache
+        pids = getattr(self.nif_pool, "worker_pids", lambda: [])()
+        return numpy_block_cache.reclaimable_gb(pids, SCHED_RESERVE_GB)
 
     def _headroom_gb(self):
         st = self.memory()
@@ -728,7 +910,7 @@ class _GlobalNifSchedule:
             return None
         vals = [v for v in (st.get("avail_gb"), st.get("commit_free_gb"))
                 if v is not None]
-        return (min(vals) - SCHED_RESERVE_GB) if vals else None
+        return (min(vals) - SCHED_RESERVE_GB + self.reclaim()) if vals else None
 
     def _pick(self, pending, in_flight):
         """The first unit of `pending` (largest first) that may start now."""
@@ -769,9 +951,10 @@ class _GlobalNifSchedule:
 
     def run(self):
         from concurrent.futures import FIRST_COMPLETED, wait
-        pending = sorted(self.units, key=lambda u: (-u.mb, u.seq))
+        pending = self._start_order()
         in_flight: dict = {}
         retry: list = []
+        self.t_start = time.time()
         broken = False
         self._advance()                   # sources with nothing to convert
         while pending or in_flight or retry:
@@ -818,7 +1001,10 @@ class _GlobalNifSchedule:
                     self.crash_retries += 1
                     broken = True
                     continue
-                _echo_worker_output(getattr(results, "output", ""))
+                _echo_worker_output(getattr(results, "output", ""), results)
+                if getattr(results, "timing", None):
+                    self.timed.append((u, results.timing,
+                                       [str(getattr(r, "status", "")) for r in results]))
                 if any(_ran_out_of_memory(r) for r in results):
                     self.memory_retries += 1
                     print(f"  out of memory converting "
@@ -831,6 +1017,78 @@ class _GlobalNifSchedule:
                     self.deliver(u.source, r)
                 self.left[u.source] -= 1
             self._advance()
+
+
+_UNIT_WORK_KEYS = ("ray_pairs", "zap_views", "nif_saves", "nif_rebuilds")
+
+
+def _unit_table(timed, workers: int, t_start: float, t_end: float, path) -> "list[str]":
+    """#unit-timing: write one row per unit of the NIF phase to `path` (TSV) and return the run-log summary.
+
+    Every run is then its own profile: which units set the length of the phase, how much of the pool sat idle
+    at the end, and what the units cost in work that does not drift with machine load (`work_counts`)."""
+    from .atomic_io import atomic_write_bytes
+    if not timed:
+        return []
+    rows = []
+    by_pass: "dict[str, int]" = {}       # ray pairs per asking pass, over the whole run
+    for u, tm, statuses in timed:
+        att = {k.split("@", 1)[1]: int(v) for k, v in (tm.get("work") or {}).items()
+               if k.startswith("ray_pairs@")}
+        for k, v in att.items():
+            by_pass[k] = by_pass.get(k, 0) + v
+        mode = next((m for m in ("body-swap", "copy") if any(m in s for s in statuses)),
+                    (statuses[0].split(" ")[0] if statuses else "?"))
+        dst = Path(str(u.items[0][1])).as_posix()
+        name = dst.split("/meshes/", 1)[-1]
+        rows.append({"unit": name, "mode": mode, "items": len(u.items), "src_mb": round(u.mb, 2),
+                     "start_s": tm["start"] - t_start, "end_s": tm["end"] - t_start,
+                     "wall_s": tm["end"] - tm["start"], "cpu_s": tm["cpu"], "pid": tm["pid"],
+                     "peak_mb": tm.get("peak_mb") or 0.0, "peak_how": tm.get("peak_how") or "?",
+                     **{k: int((tm.get("work") or {}).get(k, 0)) for k in _UNIT_WORK_KEYS},
+                     "pairs_by": "; ".join(f"{k}={v / 1e6:.1f}M" for k, v in
+                                           sorted(att.items(), key=lambda kv: -kv[1])[:3])})
+    cols = list(rows[0])
+    text = "\t".join(cols) + "\n" + "".join(
+        "\t".join(f"{r[c]:.1f}" if isinstance(r[c], float) else str(r[c]) for c in cols) + "\n"
+        for r in sorted(rows, key=lambda r: r["start_s"]))
+    atomic_write_bytes(Path(path), text.encode("utf-8"))
+
+    span = max(t_end - t_start, 1e-9)
+    busy = sum(r["wall_s"] for r in rows)
+    # The last moment every worker had a unit: after it the pool only drained.
+    ev = sorted([(r["start_s"], 1) for r in rows] + [(r["end_s"], -1) for r in rows])
+    run, last_full = 0, 0.0
+    for t, d in ev:
+        run += d
+        if d > 0 and run >= workers:
+            last_full = t
+    tail_busy = sum(max(0.0, r["end_s"] - max(r["start_s"], last_full)) for r in rows)
+    idle_tail = workers * (span - last_full) - tail_busy
+    out = [f"\n  unit table: {len(rows)} unit(s) on {workers} worker(s); workers busy {100 * busy / (workers * span):.0f}% "
+           f"of the phase; the pool was last full at {last_full:.0f}s of {span:.0f}s, and the {span - last_full:.0f}s "
+           f"after it left {idle_tail / 60:.0f} worker-minute(s) idle",
+           f"    full table (one row per unit, with work counts): {path}"]
+    for mode in ("copy", "body-swap"):
+        sel = [r for r in rows if r["mode"] == mode]
+        if sel:
+            w = sum(r["wall_s"] for r in sel)
+            out.append(f"    {mode:9}: {len(sel)} unit(s), {w / 3600:.1f} worker-hour(s), "
+                       f"mean {w / len(sel):.1f}s, {100 * w / max(busy, 1e-9):.0f}% of busy time")
+    out.append("    slowest units (wall s / CPU s / peak GB / ray pairs / zap views / saves / rebuilds):")
+    for r in sorted(rows, key=lambda r: -r["wall_s"])[:8]:
+        out.append(f"      {r['wall_s']:7.0f} {r['cpu_s']:7.0f} {r['peak_mb'] / 1024:5.1f} "
+                   f"{r['ray_pairs'] / 1e6:8.1f}M {r['zap_views']:6d} {r['nif_saves']:4d} "
+                   f"{r['nif_rebuilds']:3d}  {r['unit']} ({r['mode']}, ended {r['end_s']:.0f}s)")
+    out.append("    heaviest units (peak GB, how it was found / wall s):")
+    for r in sorted(rows, key=lambda r: -r["peak_mb"])[:5]:
+        out.append(f"      {r['peak_mb'] / 1024:5.1f} {r['peak_how']:8} {r['wall_s']:7.0f}  {r['unit']} ({r['mode']})")
+    tot = sum(by_pass.values())
+    if tot:
+        out.append(f"    ray pairs by the pass that asked ({tot / 1e9:.1f} G in all):")
+        for k, v in sorted(by_pass.items(), key=lambda kv: -kv[1])[:8]:
+            out.append(f"      {v / 1e9:7.2f} G  {100 * v / tot:4.1f}%  {k}")
+    return out
 
 
 def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
@@ -1007,6 +1265,12 @@ def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
               f"once: up to {sched.peak_heavy}; re-run alone: "
               f"{sched.memory_retries} after running out of memory, "
               f"{sched.crash_retries} after a worker died ===")
+        try:
+            for _ln in _unit_table(sched.timed, workers, sched.t_start, time.time(),
+                                   _failures_file_path().with_name("CBBEtoUBE_last_run_units.tsv")):
+                print(_ln)
+        except Exception as _ue:        # a report, never a reason to stop the run
+            print(f"  (unit table not written: {plain_error(_ue)})")
 
 
 def _incremental_code_mtime() -> float:
@@ -1090,8 +1354,12 @@ _NIF_RELEVANT_ARGS = (
 _FINGERPRINT_PLUMBING_WHY = {
     "CBBE2UBE_NO_PAUSE": "the keypress at exit",
     "CBBE2UBE_RUN_LOG": "where the run log goes",
+    "CBBE2UBE_RUN_LOG_VERBOSE": "which of the two run logs carries the pass lines "
+                                "(src/run_log.py); no mesh reads it",
     "CBBE2UBE_GLOW_LOG": "where the glow diagnostic appends its lines",
     "CBBE2UBE_STANDOFF_LOG": "where the standoff audit's JSONL goes",
+    "CBBE2UBE_LIVE_STEPS": "where the window's Live steps pictures go (#live-steps); copies "
+                           "taken after each pass, never written back",
     "CBBE2UBE_CONFIG": "where the settings file lives; its values arrive as "
                        "their own variables, which are hashed",
     "CBBE2UBE_EXCLUSIONS": "where the exclusions file lives; exclusions choose "
@@ -1153,9 +1421,11 @@ _FINGERPRINT_HASHED_GROUPS = {
             "CBBE2UBE_UBE_BODY{}", "CBBE2UBE_CBBE_BODY_0",
             "CBBE2UBE_CBBE_BODY_1", "CBBE2UBE_CBBE_BODY{}",
             "CBBE2UBE_UBE_TEMPLATE", "CBBE2UBE_UBE_OSD", "CBBE2UBE_TEXCONV",
-            "CBBE2UBE_PAPYRUS_COMPILER"),
-        "why": "a different game Data, mods folder, body, overlay slot file "
-               "or tool changes what a mesh or texture becomes"},
+            "CBBE2UBE_PAPYRUS_COMPILER", "CBBE2UBE_BREAST_FIELD",
+            "CBBE2UBE_WARP_FIELD", "CBBE2UBE_ZAP_PRESETS"),
+        "why": "a different game Data, mods folder, body, overlay slot file, "
+               "local #breast-field table or tool changes what a mesh or "
+               "texture becomes"},
     "diagnostic": {
         "names": (
             "CBBE2UBE_CLEARANCE_TERM_AUDIT", "CBBE2UBE_COINCIDENT_SKIN_DEBUG",
@@ -1171,9 +1441,13 @@ _FINGERPRINT_HASHED_GROUPS = {
                "print or write nothing; several also run extra code inside the "
                "fit that no test proves byte-neutral"},
     "not proven neutral": {
-        "names": ("CBBE2UBE_RAY_CHUNK", "CBBE2UBE_NO_ZEROED_PROBE_MEMO"),
-        "why": "how the ray casts are batched and whether a body probe is "
-               "remembered: no test proves the NIF bytes the same"},
+        "names": ("CBBE2UBE_RAY_CHUNK", "CBBE2UBE_CAST_PAIR_CHUNK",
+                  "CBBE2UBE_NO_ZEROED_PROBE_MEMO",
+                  "CBBE2UBE_NUMPY_BLOCK_CACHE_MB",
+                  "CBBE2UBE_NUMPY_BLOCK_CACHE_LOW_MB"),
+        "why": "how the ray casts are batched, whether a body probe is "
+               "remembered and whether freed numpy blocks are reused: no test "
+               "proves the NIF bytes the same"},
     # Read through `_flag`, but the mesh maths is the same either way: proven
     # byte-identical NIF for NIF (#global-schedule parity runs).
     "which files stay": {
@@ -1223,6 +1497,42 @@ def _nif_config_fingerprint(args) -> str:
     for name in _NIF_RELEVANT_ARGS:
         if hasattr(args, name):
             parts.append(f"arg:{name}={getattr(args, name)!r}")
+    # #breast-field: the LOCAL table changes every morph it reaches, and it is a
+    # file beside the tool, not an env value -- hash its bytes (62 KB), so adding,
+    # removing or replacing it invalidates --incremental reuse.
+    try:
+        from .sliderset_gen import breast_field_path
+        _bf = breast_field_path()
+        with open(_bf, "rb") if _bf else open(os.devnull, "rb") as _fh:
+            parts.append("breast-field:" + (hashlib.sha256(_fh.read()).hexdigest()
+                                            if _bf else "absent"))
+    except Exception as _e:
+        parts.append(f"breast-field:unreadable:{type(_e).__name__}")
+    # #warp-field-table: the same for the local warp table (every mesh it reaches)
+    try:
+        from . import nif_convert as _ncw
+        _wp = os.environ.get("CBBE2UBE_WARP_FIELD", "").strip()
+        if not _wp:
+            from .paths import tool_dir as _td
+            _wp = str(_td() / _ncw.WARP_FIELD_NAME)
+        if _ncw._WARP_FIELD_OFF or not os.path.isfile(_wp):
+            parts.append("warp-field:absent")
+        else:
+            with open(_wp, "rb") as _fh:
+                parts.append("warp-field:" + hashlib.sha256(_fh.read()).hexdigest())
+    except Exception as _e:
+        parts.append(f"warp-field:unreadable:{type(_e).__name__}")
+    # #body-zap: which presets the zap holds under decides which skin goes
+    try:
+        from . import body_zap as _bzh
+        _zp = _bzh.preset_paths() if _bzh.BODY_ZAP else []
+        h = hashlib.sha256()
+        for _p in _zp:
+            with open(_p, "rb") as _fh:
+                h.update(_p.encode("utf-8", "replace") + b"\0" + _fh.read())
+        parts.append("body-zap:" + (h.hexdigest() if _zp else "off"))
+    except Exception as _e:
+        parts.append(f"body-zap:unreadable:{type(_e).__name__}")
     blob = "\n".join(parts)
     return hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
 
@@ -1454,6 +1764,29 @@ def count_pass_failures(nif_results) -> dict:
     return out
 
 
+def _piece_label(dst_path) -> str:
+    """A piece as the pack names it: its path under `meshes/!UBE/` (else under
+    `meshes/`), forward slashes, so `armorf_1.nif` from two mods reads as two
+    pieces. The bare file name when neither folder is in the path; "" when it
+    cannot be read. Never raises. #pass-failure-names"""
+    try:
+        parts = Path(str(dst_path or "")).parts
+    except Exception:
+        return ""
+    if not parts:
+        return ""
+    low = [x.lower() for x in parts]
+    for i in range(len(low) - 1, -1, -1):
+        if low[i] == "meshes":
+            rest = parts[i + 1:]
+            if rest and rest[0].lower() == "!ube":
+                rest = rest[1:]
+            if rest:
+                return "/".join(rest)
+            break
+    return parts[-1]
+
+
 def count_pass_failure_pieces(nif_results) -> dict:
     """{pass name -> [pieces it failed on]}. The counts' missing half.
 
@@ -1474,10 +1807,7 @@ def count_pass_failure_pieces(nif_results) -> dict:
     """
     out: dict = {}
     for r in nif_results or ():
-        try:
-            name = Path(str(getattr(r, "dst_path", "") or "")).name
-        except Exception:
-            name = ""
+        name = _piece_label(getattr(r, "dst_path", "") or "")
         for part in (getattr(r, "reason", "") or "").split("; "):
             part = part.strip()
             if not part.startswith("PASS FAILED "):
@@ -1525,6 +1855,11 @@ def count_pass_effects(nif_results) -> dict:
                 if name and name not in out[tag]:
                     out[tag].append(name)
     return out
+
+
+# How many piece names the run summary lists under each failed pass; the full list
+# is in conversion_report.json.
+_PASS_FAIL_NAMES_SHOWN = 6
 
 
 def _pack_pass_failures(ok) -> dict:
@@ -3754,6 +4089,11 @@ def _auto_convert_mod_steps(
     except Exception:
         _raw_slot_map = {}
     slot_bits_for = _make_slot_resolver(_raw_slot_map)
+    # #zap-fp-armature: the meshes ARMAs use only as first-person models.
+    try:
+        _fp_bases = ube_patcher.build_first_person_bases(_src_esps)
+    except Exception:
+        _fp_bases = set()
     # Crash guard for ambiguous modder slots (44/47/...): keep only standard-slot
     # meshes OR those whose NIF is skinned to body-fit bones. Unskinned accessories
     # on these slots given a UBE body race CTD at actor setup. Must run before
@@ -3988,6 +4328,7 @@ def _auto_convert_mod_steps(
                 int(slot_bits),
                 alt_tex_shape_names,
                 variant_sources_by_base.get(_weight_base_key(rel)),
+                _weight_base_key(rel) in _fp_bases,          # #zap-fp-armature
             ))
         if skipped_incremental:
             print(f"  incremental: reusing {skipped_incremental} up-to-date "
@@ -4679,9 +5020,18 @@ def write_conversion_summary(output_dir: Path, results: list) -> Path | None:
                      f"across {len(pack_fails)} pass(es) and {len(ok)} mod(s).")
             L.append("   These pieces still CONVERTED, so they are in no error "
                      "count above -- but the pass did not do its job.")
+            pack_pieces = _pack_pass_failure_pieces(ok)
             for _label, _n in sorted(pack_fails.items(),
                                      key=lambda kv: (-kv[1], kv[0])):
                 L.append(f"     {_n:>6} x  {_label}")
+                # Name the pieces: a count says a pass failed, not on what.
+                _names = sorted(pack_pieces.get(_label) or [])
+                if _names:
+                    _more = (f" (+{len(_names) - _PASS_FAIL_NAMES_SHOWN} more, "
+                             "all in conversion_report.json)"
+                             if len(_names) > _PASS_FAIL_NAMES_SHOWN else "")
+                    L.append("            "
+                             + ", ".join(_names[:_PASS_FAIL_NAMES_SHOWN]) + _more)
             L.append("")
 
         L.append("per-mod detail")
@@ -6589,6 +6939,27 @@ def _stale_source_probes(ctx, state):
     return status, classify
 
 
+def _stale_plugin_owner(ctx, stem) -> "str | None":
+    """The enabled mod whose copy of plugin `stem` (.esp/.esm/.esl) wins the load
+    order: the first, highest priority first. None when no enabled mod ships it
+    or the order is unknown. #stale-patch-attribution"""
+    mr = ctx.get("mods_root")
+    order = ctx.get("enabled_ordered") or []
+    if not mr or not stem:
+        return None
+    excl = {n.lower() for n in (ctx.get("excluded") or ())}
+    for m in order:
+        if m.lower() in excl:
+            continue
+        for ext in (".esp", ".esm", ".esl"):
+            try:
+                if (Path(mr) / m / f"{stem}{ext}").is_file():
+                    return m
+            except OSError:
+                continue
+    return None
+
+
 def _stale_patch_sets(patches_dir, written) -> "dict[str, list | None]":
     """Per-source patches this run did not write: {ESP name: [its sidecars...,
     the ESP last]}, None for a set with a linked file (never moved). Coverage
@@ -6723,12 +7094,7 @@ def _stale_output_sweep_run(args, output, patches_dir, results, claimed_dst_path
             pass
     stale = set(inv.bases) - claimed - superseded
     recorded = dict((manifest or {}).get("bases", {}))
-    status, classify = _stale_source_probes(ctx, state)
-    dec = stale_sweep.decide_bases(stale, recorded, ran, status, classify)
-    for d in dec:
-        if d.action == "move" and d.key in inv.unsafe:
-            d.action, d.reason = "hold", "a file of it lies outside the output folder"
-    _STALE_ADOPTED = {d.key: d.source for d in dec if d.action == "adopt"}
+    rec_patches = dict((manifest or {}).get("patches", {}))
     sets = _stale_patch_sets(patches_dir, written)
     root_write = Path(patches_dir) == output
     named: dict = {}
@@ -6737,13 +7103,28 @@ def _stale_output_sweep_run(args, output, patches_dir, results, claimed_dst_path
         if n not in named:
             named[n] = stale_sweep.patch_bases(Path(patches_dir) / n)
         return named[n]
+    # A conversion from before the manifest is recorded by no run; the per-source
+    # patch that run wrote names its source. #stale-patch-attribution
+    attributed: dict = {}
+    if stale_sweep.attribution_on():
+        attributed, a_patches = stale_sweep.attribute_unrecorded(
+            stale, set(sets), recorded, rec_patches,
+            lambda n: (_new_source_patch_stem(n) or _legacy_source_patch_stem(n)),
+            lambda stem: _stale_plugin_owner(ctx, stem), _names_of)
+        recorded = {**attributed, **recorded}
+        rec_patches = {**a_patches, **rec_patches}
+    status, classify = _stale_source_probes(ctx, state)
+    dec = stale_sweep.decide_bases(stale, recorded, ran, status, classify)
+    for d in dec:
+        if d.action == "move" and d.key in inv.unsafe:
+            d.action, d.reason = "hold", "a file of it lies outside the output folder"
+    _STALE_ADOPTED = {d.key: d.source for d in dec if d.action == "adopt"}
     # A per-source patch left in place can be merged by a later run's fallback:
     # hold every base it could name, then decide the patches again (one that
     # moved because all its source's bases moved may have to stay now).
     while True:
         pdec = stale_sweep.decide_patches(
-            set(sets), dict((manifest or {}).get("patches", {})), ran, status, dec,
-            claims_by_source, recorded)
+            set(sets), rec_patches, ran, status, dec, claims_by_source, recorded)
         for d in pdec:
             if d.action == "move" and (root_write or sets.get(d.key) is None):
                 d.action, d.reason = "hold", ("the per-source patches sit at the mod root"
@@ -6769,6 +7150,9 @@ def _stale_output_sweep_run(args, output, patches_dir, results, claimed_dst_path
 
     print(f"\n--- stale-output sweep: {len(stale)} old conversion(s) in "
           f"meshes\\!UBE no source claimed this run ---")
+    if attributed:
+        print(f"  {len(attributed)} of them from before the manifest: their source "
+              "is the plugin the per-source patch naming them was made from")
     if gaps and (moves or pmoves):
         warn(f"stale-output sweep: {len(moves)} old conversion(s) NOT moved -- "
              f"the plan is incomplete: {'; '.join(gaps)}",
@@ -7856,6 +8240,46 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
         return (False, total_targets, False)
 
 
+# #tidy-output (ON; CBBE2UBE_NO_TIDY_OUTPUT=1 keeps everything): the output mod is never cleaned, so three
+# by-products grew run after run -- measured on a live pack: `_bsa_staging` 432 MB (source meshes pulled out of
+# archives for one run), `_superseded\<run stamp>` 123 MB for runs long since judged, and `standoff_audit.jsonl`
+# 93 MB (every run appended to it). At a run's START the audit log is cleared, so it holds this run's records for
+# `scripts/postflight_1_2.py`; at its END the staging goes and only the NEWEST superseded run stays (the rollback
+# for this run). `_superseded\meshes` (copies moved aside for a mod's own UBE build) is not a run and stays.
+_TIDY_OUTPUT = not _flag("CBBE2UBE_NO_TIDY_OUTPUT", False)
+_RUN_STAMP_RE = __import__("re").compile(r"^\d{8}-\d{6}(-\d+)?$")
+
+
+def _tidy_output_at_start(output) -> None:
+    if not _TIDY_OUTPUT:
+        return
+    try:
+        p = Path(output) / "standoff_audit.jsonl"
+        if p.is_file():
+            p.unlink()
+    except OSError as e:
+        print(f"  tidy: could not clear the previous run's standoff_audit.jsonl ({e})")
+
+
+def _tidy_output_at_end(output) -> "list[str]":
+    """Remove the BSA staging and every superseded run but the newest. Returns what went."""
+    if not _TIDY_OUTPUT:
+        return []
+    import shutil
+    gone = []
+    st = Path(output) / "_bsa_staging"
+    if st.is_dir():
+        shutil.rmtree(st, ignore_errors=True)
+        gone.append(str(st))
+    sup = Path(output) / "_superseded"
+    if sup.is_dir():
+        runs = sorted(d for d in sup.iterdir() if d.is_dir() and _RUN_STAMP_RE.match(d.name))
+        for d in runs[:-1]:
+            shutil.rmtree(d, ignore_errors=True)
+            gone.append(str(d))
+    return gone
+
+
 def _sweep_orphan_temps_at_start(output, run_started: float) -> int:
     """Remove the temp files an interrupted earlier run left under `output`,
     print and record the count as a warning, and return it. #orphan-temps
@@ -7956,6 +8380,7 @@ def _cmd_convert(args):
                   "explicitly to silence this.")
 
     _orphans_removed = _sweep_orphan_temps_at_start(output, _run_started)
+    _tidy_output_at_start(output)
     # A killed run's sweep moves go back first, on every `auto` run: before any
     # patch or mesh of the output is read and the manifest is written.
     # #sweep-recover-every-run
@@ -8449,12 +8874,15 @@ def _cmd_convert(args):
                                 "whole source", plain_error(err))
             continue
         if r.source_esps:
-            for _ln in _esp_patch_log_lines(r):
-                print(_ln)
+            _esp_lines = _esp_patch_log_lines(r)
+            # The count stays in the run log; each plugin -> patch pair and
+            # the masters go to the detail log. #readable-run-log
+            print(_esp_lines[0])
+            run_log.detail_print(*_esp_lines[1:])
         else:
             print(f"    source ESP : {r.source_esp}")
             print(f"    output ESP : {r.output_esp}")
-        print(f"    masters    : {r.esp_stats.get('masters')}")
+        run_log.detail_print(f"    masters    : {r.esp_stats.get('masters')}")
         print(f"    NIFs       : {len(r.nif_results)} total — "
               f"{r.nif_copy_count} copy, {r.nif_swap_count} body-swap, "
               f"{r.nif_skipped} skipped")
@@ -8548,7 +8976,14 @@ def _cmd_convert(args):
                 # Validator notes already surfaced above — don't double-print.
                 if n.startswith("!! patch validator"):
                     continue
+                if n.startswith("UBE body ref:"):
+                    # The same body for every source. #readable-run-log
+                    run_log.detail_print(f"    note: {n}")
+                    continue
                 print(f"    note: {n}")
+        # One line per piece: what changed, any warning. #readable-run-log
+        for _ln in run_log.piece_lines(r.nif_results):
+            print(_ln)
     if _validator_all:
         _record_failure("patch validator", "per-source patches",
                         f"{len(_validator_all)} warning(s); each patch still loads",
@@ -9167,6 +9602,10 @@ def _cmd_convert(args):
     else:
         print("\n=== all clear ===")
 
+    _tidied = _tidy_output_at_end(output)
+    if _tidied:
+        print(f"  tidy: removed {len(_tidied)} by-product folder(s) from the output "
+              "(BSA staging, older superseded runs)")
     # Written every run (empty on a clean one) -- the GUI's end-of-run popup
     # reads it; an empty list means "nothing failed", never "no data".
     _write_failures_file()
@@ -9969,8 +10408,12 @@ class _BsaMeshIndex:
     _SKIP_BSA_TEXTURE = ("texture",)
 
     def __init__(self, enabled_mod_dirs, staging_dir,
-                 bsa_name_prefixes=None, skip_bsa=None, plugin_order=None):
+                 bsa_name_prefixes=None, skip_bsa=None, plugin_order=None,
+                 ext=".nif"):
         self._dirs = list(enabled_mod_dirs)   # MO2 priority order (highest first)
+        # The file type listed: meshes by default; the body zap's alpha test
+        # lists ".dds" (keys keep their 'textures/' prefix). #zap-alpha-archives
+        self._ext = ext.lower()
         # The active plugins in load order: between two archives listing the
         # same mesh, the one whose plugin loads later wins, as in game. None
         # keeps the MO2 order (the caller passes `_bsa_plugin_order`, None when
@@ -10013,7 +10456,8 @@ class _BsaMeshIndex:
         archives. #bsa-only-sources #bsa-load-order-winner"""
         return (tuple(str(d).lower() for d in self._dirs), self._skip,
                 tuple(self._name_prefixes or ()),
-                tuple(str(p).lower() for p in (self._plugin_order or ())))
+                tuple(str(p).lower() for p in (self._plugin_order or ())),
+                self._ext)
 
     def adopt_listing(self, other) -> bool:
         """Take `other`'s archive listing instead of scanning again, when `other`
@@ -10060,7 +10504,7 @@ class _BsaMeshIndex:
                 rank = ranks.get(bsa.stem.lower()) if ranks is not None else None
                 for f in files:
                     fl = f.lower().replace("\\", "/")
-                    if not fl.endswith(".nif"):
+                    if not fl.endswith(self._ext):
                         continue
                     rel = fl[7:] if fl.startswith("meshes/") else fl
                     if ranks is None:
@@ -10344,10 +10788,11 @@ COMMIT_PLAN_FRACTION = 0.9
 
 
 
-def _process_private_mb() -> "float | None":
+def _process_private_mb(peak: bool = False) -> "float | None":
     """This process's commit charge (PrivateUsage) in MB; None off Windows or
     if the probe fails. The figure the end-of-run line and PARENT_COMMIT_GB
-    talk about, measured the way the memory notes measure it."""
+    talk about, measured the way the memory notes measure it. `peak`: the
+    lifetime peak commit (PeakPagefileUsage) instead. #unit-timing"""
     try:
         import ctypes
         from ctypes import wintypes
@@ -10373,7 +10818,7 @@ def _process_private_mb() -> "float | None":
         c.cb = ctypes.sizeof(_PMC)
         if not fn(k32.GetCurrentProcess(), ctypes.byref(c), c.cb):
             return None
-        return c.PrivateUsage / 2**20
+        return (c.PeakPagefileUsage if peak else c.PrivateUsage) / 2**20
     except Exception:
         return None
 
@@ -12808,6 +13253,9 @@ def _cmd_auto(args):
         stale_sweep={"all_mods": not only, "warn_base": _sos_warn_base,
                      "started": _sos_started, "mods_root": str(mr),
                      "enabled": None if enabled is None else sorted(enabled),
+                     # Highest priority first: whose copy of a plugin loads.
+                     # #stale-patch-attribution
+                     "enabled_ordered": list(prio or []),
                      "excluded": sorted(exclude)},
         carried_failures=_carried,   # #one-tally
         # `auto` checks the UBE nude skin's morph files; the convert step runs

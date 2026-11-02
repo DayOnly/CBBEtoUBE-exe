@@ -17,6 +17,7 @@ from .nif_convert_skinframe import (  # noqa: E402
     _g2s_is_identity,
     _shape_global_to_skin,
     _verts_skin_to_world,
+    _verts_world_to_skin,
 )
 from .nif_convert_telemetry import _note_pass_failure  # noqa: E402
 
@@ -251,6 +252,7 @@ def _separate_abdomen_layered_cloth_depth(
         cbbe_body_verts: "np.ndarray | None" = None,
         source_body_verts: "np.ndarray | None" = None,
         source_body_normals: "np.ndarray | None" = None,
+        source_body_g2s=None,
 ) -> int:
     """Re-impose the SOURCE radial layer order on a multi-layer outfit
     (corset / top / belts / coat / undershirt / ...). The per-shape warp's
@@ -275,7 +277,16 @@ def _separate_abdomen_layered_cloth_depth(
     Ordering basis: source body frame (phase-2 inline body) when available;
     phase-1 falls back to UBE fit body in output frame.
     `cbbe_body_verts` unused since v3 (kept for call-site compat). Mutates
-    jobs' `verts` + sets `verts_modified`. Returns verts moved."""
+    jobs' `verts` + sets `verts_modified`. Returns verts moved.
+
+    WORLD FRAME THROUGHOUT (#abdomen-order-world-frame). Shapes in one NIF can
+    carry DIFFERENT global-to-skin transforms; raw `src.verts` (and phase 2's
+    skin-frame `verts`) of two such shapes are not comparable, and neither is
+    comparable with the world UBE body the lift reads normals from. Measured
+    on a guard cuirass whose strap sits in a frame 31u off the plates': the
+    pass paired the strap with the wrong plate verts and lifted the plate
+    1.8u straight through it. Every shape is lifted to world here (phase-1
+    jobs, which carry `g2s`, are already world) and the move is mapped back."""
     if body_verts is None or body_normals is None:
         return 0
     try:
@@ -297,6 +308,12 @@ def _separate_abdomen_layered_cloth_depth(
         if use_source_frame:
             ord_v = np.asarray(source_body_verts, dtype=np.float64)
             ord_n = np.asarray(source_body_normals, dtype=np.float64)
+            if source_body_g2s is not None:
+                _w0 = _verts_skin_to_world(ord_v, source_body_g2s)
+                _w1 = _verts_skin_to_world(ord_v + ord_n, source_body_g2s)
+                ord_n = _w1 - _w0
+                ord_n /= np.maximum(np.linalg.norm(ord_n, axis=1, keepdims=True), 1e-12)
+                ord_v = _w0
         else:
             ord_v = bva
             ord_n = bna
@@ -318,6 +335,24 @@ def _separate_abdomen_layered_cloth_depth(
             sv = np.asarray(list(src.verts), dtype=np.float64)
             if len(sv) != len(wv):
                 continue  # topology mismatch (e.g. body-inject) -> skip
+            try:
+                _g = (_shape_global_to_skin(src)
+                      if src.has_global_to_skin else None)
+            except Exception:
+                _g = None
+            if _g is not None and _g2s_is_identity(_g):
+                _g = None
+            sv = _verts_skin_to_world(sv, _g) if _g is not None else sv
+            # Phase-1 jobs carry `g2s` and hold WORLD verts already.
+            _lift_out = _g is not None and "g2s" not in j
+            if _lift_out:
+                wv = _verts_skin_to_world(wv, _g)
+            j["_g"] = _g if _lift_out else None
+            try:
+                _t = np.asarray(src.tris, dtype=np.int64).reshape(-1, 3)
+            except Exception:
+                _t = None
+            j["_tris"] = _t if (_t is not None and len(_t)) else None
             # verts used to CLASSIFY order (source frame if available, else
             # output frame) and the per-shape signed clearance in that frame.
             ov = sv if use_source_frame else wv
@@ -327,9 +362,33 @@ def _separate_abdomen_layered_cloth_depth(
             jobs.append(j)
         if len(jobs) < 2:
             for j in jobs:
-                for k in ("_wv", "_ov", "_oc"):
+                for k in ("_wv", "_ov", "_oc", "_g", "_tris", "_adj", "_ptree"):
                     j.pop(k, None)
             return 0
+
+        def _beneath(qv, P):
+            """True where shape P's surface lies FACE-ON under each point
+            (toward the body, along the ordering body's normal). Unknown
+            topology -> no opinion (True), so a tri-less stand-in keeps the
+            pre-gate behaviour."""
+            if P.get("_tris") is None:
+                return np.ones(len(qv), dtype=bool)
+            from .nif_convert_weights import _closest_on_body
+            PV = P["_ov"]; PT = P["_tris"]
+            if "_adj" not in P:
+                adj = [[] for _ in range(len(PV))]
+                for ti, tr in enumerate(PT):
+                    for k in tr:
+                        adj[int(k)].append(ti)
+                P["_adj"] = [np.asarray(a, np.int64) for a in adj]
+                P["_ptree"] = cKDTree(PV)
+            q, _tri, _bw = _closest_on_body(qv, PV, PT, P["_ptree"], P["_adj"])
+            off = qv - q
+            dist = np.linalg.norm(off, axis=1)
+            nn = ord_n[ord_tree.query(qv)[1]]
+            up = np.einsum('ij,ij->i', off, nn)
+            return (dist < _nc().OVERLAY_PAIR_R) & (
+                up >= _nc().ABDOMEN_ORDER_RADIAL_COS * np.maximum(dist, 1e-9))
 
         # PER-VERT order constraints from the SOURCE gap field. For each pair
         # (a, b): pool signed gap SAMPLES ("a outside b" positive) from BOTH
@@ -505,6 +564,16 @@ def _separate_abdomen_layered_cloth_depth(
                     above = (ii[sa], jj[sa]) if sa.any() else None
                     return below, above
 
+                # #abdomen-order-radial: a lift constraint holds only where
+                # the partner's SURFACE is face-on beneath the vert along the
+                # body normal. The order classification above is "closer to
+                # the body" within OVERLAY_PAIR_R (3u), so a LATERAL neighbour
+                # reads as "below": measured on a guard cuirass, 334 of 347
+                # lifted sleeve verts had bare skin beneath (lift p50 0.48u)
+                # and the breast showed through in motion.
+                if _nc().ABDOMEN_ORDER_RADIAL:
+                    oa = oa & _beneath(A["_ov"], B)
+                    ob = ob & _beneath(B["_ov"], A)
                 bel, abv = _bind(A["_ov"], A["_oc"], oa, aa,
                                  B["_ov"], B["_oc"], tb)
                 if bel is not None:
@@ -519,7 +588,7 @@ def _separate_abdomen_layered_cloth_depth(
                     above_pairs[(b, a)] = abv
         if not below_pairs:
             for j in jobs:
-                for k in ("_wv", "_ov", "_oc"):
+                for k in ("_wv", "_ov", "_oc", "_g", "_tris", "_adj", "_ptree"):
                     j.pop(k, None)
             return 0
 
@@ -592,7 +661,8 @@ def _separate_abdomen_layered_cloth_depth(
                           file=_sys.stderr)
                 if (push > 0.02).any():
                     nv = v + push[:, None] * bna[bi]
-                    j["verts"] = nv
+                    j["verts"] = (_verts_world_to_skin(nv, j["_g"])
+                                  if j.get("_g") is not None else nv)
                     j["verts_modified"] = True
                     j["_wv"] = nv
                     cum_push[a] += push
@@ -603,7 +673,7 @@ def _separate_abdomen_layered_cloth_depth(
 
         total = int(sum(m.sum() for m in moved_mask))
         for j in jobs:
-            for k in ("_wv", "_ov", "_oc"):
+            for k in ("_wv", "_ov", "_oc", "_g", "_tris", "_adj", "_ptree"):
                 j.pop(k, None)
         return total
     except Exception as _le:
@@ -742,7 +812,7 @@ def _canonical_stack_name_groups(src_nif_path, exclude) -> "list | None":
 _SEAM_WELD_TOL = _knob("CBBE2UBE_SEAM_WELD_TOL", 0.05)
 
 def _weld_cross_shape_seams(shape_jobs, tol: float = _SEAM_WELD_TOL,
-                            exclude_names=None):
+                            exclude_names=None, body_v=None, body_n=None):
     """Weld source-coincident cross-plate seam verts to their centroid.
 
     Operates on the pass-1 `shape_jobs` (each {"src", "verts",
@@ -771,8 +841,28 @@ def _weld_cross_shape_seams(shape_jobs, tol: float = _SEAM_WELD_TOL,
               and (j["src"].name or "") not in _excl
               and not _nc()._shape_has_effect_shader(j["src"])
               and _nc()._shape_has_identity_g2s(j["src"])]
-    if len(plates) < 2:
+    # #seam-weld-physics-anchor. The physics cloth itself is never moved -- but
+    # leaving it out of the weld altogether left the plate on the other side of
+    # a shared seam with no partner, so the seam stayed open at whatever the two
+    # sides' separate fits made of it. Reported in game on a daedric cuirass:
+    # all 42 seam points between its plate and its SMP cloth torso open, by up
+    # to 0.58u, from the waist to the hips. A VISIBLE physics shape (textured,
+    # not hidden: a hidden collider is a proxy, and pulling a plate onto it
+    # would bend the plate toward something nobody sees) joins as an ANCHOR: it
+    # is in the clusters, its vertices and weights stay as they are, and the
+    # plate members of its cluster land ON it.
+    anchors = []
+    if _nc().SEAM_WELD_PHYSICS_ANCHOR:
+        anchors = [j for j in shape_jobs
+                   if (j["src"].name or "") in _excl
+                   and (j["src"].textures or {})
+                   and not _nc()._shape_is_hidden(j["src"])
+                   and not _nc()._shape_has_effect_shader(j["src"])
+                   and _nc()._shape_has_identity_g2s(j["src"])]
+    if len(plates) < (1 if anchors else 2):
         return 0
+    n_plates = len(plates)
+    plates = plates + anchors       # anchors last: index >= n_plates
     src_arrs, fin_arrs, owner = [], [], []  # owner[g] = (plate_idx, local_idx)
     for pi, pj in enumerate(plates):
         try:
@@ -785,10 +875,16 @@ def _weld_cross_shape_seams(shape_jobs, tol: float = _SEAM_WELD_TOL,
         src_arrs.append(psrc); fin_arrs.append(pfin)
         owner.extend((pi, li) for li in range(len(psrc)))
     valid = [a for a in src_arrs if a is not None]
-    if len(valid) < 2:
+    if len(valid) < 2 or not any(a is not None for a in src_arrs[:n_plates]):
         return 0
     all_src = np.concatenate([a for a in src_arrs if a is not None])
     tree = cKDTree(all_src)
+    body_tree = bv_arr = bn_arr = None
+    if (anchors and body_v is not None and body_n is not None
+            and len(body_v) and len(body_n) == len(body_v)):
+        bv_arr = np.asarray(body_v, dtype=np.float64)
+        bn_arr = np.asarray(body_n, dtype=np.float64)
+        body_tree = cKDTree(bv_arr)
     try:
         pairs = tree.query_pairs(tol, output_type="ndarray")
     except Exception:
@@ -823,12 +919,36 @@ def _weld_cross_shape_seams(shape_jobs, tol: float = _SEAM_WELD_TOL,
         cluster = [owner[m] for m in members]
         if len({pi for pi, _ in cluster}) < 2:
             continue  # single-shape cluster -> not a cross-shape seam
-        centroid = np.mean([fin_arrs[pi][li] for pi, li in cluster], axis=0)
-        for pi, li in cluster:
-            fin_arrs[pi][li] = centroid
+        fixed = [(pi, li) for pi, li in cluster if pi >= n_plates]
+        movable = [(pi, li) for pi, li in cluster if pi < n_plates]
+        if not movable:
+            continue  # anchors only: nothing of ours to move
+        # The anchor's own position when the cluster has one (#seam-weld-
+        # physics-anchor), else the centroid as before.
+        target = np.mean([fin_arrs[pi][li] for pi, li in (fixed or cluster)],
+                         axis=0)
+        # BODY GUARD (anchored clusters only). Authored physics cloth can rest
+        # INSIDE the converted body, and welding the plate onto it carried the
+        # plate in with it -- measured on a long shirt: plate verts inside the
+        # body 13 -> 25. A plate vert is not moved onto an anchor that would
+        # leave it inside the body and deeper than it already was; that seam
+        # point stays open instead.
+        if fixed and body_tree is not None:
+            _, _bi = body_tree.query(target)
+            t_clear = float((target - bv_arr[_bi]) @ bn_arr[_bi])
+        else:
+            t_clear = None
+        for pi, li in movable:
+            if t_clear is not None and t_clear < 0.0:
+                _, _ci = body_tree.query(fin_arrs[pi][li])
+                c0 = float((fin_arrs[pi][li] - bv_arr[_ci]) @ bn_arr[_ci])
+                if t_clear < c0 - 1e-6:
+                    continue
+            fin_arrs[pi][li] = target
             changed.add(pi)
             n_weld += 1
-        seam_clusters.append(cluster)
+        if len({pi for pi, _ in movable}) >= 2:
+            seam_clusters.append(movable)   # skin-match plates only
     for pi in changed:
         plates[pi]["verts"] = fin_arrs[pi]
         plates[pi]["verts_modified"] = True
@@ -874,6 +994,11 @@ def _layer_order_eligible(j, softbody_names=frozenset(), collider_names=frozense
         return False
     if not (s.textures or {}):
         return False
+    # #layer-order-surface works in WORLD frame (see _repair_layer_order), so a
+    # shape with its own global-to-skin is eligible; the legacy vertex pairing
+    # compares raw verts and still needs identity.
+    if getattr(_nc(), "LAYER_ORDER_SURFACE", False):
+        return True
     try:
         if s.has_global_to_skin:
             g = _shape_global_to_skin(s)
@@ -936,25 +1061,79 @@ def _repair_layer_order(shape_jobs, softbody_names=frozenset(),
         sn = np.asarray(sn, dtype=np.float64)
         if sn.shape != sv.shape or tris.size == 0:
             continue
-        L.append({"j": j, "sv": sv, "sn": sn, "tris": tris, "dv": dv})
+        # WORLD frame (#layer-order-surface): shapes in one NIF can carry
+        # different global-to-skin transforms, so raw verts of two of them are
+        # not comparable. Phase-1 jobs (`g2s` key) already hold world verts.
+        _g = None
+        if getattr(_nc(), "LAYER_ORDER_SURFACE", False):
+            try:
+                _g = (_shape_global_to_skin(j["src"])
+                      if j["src"].has_global_to_skin else None)
+            except Exception:
+                _g = None
+            if _g is not None and _g2s_is_identity(_g):
+                _g = None
+        _lift_out = False
+        if _g is not None:
+            _w0 = _verts_skin_to_world(sv, _g)
+            sn = _verts_skin_to_world(sv + sn, _g) - _w0
+            sn /= np.maximum(np.linalg.norm(sn, axis=1, keepdims=True), 1e-12)
+            sv = _w0
+            if "g2s" not in j:
+                dv = _verts_skin_to_world(dv, _g)
+                _lift_out = True
+        L.append({"j": j, "sv": sv, "sn": sn, "tris": tris, "dv": dv,
+                  "g": _g if _lift_out else None})
     if len(L) < 2:
         return 0
 
     # SOURCE pairing is fixed (computed once): the authored relationship is the truth.
     trees = [cKDTree(x["sv"]) for x in L]
+    surface = bool(getattr(_nc(), "LAYER_ORDER_SURFACE", False))
     pairing = {}
+    if surface:
+        from .nif_convert_weights import _closest_on_body
+        _cos = float(_nc().LAYER_ORDER_FACE_COS)
+        adjs = []
+        for x in L:
+            adj = [[] for _ in range(len(x["sv"]))]
+            for ti, tr in enumerate(x["tris"]):
+                for k in tr:
+                    adj[int(k)].append(ti)
+            adjs.append([np.asarray(a, np.int64) for a in adj])
     for ia, A in enumerate(L):
         for ib, B in enumerate(L):
             if ia == ib:
                 continue
             d, idx = trees[ib].query(A["sv"])
-            m = d < near
+            # Surface pairing prefilters WIDER: on a coarse layer a vert can sit
+            # on a face yet far from all three of its corners.
+            m = d < (3.0 * near if surface else near)
             if m.sum() < 3:
                 continue
             ai = np.where(m)[0]
-            bj = idx[ai]
-            s_src = np.einsum('ij,ij->i', A["sv"][ai] - B["sv"][bj], B["sn"][bj])
-            pairing[(ia, ib)] = (ai, bj, s_src)
+            if not surface:
+                bj = idx[ai]
+                s_src = np.einsum('ij,ij->i', A["sv"][ai] - B["sv"][bj], B["sn"][bj])
+                pairing[(ia, ib)] = (ai, bj, s_src)
+                continue
+            # #layer-order-surface: the closest SURFACE point, its triangle and
+            # barycentrics -- a material point on B that can be replayed on the
+            # output. Side = B's interpolated authored normal there.
+            q, tri, bw = _closest_on_body(A["sv"][ai], B["sv"], B["tris"],
+                                          trees[ib], adjs[ib])
+            off = A["sv"][ai] - q
+            dist = np.linalg.norm(off, axis=1)
+            tv = B["tris"][tri]
+            nq = np.einsum('ij,ijk->ik', bw, B["sn"][tv])
+            nq /= np.maximum(np.linalg.norm(nq, axis=1, keepdims=True), 1e-12)
+            s_src = np.einsum('ij,ij->i', off, nq)
+            # FACE-ON only: an offset that runs ALONG the surface (a vert beside
+            # the rim, not over the face) says nothing about which side it is on.
+            keep = (dist < near) & (np.abs(s_src) >= _cos * np.maximum(dist, 1e-9))
+            if keep.sum() < 3:
+                continue
+            pairing[(ia, ib)] = (ai[keep], (tv[keep], bw[keep]), s_src[keep])
     if not pairing:
         return 0
 
@@ -968,8 +1147,15 @@ def _repair_layer_order(shape_jobs, softbody_names=frozenset(),
         any_fix = False
         for (ia, ib), (ai, bj, s_src) in pairing.items():
             A, B = L[ia], L[ib]
-            nb = dn[ib][bj]
-            s_dst = np.einsum('ij,ij->i', A["dv"][ai] - B["dv"][bj], nb)
+            if isinstance(bj, tuple):           # #layer-order-surface replay
+                tv, bw = bj
+                pb = np.einsum('ij,ijk->ik', bw, B["dv"][tv])
+                nb = np.einsum('ij,ijk->ik', bw, dn[ib][tv])
+                nb = nb / np.maximum(np.linalg.norm(nb, axis=1, keepdims=True), 1e-12)
+                s_dst = np.einsum('ij,ij->i', A["dv"][ai] - pb, nb)
+            else:
+                nb = dn[ib][bj]
+                s_dst = np.einsum('ij,ij->i', A["dv"][ai] - B["dv"][bj], nb)
             # Was on/outside B in the source, is INSIDE B now -> swallowed.
             #
             # ONLY the sign flip. Firing on a LOST GAP as well -- restoring the
@@ -1020,7 +1206,8 @@ def _repair_layer_order(shape_jobs, softbody_names=frozenset(),
     if not corrected:
         return 0
     for x in L:
-        x["j"]["verts"] = x["dv"]
+        x["j"]["verts"] = (_verts_world_to_skin(x["dv"], x["g"])
+                           if x.get("g") is not None else x["dv"])
         x["j"]["verts_modified"] = True
     return len(corrected)
 
@@ -1336,6 +1523,37 @@ def _stack_depth_from_relation(n, rel):
         _depth(i)
     return depth
 
+def _ride_body_floor_push(cand, fitted, body_verts, body_norms, btree, margin):
+    """#ride-body-floor + #ride-floor-margin: the outward push, along the body
+    normal, that keeps each ridden vert no deeper than
+    `min(its fitted clearance, margin)`.
+
+    A vert the FIT CHAIN left inside (fitted < 0) is held where the chain had
+    it, never hauled out -- that is the anti-poke's job, not the ride's. A vert
+    the chain held clear keeps up to `margin` of that clearance. With margin 0
+    (the floor as it was) the ride could set a layer down ON the skin wherever
+    its author built it at or under their body, and the skin then came through
+    whenever the body moved under it: a pair of leggings at the mons, fitted
+    0.9u clear, ridden to 0.00-0.05u, walked through by 0.1u. Only the inward
+    component is ever touched, so the tangential motion that makes the stack
+    cohere is kept in full.
+
+    Returns (push (n, 3), short (n,)): `short` is how far each vert is lifted.
+    """
+    bv = np.asarray(body_verts, dtype=np.float64)
+    bn = np.asarray(body_norms, dtype=np.float64)
+    cand = np.asarray(cand, dtype=np.float64)
+    fitted = np.asarray(fitted, dtype=np.float64)
+    _, bj = btree.query(cand)
+    n = bn[bj]
+    sd = np.einsum('ij,ij->i', cand - bv[bj], n)
+    _, fj = btree.query(fitted)
+    fd = np.einsum('ij,ij->i', fitted - bv[fj], bn[fj])
+    floor = np.minimum(fd, float(margin)) - 1e-4
+    short = np.clip(floor - sd, 0.0, None)
+    return n * short[:, None], short
+
+
 def _feather_ride_disp(disp, mask, tris, sv, stats=None):
     """Smooth the ride's displacement field WITHIN the ridden mask.
 
@@ -1390,6 +1608,11 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
     """
     if not _nc().LAYER_RIDE_ENABLED or body_verts is None:
         return 0
+    if _nc()._zap_lean() and not _nc()._ZAP_KEEP_RIDE:   # #zap-lean (#zap-keep-ride)
+        return 0
+    # #zap-ride-restore: on a zapped piece the warp IS the authors' fit, so the ride only gives back the gap the warp
+    # squeezed: outward along the body normal, never inward, never sideways, no rigid panels (authors bend them).
+    _restore = bool(_nc()._zap_lean() and _nc()._ZAP_RIDE_RESTORE)
     try:
         from scipy.spatial import cKDTree
     except Exception:
@@ -1533,7 +1756,7 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
             # geometry beneath it -> its SOURCE offset to that geometry is preserved.
             _rd = disp
             _apply = mask
-            if _nc().PANEL_RIGID_RIDE and enable_panels:
+            if _nc().PANEL_RIGID_RIDE and enable_panels and not _restore:
                 _st = {}
                 _rd, _force = _panel_rigid_disp(
                     sv, j["src"].tris, disp, mask,
@@ -1569,28 +1792,31 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
                           file=_sys.stderr)
             if _nc().RIDE_FEATHER:
                 _rd = _feather_ride_disp(_rd, _apply, j["src"].tris, sv, _cst)
+            if _restore and body_norms is not None:
+                try:
+                    _cand = sv + _rd
+                    _, _rj = btree.query(fv[_apply])
+                    _rn = np.asarray(body_norms, dtype=np.float64)[_rj]
+                    _out = np.clip(np.einsum('ij,ij->i', _cand[_apply] - fv[_apply], _rn), 0.0, None)
+                    # REJECTED 10-19: restoring only where the nearest reference vert sat beneath in the SOURCE
+                    # (> 0.05u). On 136 zapped layered pieces: better/worse piece-weights 61/26 -> 37/42.
+                    _keep = np.zeros_like(_rd)
+                    _keep[_apply] = fv[_apply] + _rn * _out[:, None] - sv[_apply]
+                    _rd = np.where(_apply[:, None], _keep, _rd)
+                    _cst["zap_restore"] = _cst.get("zap_restore", 0) + int((_out > 1e-4).sum())
+                except Exception as _zre:
+                    _note_pass_failure("ride/zap-restore", _zre)
             # #ride-body-floor: clamp the INWARD component of the ride so this
             # pass cannot put cloth into the body. Applied after the feather so
             # nothing downstream re-introduces what it removes.
             if _nc().RIDE_BODY_FLOOR and body_verts is not None and body_norms is not None:
                 try:
-                    _cand = sv + _rd
-                    _bvv = np.asarray(body_verts, dtype=np.float64)
-                    _bnn = np.asarray(body_norms, dtype=np.float64)
-                    _, _bj = btree.query(_cand[_apply])
-                    _n = _bnn[_bj]
-                    _sd = np.einsum('ij,ij->i', _cand[_apply] - _bvv[_bj], _n)
-                    # Never deeper than the FIT CHAIN already had this vert:
-                    # a vert it left inside stays where it was rather than being
-                    # hauled out by a pass that is not the anti-poke.
-                    _, _fj = btree.query(fv[_apply])
-                    _fd = np.einsum('ij,ij->i', fv[_apply] - _bvv[_fj],
-                                    _bnn[_fj])
-                    _floor = np.minimum(_fd, 0.0) - 1e-4
-                    _short = np.clip(_floor - _sd, 0.0, None)
+                    _push, _short = _ride_body_floor_push(
+                        (sv + _rd)[_apply], fv[_apply], body_verts, body_norms,
+                        btree, float(_nc().RIDE_BODY_FLOOR_MARGIN))
                     if float(_short.max(initial=0.0)) > 0.0:
                         _fix = np.zeros_like(_rd)
-                        _fix[_apply] = _n * _short[:, None]
+                        _fix[_apply] = _push
                         _rd = _rd + _fix
                         _cst["body_floor"] = _cst.get("body_floor", 0) + int(
                             (_short > 0.0).sum())

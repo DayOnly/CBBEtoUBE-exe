@@ -112,7 +112,7 @@ def _worker(pool):
 
 
 def _schedule(per_source, pool, *, workers=4, sizes=None, memory=None,
-              budget_gb=2.0):
+              budget_gb=2.0, reclaim=None, largest_shape=None):
     """Run the batch-wide schedule over `per_source` ([items] per source).
     Returns (events, delivered): events is the ordered ('deliver', k, name) /
     ('finish', k) log; delivered maps source -> [ConvertResult]."""
@@ -130,7 +130,8 @@ def _schedule(per_source, pool, *, workers=4, sizes=None, memory=None,
         mgr, units, len(per_source), _deliver,
         lambda k: events.append(("finish", k)), fn=_worker(pool),
         memory=memory or (lambda: {"avail_gb": 64.0, "commit_free_gb": 64.0}),
-        budget_gb=budget_gb)
+        budget_gb=budget_gb, reclaim=reclaim,
+        largest_shape=largest_shape or (lambda _p: 0))
     sched.run()
     return events, delivered, sched
 
@@ -194,6 +195,31 @@ def test_what_each_source_receives_does_not_depend_on_the_pool(workers):
     assert got == {0: ["a_0", "a_1", "b"], 1: ["a_0", "c_1", "d_1"], 2: ["e"]}
 
 
+def test_heavy_units_start_by_their_largest_shape_not_their_file_size():
+    """#heavy-shape-order: when memory lets one heavy unit run at a time, the one with the largest shape (the
+    longest-running) goes first even with the smallest file; light units keep largest-file-first after them."""
+    sizes = {"h_big_file": 20.0, "h_mid": 18.0, "h_dense": 16.0, "l1": 1.0, "l2": 0.5}
+    shapes = {"h_big_file": 18000, "h_mid": 32000, "h_dense": 51000}
+    read = []
+
+    def largest_shape(path):
+        read.append(path)
+        return shapes.get(path, 0)
+    pool = _Pool()
+    _schedule([[_item(n) for n in sizes]], pool, workers=1, sizes=sizes, largest_shape=largest_shape,
+              memory=lambda: {"avail_gb": 3.0, "commit_free_gb": 60.0})
+    assert [names[0] for _k, names, _r in pool.submits] == ["h_dense", "h_mid", "h_big_file", "l1", "l2"]
+    assert sorted(read) == ["h_big_file", "h_dense", "h_mid"], "only heavy units' files are read"
+
+
+def test_a_heavy_unit_whose_file_cannot_be_read_keeps_its_file_size_place():
+    sizes = {"h1": 20.0, "h2": 18.0, "h3": 16.0}
+    pool = _Pool()
+    _schedule([[_item(n) for n in sizes]], pool, workers=1, sizes=sizes,
+              largest_shape=lambda p: {"h3": 40000}.get(p, 0))
+    assert [names[0] for _k, names, _r in pool.submits] == ["h3", "h1", "h2"]
+
+
 def test_largest_units_start_first():
     pool = _Pool()
     _schedule([[_item("small")], [_item("big"), _item("mid")]], pool, workers=1,
@@ -228,6 +254,32 @@ def test_commit_bounds_a_heavy_unit_like_ram_does():
               memory=lambda: {"avail_gb": 30.0, "commit_free_gb": 8.0})
     started = {names[0]: running for _k, names, running in pool.submits}
     assert "h1" not in started["h2"]
+
+
+def test_cached_numpy_blocks_count_as_free_for_a_heavy_unit():
+    """#numpy-block-cache: the workers' cached blocks read as used to the live check but are freed by themselves
+    before free RAM reaches the reserve, so they are added back -- the tight case above runs both heavy units."""
+    sizes = {"h1": 20.0, "h2": 18.0, "l1": 1.0, "l2": 0.5}
+    held = _Pool()
+    _schedule([[_item("h1"), _item("l1")], [_item("h2"), _item("l2")]], held,
+              sizes=sizes, reclaim=lambda: 4.0,
+              memory=lambda: {"avail_gb": 8.0, "commit_free_gb": 60.0})
+    started = {names[0]: running for _k, names, running in held.submits}
+    assert "h1" in started["h2"]
+
+
+def test_a_heavy_unit_never_waits_on_memory_with_no_heavy_unit_running():
+    """No free memory at all and nothing to reclaim: every heavy unit still runs, one at a time -- the schedule
+    waits on memory only beside another heavy unit, so a cache holding memory cannot stall it."""
+    sizes = {"h1": 20.0, "h2": 18.0, "h3": 16.0, "l1": 1.0}
+    pool = _Pool()
+    events, delivered, _s = _schedule([[_item("h1"), _item("h2"), _item("h3"), _item("l1")]], pool, sizes=sizes,
+                                      reclaim=lambda: 0.0,
+                                      memory=lambda: {"avail_gb": 0.0, "commit_free_gb": 0.0})
+    started = {names[0]: running for _k, names, running in pool.submits}
+    assert sorted(started) == ["h1", "h2", "h3", "l1"]
+    assert not any(h in started[g] for g in ("h2", "h3") for h in ("h1", "h2", "h3") if h != g)
+    assert len(delivered[0]) == 4 and events[-1] == ("finish", 0)
 
 
 def test_unknown_memory_runs_heavy_units_one_at_a_time():

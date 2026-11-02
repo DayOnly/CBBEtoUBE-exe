@@ -41,6 +41,12 @@ sys.path.insert(0, str(_REPO))
 
 from src import nif_convert as nc  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _groove_smooth_on(monkeypatch):
+    """the pass is OFF by default since 2026-10-18 (CBBE2UBE_GROOVE_SMOOTH=1); these pin what it does when on"""
+    monkeypatch.setattr(nc, "GROOVE_SMOOTH_ENABLED", True)
+
 _UP = np.array([0.0, 1.0, 0.0])
 
 

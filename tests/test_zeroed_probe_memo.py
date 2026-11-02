@@ -138,6 +138,15 @@ def _deny(monkeypatch, denied: Path) -> None:
                 raise PermissionError(13, "Access is denied", str(self))
             return _orig(self)
         monkeypatch.setattr(Path, name, check)
+    # Listing it raises too, as it does for a real access-denied folder: the
+    # #zeroed-probe-listing cache reads folders with `os.scandir`, not `stat`.
+    orig_scandir = zb.os.scandir
+
+    def scan(p):
+        if Path(p) == denied or denied in Path(p).parents:
+            raise PermissionError(13, "Access is denied", str(p))
+        return orig_scandir(p)
+    monkeypatch.setattr(zb.os, "scandir", scan)
 
 
 def test_an_unreadable_folder_below_the_winner_changes_nothing(tmp_path, monkeypatch):

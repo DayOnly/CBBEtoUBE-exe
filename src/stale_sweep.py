@@ -423,6 +423,62 @@ def hold_for_staying_patches(base_dec, patch_dec, names_of) -> bool:
     return changed
 
 
+def attribution_on() -> bool:
+    r"""#stale-patch-attribution: may an unrecorded base take its source from the
+    per-source patch that names it? On by default;
+    CBBE2UBE_NO_STALE_PATCH_ATTRIBUTION=1 holds every unrecorded base as before."""
+    return not _flag("CBBE2UBE_NO_STALE_PATCH_ATTRIBUTION", False)
+
+
+def attribute_unrecorded(stale_bases, stale_patches, recorded_bases,
+                         recorded_patches, patch_stem, plugin_owner, names_of
+                         ) -> "tuple[dict, dict]":
+    r"""#stale-patch-attribution. ({base: source}, {patch: source}) for stale bases
+    and per-source patches the manifest does not record, read off the patches
+    an earlier run of THIS converter wrote.
+
+    THE GAP. The manifest started in 1.5, and a base is recorded only when a run
+    claims it or a source of that run gives a reason to drop it. A conversion an
+    earlier build made whose source the planner no longer selects at all --
+    measured on the reported modlist: two clothing mods whose armours a later
+    Requiem patch made non-playable, 13 bases, 22 meshes, written 2026-09-24 by
+    1.4.1 -- is recorded by no run and held forever as "not recorded as
+    converted by any run". It stays in `meshes\!UBE`, the coverage step points
+    armatures at it, and the census counts its old seams and node sets.
+
+    THE RECORD THAT EXISTS. That earlier run wrote a per-source patch beside the
+    meshes, `<source plugin> (CBBEtoUBE src).esp` (`patch_stem` gives the
+    source plugin's name), whose armatures name exactly those bases
+    (`names_of`). The mod whose copy of that plugin wins the load order
+    (`plugin_owner`) is the source. That is evidence an earlier run of ours left,
+    not absence: a base no such patch names, a patch whose plugin no enabled mod
+    ships, and a base two patches give different sources stay unrecorded and
+    held. An attributed base is then decided exactly as a recorded one --
+    moved only when its source is gone or the planner's own gates give a
+    positive reason (`POSITIVE_REASONS`) -- and its patch moves with it under
+    `decide_patches`' rule."""
+    base_src: dict = {}
+    patch_src: dict = {}
+    conflict: set = set()
+    for n in sorted(stale_patches):
+        if n in recorded_patches:
+            continue
+        stem = patch_stem(n)
+        owner = plugin_owner(stem) if stem else None
+        if not owner:
+            continue
+        patch_src[n] = owner
+        for b in sorted(names_of(n) or ()):
+            if b not in stale_bases or b in recorded_bases:
+                continue
+            if base_src.get(b, owner) != owner:
+                conflict.add(b)
+            base_src[b] = owner
+    for b in conflict:
+        base_src.pop(b, None)
+    return base_src, patch_src
+
+
 def patch_bases(esp_path) -> "set[str] | None":
     r"""The weight bases the armatures of one plugin name below `!UBE`; None
     when it cannot be read."""

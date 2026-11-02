@@ -44,10 +44,11 @@ from src.envflags import knob                  # noqa: E402
 
 def test_defaults_are_the_literals_they_replaced():
     """Exposing a constant must not change it. These are the values every fit
-    constant in the chain was tuned around."""
+    constant in the chain was tuned around -- except max_pull, lowered 4.0 -> 0.6
+    on 10-18 after measuring against author-built UBE twins."""
     assert fg.CONFORM_TIGHT_STANDOFF == 1.0
     assert fg.CONFORM_LOOSE_STANDOFF == 4.0
-    assert fg.CONFORM_MAX_PULL == 4.0
+    assert fg.CONFORM_MAX_PULL == 0.6
 
 
 def test_the_signature_actually_takes_them():
@@ -65,7 +66,7 @@ def test_the_env_names_are_live(monkeypatch):
     for env, default, val in (
         ("CBBE2UBE_CONFORM_TIGHT_STANDOFF", 1.0, 0.5),
         ("CBBE2UBE_CONFORM_LOOSE_STANDOFF", 4.0, 6.0),
-        ("CBBE2UBE_CONFORM_MAX_PULL", 4.0, 2.0),
+        ("CBBE2UBE_CONFORM_MAX_PULL", 0.6, 2.0),
     ):
         monkeypatch.delenv(env, raising=False)
         assert knob(env, default) == default

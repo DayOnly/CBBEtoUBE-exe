@@ -230,3 +230,86 @@ def test_drop_scale_bones_still_strips_and_preserves_mass():
     assert all(not nc._is_scale_bone(b) for b in nb), "scale bone survived"
     total = sum(w for prs in nw.values() for _, w in prs)
     assert abs(total - 1.0) < 1e-6, "per-vert mass not preserved"
+
+
+# --------------------------- #seam-weld-physics-anchor -------------------------
+
+def _plate_and_cloth(cloth_hidden=False):
+    """A plate and an SMP cloth sharing a seam point (index 0). The fits moved
+    them apart; the cloth's rest may not move."""
+    plate = MockShape("TorsoLow", [[0, 0, 0], [10, 0, 0]])
+    cloth = MockShape("torso", [[0, 0, 0], [-10, 0, 0]])
+    if cloth_hidden:
+        cloth.flags = 1
+    jp = _job(plate, final=[[0, 0, 0.6], [10, 0, 0.6]])
+    jc = _job(cloth, final=[[0, 0, 0.0], [-10, 0, 0.0]])
+    return jp, jc
+
+
+def test_a_plate_welds_onto_the_physics_cloth_it_shares_a_seam_with():
+    jp, jc = _plate_and_cloth()
+    n = nc._weld_cross_shape_seams([jp, jc], exclude_names={"torso"})
+    assert n == 1
+    np.testing.assert_allclose(jp["verts"][0], [0, 0, 0.0], atol=1e-9)
+    np.testing.assert_allclose(jp["verts"][1], [10, 0, 0.6], atol=1e-9)
+
+
+def test_the_physics_cloth_never_moves():
+    jp, jc = _plate_and_cloth()
+    nc._weld_cross_shape_seams([jp, jc], exclude_names={"torso"})
+    np.testing.assert_allclose(jc["verts"], [[0, 0, 0.0], [-10, 0, 0.0]], atol=1e-9)
+
+
+def test_a_hidden_physics_shape_is_no_anchor():
+    """A hidden collider is a proxy; bending a visible plate onto it is wrong."""
+    jp, jc = _plate_and_cloth(cloth_hidden=True)
+    assert nc._weld_cross_shape_seams([jp, jc], exclude_names={"torso"}) == 0
+    np.testing.assert_allclose(jp["verts"][0], [0, 0, 0.6], atol=1e-9)
+
+
+def test_the_anchor_switch_leaves_the_seam_as_before(monkeypatch):
+    monkeypatch.setattr(nc, "SEAM_WELD_PHYSICS_ANCHOR", False)
+    jp, jc = _plate_and_cloth()
+    assert nc._weld_cross_shape_seams([jp, jc], exclude_names={"torso"}) == 0
+
+
+def test_the_anchor_switch_is_on_by_default():
+    assert nc.SEAM_WELD_PHYSICS_ANCHOR is True
+
+
+def test_two_plates_meeting_at_an_anchor_land_on_it():
+    jp, jc = _plate_and_cloth()
+    other = MockShape("Belt", [[0, 0, 0], [0, 10, 0]])
+    jo = _job(other, final=[[0, 0, -0.4], [0, 10, -0.4]])
+    nc._weld_cross_shape_seams([jp, jo, jc], exclude_names={"torso"})
+    np.testing.assert_allclose(jp["verts"][0], [0, 0, 0.0], atol=1e-9)
+    np.testing.assert_allclose(jo["verts"][0], [0, 0, 0.0], atol=1e-9)
+
+
+def _body_plane(z):
+    """A body surface at height z with its normal +z (outside = above)."""
+    g = np.arange(-12.0, 12.01, 1.0)
+    X, Y = np.meshgrid(g, g)
+    bv = np.c_[X.ravel(), Y.ravel(), np.full(X.size, z)]
+    return bv, np.tile([0.0, 0.0, 1.0], (len(bv), 1))
+
+
+def test_a_plate_is_not_welded_onto_cloth_resting_inside_the_body():
+    """BODY GUARD: the cloth's rest (z 0.0) is inside the body (surface at 0.3);
+    the plate (z 0.6) is outside. Welding would carry the plate into the body --
+    measured on a long shirt, plate verts inside 13 -> 25. The seam stays open."""
+    jp, jc = _plate_and_cloth()
+    bv, bn = _body_plane(0.3)
+    n = nc._weld_cross_shape_seams([jp, jc], exclude_names={"torso"},
+                                    body_v=bv, body_n=bn)
+    assert n == 0
+    np.testing.assert_allclose(jp["verts"][0], [0, 0, 0.6], atol=1e-9)
+
+
+def test_the_body_guard_still_welds_onto_cloth_outside_the_body():
+    jp, jc = _plate_and_cloth()
+    bv, bn = _body_plane(-1.0)
+    n = nc._weld_cross_shape_seams([jp, jc], exclude_names={"torso"},
+                                    body_v=bv, body_n=bn)
+    assert n == 1
+    np.testing.assert_allclose(jp["verts"][0], [0, 0, 0.0], atol=1e-9)

@@ -1529,7 +1529,7 @@ raised, and the check then walks the pairs on its own.
 **Why.** Some armor bakes a slice of the nude body (open-cleavage skin, bare
 lower legs) or ships a full inline body. That geometry can't morph or connect to
 the neck on its own and must *be* the body. **How.** Drop the source body/skin
-shapes and inject the full UBE `BaseShape` (+ `VirtualBody`) — the UBE reference
+shapes and inject the full UBE `BaseShape` — the UBE reference
 body or an explicit override, see *Reference bodies* — then re-fit the armor
 around it. Exposed-skin slices are detected by geometric coincidence with the CBBE
 reference body surface (a shape whose verts overwhelmingly sit on the body *is*
@@ -2212,6 +2212,44 @@ in-game.)
 finding `meshes` in the *destination* path. Converting to a scratch folder with
 no `meshes` segment silently produces the fallback body-tri — an artifact of the
 test setup, not a real conversion bug.
+
+### Colliders morph with the body (`#virtualbody-morphs`)
+
+**Why.** An SMP collider has to follow the body sliders, or the cloth collides
+with a body smaller than the one on screen. Every collider name (ColBody,
+CollisionLegs, VirtualLegs, ...) already got its own TRI table except a shape
+called `VirtualBody`: `UBE_BODY_INJECT_NAMES` holds it, so `_collect_tri_inputs`
+filed it as an injected body and gave it nothing, on the premise that it was a
+proxy the converter generates. It is not: the UBE reference ships only
+`BaseShape`, so every `VirtualBody` in an output is the source author's collider,
+and hand-built UBE versions morph it (138-186 morphs on the three author pairs
+that have one). Unmorphed, it sat 1-5u inside the hips and 2-10u inside the bust
+under the common presets (10 shipped pieces).
+
+**How.** `_collect_tri_inputs` puts a `VirtualBody` in the armour set, so it gets
+ordinary K-NN morphs. `_surface_track_inputs` leaves its triangles out, so the
+cross-layer steps (layer lockstep, nipple stack) never read the hidden collider
+as a cloth layer -- left in, they lifted the visible cloth above it by the
+body's own motion. Kill switch `CBBE2UBE_NO_VIRTUALBODY_MORPHS=1`.
+
+**The refresh's body.** `_refresh_armor_tri_after_reimport` regenerates the whole
+TRI, and it took `ube_body_shape(nf)` as the body. On a piece with no
+`BaseShape` that returns the `VirtualBody` collider, so every shape's morphs were
+built against a 137-13554-vert proxy using the OSD's 29298-vert offsets --
+scrambled. It shipped only where another re-imported collider let the refresh
+gain a shape (one accessory); elsewhere the result was discarded because the
+refresh gained nothing. The refresh now takes the injected `BaseShape`, else the
+reference body the caller passes (`fallback_body_shape`), never a collider.
+
+**Measured.** 13 pieces built with and without: collider sink under three
+presets 0.8-9.3u -> <= 0.1u (authors 0.0-0.3u); every shape's morphs agree with
+a fresh regeneration against the reference body (cosine 1.00; the accessory's
+0.0-0.3 -> 1.00). After the full reconvert: worst sink 0.06u on all 10.
+
+**Metric trap.** A skin-exposure census that compares every shape a pair has in
+common counts a collider as cloth. One piece's "bust exposure" (author 15, ours
+436) was the collider alone: the visible garments covered it as well as the
+author's did.
 
 ### Shapes that share a name (`#dup-shape-names`, `#override-contract`)
 

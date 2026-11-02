@@ -2,6 +2,371 @@
 
 ## Unreleased
 
+### Changed — #tri-follow reuses one body search across its edge and chord passes (output byte-identical)
+
+- `tri_follow.follow_pair` ran the floor pass on the weight-100 mesh and then the edge and chord passes on the
+  weight-0 mesh. The edge and chord passes each re-opened the weight-0 NIF and recomputed, per cloth shape, the
+  closest point on the body surface (a KD-tree over every body triangle) and the interpolated body normals — the
+  pass's dominant cost — although both run on the same geometry. That weight-0 geometry is now built once (`_geom`)
+  and shared by both. No behaviour change: the rows written are identical, and one pass still sees the other's edits
+  because the shared data holds only geometry, never a morph row. Verified byte-identical: the hide cuirass and iron
+  cuirass pairs reconverted to the same sha1 on all of `.tri`, `.xml` and both `.nif`.
+
+### Fixed — breasts through a coarse garment's front at rest
+
+- A low-poly garment's large flat faces can cut through the rounder UBE breast while every one of its vertices sits
+  outside the skin (LOTD bard tunic: 1802 skin vertices through its front, 0.56u median). The zap could not delete
+  that skin: from grazing angles nothing would be behind it. Before the zap's views run, each cloth face with skin
+  poking through its inside at rest now has its corners moved out along the body normal by the most the skin pokes,
+  plus 0.05u (#zap-rest-clear; `CBBE2UBE_NO_ZAP_REST_CLEAR=1` turns it off). Cloth that already clears is untouched;
+  faces within 2u of an open edge (skin over a neckline, the source's design) and simulated cloth are left alone; at
+  most 2u. Bard tunic: skin through the cloth at rest 76.7 -> 4.1 u^2 (breasts 1448 -> 0 vertices), holes at rest
+  0.52 -> 0.09; 193 of 1347 vertices moved, median 0.18u.
+
+### Fixed — cloth follows the body sliders at weight 100, at its edges, and across its faces
+
+- The armour's .tri is built from the weight-0 meshes, and the same slider rows drive the weight-100 mesh, where each
+  cloth vertex covers other skin. Measured on a cuirass, cloth lagging the skin under sliders: 6 at weight 0 against
+  1997 at weight 100. Once both weights are written, the rows are checked again at weight 100 and lifted where they
+  fall short (#tri-follow-floor), open cloth edges near the skin get the skin's own motion on every slider
+  (#tri-follow-edge), and each cloth face is lifted per slider so the skin inside it at rest stays inside at +1
+  without the face digging in at -1 (#tri-follow-chord). No vertex moves at rest. Off switches:
+  `CBBE2UBE_NO_TRI_FOLLOW_FLOOR`, `CBBE2UBE_NO_TRI_FOLLOW_EDGE`, `CBBE2UBE_NO_TRI_FOLLOW_CHORD`.
+- The cuirass converted end to end: weight-100 lag 1997 -> 457. 34 pieces replayed from their pre-zap state: holes
+  -13.8% (25 better / 8 worse), cloth edges buried under sliders -10.1% (22 / 8), slider-caused poke -6.0%, gap skin
+  +1.0% in total (23 pieces better, 11 worse). #zap-edge-lift stays: skin beside an edge rises at different rates,
+  and only its small rest gap absorbs that; with the rows following, it moves about a third fewer verts.
+
+### Added — a Live steps tab that shows each step of the piece converting now, in 3D
+
+- While a run converts, the new Live steps tab shows the newest piece as a large lit 3D view that turns once every
+  10 seconds and steps through the conversion by itself: Source, Warp and Fit coloured by how far that step moved
+  each vert, Weights coloured by each vert's strongest bone (magenta = no weight), and Zap with the written body in
+  skin tone under the cloth, so kept skin shows through it and removed skin is see-through. The UBE body stands in
+  grey behind the cloth from the warp on. A strip of the five steps sits under the view with the one on show
+  highlighted, and the three pieces before it are small cards (#live-steps).
+- A step gets a red border, and the view holds it longer, when a pass failed on the piece, a vert moved more than 10u
+  in one step, verts are not finite, a vert has no weight, or the zap left a hole in view.
+- It does not slow the conversion: a worker copies three snapshots per fitted shape at the stage hook the chain
+  already has and writes one small file per piece (about 75 KB) after the zap. The window reads the written NIF,
+  draws the view with its own renderer (`native/liveview.dll`, built by `native/build_liveview.bat`) on its own
+  thread, and draws only while the tab is on screen. The converted files are the same with it on or off.
+- On by default; Diagnostics > Window > "Show each step on the Live steps tab" turns it off (the run then records
+  nothing). The records live in `_live_steps` in the tool folder and the window deletes what it reads.
+
+### Fixed — the body zap no longer deletes skin in front of cloth the game does not draw
+
+In game: the top of the breasts missing under the hide cuirass, seen from above.
+
+- The zap's views now treat a single-sided cover shape as cover only where its front faces the view, as the game
+  draws it (#zap-cull; `CBBE2UBE_NO_ZAP_CULL=1` turns it off). A shape flagged double-sided still covers from both
+  sides. Skin in front of cloth is deleted only where the cloth behind it is drawn.
+- #zap-nipple-poke is removed. It judged skin within 5u of a nipple along
+  the skin's own normal, so it deleted breast skin rising over the cuirass's edge, and from above the camera then saw
+  the cuirass's undrawn inside. The views now judge each line of sight; a nipple tip in front of drawn cloth still goes.
+- 34 pieces replayed from their pre-zap state vs the previous build: worst-camera holes -27% (15 pieces better, 1
+  worse), gap skin -16% (30 better, none worse). Hide cuirass: the breast-top hole is gone (Too Big 7.2 -> 1.3 u^2);
+  the breast now sits over the cuirass's edges as it does in the source armour.
+- Tried and dropped: spreading the 48 views over game-camera elevations only (half the pieces worse).
+
+### Fixed — the body zap no longer deletes skin a camera can see through a gap or under a preset
+
+Holes in the skin under some armours, seen in game.
+
+- The zap judged skin only at triangle corners. A triangle whose middle shows through a slit (between straps, at an
+  opening's edge) while all three corners sit under cloth was deleted. The zap's own views now also record every body
+  triangle seen front-most at some pixel with no cover in front of the body's far side, and a seen triangle is never
+  deleted (#zap-tri-vis, same views, no extra triangles drawn). `CBBE2UBE_NO_ZAP_TRI_VIS=1` turns it off.
+- Skin a preset shows through a real opening (a bigger bust rising past a neckline) is kept wherever it is. The 1u
+  limit (#zap-preset-keep) deleted it when it lay more than 1u from skin seen at rest; `CBBE2UBE_ZAP_PRESET_KEEP_R=<u>`
+  brings the limit back.
+- Judged with 1280 cameras per shape (close perspective orbits included) at rest and under the three zap presets, on
+  34 pieces replayed from their pre-zap state: the worst camera's hole summed over the pieces 339 -> 250 u^2, 23 pieces
+  better, none worse; about 290 more body triangles kept per piece (0.5% of the body).
+
+### Fixed — cloth edges no longer sink into the skin beside them when body sliders move
+
+- After the body zap, a cloth edge that sits against kept skin is lifted off it at rest by what the worst single body
+  slider needs, at +1 or -1, so no slider buries the edge in the skin beside it (#zap-edge-lift). The lift is at most
+  0.2u (`CBBE2UBE_ZAP_EDGE_LIFT_CAP`; 1u at first read as a looser fit in game) and fades out 2u into the cloth; the
+  skin under a lifted edge is kept, so the edge never opens a view into the body. Morph rows, physics cloth and
+  colliders are not touched. `CBBE2UBE_NO_ZAP_EDGE_LIFT=1` turns it off.
+
+### Changed — nipples under opaque armour carry no nipple shape
+
+- Where no see-through (alpha) cloth lies within 7u of a nipple, the cloth over it drops its nipple sliders whatever
+  skin the zap keeps there, and a nipple core no view sees is removed (#zap-nipple-opaque;
+  `CBBE2UBE_NO_ZAP_NIPPLE_OPAQUE=1` turns it off). Which skin goes is still the zap's views' answer. Under lace or other
+  alpha cloth the nipple is left as before.
+- The zap ignores the presets' nipple sliders again. Judging the presets with them (briefly the default) kept nipple
+  skin under opaque armour, and the cloth over it kept its nipple sliders: an outline in game (iron cuirass).
+- A first version also deleted all nipple-zone skin the rest pose does not see: in game a blatant chest hole under the
+  hide cuirass on a big body. Replaced the same day.
+
+### Removed — the nipple poke rule and this round's losing experiment switches
+
+None was on in a build. `CBBE2UBE_ZAP_NIPPLE_POKE` (off since the cull), and the switches added while testing:
+per-pose view counts (`CBBE2UBE_ZAP_VIEWS_BIND` / `_PRESET`), the edge-lift re-check, turning off the edge lift's skin
+keep, and a skin keep without the lift (`CBBE2UBE_ZAP_EDGE_KEEP_R`). Each lost on the 34-piece replay: more views or a
+wider angle traded holes for skin poking through under sliders, and every lift-free version traded gaps for buried
+edges.
+
+### Removed — four disproven opt-in options
+
+None was on by default or in the deployed settings, so output is unchanged.
+
+- `CBBE2UBE_WARP_PUSH_SHELL_CAP` (and `CBBE2UBE_WARP_PUSH_SHELL_GAP`, and its row in the settings window): cap the
+  standoff push at the garment's own shell. Refused for promotion 2026-08-22: inert on every large spike measured,
+  two shapes worse, 1.38u of geometry moved.
+- `CBBE2UBE_ZAP_LEG_PUSH_ROOM` (and `CBBE2UBE_ZAP_LEG_PUSH_ROOM_COLLIDERS`): stop the zap's leg lift short of physics
+  cloth and colliders. Hip poke at rest 400 -> 817 u^2.
+- `CBBE2UBE_ZAP_LEG_PUSH_SIM`: lift physics cloth with the rest. Skin in walk/run worse on two pieces.
+- `CBBE2UBE_ZAP_LEG_PUSH_STACK`: layers above a lifted one ride its lift. No measurable effect.
+
+### Faster — a full conversion no longer waits on one piece running out of memory, and the end of the run is shorter
+
+Output is unchanged: byte-identical on 27 sampled pieces (88 files) and on a batch of one mod run with the old and
+new code (15 files).
+
+- On CPUs with performance and efficiency cores, Windows treated the conversion workers as background work and ran
+  them all on the efficiency cores: 15 workers shared 8 cores for the whole run, and half the machine sat idle.
+  The workers now opt out of Windows power throttling, so they run on every core (7.5 -> 14.9 cores in use, measured
+  on the live pool).
+- The check that finds BodySlide's zeroed builds at the start of a run read each mod folder one path piece at a
+  time from disk (1.15 million file checks); it now reads each folder's listing once and looks names up in it,
+  falling back to the disk for any name the listing cannot answer for exactly. Same answers on all 163,168
+  lookups of a real run; that check went from 124 s to 73 s.
+- Every ray cast now looks for triangles only around the stretch of ray it can actually hit, instead of in a ball
+  around the ray's start: the clipping measure, minimum push, limb-motion and gap-aware follow, the layer and
+  clearance measures, and the zap's cloth lookups. Same hits and the same hit triangle on every ray (a ray's
+  candidates keep their order, so ties break the same way); 517 M -> 178 M candidate pairs over six sampled pieces.
+- The ray cast behind the bust push's opening-edge check (`_opening_rim_edges`) built the candidate pairs of every
+  ray at once. On a dense piece that held 28.8 GB; it now works in chunks of rays like the clipping measure already
+  did (peak 1.77 GB on the same piece), and searches around the middle of each ray's short segment instead of its
+  start, which finds the same hits from a fraction of the pairs (1049 s -> 51 s on that piece's shapes).
+- The `_0`/`_1` jiggle sync after the batch counted each scale bone with per-vertex Python dictionaries over every
+  pair in the output; it now sums each bone's weights with numpy, giving the same counts (297.9 s -> 121.8 s over a
+  4036-file output).
+- First-person pieces no longer render the body zap's views: their result was always replaced by "keep the arms".
+- The nipple layer-stack step of the morph file (`_nipple_morph_stack_prep`) kept every layer-over-layer floor as a
+  Python dictionary entry; a many-layer fur piece made 14.6 million and held 11.3 GB. The floors are now numpy
+  columns built one layer pair at a time, with the same first-entry-wins and the same order: 3.1 GB, and the piece
+  converts at 4.6 GB instead of 11.7 GB with identical files.
+- The coincident-skin pass tested every pair of welded parts for touching with a nearest-point query. Pairs whose
+  bounding boxes are already farther apart than the touching distance are now skipped before the query (they could
+  never touch); on a many-part fur 43.9 million pairs needed 2.5 million queries, with identical files.
+- New: every run writes `CBBEtoUBE_last_run_units.tsv` beside the run log -- one row per piece pair with its start,
+  end, CPU seconds, peak memory and work counts (ray pairs, zap views, NIF saves, rebuilds) -- and the run log says
+  how busy the workers were, how long the pool sat partly idle at the end, and which pieces were slowest.
+  The peak memory is each piece's own: exact where the piece set its worker's highest point so far ("new-high"),
+  otherwise the highest of readings taken every 50 ms ("sampled"); the run log also lists the five heaviest pieces.
+- New, off by default: `CBBE2UBE_NUMPY_BLOCK_CACHE_MB=<MB>` lets each conversion process reuse the large blocks of
+  memory it frees instead of handing them back to Windows, which zero-fills every new block page by page (2.87
+  billion page faults in a full run, about a tenth of its CPU). At 256 MB the page faults halve on sampled pieces and
+  on a batch, with identical files. Each process holds up to that much more memory, and empties the cache while free
+  RAM or free commit is under `CBBE2UBE_NUMPY_BLOCK_CACHE_LOW_MB` (default 3072). It never holds a heavy piece back:
+  a worker empties its cache when it finishes a piece, and the scheduler counts what the busy workers hold as free
+  memory (it is freed by itself before free RAM reaches the scheduler's reserve).
+- Building each armour's morph file (`generate_armor_tri`, about a sixth of a run's CPU) takes about half as long
+  (133 s -> 72 s over 13 captured real calls), with every morph identical bit for bit:
+  - each body slider moves only a few body verts, so most armour verts reach none of them; the slider loop now
+    computes only the verts that do and leaves the rest at zero, instead of summing zeros for them;
+  - the layer lockstep picks out its rows once per morph file instead of once per slider;
+  - the overlap sync copies the layer underneath in one step per layer instead of vert by vert;
+  - the nipple layer stack tests each point only against the triangles that can hold it, and each edge only
+    against the edges it can cross, instead of against all of them (up to 1.5 billion edge pairs on a
+    many-layer piece) -- triangles and edges that rounding could tip either way are always tested in full.
+- When memory is tight the heaviest pieces can only run one at a time, and they used to start biggest file first,
+  which can leave the longest one running alone at the end. They now start in order of their largest shape (a
+  much better guide to how long they take); replaying a full run's real timings, this removed a 5-minute wait at
+  the end on a machine short of free RAM. Only those few pieces' files are read for it, and the output is unchanged.
+
+### Fixed — the thin and heavy files of one armour no longer end up with different skeleton nodes (#33)
+
+An armour's thin (`_0`) and heavy (`_1`) mesh are converted separately, and the
+rebuild step kept only bones that still carried weight, so the unweighted skeleton
+nodes in front of the meshes (the root stubs `NPC`, `NPC COM`, `NPC Root`, a chain
+bone one weight had emptied) were dropped from one file and kept in the other.
+Nodes sit before the meshes in the file, so a different node count moved every mesh
+behind them to a different position. The rebuild now keeps the old file's unweighted
+root-level nodes (a node with a real parent is left to the physics-chain code, and
+a zero-weight bone is still never added to a skin), and the jiggle sync pairs
+shapes that an author named per weight (`TorsoF_0` / `TorsoF_1`) by position and
+vertex count instead of leaving them out. On 70 torso pairs from the reported
+modlist the pairs whose nodes differ go from 9 to 1 and the pairs with a mesh at a
+different position from 6 to 0 (the one left is a source whose `_0` and `_1` already
+differ). No node changed parent. One visible difference: about a quarter of the
+files, which lost the three root stubs in both weights before, now keep them as
+the source has them. Whether this removes the in-game geometry break is not
+confirmed. `CBBE2UBE_NO_REAUTHOR_KEEPS_NODES=1` (set to 1) drops the nodes as before.
+Both weights also start from the same skeleton nodes: at the first write the tool creates
+the source's actor-skeleton nodes (and the body's bones), with their source parents and
+transforms, so which nodes a file ends up with no longer depends on what each weight's
+passes added (median 3 more nodes per file, at most 52; capped at 100 per piece). A rebuild
+keeps the unweighted ones of those too, flat, unless a physics chain hangs below them, so a
+weight that is rebuilt keeps the same nodes as one that is not.
+`CBBE2UBE_NO_CANONICAL_SKELETON_NODES=1` turns both off.
+Those nodes come from both weights' source files together: an author's two files can carry
+different unused skeleton nodes (a gauntlet's heavy file has foot nodes its thin one lacks, a
+cuirass's thin file has pauldron bones), and copying each file's own set kept that difference.
+In a full scratch conversion, the pairs whose node counts differ went from 47 to 7, and this
+closes 3 of those 7. Of the other 4, two came from a bone name cut short by one letter in one
+weight (fixed separately) and one from a source whose root node is named after its file
+(`BodyM_0.nif`, `BodyM_1.nif`): the physics-chain code recreated that root as an ordinary node,
+under a different name in each weight. It is now treated as the written file's root, so the
+chain keeps every position and parent and the stray node is gone.
+`CBBE2UBE_NO_CANONICAL_PARTNER_UNION=1` reads each weight's source alone;
+`CBBE2UBE_NO_CHAIN_SOURCE_ROOT=1` recreates a file-named root as before.
+
+### Fixed — a physics file is read from the copy the game loads, not from the mod the mesh happens to live in
+
+An armour mesh names its physics file by a path, and the game opens whichever copy of that
+path wins your load order. The tool looked in the mesh's own mod first, and then walked the
+mod folders in alphabetical order, so an add-on mod that overrides a base mod's physics file
+(a skirt rig over a plain one) lost to the base mod's older file. On the reported skirt the
+output kept the old chains, the winning rig's chains were gone, and its collider was dropped
+for a shape the mesh does not have: the converted file was 7 KB with no skirt chains at all,
+against 18 KB with the whole rig from the copy the game uses. The tool now asks your load
+order first (the overwrite folder, then your mods by priority, then the game's Data folders)
+and only falls back to the mesh's own mod when nothing in the order has the file, or when no
+profile can be read. `CBBE2UBE_XML_OWN_MOD_FIRST=1` restores the old order.
+The converter's own output (`meshes\!UBE\...`) is never looked up this way: a run reads
+the physics file it wrote beside the mesh, not a copy an earlier run left in your pack.
+Each path is looked up once per run, and only in the mods that have its folder (160
+lookups on a 3,345-folder order: 18 s by a plain walk, 1.4 s this way, same answers).
+The run summary also names the pieces behind each swallowed pass failure (six, with
+the full list in `conversion_report.json`), where it listed only counts, so a dropped
+physics shape is no longer anonymous. A piece is named by its path below `meshes\!UBE`
+(`armor/iron/armorf_1.nif`), since many mods share a file name like `armorf_1.nif`.
+A piece whose mesh names a physics file that no mod in your load order ships (an author's
+leftover pointer to another mod's file) is no longer counted as a failed pass or flagged as
+"dropped by a rebuild": the game loads no physics for it either, and the log says that
+plainly. In one full run this was all 12 such "failures".
+A failure or change note that lists several things (a physics file that lost four blocks)
+now reaches the report whole; it used to stop after the first one.
+When a build is taken over (or held back from) a source that carries a different physics
+rig (an SMP rebuild of a plain skirt), the log and `conversion_report.json` now say so by
+piece, under `rig_differs`; which file is converted is unchanged.
+
+### Fixed — a physics block whose shape name differs from the mesh only in letter case is kept
+
+A physics file names each simulated cloth and collider by its shape name, and authors ship
+files whose names differ from their own mesh only in case (a skirt's file names its cloth
+`Skirt`, the mesh calls the shape `skirt`). The tool compared names letter for letter, so it
+deleted that block from the converted file and the skirt shipped with no cloth physics at all;
+6 of 34 dropped blocks in one run were case-only. A reference that matches exactly one shape
+when case is ignored now names that shape: the block is kept under the mesh's spelling, and the
+shape's authored skin is protected like any other cloth or collider. A reference that two shapes
+match that way, or whose shape another reference already names, is treated as before. The run
+log says which names were resolved this way. Assumes the game matches these names without
+regard to case, as the author's own files imply; not yet seen in game.
+`CBBE2UBE_NO_XML_SHAPE_CASE=1` restores the exact comparison.
+
+### Fixed — a robe whose skirt is already simulated no longer gets a skirt collider that fights it
+
+The generated skirt collider (`SkirtCol`) gives cloth the physics file does not simulate a
+collision shape, built from that cloth and riding its bones. Since the collider's source moved to
+the cloth below the hip, it could pick a skirt the physics file DOES simulate as cloth: on the
+reported robe the skirt collides with everything except its own tag, the collider copied the
+robe's tag, and the skirt collided with a copy of itself -- the physics broke in game. The
+collider is now never built from a shape the physics file already declares. On the reported
+modlist this removes it from two pieces (the robe, and one dress whose tags happened to keep it
+harmless); the ten others that carry one keep it. Off with
+`CBBE2UBE_NO_SKIRT_PROXY_DECLARED_SOURCE=1`.
+
+### Fixed — the generated skirt collider is built from the skirt, not from the shoulder pieces
+
+When a piece's own physics colliders do not cover its simulated skirt, the tool adds a hidden
+skirt collider built from the piece's simulated cloth. It took the shape with the most simulated
+vertices anywhere, so on one robe the shoulder pauldrons (474 vertices) won over the skirt (306)
+and the "skirt" collider sat at the shoulders. It now prefers the shape with the most simulated
+cloth at or below the hips, measured in body space (a shape can store its vertices in its own
+frame), and never a hidden physics stabiliser. A piece whose only simulated cloth hangs at the
+chest keeps its old choice. Of the 10 pieces with this collider in one live pack, 1 changes
+(a chest cloth gave way to the skirt). `CBBE2UBE_NO_SKIRT_PROXY_BELOW_HIP=1` restores the old
+choice. Reported in #34 (its other half, the buttock collider under the skin, was fixed in #39).
+
+### Fixed — the cloth repair keeps its skin clearance when a later pass rebuilds the file
+
+The repair that un-buckles crumpled cloth is held off the skin: it may not move a vertex
+closer to the body than it was, or nearer than 0.2 units. When a later pass gives a garment
+new vertices and rebuilds the file (relaxing a self-intersection, fitting a collider), the
+repair runs once more, and that run had no body to hold it against, so it could smooth a
+vertex into the skin. It now gets the piece's own body, in the garment's frame, as the earlier
+runs do. A piece converted without a body (the copy path) is unchanged.
+
+### Fixed — an SMP armour converted from its own mesh keeps its author's physics file
+
+The guard that stops a physics file being shipped with a mesh it was never written for (the
+falling tassets of #32) also fired on the SMP mod's heavy chitin cuirass converted from your
+BodySlide build: its file ties two chains to stabilisers that the author's own mesh does not have
+either. The build is, shape for shape, the mesh the SMP mod ships with that file -- the pairing
+CBBE wearers load -- yet a regenerated rig shipped in place of the author's. The guard now ships
+the author's file when the mod that ships it also ships a mesh with the source's shapes and vertex
+counts at the same path, and records `#authored-xml-own-mesh`. A mesh the file came along on
+without its author (the #32 cuirass) is still declined. Off with
+`CBBE2UBE_NO_AUTHORED_XML_OWN_MESH=1`.
+
+### Fixed — a piece whose BodySlide build only renames its shapes is converted from the build
+
+The same check compared shapes by name, and a BodySlide project often names a shape otherwise
+than the mod's loose mesh (`CloakF_1` and `CloakF_0`, `MiraakBoots` and `Shoes`), so 31 pieces on
+the reported modlist kept their loose mesh over a build that differs in nothing but names. A shape
+on one side only now matches a shape on the other side only when it has the same vertex count and
+an identical triangle list at that weight: one mesh under two names. Only for builds without
+physics, whose files name shapes. On the reported modlist: 32 more pieces from the build (mostly
+Sons of Skyrim armour). The log and `conversion_report.json`
+(`zeroed_output_source.moved_over_renamed_shapes`) name the renamed shapes. Off with
+`CBBE2UBE_NO_ZOS_RENAMED_SHAPES=1`.
+
+### Fixed — a piece is no longer converted from an older model of it when the game loads another
+
+When a mod higher in the load order ships an older model of a piece at the same path as the
+mod whose design your BodySlide build is (a retexture with the armour's old mesh above an SMP
+mod), the converter took that older model: its shapes differ from the build, and a difference
+in garment shapes was read as "the build is another design". UBE wearers then got another
+armour than CBBE wearers, and the SMP mod's physics file still drove chains the old mesh never
+had: one cuirass's tassets fell through the floor. Now, before a garment difference keeps the
+loose mesh, the other mods that ship the piece loose are asked the same question against the
+build; when one of them matches the build at both weights, the build is taken, and the log and
+`conversion_report.json` (`zeroed_output_source.moved_over_other_design`) name both mods. A
+build that matches no loose mesh still keeps the loose mesh, and a physics change is still
+refused first. On the reported modlist this moves 11 pieces (the cuirass, which now ships with
+its author's physics file; six first-person outfit meshes; two pairs of gloves; two first-person
+cuirasses) and nothing else. Off with `CBBE2UBE_NO_ZOS_OTHER_DESIGN=1`. (#32)
+
+### Fixed — old conversions from before the conversion record are cleared out when their armour is no longer converted
+
+The output folder's old conversions are moved to `_superseded` only when a run has recorded which
+mod made them, and that record started in 1.5. Conversions an earlier build made of a mod the
+converter no longer selects were recorded by no run and stayed forever ("not recorded as converted
+by any run"): on the reported modlist, two clothing mods whose armour a later patch made
+non-playable kept 13 pieces, 22 meshes from 1.4.1 in the output, and the coverage step went on
+pointing armatures at them. Such a piece now takes its source from the per-source patch that
+earlier run wrote beside it (its name is the source plugin; the mod whose copy of that plugin wins
+the load order is the source). It is then decided like any recorded piece: it moves only when
+that mod is gone or the converter's own rules give a reason (here: non-playable), and the patch
+goes with it. A piece no such patch names stays where it is. Off with
+`CBBE2UBE_NO_STALE_PATCH_ATTRIBUTION=1`.
+
+### Fixed — seams next to a rigid part or another shape no longer stay split
+
+The pass that gives the two sides of a UV seam one skin row also joins vertices that touch across
+shapes and the vertices of a part the author skinned rigid, all in one cluster, and skips a cluster
+whose shapes share too few bones to give every member one row. A seam pair caught in such a cluster
+was skipped with it, although its two sides are one point of one shape and can always share that
+shape's bones: on one pouch, 142 seam pairs the author skinned identically shipped with one side
+on the spine and the other not. The seam pairs of a skipped cluster are now joined among
+themselves; the cluster's other members are left as before. Off with
+`CBBE2UBE_NO_SEAM_TWIN_IN_WEAK_CLUSTER=1`.
+
+A seam pair also came apart again where the pass's guard against emptying a bone handed one side
+its old row back (the side that was a bone's last carrier): the other side kept the joined row.
+Its twin now takes the handed-back row too, so the bone keeps its carrier and the seam stays
+closed; where that would empty a different bone, the guard keeps both sides as they were. On one
+cuirass 30 such pairs, 15 now closed and 15 kept apart for the bone. Off with
+`CBBE2UBE_NO_SEAM_TWIN_CARRIER_ROW=1`.
+
 ### Fixed — seams on armour with a glow or effect shader no longer tear when the body moves
 
 The two sides of a UV seam are one point of the garment, and the author skins them alike. The
@@ -27,6 +392,18 @@ pairs of a single shape, joining vertices that are not seam twins in the others.
 belongs to more than one shape is now left out of the match. In one live pack 1 of 3,262 files
 has repeated names, and the old lookup happened to miss there, so no current output changes.
 `CBBE2UBE_NO_COINCIDENT_SKIN_UNIQUE_NAMES=1` restores the old lookup.
+
+### Fixed — a bone name is no longer cut short by one letter
+
+The NIF library the tool uses reads a shape's bone names into a fixed-size buffer, and when
+the names added up to exactly that size it dropped the last letter of the last one:
+`NPC L Calf [LClf]` came back as `NPC L Calf [LClf`. The tool then wrote that name out, so the
+vertices on it were skinned to a bone no skeleton has and did not move with the body there.
+In one full conversion 6 files were affected: a dress's calf (665 vertices in both weights), a
+cuirass's upper arm (18 vertices), and two pieces where a breast or rear-thigh bone the tool
+added to a few vertices was cut short in one weight only, so that weight's file also carried a
+node the other did not. The library is fixed in the copy the tool ships
+(`.pynifly/patches/pynifly.py.diff`).
 
 ### Fixed — a piece converted from its BodySlide build no longer shows skin at the side of the bust when the arms move
 

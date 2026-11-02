@@ -246,3 +246,50 @@ def test_copy_shape_preserve_authored_skin_keeps_collider_bones(tmp_path):
     bones = _copy_with_flag(tmp_path, preserve=True)
     assert _GENITAL_BONE in bones, "collider copy must preserve authored genital bone"
     assert _NORMAL_BONE in bones
+
+
+def _full_xf(tb):
+    M = np.array(tb.to_matrix()._array, dtype=np.float64)
+    if abs(abs(np.linalg.det(M[:3, :3])) - 1.0) < 1e-2:
+        M[:3, :3] = M[:3, :3] * float(tb.scale)
+    return M
+
+
+def test_copy_shape_scaled_matched_pair_g2s_becomes_identity(tmp_path):
+    # #g2s-bake-pair. One HDT cuirass ships transform x22.245 rot 180 with g2s
+    # x0.045 rot 180 -- a matched pair, net identity. The scale bake moves the
+    # transform into the verts; keeping the g2s at x0.045 left the pair broken,
+    # so the cull sphere landed 22x off (the cuirass vanished up close) and every
+    # pass lifting verts by the g2s saw the shape ~1900u away. The written g2s
+    # must be the pair's product: identity.
+    src = build_skinned_shape_nif(tmp_path / "src.nif", scale=22.2455,
+                                  rot_z180=True, g2s_scale=1.0 / 22.2455)
+    s = nc._pynifly().NifFile(filepath=str(src)).shapes[0]
+    assert s.has_global_to_skin and abs(s.global_to_skin.scale - 0.04495) < 1e-4
+    out = copy_shape_into_fresh(src, tmp_path / "dst.nif")
+    assert abs(out.transform.scale - 1.0) < 1e-6
+    g = out.global_to_skin
+    assert np.allclose(_full_xf(g), np.eye(4), atol=1e-4), \
+        f"g2s left behind by the scale bake: scale {g.scale}, " \
+        f"rot {[list(r) for r in g.rotation]}"
+    # the bake itself still landed: verts at body scale
+    assert np.abs(np.asarray(out.verts)).max() > 10.0 * np.abs(np.asarray(VERTS)).max()
+
+
+def test_copy_shape_scale_bake_preserves_pair_product(tmp_path):
+    # An UNMATCHED pair (transform x2, g2s offset) must keep its product: after
+    # the bake the transform is identity, so full(g2s') == full(g2s) @ full(T).
+    src = build_skinned_shape_nif(tmp_path / "src.nif", scale=2.0,
+                                  g2s_trans=(0.0, 0.0, -30.0))
+    s = nc._pynifly().NifFile(filepath=str(src)).shapes[0]
+    want = _full_xf(s.global_to_skin) @ _full_xf(s.transform)
+    out = copy_shape_into_fresh(src, tmp_path / "dst.nif")
+    assert abs(out.transform.scale - 1.0) < 1e-6
+    assert np.allclose(_full_xf(out.global_to_skin), want, atol=1e-4)
+
+
+def test_copy_shape_unbaked_g2s_unchanged(tmp_path):
+    # No bake (identity transform): the authored g2s is written verbatim.
+    src = build_skinned_shape_nif(tmp_path / "src.nif", g2s_scale=0.5)
+    out = copy_shape_into_fresh(src, tmp_path / "dst.nif")
+    assert abs(out.global_to_skin.scale - 0.5) < 1e-6

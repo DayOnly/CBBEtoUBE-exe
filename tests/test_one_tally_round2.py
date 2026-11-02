@@ -263,7 +263,7 @@ def test_an_unsplit_shape_over_the_vertex_cap_is_noted_for_the_parent(
                                 verts=[(0.0, 0.0, 0.0)] * (nc.SKIN_PARTITION_VERT_CAP + 1))
     monkeypatch.setattr(nc, "_pynifly", lambda: types.SimpleNamespace(
         NifFile=lambda filepath: types.SimpleNamespace(shapes=[big])))
-    monkeypatch.setattr(nc, "_preserved_dismember_slot", lambda s: None)
+    monkeypatch.setattr(nc, "_preserved_dismember_slot", lambda s, b=0: None)
     monkeypatch.setattr(nc, "_split_oversize_partition_verts", lambda s, part_id=None: 1)
     assert nw._normalize_partitions_on_disk(tmp_path / "piece_1.nif") == 0
     assert _labels() == ["PASS FAILED " + nw.WRITER_PASS_VERT_SPLIT]

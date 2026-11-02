@@ -7,6 +7,7 @@ import, tests' monkeypatches on `nc` and `importlib.reload(nc)` all still
 apply."""
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 import numpy as np
 import os
@@ -25,6 +26,7 @@ from .nif_convert_layers import (  # noqa: E402
 from .nif_convert_skinframe import (  # noqa: E402
     _g2s_is_identity,
     _shape_global_to_skin,
+    _shape_world_verts,
     _verts_skin_to_world,
 )
 from .nif_convert_telemetry import (  # noqa: E402
@@ -68,6 +70,45 @@ def _adjust_skin_to_bone_baked(xf, bake_T):
         return pyn.TransformBuf.from_matrix(type(pm)(Mnew.tolist()))
     except Exception:
         return xf  # never break the copy on an edge case
+
+
+def _adjust_global_to_skin_baked(g2s, bake_T):
+    """The global-to-skin to write once `bake_T` is baked into the verts and
+    the shape transform reset to identity: full(g2s) @ bake_T. #g2s-bake-pair
+
+    The engine places a skinned shape's cull sphere through the PAIR (shape
+    transform, global_to_skin), and authors who scale a shape store a matched
+    pair -- measured on one HDT cuirass: transform x22.245 rot 180, g2s x0.045
+    rot 180, net identity. Baking the transform but keeping the g2s left the
+    pair at x0.045: the cull bound lands 22x off and the cuirass vanished up
+    close, and every pass that lifts verts by the g2s put the shape ~1900u away.
+    Composing keeps the pair's product, so a matched pair becomes identity.
+    `from_matrix` cannot carry a scale (it writes 1 and leaves the scale in
+    the rotation), so the uniform scale is split out here."""
+    pyn = _nc()._pynifly()
+    try:
+        pm = g2s.to_matrix()
+        G = np.array(pm.to_matrix()._array if hasattr(pm, "to_matrix")
+                     else pm._array, dtype=np.float64)
+        s = float(g2s.scale)
+        if abs(abs(float(np.linalg.det(G[:3, :3]))) - 1.0) < 1e-2:
+            G[:3, :3] = G[:3, :3] * s
+        M = G @ np.asarray(bake_T, dtype=np.float64)
+        sc = abs(float(np.linalg.det(M[:3, :3]))) ** (1.0 / 3.0)
+        if not np.isfinite(sc) or sc < 1e-9:
+            return g2s
+        M[:3, :3] = M[:3, :3] / sc
+        if np.allclose(M[:3, :3], np.eye(3), atol=1e-5):
+            M[:3, :3] = np.eye(3)
+        if abs(sc - 1.0) < 1e-5:
+            sc = 1.0
+        M[:3, 3] = np.where(np.abs(M[:3, 3]) < 1e-5, 0.0, M[:3, 3])
+        out = pyn.TransformBuf.from_matrix(type(pm)(M.tolist()))
+        out.scale = sc
+        return out
+    except Exception:
+        return g2s  # never break the copy on an edge case
+
 
 def _align_scale_bone_stbs_to_verts(xforms_map, g2s_tb, verts, weights_map,
                                     min_off=30.0, min_gain=8.0):
@@ -447,7 +488,7 @@ def _strip_jiggle_weights_map(weights_map, src_bones=None, force=False):
         jset = {b for b in weights_map
                 if _is_physics_jiggle_scale_bone(b) and b not in _srcb}
     else:
-        leg_dom = sum(1 for (bn, _w) in dom.values() if _is_leg_rigid_bone(bn))
+        leg_dom = sum(c for bn, c in Counter(bn for bn, _w in dom.values()).items() if _is_leg_rigid_bone(bn))
         if leg_dom <= 0.5 * len(dom):
             return weights_map  # not a rigid leg plate -> keep jiggle (conformance)
         # Strip only GRAFTED jiggle (absent from source) -- a rigid greave the
@@ -520,9 +561,10 @@ def _cap_weights_map(weights_map, n_verts: int):
     writable = {bn for bn in (weights_map or {})}
     _cap_and_renormalise_rows(vw, n_verts, writable)
     out: dict = {}
+    wmin = _nc()._WRITE_MIN
     for i in range(n_verts):
         for bn, w in vw[i].items():
-            if w > _nc()._WRITE_MIN:
+            if w > wmin:
                 out.setdefault(bn, []).append((i, w))
     # Preserve the caller's bone ordering for the bones that survived.
     return {bn: out[bn] for bn in (weights_map or {}) if bn in out}
@@ -583,6 +625,7 @@ def _cap_and_renormalise_rows(vw, n, writable, rows=None,
     """
     idxs = range(n) if rows is None else rows
     hold = bool(incumbents) and _nc().LAST_CARRIER_HOLD
+    wmin, cap = _nc()._WRITE_MIN, _nc()._SKIN_MAX_INFLUENCES     # read once: the loops below run per vertex
     # Live rows per bone across the WHOLE shape, not just `rows`: a bone with
     # weight on a vertex this pass never touched is not being stranded, so it
     # must not be protected.
@@ -590,12 +633,12 @@ def _cap_and_renormalise_rows(vw, n, writable, rows=None,
     if hold:
         for i in range(n):
             for b, w in vw[i].items():
-                if b in writable and w > _nc()._WRITE_MIN:
+                if b in writable and w > wmin:
                     carriers[b] = carriers.get(b, 0) + 1
     for i in idxs:
         live = {b: w for b, w in vw[i].items()
-                if b in writable and w > _nc()._WRITE_MIN}
-        if len(live) > _nc()._SKIN_MAX_INFLUENCES:
+                if b in writable and w > wmin}
+        if len(live) > cap:
             # TOTAL ORDER, not weight alone. `sorted` is stable, so EQUAL weights
             # fell back to `live`'s insertion order -- which traces back through
             # `vw` to sets iterated upstream, making the survivor depend on
@@ -605,8 +648,8 @@ def _cap_and_renormalise_rows(vw, n, writable, rows=None,
             # bone NAME settles the whole class here instead of chasing every
             # producer that feeds `vw`.  #deterministic-set-iteration
             order = sorted(live, key=lambda b: (-live[b], b))
-            kept = order[:_nc()._SKIN_MAX_INFLUENCES]
-            dropped = order[_nc()._SKIN_MAX_INFLUENCES:]
+            kept = order[:cap]
+            dropped = order[cap:]
             if hold:
                 # Seat every stranded incumbent that a NEWCOMER is displacing,
                 # cheapest newcomer first. Walking `dropped` in weight order and
@@ -631,7 +674,7 @@ def _cap_and_renormalise_rows(vw, n, writable, rows=None,
                     vw[i][b] = 0.0
             live = {b: w for b, w in live.items() if b in keep}
         tot = sum(live.values())
-        if tot > _nc()._WRITE_MIN and abs(tot - 1.0) > 1e-6:
+        if tot > wmin and abs(tot - 1.0) > 1e-6:
             for b in live:
                 vw[i][b] /= tot
 
@@ -1231,6 +1274,35 @@ def _covered_skin_target(cover, clearance, body_w, eps):
         for bone, w in body_w[b].items():
             acc[bone] = acc.get(bone, 0.0) + float(w) * wgt
     if tot <= 0.0:
+        return None
+    return {bone: w / tot for bone, w in acc.items()}
+
+
+def _covered_skin_target_near(cover, clearance, body_w, eps, Vb, at, sigma):
+    """`_covered_skin_target` with each skin vert's weight also scaled by a
+    Gaussian of its distance to the garment vert at `at` (#gap-aware-cover-near).
+    The gap-aware pool reaches GAF_SMOOTH round each vert, and the touching-weight
+    favours whatever skin is tightest ANYWHERE in it: at the crotch that was the
+    pelvis skin of the body's slit 2-3u away, not the thigh under the vert. A
+    greave vert on the inner thigh went L Thigh 0.73 / Pelvis 0.26 -> Pelvis
+    0.85, the thigh moved out from under it on every stride, and inner-thigh
+    skin came through (stride 2 -> 21, crouch 2 -> 50; back to 2 / 1 with
+    sigma 1.0). The Gaussian is smooth, so neighbouring verts still agree.
+    sigma <= 0 is the plain target. Pure."""
+    if sigma <= 0:
+        return _covered_skin_target(cover, clearance, body_w, eps)
+    if not cover:
+        return None
+    acc: dict = {}
+    tot = 0.0
+    for b in cover:
+        c = float(clearance[b])
+        d2 = float(((Vb[b] - at) ** 2).sum())
+        wgt = np.exp(-d2 / (2.0 * sigma * sigma)) / (max(c, 0.0) + eps)
+        tot += wgt
+        for bone, w in body_w[b].items():
+            acc[bone] = acc.get(bone, 0.0) + float(w) * wgt
+    if tot <= 1e-300:
         return None
     return {bone: w / tot for bone, w in acc.items()}
 
@@ -2069,6 +2141,80 @@ def _match_full_weights_to_body(dst_path, biped_slots: int = 0,
         shoulder_z=ARMHOLE_Z[0], shoulder_max_dist=_nc()._FULL_WEIGHT_SHOULDER_DIST,
         flank_skeleton_ok=_nc().FLANK_SKIN_MATCH)
 
+def _row_sides(row: dict) -> set:
+    """The body sides ('L' / 'R') a weight row carries more than 0.05 of."""
+    return {sd for b, w in row.items()
+            if w > 0.05 for sd in (_bone_side(b),) if sd}
+
+
+def _cover_side_excluded(closest_row: dict, covered_sides: set) -> set:
+    """Which side's skin a vert's pooled covered-skin target must leave out
+    (#gap-aware-cover-side): the OTHER side, when the skin row under the vert and
+    every skin its faces cover ('M' = unsided skin) lie on one side only; else
+    none -- over the pelvis cleft the two-sided pool is the right answer.
+    Off with CBBE2UBE_NO_GAF_COVER_SIDE=1 (scratch control only)."""
+    if not _nc().GAF_COVER_SIDE:
+        return set()
+    own = _row_sides(closest_row) | set(covered_sides)
+    return ({"L", "R"} - own) if own in ({"L"}, {"R"}) else set()
+
+
+def _full_weight_strength(dist, strength: float):
+    """Per-row strength of the full-vector body match (#full-weight-gap-ramp):
+    the knob, scaled by #gap-aware-follow's own ramp on the vert's distance to
+    the body -- all of it at _GAF_TIGHT or closer, none from _GAF_LOOSE out,
+    smoothstep between -- so both passes mean the same thing by hugging and the
+    match hands off to the last weight pass without a step.
+    Off with CBBE2UBE_NO_FULL_WEIGHT_GAP_RAMP=1 (scratch control only)."""
+    d = np.asarray(dist, np.float64)
+    st = np.full(d.shape, float(strength))
+    if not _nc().FULL_WEIGHT_GAP_RAMP:
+        return st
+    t, l_ = float(_nc()._GAF_TIGHT), float(_nc()._GAF_LOOSE)
+    x = np.clip((l_ - d) / max(l_ - t, 1e-6), 0.0, 1.0)
+    return st * (x * x * (3.0 - 2.0 * x))
+
+
+def _surface_rows(bar, tri_verts, body_pv, bones) -> np.ndarray:
+    """(n, len(bones)) skin weights at closest SURFACE points: each row is the
+    barycentric blend of its triangle's three vertex rows. #family-surface-target"""
+    bar = np.asarray(bar, np.float64)
+    tv = np.asarray(tri_verts, np.int64)
+    out = np.zeros((len(bar), len(bones)), dtype=np.float64)
+    for k, b in enumerate(bones):
+        for j in range(3):
+            out[:, k] += bar[:, j] * np.array([body_pv[int(t)].get(b, 0.0)
+                                               for t in tv[:, j]])
+    return out
+
+
+def _fund_unmanaged(Go, o_new, keep) -> np.ndarray:
+    """New weights for the bones a family match does NOT manage, given their old
+    rows `Go` (rows x bones) and the mass `o_new` left for them per row. Bones
+    flagged in `keep` (breast) hold their weight up to what is left; the rest
+    absorb the change. A row with nothing else to scale falls back to scaling
+    all of them alike, which is also the whole rule when `keep` is empty.
+    #family-breast-keep"""
+    Go = np.asarray(Go, np.float64)
+    o_new = np.asarray(o_new, np.float64)
+    keep = np.asarray(keep, dtype=bool)
+    out = np.zeros_like(Go)
+    o_old = Go.sum(axis=1)
+    uni = np.where(o_old > 1e-6, o_new / np.maximum(o_old, 1e-12), 0.0)
+    if not keep.any() or keep.all():
+        return Go * uni[:, None]
+    b_old = Go[:, keep].sum(axis=1)
+    b_new = np.minimum(b_old, o_new)
+    r_old = Go[:, ~keep].sum(axis=1)
+    r_new = o_new - b_new
+    out[:, keep] = Go[:, keep] * np.where(b_old > 1e-6, b_new / np.maximum(b_old, 1e-12), 0.0)[:, None]
+    out[:, ~keep] = Go[:, ~keep] * np.where(r_old > 1e-6, r_new / np.maximum(r_old, 1e-12), 0.0)[:, None]
+    fb = (r_old <= 1e-6) & (r_new > 1e-6)
+    if fb.any():
+        out[fb] = Go[fb] * uni[fb, None]
+    return out
+
+
 def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                                family: str = "leg", bones=(),
                                z_lo: float = 0.0, z_hi: float = 0.0,
@@ -2254,6 +2400,7 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
             # reads as foreign and the gate would silently reject every row.
             ube_bones = set(_body_bones or ())
 
+    _vt_adj_cache: dict = {}
     total = 0
     dirty = False
     _ray_paired = 0          # rows re-paired by ray; 0 with pair_by_ray on is a BUG
@@ -2619,7 +2766,18 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                 if len(rows) == 0:
                     continue
                 NEW = G.copy()
-                NEW[rows] = (1.0 - strength) * G[rows] + strength * BF[rows]
+                # HAND OFF TO #gap-aware-follow ON ITS OWN RAMP (#full-weight-gap-ramp).
+                # A full-strength copy inside a hard 5u box left a STEP where the
+                # last weight pass's 1u -> 4u ramp ends: rows at 4-5u shipped the
+                # body's whole row next to rows past 5u that kept their own, and
+                # the step creased under motion (40 pieces: this pass cost 3439
+                # creases and 796 stretched edges and bought +-1 poke, because
+                # gap-aware now makes the tight rows follow anyway). Same notion
+                # of "hugging" in both passes: full at _GAF_TIGHT, none from
+                # _GAF_LOOSE, smoothstep between.
+                _st = _full_weight_strength(np.asarray(dist, np.float64)[rows],
+                                            strength)
+                NEW[rows] = (1.0 - _st[:, None]) * G[rows] + _st[:, None] * BF[rows]
                 if _nc().BREAST_FOLLOW_KEEP:
                     # CULPRIT 2 of the authored-breast-follow loss. The family
                     # path below is push-up only by construction (np.maximum);
@@ -2671,6 +2829,26 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                 B = np.zeros((n, len(managed)), dtype=np.float64)
                 for k, b in enumerate(managed):
                     B[:, k] = [body_pv[int(i)].get(b, 0.0) for i in near]
+                # THE SAME TARGET AS #gap-aware-follow (#family-surface-target): the
+                # skin row at the CLOSEST SURFACE POINT (barycentric, continuous),
+                # not the nearest body vertex -- so where this match hands over to
+                # gap-aware the two passes agree instead of meeting at a seam
+                # (40 pieces: -274 creases, -70 stretched edges, pokes unchanged).
+                # Off with CBBE2UBE_NO_FAMILY_SURFACE_TARGET=1 (scratch control only).
+                if (_nc().FAMILY_SURFACE_TARGET and body_tris is not None
+                        and len(body_tris) and not pair_by_ray):
+                    try:
+                        if _vt_adj_cache.get("adj") is None:
+                            _va = [[] for _ in range(len(Vb))]
+                            for _ti, _tr in enumerate(body_tris):
+                                for _j in _tr:
+                                    _va[int(_j)].append(_ti)
+                            _vt_adj_cache["adj"] = [np.asarray(x, dtype=np.int64) for x in _va]
+                        _Q, _tri, _bar = _closest_on_body(_qv, Vb, body_tris, tree,
+                                                          _vt_adj_cache["adj"])
+                        B = _surface_rows(_bar, body_tris[_tri], body_pv, managed)
+                    except Exception as _se:
+                        _note_pass_failure("_match_limb_motion_to_body/surface-target", _se)
                 for _gi, _t in _cov_t.items():
                     for _k, _b in enumerate(managed):
                         B[_gi, _k] = _t.get(_b, 0.0)
@@ -2766,12 +2944,19 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                 NEW[np.ix_(rows, midx)] = shape_of[rows] * target[rows, None]
                 other = [i for i in range(len(shape_bones)) if i not in midx]
                 if other:
-                    o_old = G[np.ix_(rows, other)].sum(axis=1)
-                    o_new = 1.0 - target[rows]
-                    sc = np.zeros(len(rows))
-                    nzo = o_old > 1e-6
-                    sc[nzo] = o_new[nzo] / o_old[nzo]
-                    NEW[np.ix_(rows, other)] = G[np.ix_(rows, other)] * sc[:, None]
+                    # #family-breast-keep: the push-up is funded from the bones this
+                    # match does not manage, and a uniform rescale took it from a
+                    # breast graft too -- the spine match undid 21% of the leg-bend
+                    # pass's chest graft. Breast bones keep their weight (up to what
+                    # is left); the other unmanaged bones absorb the change, as
+                    # #breast-follow-keep does for the full-vector branch (40
+                    # pieces: -303 creases, -101 stretched edges, pokes unchanged).
+                    # Off with CBBE2UBE_NO_FAMILY_BREAST_KEEP=1 (scratch control only).
+                    _br = ([i for i in other if _is_breast_bone(shape_bones[i])]
+                           if _nc().FAMILY_BREAST_KEEP else [])
+                    NEW[np.ix_(rows, other)] = _fund_unmanaged(
+                        G[np.ix_(rows, other)], 1.0 - target[rows],
+                        np.array([i in _br for i in other], dtype=bool))
                 if _hug_f is not None:
                     # A row between the two distances takes that fraction of the
                     # match; both ends sum to 1, so the blend does too.
@@ -3179,7 +3364,124 @@ def _unify_seam_twins_in_skin(src_shape, weights_map, src_nif=None):
     return len(changed), out
 
 
-def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
+def _part_lock(lock, idx) -> float:
+    """One #author-pull-skin-lock value for a whole part: its TIGHTEST vert's.
+    #part-pair-align moves a part by one uniform additive shift -- that is what
+    keeps the part's own shape -- so the lock must be uniform too."""
+    idx = np.asarray(idx, dtype=np.int64)
+    return float(np.asarray(lock)[idx].max()) if len(idx) else 0.0
+
+
+def _drape_exempt(name: str, drape_keys) -> bool:
+    """A draping shape (robe / cloak / dress ...) keeps the covered-skin
+    exemption the user kept on 2026-09-19 -- at every site, #gap-aware-follow's
+    pooled crotch target included."""
+    low = (name or "").lower()
+    return any(k in low for k in drape_keys)
+
+
+def _cover_band_weight(q) -> float:
+    """How far inside the covered-skin band a skin point sits, as a 0..1 weight:
+    1 from _GAF_SMOOTH inside every wall (z_lo, z_hi, |x|) of the band, smoothstep
+    to 0 at the wall: a step at the box wall creased (40 pieces: -1420 creases,
+    -628 stretched edges, -4 pokes). Off with CBBE2UBE_NO_COVER_BAND_FEATHER=1
+    (scratch control only). #cover-band-feather"""
+    nc = _nc()
+    w = float(nc._GAF_SMOOTH)
+    d = min(float(q[2]) - nc._COVER_Z_LO, nc._COVER_Z_HI - float(q[2]),
+            nc._COVER_X - abs(float(q[0])))
+    if w <= 0.0:
+        return 1.0 if d >= 0.0 else 0.0
+    x = min(max(d / w, 0.0), 1.0)
+    return x * x * (3.0 - 2.0 * x)
+
+
+def _face_cover_row(acc: dict, wt: float, closest: dict):
+    """The row a vert takes from the skin its faces press on
+    (#gap-aware-face-cover), or None to keep the closest skin's: `acc` is the
+    hit-share-weighted sum of the covered skin rows, `wt` their total share.
+    Taken only when there is at least one whole hit's worth of cover AND that
+    skin carries more jiggle (breast / butt / belly) than the closest skin --
+    a face spanning a jiggle feature its corners miss."""
+    if wt < 1.0:
+        return None
+    fc = {b: x / wt for b, x in acc.items()}
+    jf = sum(w for b, w in fc.items() if _jiggle_region_of(b))
+    jc = sum(w for b, w in closest.items() if _jiggle_region_of(b))
+    return fc if jf > jc + 0.02 else None
+
+
+def _skin_lock_for_ents(nf, ents, dst_path, biped_slots: int = 0) -> list:
+    """Per entry, per vert: how much the armour there is LOCKED to the skin under
+    it (#author-pull-skin-lock) -- the share #gap-aware-follow gave it the skin's
+    row, by the same gap ramp: 1 at _GAF_TIGHT or closer, 0 from _GAF_LOOSE out,
+    smoothstep between; 0 on simulated (chain) verts, and 0 everywhere when that
+    pass had no skin to follow. The author-relative steps of the coincident pass
+    (#part-pair-align, #author-deviation-skin) restore the author's within-part
+    and between-part differences; where the armour is locked to the skin, the
+    skin's own difference is the answer and pulling back toward the author's --
+    drawn for another body -- is what exposes it (a dress 6 -> 60 pokes, a
+    layered torso 23 -> 65). Off with CBBE2UBE_NO_AUTHOR_PULL_SKIN_LOCK=1
+    (scratch control only)."""
+    nc = _nc()
+    zero = [np.zeros(len(e["wv"])) for e in ents]
+    if not nc.AUTHOR_PULL_SKIN_LOCK or not nc.GAP_AWARE_FOLLOW:
+        return zero
+    if biped_slots & (nc.BIPED_SLOT33_BIT | nc.BIPED_SLOT37_BIT):
+        return zero
+    body = next((b for b in nf.shapes if b.name in nc.UBE_BODY_INJECT_NAMES
+                 and not (int(b.flags) & 1) and b.bone_weights), None)
+    if body is None:
+        if not biped_slots or (biped_slots & nc.BIPED_SLOT32_BIT):
+            return zero
+        weight = "_0" if str(dst_path).lower().endswith("_0.nif") else "_1"
+        p = nc._find_ube_femalebody(weight) or nc._find_ube_femalebody("_1")
+        if p is None:
+            return zero
+        try:
+            body = max(nc._pynifly().NifFile(filepath=str(p)).shapes,
+                       key=lambda s: len(s.verts))
+        except Exception:
+            return zero
+    g2s = _shape_global_to_skin(body)
+    if not (g2s is None or _g2s_is_identity(g2s)):
+        return zero
+    from scipy.spatial import cKDTree
+    bV = np.asarray(body.verts, np.float64)
+    bT = np.asarray(body.tris, np.int64)
+    if not len(bV) or not len(bT):
+        return zero
+    bN = np.zeros_like(bV)
+    fn = np.cross(bV[bT[:, 1]] - bV[bT[:, 0]], bV[bT[:, 2]] - bV[bT[:, 0]])
+    for j in range(3):
+        np.add.at(bN, bT[:, j], fn)
+    bN /= np.linalg.norm(bN, axis=1, keepdims=True) + 1e-12
+    try:
+        sn = np.asarray(body.normals, np.float64)
+        if sn.shape == bN.shape and (sn * bN).sum(1).mean() < 0:
+            bN = -bN
+    except Exception:
+        pass
+    tree = cKDTree(bV)
+    tight, loose = float(nc._GAF_TIGHT), float(nc._GAF_LOOSE)
+    out = []
+    for e in ents:
+        V = e["wv"]
+        d, j = tree.query(V)
+        gap = np.maximum(((V - bV[j]) * bN[j]).sum(1), 0.0)
+        x = np.clip((loose - gap) / max(loose - tight, 1e-6), 0.0, 1.0)
+        lk = x * x * (3.0 - 2.0 * x)
+        lk[d > loose + 2.0] = 0.0
+        chain = np.array([any(w > 0.1 and not _is_skeleton_bone(b)
+                              for b, w in r.items()) for r in e["rows"]])
+        lk[chain] = 0.0
+        out.append(lk)
+    return out
+
+
+
+def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None,
+                                       biped_slots: int = 0) -> int:
     """Give cross-shape coincident verts ONE weight row. Returns verts unified.
 
     Runs LAST of the weight passes: every pass above pairs to the body per
@@ -3257,7 +3559,8 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
                     and getattr(ss, "bone_weights", None)):
                 src_rows[nm] = _rows_of(ss, len(ss.verts))
                 if _nc().SEAM_TWIN_SKIN:
-                    src_twins[nm] = _source_twin_pairs(ss.verts)
+                    src_twins[nm] = _source_twin_pairs(
+                        _shape_world_verts(ss))   # #source-world-frame
     except Exception as _se:
         _note_pass_failure("_match_coincident_cross_shape_skin/source", _se)
         return 0
@@ -3284,6 +3587,11 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     if len(ents) < (1 if _nc().SEAM_TWIN_SKIN else 2):
         return 0
 
+    try:
+        _lock = _skin_lock_for_ents(nf, ents, dst_path, biped_slots)
+    except Exception as _le:
+        _note_pass_failure("_match_coincident_cross_shape_skin/skin-lock", _le)
+        _lock = [np.zeros(len(e["wv"])) for e in ents]
     owner: list = []
     for k, e in enumerate(ents):
         owner.extend((k, i) for i in range(len(e["wv"])))
@@ -3326,6 +3634,14 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     # SOURCE (output distance is not asked: the weld may not have run), behind the
     # same author gate as the cross-shape edges above.
     twin_joined: set = set()
+    tparent: dict = {}          # the twins alone, #seam-twin-in-weak-cluster
+
+    def tfind(x):
+        tparent.setdefault(x, x)
+        while tparent[x] != x:
+            tparent[x] = tparent[tparent[x]]
+            x = tparent[x]
+        return x
     base = 0
     for k, e in enumerate(ents):
         for ia, ib in e["twins"]:
@@ -3339,6 +3655,9 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
             joined.add(b)
             twin_joined.add(a)
             twin_joined.add(b)
+            ta, tb = tfind(a), tfind(b)
+            if ta != tb:
+                tparent[ta] = tb
             pa, pb = find(a), find(b)
             if pa != pb:
                 parent[pa] = pb
@@ -3495,11 +3814,26 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
                     e["src"], idx, _nc()._PART_PAIR_BILATERAL_FRAC))
                 _pmean.append((k, idx, dict(mo), dict(ma),
                                cKDTree(e["wv"][idx]), bil))
+            # #part-pair-bbox: two parts whose bounding boxes are farther apart
+            # than _PART_PAIR_NEAR cannot have verts that close, so the query
+            # below would skip them anyway; skip them without it. The box gap is
+            # a lower bound on the closest approach and the margin covers its
+            # rounding, so every pair the query would keep is still queried. A
+            # many-part fur spent 75% of its conversion on those queries.
+            from .work_counts import WORK as _WORK
+            _WORK["part_pairs"] += len(_pmean) * (len(_pmean) - 1) // 2
+            _lo = np.array([ents[k]["wv"][idx].min(0) for k, idx, *_r in _pmean])
+            _hi = np.array([ents[k]["wv"][idx].max(0) for k, idx, *_r in _pmean])
             for _i in range(len(_pmean)):
                 ki, ii, moi, mai, ti, bi = _pmean[_i]
+                _gap = np.maximum(0.0, np.maximum(_lo[_i + 1:] - _hi[_i], _lo[_i] - _hi[_i + 1:]))
+                _far = np.sqrt((_gap * _gap).sum(1)) > _nc()._PART_PAIR_NEAR + 1e-6
                 for _j in range(_i + 1, len(_pmean)):
+                    if _far[_j - _i - 1]:
+                        continue
                     kj, ij, moj, maj, tj, bj = _pmean[_j]
                     # adjacency, cheapest test first
+                    _WORK["part_pair_queries"] += 1          # #unit-timing
                     d, _q = ti.query(ents[kj]["wv"][ij])
                     if d.min() > _nc()._PART_PAIR_NEAR:
                         continue
@@ -3556,6 +3890,11 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
                     for (kk, idxk, mk, M) in _moves:
                         e = ents[kk]
                         pal = e["pal"]
+                        # ONE lock per part -- its tightest vert's -- so the shift
+                        # stays the uniform additive move that keeps the part's own
+                        # shape; a per-vert lock sheared a part that is tight at
+                        # one end (a mixed-cloth cuirass: +350 creases, no poke).
+                        _plk = _part_lock(_lock[kk], idxk)
                         for vi in idxk:
                             vi = int(vi)
                             cur = e["rows"][vi]
@@ -3563,7 +3902,7 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
                             for b in set(cur) | set(M):
                                 if b not in pal:
                                     continue
-                                v = cur.get(b, 0.0) + s * (M.get(b, 0.0)
+                                v = cur.get(b, 0.0) + s * (1.0 - _plk) * (M.get(b, 0.0)
                                                            - mk.get(b, 0.0))
                                 if v > _nc()._WRITE_MIN:
                                     row[b] = v
@@ -3689,6 +4028,20 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
                     if tot_r <= _nc()._WRITE_MIN:
                         continue
                     row = {b: w / tot_r for b, w in row.items()}
+                    lk = float(_lock[k][vi])
+                    if lk > 1e-3:
+                        # locked to the skin: keep that share of OUR row
+                        row = {b: (1.0 - lk) * row.get(b, 0.0) + lk * cur.get(b, 0.0)
+                               for b in set(row) | set(cur) if b in pal}
+                        row = {b: w for b, w in row.items() if w > _nc()._WRITE_MIN}
+                        if len(row) > _nc()._SKIN_MAX_INFLUENCES:
+                            row = dict(sorted(row.items(),
+                                              key=lambda kv: (-kv[1], kv[0]))
+                                       [:_nc()._SKIN_MAX_INFLUENCES])
+                        tot_r = sum(row.values())
+                        if tot_r <= _nc()._WRITE_MIN:
+                            continue
+                        row = {b: w / tot_r for b, w in row.items()}
                     e["old"].setdefault(vi, cur)
                     rows_k[vi] = row
                     changed[k].add(vi)
@@ -3704,6 +4057,61 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     for g in sorted(joined):
         groups[find(g)].append(g)
 
+    # #seam-twin-in-weak-cluster. A cluster is skipped as weak when the bones its
+    # shapes all carry hold too little of a member's row -- right for a CROSS-
+    # SHAPE join, which can only share what every shape can write. But the
+    # union also pulls in the seam twins of any vertex it touches, and a twin
+    # pair is one point of ONE shape, so its own palette always holds both rows
+    # whole. Skipping the cluster left those twins on the rows the weight passes
+    # gave them: measured on a pouch whose welded rigid part spans two shapes,
+    # 142 twin pairs the author skinned identically (Pelvis 1.0 both) shipped
+    # 0.137 against 0.003 on Spine. The twins of such a cluster are joined among
+    # themselves instead, by the same mean, cap and renormalise.
+    def _join_twins_of(mem) -> None:
+        if not (_nc().SEAM_TWIN_IN_WEAK_CLUSTER and twin_joined):
+            return
+        sub = _dd(list)
+        for m in mem:
+            if m in twin_joined:
+                sub[tfind(m)].append(m)
+        for tm in sub.values():
+            if len(tm) < 2:
+                continue
+            cl = [owner[m] for m in tm]
+            k0 = cl[0][0]
+            if any(kk != k0 for kk, _i in cl):
+                continue            # twins are of one shape; never guess
+            e0 = ents[k0]
+            rt = [e0["rows"][i] for _k, i in cl]
+            av: dict = _dd(float)
+            for r in rt:
+                for b, w in r.items():
+                    av[b] += w / len(rt)
+            kp = {b: w for b, w in av.items() if w > _nc()._WRITE_MIN}
+            if len(kp) > _nc()._SKIN_MAX_INFLUENCES:
+                kp = dict(sorted(kp.items(), key=lambda kv: (-kv[1], kv[0]))
+                          [:_nc()._SKIN_MAX_INFLUENCES])
+            tt = sum(kp.values())
+            if tt <= _nc()._WRITE_MIN:
+                continue
+            tg = {b: w / tt for b, w in kp.items()}
+            for _k, i in cl:
+                e0["old"].setdefault(i, e0["rows"][i])
+                e0["rows"][i] = dict(tg)
+                changed[k0].add(i)
+
+    # Each seam twin's twins, per shape, for the last-carrier step below.
+    # #seam-twin-carrier-row
+    twin_peers: dict = _dd(dict)
+    if twin_joined:
+        _tg = _dd(list)
+        for m in twin_joined:
+            _tg[tfind(m)].append(m)
+        for _tm in _tg.values():
+            _cl = [owner[m] for m in _tm]
+            for _kk, _ii in _cl:
+                twin_peers[_kk][_ii] = [j for kk2, j in _cl if kk2 == _kk and j != _ii]
+
     n_weak = 0
     for mem in groups.values():
         if len(mem) < 2:
@@ -3718,11 +4126,13 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
             basis = ents[k]["pal"] if basis is None else (basis & ents[k]["pal"])
         if not basis:
             n_weak += 1
+            _join_twins_of(mem)
             continue
         ro = [ents[k]["rows"][i] for k, i in cluster]
         if any(sum(w for b, w in r.items() if b in basis)
                < _nc()._COINCIDENT_SKIN_MIN_SHARE for r in ro):
             n_weak += 1
+            _join_twins_of(mem)
             continue
         avg: dict = _dd(float)
         for r in ro:
@@ -3739,6 +4149,7 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
         tot = sum(kept.values())
         if tot <= _nc()._WRITE_MIN:
             n_weak += 1
+            _join_twins_of(mem)
             continue
         tgt = {b: w / tot for b, w in kept.items()}
         for k, i in cluster:
@@ -3781,6 +4192,25 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
         pre = [old.get(i, rr[i]) for i in range(n)]
         chg = {int(i): rr[int(i)] for i in ch}
         if _restore_emptied_bones(pre, chg):
+            # #seam-twin-carrier-row. A vertex handed back keeps its pre-pass
+            # row; its seam twins were joined to a DIFFERENT row, so the pair the
+            # join closed opens again (30 pairs on one cuirass, every one of them
+            # a hand-back). Its twins take the handed-back row instead: the bone
+            # keeps its carrier, the pair stays one point. The guard is asked
+            # again, so a twin whose change would now empty another bone is
+            # handed back in its turn -- safety first, the seam second.
+            if _nc().SEAM_TWIN_CARRIER_ROW and twin_peers.get(k):
+                for _round in range(3):
+                    _moved = False
+                    for i in sorted(set(ch) - set(chg)):
+                        for j in twin_peers[k].get(int(i), ()):
+                            if j in chg and chg[j] != pre[int(i)]:
+                                chg[j] = dict(pre[int(i)])
+                                _moved = True
+                    if not _moved or not _restore_emptied_bones(pre, chg):
+                        break
+                for j, r in chg.items():
+                    rr[j] = r
             for i in sorted(set(ch) - set(chg)):
                 rr[int(i)] = old[int(i)]        # back to its pre-pass row
                 ch.discard(i)
@@ -4165,6 +4595,794 @@ def _restore_emptied_bones(ours, changed) -> int:
         rescued += 1
     return rescued
 
+def _rigid_plate_jiggle_where_needed(dst_path, src_nif_path=None,
+                                     biped_slots: int = 0) -> int:
+    """Take the CONVERTER-ADDED body-jiggle follow back off a rigid torso plate
+    that has no skin under it. #jiggle-where-needed
+
+    The torso graft, the leg-bend match and the full-weight match each copy the
+    body's jiggle skinning onto a fitted cuirass so the body cannot poke through
+    it when it moves. On a metal plate the copy is itself a defect: the body's
+    breast chain runs base -> tip (Breast01..03), so plate verts 2u apart land
+    on different links, and the plate FOLDS along those lines whenever the chain
+    bounces. Reported in game on a fluted cuirass ("folds over the breasts when
+    moving"); its author shipped the plate with no jiggle weight, and with that
+    weight taken off it was confirmed in game: no folds, no poke.
+
+    No poke because there was no skin to poke. WHOSE SKIN is under the plate
+    decides this pass (#jiggle-skin-source):
+      * a body-slot (32) piece that carries no body copy: the engine does not
+        render the actor's body under it, so the follow protects nothing and
+        only bends the metal -- it comes off;
+      * a piece with its own visible body copy (an injected BaseShape), or one
+        worn over the actor's own body, or slots unknown: skin IS there, and
+        trimming the follow there measured as MORE exposed skin under a bounce
+        (and could not keep a `_0`/`_1` pair in step) -- left exactly as is.
+    The UBE REFERENCE body is never a stand-in for "the skin under it":
+    assuming it under every piece predicted 2000 exposed verts on the fluted
+    cuirass, which ships no body at all.
+
+    Never below what the AUTHOR weighted; simulated (chain) verts untouched; a
+    vert that is all jiggle takes the rigid mix of its nearest vert that has
+    one. Off with CBBE2UBE_NO_JIGGLE_WHERE_NEEDED=1 (scratch control only)."""
+    nc = _nc()
+    if not nc.JIGGLE_WHERE_NEEDED or not (biped_slots & nc.BIPED_SLOT32_BIT):
+        return 0
+    try:
+        nf = nc._pynifly().NifFile(filepath=str(dst_path))
+    except Exception:
+        return 0
+    if nc._nif_has_fx_shape(nf):
+        return 0
+    if any(b.name in nc.UBE_BODY_INJECT_NAMES and not (int(b.flags) & 1)
+           for b in nf.shapes):
+        return 0                    # skin under it: not this pass's call
+    from collections import Counter
+    from scipy.spatial import cKDTree
+    _dss = nc._dst_xml_stem_scan()
+    skip = (set(nc._hdt_collider_shape_names(dst_path, nif=nf, stem_scan=_dss))
+            | set(nc._hdt_softbody_shape_names(dst_path, nif=nf, stem_scan=_dss))
+            | set(nc.UBE_BODY_INJECT_NAMES))
+    dup = {k for k, c in Counter(s.name for s in nf.shapes).items() if c > 1}
+    src_by: dict = {}
+    if src_nif_path:
+        try:
+            _ss = list(nc._open_source_nif(src_nif_path).shapes)
+            _sc = Counter(x.name for x in _ss)
+            src_by = {x.name: x for x in _ss if _sc[x.name] == 1}
+        except Exception:
+            src_by = {}
+    overrides: dict = {}
+    changed_total = 0
+    for s in nf.shapes:
+        nm = s.name or ""
+        if nm in skip or nm in dup or (int(s.flags) & 1):
+            continue
+        g2s = _shape_global_to_skin(s)
+        if not (g2s is None or _g2s_is_identity(g2s)):
+            continue
+        bw = s.bone_weights or {}
+        jig = [b for b in bw if _is_physics_jiggle_scale_bone(b)]
+        if not jig or not nc._shape_is_rigid_torso_armor(s):
+            continue
+        V = np.asarray(s.verts, np.float64)
+        n = len(V)
+        if n < 30:
+            continue
+        bones = list(bw)
+        col = {b: np.zeros(n) for b in bones}
+        for b, prs in bw.items():
+            for i, w in prs:
+                if 0 <= int(i) < n:
+                    col[b][int(i)] = float(w)
+        chain = np.zeros(n, dtype=bool)
+        for b in bones:
+            if not _is_skeleton_bone(b):
+                chain |= col[b] > 0.1
+        jsum = sum(col[b] for b in jig)
+        other = sum((col[b] for b in bones if b not in jig), np.zeros(n))
+        # The plate's RIGID self: its jiggle mass handed back to its own bones.
+        rigid = {b: np.where(other > 1e-9, col[b] / np.maximum(other, 1e-9), 0.0)
+                 for b in bones if b not in jig}
+        # A vert that is ALL jiggle has no bone of its own to hand back to; it
+        # takes the rigid mix of its nearest vert that has one (the zero-weight
+        # fill's rule). Left as it was, it would keep bouncing inside a plate
+        # whose neighbours no longer do -- the fold this pass exists to remove.
+        orphan = (other <= 1e-9) & ~chain & (jsum > 0)
+        donors = np.flatnonzero(other > 1e-9)
+        if orphan.any():
+            if not len(donors) or not rigid:
+                continue
+            _, nn = cKDTree(V[donors]).query(V[orphan])
+            for b in rigid:
+                rigid[b][orphan] = rigid[b][donors[nn]]
+            other = other.copy()
+            other[orphan] = 1.0
+        # What survives: only the AUTHOR's own jiggle weight, and simulated verts.
+        new = {b: np.zeros(n) for b in jig}
+        ss = src_by.get(nm)
+        if ss is not None and len(ss.verts) == n:
+            for b, prs in (ss.bone_weights or {}).items():
+                if b in new:
+                    for i, w in prs:
+                        if 0 <= int(i) < n:
+                            new[b][int(i)] = float(w)
+        for b in jig:
+            new[b][chain] = col[b][chain]
+        newj = sum(new.values())
+        if np.allclose(newj, jsum, atol=1e-4):
+            continue
+        rows = [dict() for _ in range(n)]
+        for i in range(n):
+            if chain[i] or other[i] <= 1e-9:
+                rows[i] = {b: col[b][i] for b in bones if col[b][i] > 0}
+                continue
+            rest = max(0.0, 1.0 - newj[i])
+            for b in bones:
+                w = new[b][i] if b in jig else rigid[b][i] * rest
+                if w > 1e-6:
+                    rows[i][b] = float(w)
+        _cap_and_renormalise_rows(rows, n, set(bones))
+        weights: dict = {}
+        for i, r in enumerate(rows):
+            for b, w in r.items():
+                if w > nc._WRITE_MIN:
+                    weights.setdefault(b, []).append((i, float(w)))
+        kept = [b for b in bones if b in weights]
+        xforms = {b: s.get_shape_skin_to_bone(b) for b in kept}
+        if any(x is None for x in xforms.values()):
+            continue
+        overrides[nm] = {"bones": kept, "xforms": xforms, "weights": weights}
+        changed_total += int((np.abs(newj - jsum) > 1e-3).sum())
+        _note_pass_effect("#jiggle-where-needed",
+                          f"{nm}: converter jiggle taken off {int((jsum > 1e-3).sum())}"
+                          f" vert(s), no skin under it", dst_path)
+    if not overrides:
+        return 0
+    try:
+        if not nc._reauthor_nif_fresh(Path(dst_path), nif=nf,
+                                      override_skin_by_name=overrides):
+            _note_pass_failure("_rigid_plate_jiggle_where_needed",
+                               RuntimeError("re-author declined"))
+            return 0
+    except Exception as _we:
+        _note_pass_failure("_rigid_plate_jiggle_where_needed/reauthor", _we)
+        return 0
+    return changed_total
+
+
+def _closest_on_body(P, bV, bT, tree, vt_adj, k: int = 8, chunk: int = 8192):
+    """For each point: (closest point on the body SURFACE, triangle index,
+    barycentrics). Candidates are the triangles around the k nearest body
+    verts -- exact for any point whose closest surface point lies on one of
+    them, which for a closed body and k=8 is every point within a few units.
+
+    Each (point, triangle) candidate is evaluated ONCE. The previous form padded
+    every vertex's triangle list to the body's MAXIMUM vertex degree (141 on the
+    UBE body, mean 5.8), so a point evaluated 8 x 141 = 1128 slots for ~28 real
+    triangles -- 26% of a heavy piece's conversion, and arrays of ~110 MB per
+    chunk. Ties go to the FIRST occurrence in neighbour-then-adjacency order, as
+    the padded argmin did, so the result is bit-identical (measured on 104k
+    points of two pieces)."""
+    P = np.asarray(P, np.float64)
+    m = len(P)
+    best_q = np.zeros((m, 3))
+    best_t = np.zeros(m, dtype=np.int64)
+    best_w = np.zeros((m, 3))
+    if not m:
+        return best_q, best_t, best_w
+    lens = np.fromiter((len(a) for a in vt_adj), dtype=np.int64, count=len(vt_adj))
+    indptr = np.zeros(len(vt_adj) + 1, dtype=np.int64)
+    np.cumsum(lens, out=indptr[1:])
+    if not indptr[-1]:
+        return best_q, best_t, best_w
+    flat = np.concatenate([np.asarray(a, np.int64) for a in vt_adj if len(a)])
+    _, nn = tree.query(P, k=k)
+    nn = np.asarray(nn).reshape(m, -1)
+    ntri = len(bT)
+    for s0 in range(0, m, chunk):
+        sl = slice(s0, s0 + chunk)
+        nb = nn[sl]
+        c = len(nb)
+        cnt = lens[nb]
+        pt = np.repeat(np.arange(c), cnt.sum(1))     # owning point per entry
+        cl = cnt.ravel()
+        offs = np.arange(cl.sum()) - np.repeat(np.cumsum(cl) - cl, cl)
+        tri = flat[np.repeat(indptr[nb].ravel(), cl) + offs]
+        rank = np.arange(len(tri))                   # neighbour-then-adjacency order
+        _, first = np.unique(pt * ntri + tri, return_index=True)
+        pt, tri, rank = pt[first], tri[first], rank[first]
+        A, B, C = bV[bT[tri, 0]], bV[bT[tri, 1]], bV[bT[tri, 2]]
+        Pp = P[sl][pt]
+        ab, ac, ap = B - A, C - A, Pp - A
+        d00 = (ab * ab).sum(-1)
+        d01 = (ab * ac).sum(-1)
+        d11 = (ac * ac).sum(-1)
+        d20 = (ap * ab).sum(-1)
+        d21 = (ap * ac).sum(-1)
+        den = d00 * d11 - d01 * d01 + 1e-12
+        v = np.clip((d11 * d20 - d01 * d21) / den, 0, 1)
+        w = np.clip((d00 * d21 - d01 * d20) / den, 0, 1)
+        u = np.clip(1 - v - w, 0, 1)
+        s = u + v + w
+        u, v, w = u / s, v / s, w / s
+        Q = A * u[:, None] + B * v[:, None] + C * w[:, None]
+        dd = np.linalg.norm(Q - Pp, axis=-1)
+        order = np.lexsort((rank, dd, pt))
+        pick = order[np.r_[0, np.flatnonzero(np.diff(pt[order])) + 1]]
+        r = s0 + pt[pick]
+        best_q[r] = Q[pick]
+        best_t[r] = tri[pick]
+        best_w[r] = np.stack([u[pick], v[pick], w[pick]], axis=1)
+    return best_q, best_t, best_w
+
+
+def _small_pieces(V, T, max_extent: float):
+    """Index arrays of the separate pieces of a mesh (connected by its edges,
+    coincident verts welded so a UV seam does not split a piece) whose longest
+    bounding-box side is at most `max_extent`."""
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+    n = len(V)
+    if not n or not len(T):
+        return []
+    e = [T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]]
+    welds = np.array(sorted(cKDTree(V).query_pairs(1e-4)), np.int64).reshape(-1, 2)
+    e = np.vstack(e + [welds])
+    k, lab = connected_components(
+        csr_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(n, n)),
+        directed=False)
+    order = np.argsort(lab, kind="stable")
+    cuts = np.flatnonzero(np.diff(lab[order])) + 1
+    out = []
+    for idx in np.split(order, cuts):
+        if len(idx) > 1 and np.ptp(V[idx], axis=0).max() <= max_extent:
+            out.append(idx)
+    return out
+
+
+def _gaf_new_bone_stb(bone, shape, shape_bw, body_stb, parents):
+    """Skin-to-bone for a body bone the follow adds to `shape`, RE-ANCHORED to a
+    bone the shape already has (its nearest skeleton ancestor it carries, else
+    its heaviest bone) via `_derive_anchored_stb` -- so it is right in the
+    shape's own skin frame. Copying the body's absolute STB is the in-game
+    explosion that helper exists for. None if it cannot be derived."""
+    nc = _nc()
+    if body_stb.get(bone) is None:
+        return None
+    cands = []
+    x = parents.get(bone)
+    while x:
+        if x in shape_bw and body_stb.get(x) is not None:
+            cands.append(x)
+            break
+        x = parents.get(x)
+    tot = {b: sum(w for _, w in prs) for b, prs in shape_bw.items()}
+    cands += [b for b in sorted(tot, key=lambda b: (-tot[b], b))
+              if body_stb.get(b) is not None and b not in cands]
+    m_new, proto = nc._stb_to_mat4(body_stb[bone])
+    for a in cands:
+        m_ab, _ = nc._stb_to_mat4(body_stb[a])
+        st_a = shape.get_shape_skin_to_bone(a)
+        m_aa, proto_a = nc._stb_to_mat4(st_a) if st_a is not None else (None, None)
+        if m_new is None or m_ab is None or m_aa is None:
+            continue
+        out = nc._derive_anchored_stb(m_new, m_ab, m_aa, proto_a or proto)
+        if out is not None:
+            return out
+    return None
+
+
+def _ball_mean(V, vals, r):
+    """Each vertex's mean of `vals` over the verts within `r` of it -- exactly
+    `vals[query_ball_point(V, r)].mean()`, without building every ball.
+
+    On a small DENSE mesh the balls are huge: a worn book prop of 50,705 verts
+    about 8u across has a median 12,975 verts within 3u, 676 million pairs as
+    Python lists -- one piece ran ~25 min and set a full reconvert's finish
+    time. A ball whose members all share one value v has mean v exactly when v
+    is 0.0 or 1.0 (a sum of n zeros or ones is exact), which is nearly every
+    ball here (the follow strength is 0 or 1 outside a transition band). Those
+    are found with one nearest-neighbour query against the verts holding any
+    OTHER value (exact). The mixed balls are summed over pairs in chunks: the
+    same members, a different summation order -- equal to the old mean to the
+    last bits of a double, far below the float32 the weights are stored in."""
+    from scipy.spatial import cKDTree
+    V = np.asarray(V, dtype=np.float64)
+    vals = np.asarray(vals, dtype=np.float64)
+    n = len(V)
+    out = np.empty(n)
+    todo = np.ones(n, dtype=bool)
+    lim = r * (1.0 + 1e-9) + 1e-9            # borderline balls take the exact path
+    for v in (0.0, 1.0):
+        same = vals == v
+        if not same.any():
+            continue
+        other = ~same
+        if other.any():
+            d, _ = cKDTree(V[other]).query(V[same & todo], k=1)
+            uniform = np.zeros(n, dtype=bool)
+            uniform[np.flatnonzero(same & todo)[d > lim]] = True
+        else:
+            uniform = same & todo
+        out[uniform] = v
+        todo &= ~uniform
+    idx = np.flatnonzero(todo)
+    if len(idx):
+        # Mixed balls: same members, summed with bincount over pairs found in
+        # chunks (a chunk holds at most ~4M pairs). The sum ORDER differs from
+        # numpy's pairwise mean, so the result can differ in the last bits of a
+        # double -- below float32, which is what the weights are stored in.
+        tree = cKDTree(V)
+        lens = tree.query_ball_point(V[idx], r, return_length=True)
+        sums = np.zeros(len(idx)); cnts = np.zeros(len(idx))
+        start = 0
+        while start < len(idx):
+            stop = start + 1
+            budget = int(lens[start])
+            while stop < len(idx) and budget + int(lens[stop]) <= 4_000_000:
+                budget += int(lens[stop]); stop += 1
+            m = cKDTree(V[idx[start:stop]]).sparse_distance_matrix(
+                tree, r, output_type="ndarray")
+            ii = m["i"].astype(np.int64, copy=False)
+            jj = m["j"].astype(np.int64, copy=False)
+            sums[start:stop] = np.bincount(ii, weights=vals[jj], minlength=stop - start)
+            cnts[start:stop] = np.bincount(ii, minlength=stop - start)
+            start = stop
+        out[idx] = sums / np.maximum(cnts, 1.0)
+    return out
+
+
+def _ball_bone_scores(V, need, r, rows) -> "dict[int, dict[str, float]]":
+    """{i: {bone: sum of rows[j][bone] over the verts j within `r` of vert i}}
+    for each i in `need`, for the bones of rows[i] -- bit for bit what summing
+    over `query_ball_point(V[need], r)` gives, without its Python lists.
+
+    Those lists were the gap-aware cap's peak memory: on a dense worn prop
+    (50,705 verts, most needing the cap) the batched query held +5 GB and the
+    loop over it took ~35 s (measured 2026-10-15). Here the balls are found in
+    chunks of at most ~4M pairs and summed as a sparse x dense product. With the
+    row indices sorted, that product adds each ball's members in ascending j --
+    the order the sorted lists gave -- one at a time from 0.0, so every score is
+    the same double; a bone a member lacks adds 0.0, which changes nothing."""
+    from scipy.spatial import cKDTree
+    from scipy.sparse import csr_matrix
+    V = np.asarray(V, dtype=np.float64)
+    need = np.asarray(need, dtype=np.int64)
+    bones = sorted({b for row in rows for b in row})
+    col = {b: k for k, b in enumerate(bones)}
+    W = np.zeros((len(V), len(bones)))
+    for j, row in enumerate(rows):
+        for b, w in row.items():
+            W[j, col[b]] = w
+    tree = cKDTree(V)
+    lens = tree.query_ball_point(V[need], r, return_length=True)
+    out: "dict[int, dict[str, float]]" = {}
+    start = 0
+    while start < len(need):
+        stop = start + 1
+        budget = int(lens[start])
+        while stop < len(need) and budget + int(lens[stop]) <= 4_000_000:
+            budget += int(lens[stop]); stop += 1
+        m = cKDTree(V[need[start:stop]]).sparse_distance_matrix(
+            tree, r, output_type="ndarray")
+        ball = csr_matrix((np.ones(len(m)), (m["i"].astype(np.int64, copy=False),
+                                             m["j"].astype(np.int64, copy=False))),
+                          shape=(stop - start, len(V)))
+        # Built from coordinates the matrix is already canonical (tocsr sorts
+        # each row); explicit because the exactness rests on that order.
+        ball.sort_indices()
+        S = ball @ W
+        for k, i in enumerate(need[start:stop]):
+            out[int(i)] = {b: float(S[k, col[b]]) for b in rows[i]}
+        start = stop
+    return out
+
+
+def _gap_aware_follow(dst_path, biped_slots: int = 0) -> int:
+    """Make the armour move like the skin directly under it, by how tight it
+    fits. #gap-aware-follow
+
+    Measured on pieces that carry a body copy, posing body and armour with the
+    same motions (breast/butt/belly bounce, stride, lean) and casting from the
+    covered skin to the armour:
+      * breasts pushed forward -- the armour UNDER-follows: at every escape the
+        skin carried ~0.55 breast weight, the armour 0.32 (ebony mail, 58%) or
+        ~0.20 (a bandit top, 35-40%), over gaps of only 0.4-0.9u;
+      * stride -- the armour OVER-follows the thighs: lower plates carried
+        0.18-0.34 thigh weight over skin with none, and peeled off the hip.
+    Both are one defect: the armour's weights do not match the skin beneath
+    it. The follow passes before this one each add or hold weight on their own
+    rule (a fixed factor, a closeness ramp, a pull toward the author), and the
+    result tracks the skin neither closely enough nor smoothly enough.
+
+    So, last of the weight passes: each armour vert takes the full skin row of
+    the CLOSEST POINT on the body surface (barycentric -- continuous, not the
+    nearest vertex), blended in by the gap: all of it where the fit is tight
+    (gap <= _GAF_TIGHT), none where there is room (>= _GAF_LOOSE), smooth
+    between; the blend itself is smoothed over _GAF_SMOOTH so it cannot make a
+    kink, and each vert keeps the 4 bones its NEIGHBOURHOOD ranks highest, so
+    neighbours cannot drop different bones under the 4-influence cap. Tight
+    armour then moves exactly as the skin does -- the gap it was given cannot
+    close -- and loose armour keeps the weights it had.
+
+    Per shape, against the SKIN -- not the armour layer beneath. Following the
+    layer beneath instead (each vert taking the change made to the layer it
+    rests on) was built and measured: it ADDED armour creases (a layered cuirass
+    2153 -> 3054 over the same motions, a bandit outfit 366 -> 394) and fixed no
+    layer pair, because the one pair that read worse posed rests on per-vertex
+    SMP cloth, which the game simulates and posing cannot judge. Nor is there a
+    motion floor (each vert following at least what a +-30 deg thigh swing
+    needs to keep its gap): built and measured on 37 pieces, it changed nothing
+    (real pokes 438 -> 438) -- legs are not where the pokes are. Nor is the row
+    least-squares fitted so each FACE matches the skin it covers (for armour
+    coarser than the skin's weight gradient, e.g. at the hip crease): built
+    and measured, it exposed MORE skin on a mail cuirass (123 -> 160-171) and
+    added stretch on a layered one; the remaining stride escapes there are a
+    30-degree thigh swing, which no per-vert row can track exactly.
+
+    The skin under the piece: its own visible body copy (injected BaseShape);
+    else, off the body slot, the actor's body, i.e. the zeroed UBE body; a
+    body-slot piece with neither has no skin under it and is left alone.
+    Simulated (chain) verts, colliders, per-vertex SMP shapes and effect
+    shaders are untouched. Off with CBBE2UBE_NO_GAP_AWARE_FOLLOW=1 (scratch
+    control only)."""
+    nc = _nc()
+    if not nc.GAP_AWARE_FOLLOW:
+        return 0
+    if biped_slots & (nc.BIPED_SLOT33_BIT | nc.BIPED_SLOT37_BIT):
+        return 0
+    try:
+        nf = nc._pynifly().NifFile(filepath=str(dst_path))
+    except Exception:
+        return 0
+    if nc._nif_has_fx_shape(nf):
+        return 0
+    body = next((b for b in nf.shapes if b.name in nc.UBE_BODY_INJECT_NAMES
+                 and not (int(b.flags) & 1) and b.bone_weights), None)
+    if body is None:
+        if not biped_slots or (biped_slots & nc.BIPED_SLOT32_BIT):
+            return 0                # no skin under it, or slots unknown
+        weight = "_0" if str(dst_path).lower().endswith("_0.nif") else "_1"
+        p = nc._find_ube_femalebody(weight) or nc._find_ube_femalebody("_1")
+        if p is None:
+            return 0
+        try:
+            body = max(nc._pynifly().NifFile(filepath=str(p)).shapes,
+                       key=lambda s: len(s.verts))
+        except Exception:
+            return 0
+    g2s = _shape_global_to_skin(body)
+    if not (g2s is None or _g2s_is_identity(g2s)):
+        return 0
+    from collections import Counter
+    from scipy.spatial import cKDTree
+    bV = np.asarray(body.verts, np.float64)
+    bT = np.asarray(body.tris, np.int64)
+    if not len(bV) or not len(bT):
+        return 0
+    bN = np.zeros_like(bV)
+    fn = np.cross(bV[bT[:, 1]] - bV[bT[:, 0]], bV[bT[:, 2]] - bV[bT[:, 0]])
+    for j in range(3):
+        np.add.at(bN, bT[:, j], fn)
+    bN /= np.linalg.norm(bN, axis=1, keepdims=True) + 1e-12
+    # The gap is SIGNED along these normals, so they must face out of the body.
+    # Winding alone does not promise that (a mirrored bake reverses it); the
+    # shape's own vertex normals break the tie.
+    try:
+        sn = np.asarray(body.normals, np.float64)
+        if sn.shape == bN.shape and (sn * bN).sum(1).mean() < 0:
+            bN = -bN
+    except Exception:
+        pass
+    brows = [dict() for _ in range(len(bV))]
+    for b, prs in (body.bone_weights or {}).items():
+        for i, w in prs:
+            if 0 <= int(i) < len(bV) and float(w) > 0:
+                brows[int(i)][b] = float(w)
+    bstb = {b: body.get_shape_skin_to_bone(b) for b in (body.bone_weights or {})}
+    try:
+        parents = nc._actor_skeleton_bone_parents()
+    except Exception:
+        parents = {}
+    vt_adj = [[] for _ in range(len(bV))]
+    for ti, tri in enumerate(bT):
+        for j in tri:
+            vt_adj[int(j)].append(ti)
+    vt_adj = [np.asarray(x, dtype=np.int64) for x in vt_adj]
+    tree = cKDTree(bV)
+    _dss = nc._dst_xml_stem_scan()
+    skip = (set(nc._hdt_collider_shape_names(dst_path, nif=nf, stem_scan=_dss))
+            | set(nc._hdt_softbody_shape_names(dst_path, nif=nf, stem_scan=_dss))
+            | set(nc.UBE_BODY_INJECT_NAMES))
+    dup = {k for k, c in Counter(s.name for s in nf.shapes).items() if c > 1}
+    tight, loose = float(nc._GAF_TIGHT), float(nc._GAF_LOOSE)
+    _bside_all = None
+    try:
+        _drape_keys = tuple(k for k in nc._conform_skip_keys(
+            nc._piece_has_hdt_xml(dst_path, nif=nf, stem_scan=nc._dst_xml_stem_scan())
+            if nc.DRAPE_SKIP_XML_GATED else None) if k in nc._CONFORM_SKIP_DRAPING)
+    except Exception:
+        _drape_keys = tuple(nc._CONFORM_SKIP_DRAPING)
+    overrides: dict = {}
+    changed_total = 0
+    for s in nf.shapes:
+        nm = s.name or ""
+        if (nm in skip or nm in dup or (int(s.flags) & 1)
+                or nc._shape_has_effect_shader(s) or nc._is_fx_overlay_name(nm)):
+            continue
+        bw = s.bone_weights or {}
+        if not bw:
+            continue
+        # Geometry in the WORLD frame (a shape authored in its own skin frame is
+        # lifted by its g2s); weights do not depend on the frame. Skipping such
+        # shapes left 43 of 1215 armour shapes on 30 body-copy pieces unfollowed
+        # (a guard cuirass's butt plates: under-follow pokes untouched).
+        V = _shape_world_verts(s)
+        n = len(V)
+        if n < 30:
+            continue
+        T = np.asarray(s.tris, np.int64)
+        d0, _ = tree.query(V)
+        # SURFACE gap: a coarse garment's faces can pass within 0.3u of the skin
+        # while its corner verts sit 2u off, and skinning moves the faces by
+        # those corners -- measured on a 750-vert top, 0 of its verts within 1u
+        # of the breast its surface touched. So cast from the skin to this shape
+        # and give each face's verts the tightest gap any ray found on it.
+        vgap = np.full(n, np.inf)
+        _covby = None
+        _covbar = None
+        if len(T):
+            bsel = np.flatnonzero(cKDTree(V).query(bV, distance_upper_bound=loose + 6.0)[0]
+                                  < np.inf)
+            if len(bsel):
+                tester = fit_metrics._ClipTester(V, T, tmax=loose)
+                O, D = bV[bsel], bN[bsel]
+                ri, ti = tester._pairs_segment(O, D)   # #cast-segment-ball
+                tt, who = tester._cast(O, D, ri, ti, len(O), want_tri=True)
+                hit = np.isfinite(tt) & (who >= 0)
+                if hit.any():
+                    np.minimum.at(vgap, T[who[hit]].ravel(),
+                                  np.repeat(tt[hit], 3))
+                    _covby = (bsel[hit], T[who[hit]])
+                    _X = O[hit] + D[hit] * tt[hit, None]
+                    _tv = T[who[hit]]
+                    _A, _B, _C = V[_tv[:, 0]], V[_tv[:, 1]], V[_tv[:, 2]]
+                    _ab, _ac, _ap = _B - _A, _C - _A, _X - _A
+                    _d00 = (_ab * _ab).sum(1); _d01 = (_ab * _ac).sum(1); _d11 = (_ac * _ac).sum(1)
+                    _d20 = (_ap * _ab).sum(1); _d21 = (_ap * _ac).sum(1)
+                    _den = _d00 * _d11 - _d01 * _d01 + 1e-12
+                    _bv = np.clip((_d11 * _d20 - _d01 * _d21) / _den, 0, 1)
+                    _bw = np.clip((_d00 * _d21 - _d01 * _d20) / _den, 0, 1)
+                    _bu = np.clip(1 - _bv - _bw, 0, 1)
+                    _covbar = np.stack([_bu, _bv, _bw], 1)
+                    _covbar /= _covbar.sum(1, keepdims=True) + 1e-12
+                    _covtt = tt[hit]
+        near = np.flatnonzero((d0 <= loose + 2.0) | np.isfinite(vgap))
+        if not len(near):
+            continue
+        rows = [dict() for _ in range(n)]
+        for b, prs in bw.items():
+            for i, w in prs:
+                if 0 <= int(i) < n and float(w) > 0:
+                    rows[int(i)][b] = float(w)
+        chain = np.array([any(w > 0.1 and not _is_skeleton_bone(b)
+                              for b, w in r.items()) for r in rows])
+        Q, tri, bary = _closest_on_body(V[near], bV, bT, tree, vt_adj)
+        nrm = (bN[bT[tri, 0]] * bary[:, :1] + bN[bT[tri, 1]] * bary[:, 1:2]
+               + bN[bT[tri, 2]] * bary[:, 2:3])
+        nrm /= np.linalg.norm(nrm, axis=1, keepdims=True) + 1e-12
+        gap = np.maximum(np.minimum(((V[near] - Q) * nrm).sum(1), vgap[near]), 0.0)
+        x = np.clip((loose - gap) / max(loose - tight, 1e-6), 0.0, 1.0)
+        blend = np.zeros(n)
+        blend[near] = x * x * (3.0 - 2.0 * x)            # smoothstep
+        blend[chain] = 0.0
+        sm_r = float(nc._GAF_SMOOTH)
+        if sm_r > 0:
+            blend = _ball_mean(V, blend, sm_r)
+            blend[chain] = 0.0
+        if not (blend > 1e-3).any():
+            continue
+        target = [dict() for _ in range(n)]
+        for k, i in enumerate(near):
+            t_ = bT[tri[k]]
+            for j, wj in zip(t_, bary[k]):
+                for b, w in brows[int(j)].items():
+                    target[i][b] = target[i].get(b, 0.0) + float(wj) * w
+        # A FACE SPANNING A JIGGLE FEATURE FOLLOWS THE SKIN IT COVERS
+        # (#gap-aware-face-cover). On armour coarser than the skin a breast or
+        # buttock face's corners sit off the feature and took the closest skin's
+        # row -- little or no jiggle -- so the face stayed still while the skin
+        # bounced up through its middle (a watchman's breast plate, 19 pokes at
+        # 0.1-0.3u). Such a corner takes the mean of the rows its faces press on
+        # (hits within _GAF_TIGHT, weighted by its share of each hit) -- only
+        # where that skin carries MORE jiggle than the closest skin: elsewhere
+        # the closest skin is the sharper answer, and taking the face mean
+        # there only creased (+1937 creases over 40 pieces). Draping shapes
+        # keep the covered-skin exemption. Off with CBBE2UBE_NO_GAF_FACE_COVER=1
+        # (scratch control only).
+        if nc.GAF_FACE_COVER and _covbar is not None and not _drape_exempt(nm, _drape_keys):
+            _acc = [dict() for _ in range(n)]
+            _wt = np.zeros(n)
+            for (_sb, _tv), _br, _tt in zip(zip(*_covby), _covbar, _covtt):
+                if _tt > tight:
+                    continue
+                _row = brows[int(_sb)]
+                for _v, _w in zip(_tv, _br):
+                    if _w <= 1e-6:
+                        continue
+                    _v = int(_v)
+                    _wt[_v] += _w
+                    _a = _acc[_v]
+                    for _b, _x in _row.items():
+                        _a[_b] = _a.get(_b, 0.0) + _w * _x
+            for i in near:
+                _fc = _face_cover_row(_acc[i], _wt[i], target[i])
+                if _fc is not None:
+                    target[i] = _fc
+        # #covered-skin-target, fifth site. Over the crotch and hips the CLOSEST
+        # skin is the wrong row: a panel under the crotch is nearest the inner
+        # thigh but covers the pelvis cleft, which no leg moves. Given the
+        # thigh's row it swings up into the pelvis on every stride -- the class
+        # that fix closed at the four earlier sites (in game 2026-09-19), which
+        # this pass re-opened on an imperial skirt (stride pokes 8 -> 34). So a
+        # vert that covers skin there takes the clearance-weighted mean of what
+        # it covers, as the other sites do.
+        # Draping shapes (robe / cloak / dress ...) stay EXEMPT from the covered-
+        # skin rule, as at its four other sites: the user kept that exemption on
+        # 2026-09-19 (#covered-skin-target, policy cost measured, not a bug).
+        if nc.COVERED_SKIN_TARGET and not _drape_exempt(nm, _drape_keys):
+            _cb = ((bV[:, 2] >= nc._COVER_Z_LO) & (bV[:, 2] <= nc._COVER_Z_HI)
+                   & (np.abs(bV[:, 0]) < nc._COVER_X))
+            _cover, _clr = _covered_skin_map(V, bV, bN, _cb, nc._COVER_REACH)
+            # POOLED over the vert's neighbourhood: on a dense mesh most verts
+            # are the nearest to fewer than _COVER_MIN_VERTS skin verts and fell
+            # back to the closest skin -- the inner thigh -- so a pant crotch
+            # kept one thigh's row over pelvis-only skin (pokes 23 -> 56). Every
+            # vert pools, not only the under-covered: mixing own and pooled
+            # rows made neighbours disagree (40 pieces: worse on all four
+            # measures than pooling everywhere).
+            if _cover:
+                _ks = np.fromiter(_cover.keys(), dtype=np.int64)
+                _kt = cKDTree(V[_ks])
+                _sm = max(float(nc._GAF_SMOOTH), 1e-3)
+                # ONE SIDE OF THE BODY ONLY WHERE THE SKIN IS SIDED
+                # (#gap-aware-cover-side). At the crotch the pool's radius crosses
+                # the midline and handed a vert the OTHER leg's row -- measured: a
+                # vert over skin carrying L Thigh 0.84 / Pelvis 0.10 took R Thigh
+                # 0.31; on a stride the legs swing opposite ways, it lagged, and
+                # the inner thigh came through (a cuirass 1 -> 22 pokes, a tunic
+                # 4 -> 12). The side is read off the SKIN'S OWN ROW under the
+                # vert, never its x: over the pelvis cleft that row is unsided and
+                # the two-sided pool is right (the legs' opposite swings cancel and
+                # the face stays with the pelvis -- an x rule there cost a robe
+                # 9 -> 24 and a bandit skirt 25 -> 40 stride pokes).
+                _sides = _row_sides
+                if nc.GAF_COVER_SIDE and _bside_all is None:
+                    _bside_all = [_sides(brows[j]) for j in range(len(bV))]
+                _bside = _bside_all if nc.GAF_COVER_SIDE else None
+                # every side the vert's FACES cover ("M" = unsided skin)
+                _fside = [set() for _ in range(n)]
+                if _bside is not None and _covby is not None:
+                    for _sb, _tv in zip(*_covby):
+                        _ss = _bside[int(_sb)] or {"M"}
+                        for _v in _tv:
+                            _fside[int(_v)] |= _ss
+                for k, i in enumerate(near):
+                    _opp = (_cover_side_excluded(target[i], _fside[i])
+                            if _bside is not None else set())
+                    _bis = [b for j in _kt.query_ball_point(V[i], _sm)
+                            for b in _cover[int(_ks[j])]
+                            if not (_opp and (_opp & _bside[b]))]
+                    if len(_bis) >= nc._COVER_MIN_VERTS:
+                        _ct = _covered_skin_target_near(_bis, _clr, brows, nc._COVER_EPS,
+                                                        bV, V[i], float(nc._COVER_NEAR_SIGMA))
+                        if _ct:
+                            # FEATHERED AT THE BAND EDGE (#cover-band-feather): the
+                            # pooled row hands over to the closest skin's over the
+                            # pass's own smoothing radius instead of switching at
+                            # the box wall, where the step creased.
+                            _bw = _cover_band_weight(Q[k]) if nc.COVER_BAND_FEATHER else 1.0
+                            if _bw >= 1.0 - 1e-9:
+                                target[i] = _ct
+                            elif _bw > 1e-9:
+                                _old = target[i]
+                                target[i] = {b: (1.0 - _bw) * _old.get(b, 0.0) + _bw * _ct.get(b, 0.0)
+                                             for b in set(_old) | set(_ct)}
+        # SMALL PIECES STANDING OFF THE SKIN RIDE AS ONE (#gap-aware-follow-pieces).
+        # A fur card, spike or buckle spans the follow band: its base sits on
+        # the skin, its tip out past it, so a per-vert blend shears it --
+        # measured on a fur trim of 1111 six-vert cards, creases under a bounce
+        # 87 -> 278 and 146 edges stretched past 25%. Such a piece takes the
+        # blend and the skin row of its TIGHTEST vert (where the skin would come
+        # through) and rides that skin rigidly; partly followed, it keeps its
+        # authored shape (that trim: creases 1707 -> 1381, below the author's).
+        # Only pieces that STAND OFF the skin (gap spread >= a quarter of their
+        # size; fur, collar and ornament cards 92-99%): a flat piece lying along
+        # the skin must keep following it -- given one row, a mail cuirass's
+        # flat breast pieces (spread 0.12 of size) exposed more skin, 123 -> 150.
+        gfull = np.full(n, np.inf)
+        gfull[near] = gap
+        for idx in _small_pieces(V, T, float(nc._GAF_PIECE)):
+            idx = idx[~chain[idx]]
+            if len(idx) < 2:
+                continue
+            if np.ptp(d0[idx]) < 0.25 * np.ptp(V[idx], axis=0).max():
+                continue
+            j = int(idx[np.argmin(gfull[idx])])
+            if not np.isfinite(gfull[j]):
+                continue
+            blend[idx] = blend[idx].max()
+            for i in idx:
+                target[int(i)] = target[j]
+        mixed = []
+        for i in range(n):
+            f = float(blend[i])
+            if f <= 1e-3 or chain[i]:
+                mixed.append(dict(rows[i]))
+                continue
+            r = {}
+            for b in sorted(set(rows[i]) | set(target[i])):
+                w = (1.0 - f) * rows[i].get(b, 0.0) + f * target[i].get(b, 0.0)
+                if w > 1e-6:
+                    r[b] = w
+            mixed.append(r)
+        # 4-influence cap by NEIGHBOURHOOD rank, so neighbours keep one bone set.
+        need = [i for i in range(n) if len(mixed[i]) > 4 and not chain[i]]
+        scores = (_ball_bone_scores(V, need, sm_r, mixed) if need and sm_r > 0
+                  else {i: mixed[i] for i in need})
+        out = []
+        for i in range(n):
+            r = mixed[i]
+            if len(r) <= 4 or chain[i]:
+                out.append(r)
+                continue
+            score = scores[i]
+            keep = sorted(r, key=lambda b: (-score.get(b, 0.0), b))[:4]
+            out.append({b: r[b] for b in keep})
+        _cap_and_renormalise_rows(out, n, {b for r in out for b in r})
+        bones = sorted({b for r in out for b in r if r[b] > nc._WRITE_MIN})
+        if len(bones) > SKIN_PARTITION_BONE_CAP:
+            continue
+        xforms = {}
+        for b in bones:
+            st = (s.get_shape_skin_to_bone(b) if b in bw
+                  else _gaf_new_bone_stb(b, s, bw, bstb, parents))
+            if st is None:
+                break
+            xforms[b] = st
+        else:
+            weights: dict = {}
+            for i, r in enumerate(out):
+                for b, w in r.items():
+                    if w > nc._WRITE_MIN:
+                        weights.setdefault(b, []).append((i, float(w)))
+            moved = sum(1 for i in range(n) if
+                        max((abs(out[i].get(b, 0.0) - rows[i].get(b, 0.0))
+                             for b in set(out[i]) | set(rows[i])), default=0.0) > 1e-3)
+            if not moved:
+                continue
+            overrides[nm] = {"bones": [b for b in bones if b in weights],
+                             "xforms": xforms, "weights": weights}
+            changed_total += moved
+            _note_pass_effect("#gap-aware-follow",
+                              f"{nm}: {moved} vert(s) follow the skin under them",
+                              dst_path)
+    if not overrides:
+        return 0
+    try:
+        if not nc._reauthor_nif_fresh(Path(dst_path), nif=nf,
+                                      override_skin_by_name=overrides):
+            _note_pass_failure("_gap_aware_follow",
+                               RuntimeError("re-author declined"))
+            return 0
+    except Exception as _we:
+        _note_pass_failure("_gap_aware_follow/reauthor", _we)
+        return 0
+    return changed_total
+
+
 def _hold_weights_at_smp_boundary(dst_path, src_nif_path=None) -> int:
     """Stop a reskinned layer shearing away from the SMP layer it touches.
 
@@ -4293,11 +5511,14 @@ def _hold_weights_at_smp_boundary(dst_path, src_nif_path=None) -> int:
             tgt = {b: w / k for b, w in keep.items()}
             f = float(alpha[i])
             row = dict(ours[i])
-            for b in set(row) | set(tgt):
+            # SORTED, and ties below broken by name: a set's order follows the
+            # hash seed, and the 4-cap's stable sort then dropped a different
+            # tied bone run to run. #hashseed-hold
+            for b in sorted(set(row) | set(tgt)):
                 row[b] = (1.0 - f) * row.get(b, 0.0) + f * tgt.get(b, 0.0)
             row = {b: w for b, w in row.items() if w > _nc()._WRITE_MIN}
             if len(row) > 4:
-                row = dict(sorted(row.items(), key=lambda kv: -kv[1])[:4])
+                row = dict(sorted(row.items(), key=lambda kv: (-kv[1], kv[0]))[:4])
             t = sum(row.values())
             if t <= 0:
                 continue
@@ -4384,6 +5605,42 @@ def _hold_weights_at_smp_boundary(dst_path, src_nif_path=None) -> int:
                           f"held {total} vert(s) toward the author")
     return total
 
+def _pair_weight_partner_shapes(shapes0, shapes1) -> dict:
+    """{shape name in `_0` -> shape name in `_1`}: the same shape at both weights.
+    #weight-partner-shape-pairing
+
+    By NAME first. A shape with no namesake is paired by POSITION and VERTEX
+    COUNT when both files list the same number of shapes: an author who names the
+    shapes per weight (a `_0` suffix in one file, `_1` in the other) ships the same
+    mesh under two
+    names, and pairing by name alone left every such piece out of the jiggle sync
+    (#33 mechanism B2: `NPC Belly`, 81 to 457 vertices, stayed in `_0` only). A
+    pair is made only when the two vertex counts agree, so a different shape that
+    happens to sit at the same index is never matched.
+    """
+    sh0, sh1 = list(shapes0), list(shapes1)
+    by1 = {(x.name or ""): x for x in sh1}
+    partner = {}
+    for x in sh0:
+        n = x.name or ""
+        if n and n in by1:
+            partner[n] = n
+    taken = set(partner.values())
+    if len(sh0) == len(sh1):
+        for x0, x1 in zip(sh0, sh1):
+            n0, n1 = x0.name or "", x1.name or ""
+            if not n0 or not n1 or n0 in partner or n1 in taken:
+                continue
+            try:
+                if len(x0.verts) != len(x1.verts) or not len(x0.verts):
+                    continue
+            except Exception:
+                continue
+            partner[n0] = n1
+            taken.add(n1)
+    return partner
+
+
 def _sync_weight_partner_jiggle(path0, path1) -> int:
     """Give a garment the SAME jiggle bones at both body weights.
 
@@ -4401,8 +5658,10 @@ def _sync_weight_partner_jiggle(path0, path1) -> int:
 
     **WE add the bone to one weight; the author has it in NEITHER**, and the
     direction FLIPS between the heavy and light cuirass -- a straddled
-    threshold, not a bias. `_CONFORM_MIN_JIGGLE_VERTS` (8) is exactly the
-    detector's `present_min`: the two constants describe the same edge.
+    threshold, not a bias. `_CONFORM_MIN_JIGGLE_VERTS` (8) is the graft's own
+    gate and was once also the detector's `present_min`; the sync's minimum is
+    now 4, because the graft can land on 4 to 7 vertices of one weight and the
+    old shared edge left that case in neither camp (#weight-partner-dead-zone).
 
     UNION, NOT INTERSECTION. Removing the bone from the side that has it would
     throw away the anti-poke the graft exists for, so the deficient side gets it
@@ -4454,6 +5713,19 @@ def _sync_weight_partner_jiggle(path0, path1) -> int:
             nif_io.release_nif(_f)
 
 
+def _bone_column(prs, n: int) -> np.ndarray:
+    """One bone's weight per vertex as `_rows` holds it: in-range, positive entries summed in list order
+    (np.add.at is unbuffered and in order, so a repeated vertex sums exactly as the dict did). #tail-fold-columns"""
+    a = np.zeros(n)
+    if prs is None or not len(prs):
+        return a
+    pl = np.asarray(prs.tolist() if hasattr(prs, "tolist") else prs, dtype=np.float64).reshape(-1, 2)
+    i, w = pl[:, 0].astype(np.int64), pl[:, 1]
+    k = (i >= 0) & (i < n) & (w > 0)
+    np.add.at(a, i[k], w[k])
+    return a
+
+
 def _sync_weight_partner_jiggle_loaded(path0, path1, nf) -> int:
     """The pass proper, on an OPEN pair. The caller owns `nf` and releases it
     after the return; nothing here may keep a shape past that."""
@@ -4470,26 +5742,35 @@ def _sync_weight_partner_jiggle_loaded(path0, path1, nf) -> int:
         return out
 
     by = {w: {(s.name or ""): s for s in nf[w].shapes} for w in ("0", "1")}
-    # weight-that-is-DEFICIENT -> {shape name: [bones to graft]}
+    # `_0` shape name -> its `_1` namesake or positional twin. #weight-partner-shape-pairing
+    partner = _pair_weight_partner_shapes(nf["0"].shapes, nf["1"].shapes)
+    # weight-that-is-DEFICIENT -> {`_0` shape name: [bones to graft]}
     plan: dict = {"0": {}, "1": {}}
     for name, s0 in by["0"].items():
-        s1 = by["1"].get(name)
+        s1 = by["1"].get(partner.get(name))
         if not name or s1 is None:
             continue
         try:
             if len(s0.verts) != len(s1.verts) or not len(s0.verts):
                 continue
-            r0, r1 = _rows(s0), _rows(s1)
+            n = len(s0.verts)
+            bw0, bw1 = (s0.bone_weights or {}), (s1.bone_weights or {})
+            # Each bone's column of `_rows`, summed in the same order: only the
+            # scale bones are counted, so the per-vertex dicts are built for a
+            # shape that gets a graft, never for detection. #tail-fold-columns
+            cols = {bn: (_bone_column(bw0.get(bn), n), _bone_column(bw1.get(bn), n))
+                    for bn in {b for b in list(bw0) + list(bw1) if _is_scale_bone(b)}}
         except Exception as _re:
             _note_pass_failure("_sync_weight_partner_jiggle/rows", _re)
             continue
         cand = {b for b in (list(s0.bone_names or []) + list(s1.bone_names or []))
                 if _is_scale_bone(b)}
+        zero = np.zeros(n)
         for bn in sorted(cand):
-            c0 = sum(1 for r in r0 if r.get(bn, 0.0) > _nc()._WRITE_MIN)
-            c1 = sum(1 for r in r1 if r.get(bn, 0.0) > _nc()._WRITE_MIN)
-            p0 = max((r.get(bn, 0.0) for r in r0), default=0.0)
-            p1 = max((r.get(bn, 0.0) for r in r1), default=0.0)
+            a0, a1 = cols.get(bn, (zero, zero))
+            c0 = int((a0 > _nc()._WRITE_MIN).sum())
+            c1 = int((a1 > _nc()._WRITE_MIN).sum())
+            p0, p1 = float(a0.max()), float(a1.max())
             # Same rule as the detector: substantially present on one side,
             # effectively absent on the other, and actually MOVING the mesh.
             if (c0 >= _nc()._WP_JIGGLE_PRESENT_MIN and c1 <= _nc()._WP_JIGGLE_ABSENT_MAX
@@ -4506,7 +5787,9 @@ def _sync_weight_partner_jiggle_loaded(path0, path1, nf) -> int:
         other = "1" if side == "0" else "0"
         dirty = False
         for name, bones in sorted(plan[side].items()):
-            s, src = by[side][name], by[other][name]
+            own = name if side == "0" else partner[name]
+            oth = partner[name] if side == "0" else name
+            s, src = by[side][own], by[other][oth]
             ours, theirs = _rows(s), _rows(src)
             existing = list(s.bone_names or [])
             # The new bones' STBs, from the partner, BEFORE anything is written.
@@ -6192,3 +7475,95 @@ def _match_seam_skinning(plates, seam_clusters):
         if _o and id(_o) in touched:
             _weights_from_index(_o)
     return n_matched
+
+
+# #pair-weight-parity (DEFAULT ON since 2026-10-21; CBBE2UBE_NO_PAIR_WEIGHT_PARITY=1 off): the post-write passes that
+# copy the weights of the NEAREST BODY POINT look the body up at each weight's own geometry, so a vertex near a band
+# edge landed on a different body vertex at `_0` and `_1` and the two weights' skin diverged where the source's are
+# identical (audit 2026-10-20 F11: 116 pieces, 12,970 verts off by L1 > 0.5; armpit / bust flank, pelvis / thigh).
+# The game blends the pair per vertex with ONE weight set, so the author's are equal. Once both weights are written,
+# a vertex whose SOURCE weights agree across the pair takes `_1`'s weights at `_0` too. Same pair-unit point as the
+# body zap, so a single convert of the pair ends the same as the batch.
+PAIR_WEIGHT_PARITY = not _flag("CBBE2UBE_NO_PAIR_WEIGHT_PARITY", False)
+PAIR_PARITY_SRC_TOL = 1e-3      # source rows this close (L1) count as the author's one weight set
+PAIR_PARITY_OUT_TOL = 1e-3      # our rows further apart than this are re-synced
+
+
+def _weight_matrix(shape, n, bones):
+    """(n, len(bones)) skin weights of `shape`, columns in `bones` order (bones it lacks stay 0)."""
+    M = np.zeros((n, len(bones)))
+    col = {b: k for k, b in enumerate(bones)}
+    for b, prs in (shape.bone_weights or {}).items():
+        k = col.get(b)
+        if k is None:
+            continue
+        for i, w in prs:
+            if 0 <= int(i) < n:
+                M[int(i), k] += float(w)
+    return M
+
+
+def _pair_weight_parity(dst_path, variant_sources) -> int:
+    """#pair-weight-parity on the pair `dst_path` belongs to. Returns the number of `_0` verts re-synced."""
+    if not PAIR_WEIGHT_PARITY or not variant_sources:
+        return 0
+    dst_path = Path(dst_path); st = dst_path.stem
+    if st[-2:] not in ("_0", "_1"):
+        return 0
+    p0 = dst_path.with_name(st[:-2] + "_0" + dst_path.suffix)
+    p1 = dst_path.with_name(st[:-2] + "_1" + dst_path.suffix)
+    s0, s1 = variant_sources.get("_0"), variant_sources.get("_1")
+    if not (p0.is_file() and p1.is_file() and s0 and s1):
+        return 0
+    pyn = _nc()._pynifly()
+    try:
+        o0, o1 = pyn.NifFile(filepath=str(p0)), pyn.NifFile(filepath=str(p1))
+        a0 = {s.name: s for s in pyn.NifFile(filepath=str(s0)).shapes}
+        a1 = {s.name: s for s in pyn.NifFile(filepath=str(s1)).shapes}
+    except Exception as e:
+        _note_pass_failure("pair-weight-parity", e, dst_path)
+        return 0
+    by1 = {s.name: s for s in o1.shapes}
+    overrides, total = {}, 0
+    for s in o0.shapes:
+        t = by1.get(s.name); x0, x1 = a0.get(s.name), a1.get(s.name)
+        n = len(s.verts)
+        if (t is None or x0 is None or x1 is None or n == 0 or len(t.verts) != n
+                or len(x0.verts) != n or len(x1.verts) != n or s.name in _nc().UBE_BODY_INJECT_NAMES):
+            continue
+        sb = sorted(set(x0.bone_weights or {}) | set(x1.bone_weights or {}))
+        same_src = np.abs(_weight_matrix(x0, n, sb) - _weight_matrix(x1, n, sb)).sum(1) < PAIR_PARITY_SRC_TOL
+        ob = sorted(set(s.bone_weights or {}) | set(t.bone_weights or {}))
+        W0, W1 = _weight_matrix(s, n, ob), _weight_matrix(t, n, ob)
+        fix = same_src & (np.abs(W0 - W1).sum(1) > PAIR_PARITY_OUT_TOL)
+        if not fix.any():
+            continue
+        W0[fix] = W1[fix]
+        weights: dict = {}
+        for k, b in enumerate(ob):
+            col = W0[:, k]
+            idx = np.flatnonzero(col > _nc()._WRITE_MIN)
+            if len(idx):
+                weights[b] = [(int(i), float(col[i])) for i in idx]
+        xforms = {}
+        for b in weights:
+            x = s.get_shape_skin_to_bone(b) if b in (s.bone_names or []) else None
+            if x is None and b in (t.bone_names or []):
+                x = t.get_shape_skin_to_bone(b)
+            xforms[b] = x
+        if any(x is None for x in xforms.values()):
+            continue
+        overrides[s.name] = {"bones": list(weights), "xforms": xforms, "weights": weights}
+        total += int(fix.sum())
+    if not overrides:
+        return 0
+    try:
+        from . import nif_convert_writer as _nw
+        if not _nw._reauthor_nif_fresh(p0, nif=o0, override_skin_by_name=overrides):
+            _note_pass_failure("pair-weight-parity", RuntimeError("re-author declined"), p0)
+            return 0
+    except Exception as e:
+        _note_pass_failure("pair-weight-parity", e, p0)
+        return 0
+    _note_pass_effect("#pair-weight-parity", f"{p0.name}: {total} vert(s) re-synced to {p1.name}", p0)
+    return total

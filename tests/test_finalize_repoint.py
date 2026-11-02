@@ -235,6 +235,49 @@ def test_a_failed_copy_never_captures_the_pointer(tmp_path, monkeypatch):
     assert _pointer(dst) == SOURCE_PTR
 
 
+# ------------------------------------------- #finalize-stale-sibling
+
+STALE = ('<?xml version="1.0"?>\n<system>\n'
+         '\t<per-vertex-shape name="Skirt">\n\t\t<tag>Old</tag>\n'
+         '\t</per-vertex-shape>\n</system>\n')
+
+
+def test_a_stale_sibling_gives_a_pointerless_piece_no_physics(
+        tmp_path, monkeypatch):
+    """No pointer, no authored XML: the `<stem>.xml` beside the output is an
+    earlier run's. The piece stays as the source has it -- no pointer, the NIF
+    and the old file both untouched."""
+    dst, src, sibling = _piece(tmp_path, monkeypatch, pointer=None,
+                               source_xml=False)
+    sibling.write_text(STALE, encoding="utf-8")
+    before = dst.read_bytes()
+    assert ph._finalize_hdt_physics(dst, src) is False
+    assert _pointer(dst) is None
+    assert dst.read_bytes() == before
+    assert sibling.read_text(encoding="utf-8") == STALE
+
+
+def test_a_failed_copy_gives_a_pointerless_piece_no_stale_physics(
+        tmp_path, monkeypatch):
+    dst, src, sibling = _piece(tmp_path, monkeypatch, pointer=None)
+    sibling.write_text(STALE, encoding="utf-8")
+
+    def _boom(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(ph, "atomic_copy", _boom)
+    assert ph._finalize_hdt_physics(dst, src) is False
+    assert _pointer(dst) is None
+
+
+def test_switched_off_a_stale_sibling_is_linked_as_before(tmp_path, monkeypatch):
+    monkeypatch.setenv(SWITCH, "1")
+    dst, src, sibling = _piece(tmp_path, monkeypatch, pointer=None,
+                               source_xml=False)
+    sibling.write_text(STALE, encoding="utf-8")
+    assert ph._finalize_hdt_physics(dst, src) is True
+    assert _pointer(dst) == SIBLING_PTR
+
+
 def test_switched_off_the_pointer_is_kept(tmp_path, monkeypatch):
     monkeypatch.setenv(SWITCH, "1")
     dst, src, sibling = _piece(tmp_path, monkeypatch, pointer=SOURCE_PTR)

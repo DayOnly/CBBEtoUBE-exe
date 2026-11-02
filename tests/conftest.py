@@ -21,11 +21,19 @@ ESP-override machinery was removed once SkyPatcher was proven in-game. The suite
 runs the default (SkyPatcher) path everywhere; nothing pins an escape hatch.
 """
 import importlib
+import os
 import time
 
 import pytest
 
-from tests import _module_guard
+# The #breast-field table is a LOCAL file (beside the exe, or the repo root when
+# run from source) that some machines have and CI never does: the suite must not
+# depend on it. Off before any converter module reads its switches; the tests of
+# the table itself turn it back on with their own file.
+os.environ["CBBE2UBE_NO_BREAST_FIELD"] = "1"
+os.environ["CBBE2UBE_NO_WARP_FIELD"] = "1"
+
+from tests import _module_guard  # noqa: E402
 
 # Loaded up front so the guard below watches them from the first test on; a
 # module first imported INSIDE a test is watched from the next test.
@@ -70,6 +78,15 @@ def pytest_terminal_summary(terminalreporter):
         terminalreporter.write_line(
             f"module guard: {_GUARD_SECONDS[1]} tests, "
             f"{_GUARD_SECONDS[0]:.2f} s snapshot+compare")
+
+
+@pytest.fixture(autouse=True)
+def _keep_the_breast_field_table_off(monkeypatch):
+    """Re-asserted per test: a test that scrubs `CBBE2UBE_*` from the real
+    environment would otherwise let a later reload read the table switch as
+    its default and pick up a developer's local table."""
+    monkeypatch.setenv("CBBE2UBE_NO_BREAST_FIELD", "1")
+    monkeypatch.setenv("CBBE2UBE_NO_WARP_FIELD", "1")
 
 
 @pytest.fixture(autouse=True)

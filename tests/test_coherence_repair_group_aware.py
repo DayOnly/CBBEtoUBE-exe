@@ -337,7 +337,7 @@ def test_the_repair_hands_the_hold_its_groups(monkeypatch):
     without sends none."""
     seen = []
 
-    def spy(before, after, bv, bn, *, groups=None):
+    def spy(before, after, bv, bn, *, groups=None, tris=None):
         seen.append(groups)
         return after
 

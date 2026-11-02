@@ -62,6 +62,7 @@ import os
 
 from .envflags import flag as _flag, knob as _knob
 from .atomic_io import append_whole
+from .work_counts import add_attributed
 from pathlib import Path
 
 import numpy as np
@@ -89,6 +90,14 @@ CAST_CULL_MIN = 4096   # below this the cull costs more than the test it saves
 # Chunking cannot change a verdict: every ray is independent, so a chunk
 # boundary is invisible to the result.
 RAY_CHUNK = _knob("CBBE2UBE_RAY_CHUNK", 512, int)
+# `_cast` tests its (ray, triangle) pairs in slices of this many. A caller that
+# casts every ray at once (the gap-aware follow does) otherwise holds a dozen
+# (pairs, 3) temporaries together: the cast was the conversion's peak memory on
+# the heaviest acceptance piece (2.39 GB, +0.5 GB over the rest of the piece;
+# measured 2026-10-14). Slicing PAIRS, not rays, keeps every pair in its
+# original order, so the per-ray minimum and the tie-break between equal hits
+# are the ones the single batch gives.
+CAST_PAIR_CHUNK = _knob("CBBE2UBE_CAST_PAIR_CHUNK", 1 << 20, int)
 
 MIN_HITS = 40          # below this the garment does not cover the bust and
                        # the distribution is a handful of stray rays
@@ -285,6 +294,7 @@ class _ClipTester:
                 ti.append(b[keep])
         if not ri:
             return np.empty(0, np.int64), np.empty(0, np.int64)
+        add_attributed("ray_pairs", sum(len(x) for x in ri))
         return np.concatenate(ri), np.concatenate(ti)
 
     def cast(self, O, D, tmin: float = 1e-4):
@@ -296,17 +306,83 @@ class _ClipTester:
         BODY_EPS, which steps over the origin's own triangles. An inward garment
         hit beyond the returned wall is on the far side of the body, not a
         poke-through. `clipping` itself stays gate-free (AUDIT A8; see
-        tests/test_push_region_stays_thick.py) -- a caller applies the wall."""
+        tests/test_push_region_stays_thick.py) -- a caller applies the wall.
+
+        CHUNKED over rays like `clipping`: each ray's nearest hit depends on that
+        ray alone. Unchunked, the candidate pairs of every ray were built at once;
+        on a dense shape (`_opening_rim_edges`, reach 3u) that held 28.8 GB."""
         O = np.asarray(O, np.float64)
         D = np.asarray(D, np.float64)
-        ray_i, tri_i = self._pairs(O)
+        if RAY_CHUNK > 0 and len(O) > RAY_CHUNK:
+            return np.concatenate([self.cast(O[i:i + RAY_CHUNK], D[i:i + RAY_CHUNK], tmin)
+                                   for i in range(0, len(O), RAY_CHUNK)])
+        ray_i, tri_i = self._pairs_segment(O, D)
         return self._cast(O, D, ray_i, tri_i, len(O), tmin=tmin)
+
+    def _pairs_segment(self, O, D):
+        """`_pairs` for rays that stop at tmax: the candidates of `_pairs` that can still be hit. #cast-segment-ball
+
+        A hit at 0 < t < tmax lies on the segment O..O+tmax*D, so it is within tmax*|D|/2 of the segment's MIDPOINT,
+        and the hit triangle's centroid within its own radius of the hit. Searching around the midpoint at half the
+        reach instead of around O at the full reach admits ~1/6 of the pairs. `_pairs`' own test (centroid within
+        tmax + radius of O) is then applied as well, so the result is a SUBSET of `_pairs` that keeps every pair able
+        to hit -- the hits, and so the nearest hit per ray, are the same.
+
+        The slack is 1e-6 plus 1e-5 of the triangle's radius: the hit test accepts barycentrics down to -1e-6, so a
+        hit can sit just outside its triangle's radius ball, by at most a few millionths of that radius."""
+        if not len(O) or not len(self.gT):
+            return np.empty(0, np.int64), np.empty(0, np.int64)
+        half = 0.5 * self.tmax * np.linalg.norm(D, axis=1)
+        M = O + 0.5 * self.tmax * D
+        mtree = cKDTree(M)
+        hmax = float(half.max())
+        ri, ti = [], []
+        for sel, ktree, reach in self.tiers():
+            rmax = reach - self.tmax                  # this tier's largest triangle radius
+            m = mtree.sparse_distance_matrix(ktree, hmax + rmax * (1 + 1e-5) + 1e-6, output_type="ndarray")
+            if not len(m):
+                continue
+            a = m["i"].astype(np.int64, copy=False)
+            b = sel[m["j"].astype(np.int64, copy=False)]
+            keep = m["v"] <= half[a] + self.trad[b] * (1 + 1e-5) + 1e-6
+            a, b = a[keep], b[keep]
+            w = self.cent[b] - O[a]
+            keep = np.sqrt(np.einsum("ij,ij->i", w, w)) <= self.tmax + self.trad[b]
+            if keep.any():
+                ri.append(a[keep])
+                ti.append(b[keep])
+        if not ri:
+            return np.empty(0, np.int64), np.empty(0, np.int64)
+        add_attributed("ray_pairs", sum(len(x) for x in ri))
+        return np.concatenate(ri), np.concatenate(ti)
 
     def _cast(self, O, D, ray_i, tri_i, n_rays, want_tri=False, tmin=1e-4):
         out = np.full(n_rays, np.inf)
         who = np.full(n_rays, -1, np.int64)
         if not len(ray_i):
             return (out, who) if want_tri else out
+        # Whether to cull is decided ONCE, on the whole pair set, as before the
+        # slicing: a short last slice is culled like the rest.
+        cull = CAST_CULL and len(ray_i) > CAST_CULL_MIN
+        step = CAST_PAIR_CHUNK if CAST_PAIR_CHUNK > 0 else len(ray_i)
+        hr, ht, hv = [], [], []
+        for s0 in range(0, len(ray_i), step):
+            r, tr, tv = self._cast_slice(O, D, ray_i[s0:s0 + step],
+                                         tri_i[s0:s0 + step], cull, tmin)
+            hr.append(r); ht.append(tr); hv.append(tv)
+        # Hits only, still in pair order: the minimum and the tie-break below
+        # see exactly the rows the single batch fed them.
+        ray_h, tri_h, t_h = np.concatenate(hr), np.concatenate(ht), np.concatenate(hv)
+        np.minimum.at(out, ray_h, t_h)
+        if want_tri:
+            sel = t_h <= out[ray_h] + 1e-12
+            who[ray_h[sel]] = tri_h[sel]
+            return out, who
+        return out
+
+    def _cast_slice(self, O, D, ray_i, tri_i, cull, tmin):
+        """(ray, triangle, t) of the pairs in this slice that HIT, in order."""
+        none = (np.empty(0, np.int64), np.empty(0, np.int64), np.empty(0))
         V, T = self.gV, self.gT
         # RAY-LINE CULL. A ray along unit D can only hit a triangle whose
         # centroid lies within that triangle's own radius of the ray LINE, so
@@ -316,7 +392,7 @@ class _ClipTester:
         # ray. Measured: 4.0% of pairs survive, and _cast runs 2.0x faster with
         # bit-identical hits. Conservative -- it can only drop pairs that could
         # not have intersected.
-        if CAST_CULL and len(ray_i) > CAST_CULL_MIN:
+        if cull:
             d_r = D[ray_i]
             w = self.cent[tri_i] - O[ray_i]
             # SQUARED form, via the Lagrange identity:
@@ -344,7 +420,7 @@ class _ClipTester:
             k = perp2 <= lim * lim
             ray_i, tri_i = ray_i[k], tri_i[k]
             if not len(ray_i):
-                return (out, who) if want_tri else out
+                return none
         a = V[T[tri_i, 0]]
         e1 = V[T[tri_i, 1]] - a
         e2 = V[T[tri_i, 2]] - a
@@ -361,12 +437,7 @@ class _ClipTester:
         t = np.einsum("ij,ij->i", q, e2) * inv
         hit = (ok & (u >= -1e-6) & (v >= -1e-6) & (u + v <= 1 + 1e-6)
                & (t > tmin) & (t < self.tmax))
-        np.minimum.at(out, ray_i[hit], t[hit])
-        if want_tri:
-            sel = hit & (t <= out[ray_i] + 1e-12)
-            who[ray_i[sel]] = tri_i[sel]
-            return out, who
-        return out
+        return ray_i[hit], tri_i[hit], t[hit]
 
     def clipping(self, bV, bN, idx, oriented: bool = True, chunk: int = 0):
         """(clip_mask, in_t) over `idx`. clip = out escapes AND in hits.
@@ -388,18 +459,16 @@ class _ClipTester:
                 ts.append(_t)
             return np.concatenate(masks), np.concatenate(ts)
         O, N = np.asarray(bV)[idx], np.asarray(bN)[idx]
-        ray_i, tri_i = self._pairs(O)
-        o = self._cast(O, N, ray_i, tri_i, len(O))
+        # Each direction searches around its own segment (#cast-segment-ball). Exact for the hit TRIANGLE too: a
+        # ray's candidates come out of the triangle tree in that tree's own order whichever other rays are queried
+        # with it, so the last-tied-hit-wins choice in `_cast` sees them in the same order as the old shared set.
+        o = self._cast(O, N, *self._pairs_segment(O, N), len(O))
         i_t = np.full(len(O), np.inf)
         who = np.full(len(O), -1, np.int64)
         esc = ~np.isfinite(o)
-        if esc.any() and len(ray_i):
-            sel = esc[ray_i]
-            eidx = np.flatnonzero(esc)
-            remap = np.full(len(O), -1, np.int64)
-            remap[eidx] = np.arange(len(eidx))
+        if esc.any():
             i_t[esc], who[esc] = self._cast(
-                O[esc], -N[esc], remap[ray_i[sel]], tri_i[sel], len(eidx),
+                O[esc], -N[esc], *self._pairs_segment(O[esc], -N[esc]), int(esc.sum()),
                 want_tri=True)
         same = np.ones(len(idx), bool)
         if oriented:
@@ -408,6 +477,30 @@ class _ClipTester:
             g = who >= 0
             same[g] = np.einsum("ij,ij->i", fn[who[g]], N[g]) > 0.0
         return (np.isfinite(i_t) & ~np.isfinite(o) & same), i_t
+
+
+def _opening_rim_edges(gV, gT, bV, bN, step: float = 0.75, reach: float = 3.0):
+    """#push-rim-interior: the cut edges that border an OPENING. Just past each edge (in its triangle's plane, away
+    from it) a real opening has no garment along the body normal either way; an edge inside the covered area (one of
+    overlapping breastplate panels) has more garment there. Returns the opening edges (same layout as _rim_edges)."""
+    E = _rim_edges(gT)
+    if not len(E):
+        return E
+    gT = np.asarray(gT, np.int64).reshape(-1, 3)
+    owner = {}
+    for ti, t in enumerate(gT):
+        for a_, b_ in ((t[0], t[1]), (t[1], t[2]), (t[2], t[0])):
+            owner.setdefault((min(int(a_), int(b_)), max(int(a_), int(b_))), ti)
+    tri = np.array([owner[(int(a), int(b))] for a, b in E], np.int64)
+    a, b = gV[E[:, 0]], gV[E[:, 1]]; mid = 0.5 * (a + b); cen = gV[gT[tri]].mean(1)
+    fn = np.cross(gV[gT[tri, 1]] - gV[gT[tri, 0]], gV[gT[tri, 2]] - gV[gT[tri, 0]])
+    o = np.cross(b - a, fn); o /= np.linalg.norm(o, axis=1, keepdims=True) + 1e-12
+    flip = ((mid - cen) * o).sum(1) < 0; o[flip] = -o[flip]
+    P = mid + step * o
+    _, j = cKDTree(bV).query(P); n = bN[j]
+    t = _ClipTester(gV, gT, tmax=reach)
+    hit = np.isfinite(t.cast(P - reach * 0.5 * n, n)) | np.isfinite(t.cast(P + reach * 0.5 * n, -n))
+    return E[~hit]
 
 
 def _rim_edges(T):
@@ -500,6 +593,11 @@ PUSH_Y_MIN = _knob("CBBE2UBE_PUSH_Y_MIN", -2.0)
 # way. This is the check that took the clean-armour control from 37 verts moved
 # to 0.
 PUSH_RIM_MARGIN = _knob("CBBE2UBE_PUSH_RIM_MARGIN", 2.0)
+# #push-rim-interior (DEFAULT ON since 2026-10-19; CBBE2UBE_NO_PUSH_RIM_INTERIOR=1 = every cut edge): the margin is
+# measured to edges that border an OPENING only (`_opening_rim_edges`). Overlapping breastplate panels put cut edges
+# INSIDE the covered area (the nipple skin a median 0.86u from one, never judged, showed through); a hem at a real
+# opening keeps the full margin (a 0.5u margin everywhere pushed a clean light cuirass's neckline hem 2.0u out).
+PUSH_RIM_INTERIOR = not _flag("CBBE2UBE_NO_PUSH_RIM_INTERIOR", False)
 # A body vert whose nearest garment vertex is further than this cannot be fixed
 # by moving a vertex; attempting it perturbs sparse mesh and creates new pokes.
 PUSH_MAX_REACH = _knob("CBBE2UBE_PUSH_MAX_REACH", 3.0)
@@ -513,6 +611,13 @@ PUSH_MAX_TOTAL = _knob("CBBE2UBE_PUSH_MAX_TOTAL", 2.00)
 PUSH_REQ_CAP = _knob("CBBE2UBE_PUSH_REQ_CAP", 1.50)
 PUSH_MIN_REGION = 50          # too little covered skin to judge
 PUSH_ENABLED = not _flag("CBBE2UBE_NO_MIN_PUSH", False)
+# #push-tri (DEFAULT ON since 2026-10-19; CBBE2UBE_NO_PUSH_TRI=1 = the PUSH_KNN nearest verts): lift the covering
+# triangle (see minimum_push). On the 200 zapped nipple-covering author pairs, with #push-tri + rim 0.5 + #coherence-hold-surface + #zap-nipple-envelope: strict
+# skin poke (no cover above, cover below) w1 bind/N/FP/TB/ShyGirl 30643/29420/25768/37690/28506 -> 12232/11907/10798/
+# 17867/11351 (authors 8727/10454/9090/21697/14306); bust skin bind/N/TB 34836/4388/14446 -> 15998/1394/7933 (authors
+# 14503/2146/8551); fit to the authors unchanged (median 0.061u); layer crossings +4-5%; walk/run skin -4/-8%. fit118
+# sample: copy path untouched, body-swap skin better 6 / worse 1.
+PUSH_TRI = not _flag("CBBE2UBE_NO_PUSH_TRI", False)
 # NO neighbour-smoothing of the push field. Measured: with one smoothing pass a
 # residual set plateaus and oscillates without ever being reached; without it,
 # convergence is monotonic. The smoothing came from the follow-WEIGHT feather,
@@ -623,8 +728,15 @@ def push_region_mask(body_verts) -> np.ndarray:
 
 
 def minimum_push(garment_verts, garment_tris, garment_normals,
-                 body_verts, body_tris, body_normals, is_chain=None):
+                 body_verts, body_tris, body_normals, is_chain=None, region=None,
+                 max_depth=None, max_total=None):
     """Smallest outward move that clears measured skin-through-armour.
+
+    `region` (bool per body vert): the skin to judge instead of the bust band
+    (`push_region_mask`); the zap's leg/hip push passes the kept skin below the
+    hips (#zap-leg-push). `max_depth`: judge only skin whose cloth is at most
+    this far under it. `max_total`: the cap on any vert's lift instead of
+    PUSH_MAX_TOTAL.
 
     NOT "push until nothing clips". That objective has no upper bound -- a
     garment three units too far off the body scores a perfect 0.0% -- and a
@@ -673,7 +785,10 @@ def minimum_push(garment_verts, garment_tris, garment_normals,
         return gV, stats
 
     z = bV[:, 2]
-    region = (z >= PUSH_Z_LO) & (z <= PUSH_Z_HI) & (bV[:, 1] > PUSH_Y_MIN)
+    if region is None:
+        region = (z >= PUSH_Z_LO) & (z <= PUSH_Z_HI) & (bV[:, 1] > PUSH_Y_MIN)
+    else:
+        region = np.asarray(region, bool).copy()
     if int(region.sum()) < PUSH_MIN_REGION:
         stats["skipped"] = "region too small"
         return gV, stats
@@ -684,9 +799,11 @@ def minimum_push(garment_verts, garment_tris, garment_normals,
     # 44.0s of a 176.3s file, 25% of the whole thing -- almost all of it spent
     # on body verts that the z-band had already excluded.
     _r = np.flatnonzero(region)
-    rim_d = _rim_distance(bV[_r], gV, _rim_edges(gT))
     reach, _nn = cKDTree(gV).query(bV[_r], k=1)
-    region[_r] &= (rim_d > PUSH_RIM_MARGIN) & (reach <= PUSH_MAX_REACH)
+    # #push-rim-interior: distance to OPENING edges only (see _opening_rim_edges)
+    rim_d = _rim_distance(bV[_r], gV, _opening_rim_edges(gV, gT, bV, bN) if PUSH_RIM_INTERIOR else _rim_edges(gT))
+    ok_rim = rim_d > PUSH_RIM_MARGIN
+    region[_r] &= ok_rim & (reach <= PUSH_MAX_REACH)
     idx = np.flatnonzero(region)
     if len(idx) < PUSH_MIN_REGION:
         stats["skipped"] = "no judgeable skin after rim/reach gating"
@@ -700,11 +817,23 @@ def minimum_push(garment_verts, garment_tris, garment_normals,
 
     tester = _ClipTester(gV, gT)
     clip, _in_t = tester.clipping(bV, bN, idx)
+    if max_depth is not None and clip.any():
+        # Only SHALLOW poke is judged: cloth further than `max_depth` under the skin is not this cloth sitting just
+        # inside it but other geometry (the far side of a hem, an inner layer through the limb). Lifting toward it
+        # raised capped tents and showed more skin (#zap-leg-push, 2026-10-21).
+        deep = clip & ~(np.nan_to_num(_in_t, nan=np.inf, posinf=np.inf) <= float(max_depth))
+        if deep.any():
+            idx = idx[~deep]
+            clip = clip[~deep]
+            if len(idx) < PUSH_MIN_REGION:
+                stats["skipped"] = "no shallow poke to judge"
+                return gV, stats
     stats["exposed_before"] = int(clip.sum())
     if not clip.any():
         stats["exposed_after"] = 0
         return gV, stats                      # the 94% path: nothing moved
 
+    cap_total = PUSH_MAX_TOTAL if max_total is None else float(max_total)
     push = np.zeros(len(gV))
     for it in range(PUSH_ITERS):
         cur = gV + gN * push[:, None]
@@ -717,14 +846,26 @@ def minimum_push(garment_verts, garment_tris, garment_normals,
         depth = in_t[clip]
         depth = np.where(np.isfinite(depth), depth, 0.0)
         want = np.clip(depth + PUSH_MARGIN, 0.0, PUSH_REQ_CAP)
-        _d, nn = cKDTree(cur).query(bV[bad], k=PUSH_KNN)
         step = np.zeros(len(gV))
-        np.maximum.at(step, np.atleast_2d(nn).reshape(-1),
-                      np.repeat(want, PUSH_KNN))
-        step = np.clip(step * not_chain * PUSH_DAMP, 0.0, PUSH_MAX_TOTAL)
+        if PUSH_TRI:
+            # #push-tri: lift the TRIANGLE under the skin point -- all three corners by what it lacks, so the surface
+            # point itself clears. The nearest verts alone raise thin tents that pass this very test (the outward ray
+            # now meets a tent) while the surface between them stays inside the skin.
+            _ri, _ti = tester._pairs_segment(bV[bad], -bN[bad])   # #cast-segment-ball
+            _t, _who = tester._cast(bV[bad], -bN[bad], _ri, _ti, len(bad), want_tri=True)
+            _ok = _who >= 0
+            if _ok.any():
+                for _k in range(3):
+                    np.maximum.at(step, gT[_who[_ok], _k], want[_ok])
+            step = np.clip(step * not_chain, 0.0, cap_total)
+        else:
+            _d, nn = cKDTree(cur).query(bV[bad], k=PUSH_KNN)
+            np.maximum.at(step, np.atleast_2d(nn).reshape(-1),
+                          np.repeat(want, PUSH_KNN))
+            step = np.clip(step * not_chain * PUSH_DAMP, 0.0, cap_total)
         if step.max() <= 1e-3:
             break
-        push = np.clip(push + step, 0.0, PUSH_MAX_TOTAL)
+        push = np.clip(push + step, 0.0, cap_total)
 
     out = gV + gN * push[:, None]
     out[chain] = gV[chain]
@@ -1285,7 +1426,7 @@ def cast_chunked(tester, O, N, chunk: int = 0, finite_only: bool = True):
     out = []
     for i in range(0, len(O), n):
         o, d = O[i:i + n], N[i:i + n]
-        t = tester._cast(o, d, *tester._pairs(o), len(o))
+        t = tester._cast(o, d, *tester._pairs_segment(o, d), len(o))  # #cast-segment-ball
         out.append(t[np.isfinite(t)] if finite_only else t)
     return np.concatenate(out) if out else np.empty(0)
 

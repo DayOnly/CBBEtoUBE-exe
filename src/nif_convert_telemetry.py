@@ -41,7 +41,11 @@ def _note_pass_failure(label: str, exc: BaseException, dst=None) -> None:
     try:
         key = f"{label}: {type(exc).__name__}"
         _PASS_FAILURES[key] = _PASS_FAILURES.get(key, 0) + 1
-        entry = f"PASS FAILED {label} ({type(exc).__name__}: {exc})"
+        # The piece's `reason` is joined on "; " and split on it again by the
+        # parent, so a message that carries "; " (a prune naming several shapes)
+        # was cut after its first part. #pass-message-separator
+        entry = (f"PASS FAILED {label} ({type(exc).__name__}: "
+                 f"{str(exc).replace('; ', ', ')})")
         if entry not in _PASS_FAILURES_THIS_PIECE:
             _PASS_FAILURES_THIS_PIECE.append(entry)
         if _PASS_FAILURES[key] <= 3:      # once per kind, not per piece
@@ -78,7 +82,8 @@ def _note_pass_effect(tag: str, detail: str = "", dst=None) -> None:
     """
     try:
         _PASS_EFFECTS[tag] = _PASS_EFFECTS.get(tag, 0) + 1
-        entry = f"CHANGED BY {tag}" + (f" ({detail})" if detail else "")
+        entry = f"CHANGED BY {tag}" + (
+            f" ({str(detail).replace('; ', ', ')})" if detail else "")  # #pass-message-separator
         if entry not in _PASS_EFFECTS_THIS_PIECE:
             _PASS_EFFECTS_THIS_PIECE.append(entry)
     except Exception:
@@ -123,7 +128,7 @@ def pass_failure_summary() -> "dict[str, int]":
 
 
 def make_stage_hook(*, tracer=None, chain=None, surv=None, dump=None,
-                    skip_none: bool = False):
+                    skip_none: bool = False, live=None):
     """ONE pass-boundary hook for BOTH convert paths, with the per-path
     contract stated instead of implied by which copy you happen to read.
 
@@ -151,7 +156,8 @@ def make_stage_hook(*, tracer=None, chain=None, surv=None, dump=None,
     capture this replaces. If that ever stops being true, this factory must be
     called after the last rebinding, or the capture will go stale.
 
-    Order is preserved exactly: tracer, chain, survival, dump.
+    Order is preserved exactly: tracer, chain, survival, dump. `live` (the
+    window's Live steps panel, #live-steps) comes last and only copies.
     """
     def _stage(label, v):
         if skip_none and v is None:
@@ -164,4 +170,6 @@ def make_stage_hook(*, tracer=None, chain=None, surv=None, dump=None,
             surv.checkpoint(label, v)
         if dump is not None:
             dump.checkpoint(label, v)
+        if live is not None:
+            live(label, v)
     return _stage

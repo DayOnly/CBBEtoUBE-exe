@@ -39,8 +39,10 @@ session or shipped a wrong mesh.
 `convert_nif` is the entry point.
 
 * **Phase 2** (`convert_nif_phase2`) when the NIF has an inline body or exposed
-  skin AND a UBE body reference exists. It injects the UBE `BaseShape` +
-  `VirtualBody`, drops the CBBE body, and runs the full chain.
+  skin AND a UBE body reference exists. It injects the UBE `BaseShape`, drops
+  the CBBE body, and runs the full chain. (The reference ships no `VirtualBody`;
+  any `VirtualBody` in an output is the source author's collider -- see DESIGN.md
+  `#virtualbody-morphs`.)
   The injected body is `auto_convert._find_ube_body_ref()`'s (or
   `--ube-body-ref`): an explicit UBE override — the GUI's Reference bodies pick
   included — else BodySlide's zeroed UBE build as the game loads it, else the old
@@ -341,10 +343,10 @@ answered is "which CHANGE did this".
 
 | pass | what it does | flag |
 |---|---|---|
-| `_conform_fitted_to_body` | WEIGHTS: conforms garment verts to the body's per-vert skinning, shared tail | `CBBE2UBE_NO_CONFORM` (`conform_to_body`) |
+| `_conform_fitted_to_body` | WEIGHTS: conforms garment verts to the body's per-vert skinning, shared tail | `CBBE2UBE_CONFORM_FITTED` (`conform_to_body`) |
 | `conform_to_source_standoff` | GEOMETRY: reels over-projected verts back to the authored standoff; the `conform` stage in the survival trace. NOTE the two paths call it differently: body-swap passes the body's nipple map and `conform_margin` (nipple-ramped bust clearance); the copy path passes neither unless `CBBE2UBE_PHASE1_NIPPLE_MAP=1` (flat clearance otherwise), and its source body is the CBBE reference body (`_find_cbbe_base_body` — BodySlide's zeroed 3BA build since `#zeroed-body-refs`; before that, name discovery returned the 3BA body mod's own preset build, not a slider-zero body) rather than the inline preset body | `CBBE2UBE_PHASE1_CONFORM` (copy, default OFF) / `CBBE2UBE_NO_PHASE2_CONFORM` (body-swap, default ON) |
 
-An A/B run against `CBBE2UBE_NO_CONFORM` expecting to move the traced `conform`
+An A/B run against `CBBE2UBE_CONFORM_FITTED` expecting to move the traced `conform`
 stage measures nothing and reads as "conform does not matter". The body-swap one
 had NO switch at all until 2026-08-23.
 
@@ -488,7 +490,9 @@ run, and every "defaults-only" baseline described an unjudged configuration. The
 `warp_push_shell_cap` was in that same recipe and was **not** promoted: it is
 inert on every large spike measured and regresses two shapes while moving
 geometry by 1.38u (`tests/test_warp_flag_defaults.py`). A general "looks fine so
-far" does not overturn a specific negative measurement.
+far" does not overturn a specific negative measurement. It was removed on
+2026-10-30, along with the disproven opt-in leg-push variants (#zap-leg-push-room,
+-sim, -stack).
 
 **SECOND PROMOTION, 2026-08-26 — AND THE ORDER IS INVERTED.** Three more flags
 went DEFAULT ON: `bust_morph_chord` and `panel_rigid_surface_guard`, both

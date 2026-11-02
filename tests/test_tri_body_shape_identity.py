@@ -79,13 +79,14 @@ def test_without_a_body_count_the_split_is_unchanged(tmp_path):
     assert "BaseShape" not in armor
 
 
-def test_the_collision_proxy_is_never_armour(tmp_path):
-    """`VirtualBody` is the SMP proxy we generate ourselves. Its topology is
-    per-piece by construction, so a topology check would demote EVERY one of
-    them into the armour set and start morphing a collision shape. It must stay
-    out of both -- `generate_armor_tri` only ever emits a verbatim body TriShape
-    for `BaseShape`, so naming it in the body set is inert."""
+def test_the_collision_proxy_is_armour(tmp_path):
+    """#virtualbody-morphs (2026-10-18), REVERSING the old rule "`VirtualBody` is the
+    SMP proxy we generate ourselves, it must not morph": the UBE reference ships no
+    VirtualBody, so every one in our output is the AUTHOR'S collider, and the authors
+    morph it (138-186 morphs on the three author pairs that have one). Left static it
+    sat 1-5u inside the hips and 2-10u inside the bust under the presets, so the SMP
+    cloth collided with a smaller body than the one on screen."""
     nif = _nif(tmp_path, "VirtualBody", VERTS)
     armor, body, _ef = _collect_tri_inputs(nif, 29298)
-    assert armor == {}, "a collision proxy must not be given body morphs"
-    assert body == {"VirtualBody"}
+    assert "VirtualBody" in armor and len(armor["VirtualBody"]) == len(VERTS)
+    assert body == set()

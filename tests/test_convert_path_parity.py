@@ -223,6 +223,7 @@ KNOWN_PHASE2_ONLY = {
                                  "body_verts_for_fit; needs an A/B",
     "_ride_disp_barycentric": "helper of the layer ride",
     "_feather_ride_disp": "helper of the layer ride",
+    "_ride_body_floor_push": "helper of the layer ride (#ride-floor-margin)",
     # `_weld_components` WAS here, with the note "wire it into the copy path
     # BEFORE the default is ever flipped, or the two paths will split the pack".
     # PAID 2026-08-22. The debt note keyed on the wrong event: the default was

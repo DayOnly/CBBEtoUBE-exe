@@ -30,10 +30,9 @@ which would be circular):
 
   WARP_PUSH_SHELL_CAP  touches ZERO verts on every shape of that cuirass with a
                        large spike, regresses Corset and HeavyFur, and still moves
-                       geometry 1.38u. OFF.
+                       geometry 1.38u. REMOVED 2026-10-30.
 
-This file pins both, because "they were only ever off by accident" is exactly the
-argument that would flip the second one too.
+This file pins the first and that the second stays gone.
 """
 import inspect
 
@@ -57,14 +56,11 @@ def test_the_outlier_cap_is_ON_by_default():
     assert "not _flag(" in d
 
 
-def test_the_shell_cap_is_OFF_and_the_measurement_is_why():
-    """NOT a hypothetical risk -- it was measured and it did not earn its cost."""
-    assert nc.WARP_PUSH_SHELL_CAP is False
-    d = _decl("WARP_PUSH_SHELL_CAP")
-    assert '"CBBE2UBE_WARP_PUSH_SHELL_CAP"' in d, (
-        "must stay an opt-IN: it is inert on every large spike measured and "
-        "regresses two shapes, while moving geometry by 1.38u")
-    assert "not _flag(" not in d and "_flag(" in d
+def test_the_shell_cap_is_removed():
+    """Measured, did not earn its cost, removed 2026-10-30."""
+    from tests import _converter_sources as cs
+    assert not hasattr(nc, "WARP_PUSH_SHELL_CAP")
+    assert 'WARP_PUSH_SHELL_CAP = ' not in cs.whole_text()
 
 
 def test_the_asymmetry_is_recorded_next_to_the_flag():

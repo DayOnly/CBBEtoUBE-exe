@@ -134,6 +134,7 @@ In the GUI, choose **Help ▸ Save diagnostics zip**. It writes
 | `REPORT.txt` | The same report as above, already filled in |
 | `gui_log.txt` | What the GUI's log panel showed this session (empty after a restart) |
 | `CBBEtoUBE_last_run.log`, `CBBEtoUBE_previous_run.log` | The last run's log, and the one before it — the one that matters if a run died |
+| `CBBEtoUBE_last_run_detail.log`, `CBBEtoUBE_previous_run_detail.log` | The same runs' detail logs: every line each run printed, the per-shape pass lines included (the run log keeps one line per piece and the run summary) |
 | `CBBEtoUBE_last_failures.json`, `CBBEtoUBE_previous_failures.json` | What those runs reported as failures and warnings |
 | `conversion_report.json`, `conversion_settings.json` | The output mod's report, and the settings that run used. Both exist from before the first mod; a report from a run that died says `"complete": false` and how many of the planned mods it covers |
 | `machine.txt` | RAM, commit limit, CPU threads, and whether the page file is system-managed, a fixed size or off |
@@ -151,7 +152,12 @@ A file that no run has written yet is left out.
 
 A normal run also leaves these behind, useful if the GUI won't start:
 
-- `CBBEtoUBE_last_run.log`, `CBBEtoUBE_last_failures.json` — next to the exe
+- `CBBEtoUBE_last_run.log`, `CBBEtoUBE_last_failures.json` — next to the exe.
+  The run log opens with the run summary (failures, warnings, coverage, time,
+  pieces each pass changed), repeats it at the end, and lists each mod with one
+  line per piece. `CBBEtoUBE_last_run_detail.log` beside it holds every line the
+  run printed, the per-shape pass lines included. Diagnostics > "Write every pass
+  line into the run log" gives the old single log.
 - `CBBEtoUBE_settings.json`, `CBBEtoUBE_exclusions.json` — next to the exe
   too. The tool keeps nothing anywhere else (no AppData, no temp files), so
   replacing its folder resets it.

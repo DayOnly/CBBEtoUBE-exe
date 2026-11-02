@@ -23,6 +23,12 @@ class _Unconvertible:
         raise RuntimeError("injected")
 
 
+@pytest.fixture(autouse=True)
+def _groove_smooth_on(monkeypatch):
+    # off by default since 2026-10-18; its failure path is still what the case below pins
+    monkeypatch.setattr(nc, "GROOVE_SMOOTH_ENABLED", True)
+
+
 @pytest.fixture
 def clean_recorder():
     before = list(nc._PASS_FAILURES_THIS_PIECE)

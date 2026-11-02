@@ -143,6 +143,7 @@ def test_a_pass_that_raises_is_reported_in_the_result_not_lost(world, monkeypatc
 
     # Both callees of the panel-rigidity site: which one runs depends on the
     # early-clearance flag, and the planted failure must fire either way.
+    monkeypatch.setattr(nc, "PANEL_RIGIDITY", 0.75)      # off by default since 2026-10-18; the site must still report
     assert _cs.patch(monkeypatch, "_partial_rigid_panels", planted) >= 1
     assert _cs.patch(monkeypatch, "_rigidify_within_clearance", planted) >= 1
     res, dst = _convert(cuirass, out, ref)
