@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed — #tri-follow reuses one body search across its edge and chord passes (output byte-identical)
+
+- `tri_follow.follow_pair` ran the floor pass on the weight-100 mesh and then the edge and chord passes on the
+  weight-0 mesh. The edge and chord passes each re-opened the weight-0 NIF and recomputed, per cloth shape, the
+  closest point on the body surface (a KD-tree over every body triangle) and the interpolated body normals — the
+  pass's dominant cost — although both run on the same geometry. That weight-0 geometry is now built once (`_geom`)
+  and shared by both. No behaviour change: the rows written are identical, and one pass still sees the other's edits
+  because the shared data holds only geometry, never a morph row. Verified byte-identical: the hide cuirass and iron
+  cuirass pairs reconverted to the same sha1 on all of `.tri`, `.xml` and both `.nif`.
+
 ### Fixed — breasts through a coarse garment's front at rest
 
 - A low-poly garment's large flat faces can cut through the rounder UBE breast while every one of its vertices sits

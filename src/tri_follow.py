@@ -62,27 +62,30 @@ def _set_row(ts, by_name, name, new) -> None:
         gm.idx, gm.delta = keep, new[keep]
 
 
-def follow(nif_path, tf, mode: str, collider_names=()) -> int:
-    """Apply one #tri-follow mode ("floor" or "chord") to the cloth rows of `tf` at the geometry of `nif_path`
-    (its injected body and cloth). Returns the number of (shape, slider) rows changed; `tf` is edited in place."""
+def _geom(nif_path, tf, collider_names):
+    """Shared geometry for the follow modes at one weight: open the NIF once, resolve the injected body and its slider
+    deltas, and per eligible cloth shape the closest-surface frame. The modes that run on the SAME weight (edge, chord)
+    reuse one of these instead of recomputing the body open and the per-shape closest-surface search (the pass's
+    dominant cost). Returns (BV, bn, sliders, Dbody, shapes) or None; `shapes` is
+    [(ts, V, T, corners, bary, vn, w, hug), ...] carrying only geometry -- never a morph row, so a mode may edit `tf`
+    and the next mode sees it."""
     from . import body_zap as bz
     from . import nif_convert as nc
     from . import sliderset_gen as sg
-    from . import fit_metrics as fm
     nf = nc._pynifly().NifFile(filepath=str(nif_path))
     body = next((s for s in nf.shapes if s.name == bz.BODY_NAME), None)
     if body is None:
-        return 0
+        return None
     w_ = "_0" if str(nif_path)[-6:-4] == "_0" else "_1"
     full, _ = bz.full_body_tris(w_)
     full = np.asarray(full, np.int64)
     BV = np.asarray(body.verts, np.float64)
     if len(BV) <= int(full.max()):
-        return 0
+        return None
     tri = {s.name: s for s in tf.shapes}
     bt = tri.get(bz.BODY_NAME)
     if bt is None:
-        return 0
+        return None
     fn = np.cross(BV[full[:, 1]] - BV[full[:, 0]], BV[full[:, 2]] - BV[full[:, 0]])
     sgn = 1.0 if ((BV[full].mean(1) - BV.mean(0)) * fn).sum(1).mean() >= 0 else -1.0
     bn = np.zeros_like(BV)
@@ -91,7 +94,7 @@ def follow(nif_path, tf, mode: str, collider_names=()) -> int:
     bn = sgn * bn / (np.linalg.norm(bn, axis=1, keepdims=True) + 1e-12)
     sliders = [m for m in bt.morphs if len(m.idx) and not _nipple_slider(m.name)]
     Dbody = {m.name: _dense(m, len(BV)) for m in sliders}
-    changed = 0
+    shapes = []
     for s in nf.shapes:
         ts = tri.get(s.name)
         if (ts is None or s.name == bz.BODY_NAME or s.name in nc.UBE_BODY_INJECT_NAMES or s.name in collider_names
@@ -111,10 +114,26 @@ def follow(nif_path, tf, mode: str, collider_names=()) -> int:
         if not len(hug):
             continue
         vn = (bn[corners] * bary[:, :, None]).sum(1); vn /= np.linalg.norm(vn, axis=1, keepdims=True) + 1e-12
+        shapes.append((ts, V, T, corners, bary, vn, w, hug))
+    return BV, bn, sliders, Dbody, shapes
+
+
+def follow(nif_path, tf, mode: str, collider_names=(), geom=None) -> int:
+    """Apply one #tri-follow mode ("floor", "edge" or "chord") to the cloth rows of `tf` at the geometry of
+    `nif_path`. `geom` (from `_geom`) may be reused across modes on the same weight; it is built here when None.
+    Returns the number of (shape, slider) rows changed; `tf` is edited in place."""
+    from . import body_zap as bz
+    from . import fit_metrics as fm
+    if geom is None:
+        geom = _geom(nif_path, tf, collider_names)
+    if geom is None:
+        return 0
+    BV, bn, sliders, Dbody, shapes = geom
+    changed = 0
+    for ts, V, T, corners, bary, vn, w, hug in shapes:
         by_name = {m.name.lower(): m for m in ts.morphs}
         if mode == "edge":
-            from . import body_zap as _bz
-            emask, _ = _bz._open_edge_verts(V, T)
+            emask, _ = bz._open_edge_verts(V, T)
             on = emask & (w > 0)
             if not on.any():
                 continue
@@ -223,10 +242,16 @@ def follow_pair(dst_path) -> "dict | None":
     out = {}
     if TRI_FOLLOW_FLOOR and p1 is not None:
         out["floor_rows"] = follow(p1, tf, "floor", coll)
-    if TRI_FOLLOW_EDGE:
-        out["edge_rows"] = follow(p0 if p0 is not None else p1, tf, "edge", coll)
-    if TRI_FOLLOW_CHORD:
-        out["chord_rows"] = follow(p0 if p0 is not None else p1, tf, "chord", coll)
+    # Edge and chord both read the `_0` geometry: build it once and share it (the closest-surface search over the
+    # full body is the pass's dominant cost). `tf` edits by one are visible to the next -- the shared geom holds no
+    # morph rows.
+    if TRI_FOLLOW_EDGE or TRI_FOLLOW_CHORD:
+        p = p0 if p0 is not None else p1
+        g0 = _geom(p, tf, coll)
+        if TRI_FOLLOW_EDGE:
+            out["edge_rows"] = follow(p, tf, "edge", coll, geom=g0)
+        if TRI_FOLLOW_CHORD:
+            out["chord_rows"] = follow(p, tf, "chord", coll, geom=g0)
     if any(out.values()):
         tf.save(tri_path)
     return out
