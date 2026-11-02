@@ -4153,8 +4153,9 @@ def prune_unused_masters(esp_obj: esp.ESP) -> list[str]:
 
 def resort_masters(esp_obj: esp.ESP,
                    master_data_dirs: "list[Path] | None" = None) -> bool:
-    """Re-sort a plugin's master list so master-tier plugins (.esm/.esl/ESM- or
-    ESL-flagged .esp) precede regular ESPs, renumbering every FormID in place.
+    """Re-sort a plugin's master list so master-tier plugins (.esm/.esl/ESM-flagged
+    .esp; an ESL flag alone is not a master, #espfe-is-not-a-master) precede
+    regular ESPs, each tier in load order, renumbering every FormID in place.
 
     A master-tier plugin listed AFTER a regular ESP is a load-order / FormID
     resolution crash. The merge already tier-sorts (merge_patches), but a STALE
