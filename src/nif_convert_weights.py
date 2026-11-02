@@ -7,6 +7,7 @@ import, tests' monkeypatches on `nc` and `importlib.reload(nc)` all still
 apply."""
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 import numpy as np
 import os
@@ -487,7 +488,7 @@ def _strip_jiggle_weights_map(weights_map, src_bones=None, force=False):
         jset = {b for b in weights_map
                 if _is_physics_jiggle_scale_bone(b) and b not in _srcb}
     else:
-        leg_dom = sum(1 for (bn, _w) in dom.values() if _is_leg_rigid_bone(bn))
+        leg_dom = sum(c for bn, c in Counter(bn for bn, _w in dom.values()).items() if _is_leg_rigid_bone(bn))
         if leg_dom <= 0.5 * len(dom):
             return weights_map  # not a rigid leg plate -> keep jiggle (conformance)
         # Strip only GRAFTED jiggle (absent from source) -- a rigid greave the
@@ -560,9 +561,10 @@ def _cap_weights_map(weights_map, n_verts: int):
     writable = {bn for bn in (weights_map or {})}
     _cap_and_renormalise_rows(vw, n_verts, writable)
     out: dict = {}
+    wmin = _nc()._WRITE_MIN
     for i in range(n_verts):
         for bn, w in vw[i].items():
-            if w > _nc()._WRITE_MIN:
+            if w > wmin:
                 out.setdefault(bn, []).append((i, w))
     # Preserve the caller's bone ordering for the bones that survived.
     return {bn: out[bn] for bn in (weights_map or {}) if bn in out}
@@ -623,6 +625,7 @@ def _cap_and_renormalise_rows(vw, n, writable, rows=None,
     """
     idxs = range(n) if rows is None else rows
     hold = bool(incumbents) and _nc().LAST_CARRIER_HOLD
+    wmin, cap = _nc()._WRITE_MIN, _nc()._SKIN_MAX_INFLUENCES     # read once: the loops below run per vertex
     # Live rows per bone across the WHOLE shape, not just `rows`: a bone with
     # weight on a vertex this pass never touched is not being stranded, so it
     # must not be protected.
@@ -630,12 +633,12 @@ def _cap_and_renormalise_rows(vw, n, writable, rows=None,
     if hold:
         for i in range(n):
             for b, w in vw[i].items():
-                if b in writable and w > _nc()._WRITE_MIN:
+                if b in writable and w > wmin:
                     carriers[b] = carriers.get(b, 0) + 1
     for i in idxs:
         live = {b: w for b, w in vw[i].items()
-                if b in writable and w > _nc()._WRITE_MIN}
-        if len(live) > _nc()._SKIN_MAX_INFLUENCES:
+                if b in writable and w > wmin}
+        if len(live) > cap:
             # TOTAL ORDER, not weight alone. `sorted` is stable, so EQUAL weights
             # fell back to `live`'s insertion order -- which traces back through
             # `vw` to sets iterated upstream, making the survivor depend on
@@ -645,8 +648,8 @@ def _cap_and_renormalise_rows(vw, n, writable, rows=None,
             # bone NAME settles the whole class here instead of chasing every
             # producer that feeds `vw`.  #deterministic-set-iteration
             order = sorted(live, key=lambda b: (-live[b], b))
-            kept = order[:_nc()._SKIN_MAX_INFLUENCES]
-            dropped = order[_nc()._SKIN_MAX_INFLUENCES:]
+            kept = order[:cap]
+            dropped = order[cap:]
             if hold:
                 # Seat every stranded incumbent that a NEWCOMER is displacing,
                 # cheapest newcomer first. Walking `dropped` in weight order and
@@ -671,7 +674,7 @@ def _cap_and_renormalise_rows(vw, n, writable, rows=None,
                     vw[i][b] = 0.0
             live = {b: w for b, w in live.items() if b in keep}
         tot = sum(live.values())
-        if tot > _nc()._WRITE_MIN and abs(tot - 1.0) > 1e-6:
+        if tot > wmin and abs(tot - 1.0) > 1e-6:
             for b in live:
                 vw[i][b] /= tot
 

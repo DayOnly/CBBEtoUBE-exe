@@ -77,6 +77,15 @@ def test_a_lid_seen_from_its_undrawn_side_does_not_cover():
     assert not run([True])[B[:, 2] < 40.1].any()                # the walls and floor still face out and cover
 
 
+def test_the_cull_does_not_need_the_triangle_pass():
+    """#zap-cull must hold with #zap-tri-vis off too (no tri_acc passed)."""
+    B, BT = _grid_box((0, 0, 50), 10)
+    G, GT = _box((0, 0, 50), 11)
+    lid = np.array([(G[t][:, 2] > 60).all() for t in GT])
+    GT = np.concatenate([GT[~lid], GT[lid][:, ::-1]])
+    assert bz.needed(B, BT, [G], [GT], bz.fib_dirs(48), gcull=[True]).astype(bool)[B[:, 2] > 59.9].any()
+
+
 def test_the_nipple_poke_rule_is_off_by_default():
     assert not bz.ZAP_NIPPLE_POKE and bz.ZAP_CULL
 
@@ -191,6 +200,25 @@ def test_nipple_flat_drops_only_nipple_local_rows_over_deleted_skin():
     assert list(m["NippleLength"].idx) == [1]              # -x side kept: its skin is still there
     assert list(m["Breasts"].idx) == [0, 1]                # breast shape untouched
     assert bz._flatten_nipples(tf, V, kept, apexes, names, {"Top": G}) == 0   # idempotent
+
+
+def test_nipple_opaque_flattens_the_cloth_even_where_skin_is_kept():
+    """#zap-nipple-opaque: a nipple with no see-through cloth near it (`force`) loses its cloth nipple sliders whatever
+    skin the zap keeps there; the breast-shape slider stays."""
+    tf, V, apexes, G = _nipple_tri()
+    names = bz._nipple_local_names(tf.shapes[0], V, apexes)
+    every = np.arange(len(V))
+    kept = np.c_[every[:-2], every[1:-1], every[2:]]           # all skin kept: plain #zap-nipple-flat drops nothing
+    assert bz._flatten_nipples(tf, V, kept, apexes, names, {"Top": G}) == 0
+    n = bz._flatten_nipples(tf, V, kept, apexes, names, {"Top": G}, force=[apexes[1]])
+    assert n == 1
+    m = {x.name: x for x in tf.shapes[1].morphs}
+    assert list(m["NippleLength"].idx) == [0]              # only the forced (-x) side lost its row
+    assert list(m["Breasts"].idx) == [0, 1]
+
+
+def test_nipple_opaque_is_on_and_preset_nipples_are_gone():
+    assert bz.ZAP_NIPPLE_OPAQUE and not hasattr(bz, "ZAP_PRESET_NIPPLES")
 
 
 def test_nipple_flat_is_on_with_the_zap():

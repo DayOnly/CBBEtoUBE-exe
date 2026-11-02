@@ -49,6 +49,10 @@ ZAP_PRESETS_NAME = "CBBEtoUBE_zap_presets.txt"
 ZAP_VIEWS = _knob("CBBE2UBE_ZAP_VIEWS", 48, int)
 ZAP_PIXEL = _knob("CBBE2UBE_ZAP_PIXEL", 0.6)
 ZAP_VIEW_ANGLE = _knob("CBBE2UBE_ZAP_VIEW_ANGLE", 70.0)
+# Views per pose, when the rest pose and the presets should not share ZAP_VIEWS (0 = ZAP_VIEWS): the rest pose
+# is where narrow sight lines show skin at every body; a preset's bigger shape opens wide ones.
+ZAP_VIEWS_BIND = _knob("CBBE2UBE_ZAP_VIEWS_BIND", 0, int)
+ZAP_VIEWS_PRESET = _knob("CBBE2UBE_ZAP_VIEWS_PRESET", 0, int)
 # REJECTED 2026-11-01: spreading the views over elevations >= -20 deg only (where game cameras are, ~1.5x denser): 34
 # pre-zap replays, holes 14 pieces better / 14 worse, poke +6% -- the views from below see skin the cameras see.
 # #zap-cull (DEFAULT ON since 2026-11-01; CBBE2UBE_NO_ZAP_CULL=1 off): a single-sided cover shape covers only where its
@@ -324,12 +328,15 @@ def needed(B, BT, Gvs, Gts, dirs, acc=None, tri_acc=None, gcull=None):
     args = (B, len(B), BT, len(BT), GV, len(GV), GT, len(GT), mats, off, len(dirs), nx, np.float32(SELFTOL / px), acc,
             int(front_sign), vn.ctypes.data, np.ascontiguousarray(dirs, np.float32),
             np.float32(np.cos(np.radians(float(ZAP_VIEW_ANGLE)))))
+    cull = gcull is not None and any(gcull) and bool(Gvs)
+    if cull and tri_acc is None:
+        tri_acc = np.zeros(len(BT), np.uint8)   # #zap-cull rides the triangle pass; the triangles are not wanted here
     if tri_acc is not None:
         if not hasattr(dll, "zr_needed_t"):
             raise RuntimeError("zraster.dll predates #zap-tri-vis (no zr_needed_t)")
         tn = fn * front_sign
         tn = np.ascontiguousarray(tn / (np.linalg.norm(tn, axis=1, keepdims=True) + 1e-12), np.float32)
-        if gcull is not None and any(gcull) and Gvs:
+        if cull:
             if not hasattr(dll, "zr_needed_c"):
                 raise RuntimeError("zraster.dll predates #zap-cull (no zr_needed_c)")
             gc = np.ascontiguousarray(np.concatenate([np.full(len(T), bool(c), np.uint8) for T, c in zip(Gts, gcull)]))
@@ -1004,12 +1011,13 @@ def _edge_lift(loaded, kept, tri, vert_over, coll) -> "tuple[int, np.ndarray | N
         return 0, None
     sliders = [m for m in bt.morphs if len(m.idx) and "nipple" not in m.name.lower() and "areola" not in m.name.lower()]
 
-    def dense(m, n):
-        D = np.zeros((n, 3))
+    def along(m, N):
+        """Each vertex's move under morph `m` along its own normal N (0 where the morph has no row)."""
+        a = np.zeros(len(N))
         if m is not None:
-            i = np.asarray(m.idx, np.int64); ok = (i >= 0) & (i < n)
-            D[i[ok]] = np.asarray(m.delta, np.float64)[ok]
-        return D
+            i = np.asarray(m.idx, np.int64); ok = (i >= 0) & (i < len(N))
+            a[i[ok]] = np.einsum("ij,ij->i", np.asarray(m.delta, np.float64)[ok], N[i[ok]])
+        return a
 
     cap, feather = float(ZAP_EDGE_LIFT_CAP), float(ZAP_EDGE_LIFT_FEATHER)
     moved, keep_v = 0, None
@@ -1026,7 +1034,7 @@ def _edge_lift(loaded, kept, tri, vert_over, coll) -> "tuple[int, np.ndarray | N
         if not len(kidx):
             continue
         ktree = cKDTree(BV[kidx]); btree = cKDTree(BV)
-        BD = {m.name: dense(m, len(BV)) for m in sliders}
+        BA = [along(m, bn) for m in sliders]        # each slider's body move along the body normal, per vertex
         body_bones = set(body.bone_names or [])
         cur = vert_over.get(w) or {}
         for s in nf.shapes:
@@ -1054,14 +1062,26 @@ def _edge_lift(loaded, kept, tri, vert_over, coll) -> "tuple[int, np.ndarray | N
             if not len(ev):
                 continue
             cm = {m.name.lower(): m for m in ts.morphs} if ts is not None else {}
-            # the gap each edge vert needs so no single slider at +1 or -1 buries it in the kept skin beside it
+            # the gap each edge vert needs so no single slider at +1 or -1 buries it in the kept skin beside it; the
+            # kept skin beside each edge vert as one padded index table (pad -> a sentinel slot ignored by max / min)
+            width = max(len(x) for x in nbrs)
+            P = np.full((len(ev), width), len(BV), np.int64)
+            for j, ks in enumerate(nbrs):
+                P[j, :len(ks)] = ks
+            pad = P == len(BV)
+            nev = n[ev]
             need = np.zeros(len(ev))
-            for sl in sliders:
-                Db = BD[sl.name]
-                cn = np.einsum("ij,ij->i", dense(cm.get(sl.name.lower()), len(V))[ev], n[ev])
-                for j, ks in enumerate(nbrs):
-                    sk = np.einsum("ij,ij->i", Db[ks], bn[ks])
-                    need[j] = max(need[j], sk.max() - cn[j], cn[j] - sk.min())
+            for sl, sa in zip(sliders, BA):
+                m = cm.get(sl.name.lower())
+                cn = np.zeros(len(ev))
+                if m is not None:
+                    i = np.asarray(m.idx, np.int64); ok = (i >= 0) & (i < len(V))
+                    pos = np.full(len(V), -1, np.int64); pos[ev] = np.arange(len(ev))
+                    j = pos[i[ok]]; hit = j >= 0
+                    cn[j[hit]] = np.einsum("ij,ij->i", np.asarray(m.delta, np.float64)[ok][hit], nev[j[hit]])
+                sk = np.append(sa, 0.0)[P]
+                need = np.maximum(need, np.maximum(np.where(pad, -np.inf, sk).max(1) - cn,
+                                                   cn - np.where(pad, np.inf, sk).min(1)))
             lift_e = np.clip(need + ZAP_EDGE_LIFT_TOL - g[ev], 0.0, cap)
             on = lift_e > 1e-4
             if not on.any():
@@ -1072,10 +1092,10 @@ def _edge_lift(loaded, kept, tri, vert_over, coll) -> "tuple[int, np.ndarray | N
             src = np.fromiter(grp.keys(), np.int64); amt = np.fromiter(grp.values(), np.float64)
             lift = np.zeros(len(V))
             if feather > 0:
-                for vi, cand in enumerate(cKDTree(V[src]).query_ball_point(V, feather)):
-                    if cand:
-                        d = np.linalg.norm(V[src[cand]] - V[vi], axis=1)
-                        lift[vi] = float(np.max(amt[cand] * (1.0 - d / feather)))
+                pr = cKDTree(V).sparse_distance_matrix(cKDTree(V[src]), feather, output_type="ndarray")
+                if len(pr):
+                    d = np.linalg.norm(V[pr["i"]] - V[src[pr["j"]]], axis=1)   # as the per-vert loop measured it
+                    np.maximum.at(lift, pr["i"], amt[pr["j"]] * (1.0 - d / feather))
             else:
                 lift = np.array([grp.get(W[i], 0.0) for i in range(len(V))])
             lift[free] = 0.0
@@ -1222,7 +1242,9 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
             Bp = _morphed(BV, tri.get(BODY_NAME), sl)
             Gp = [_morphed(V, tri.get(nm), sl) for nm, V, T in G]
             ts = np.zeros(len(BT), np.uint8) if ZAP_TRI_VIS else None
-            nd = needed(Bp, BT, Gp, [T for _, _, T in G], dirs, tri_acc=ts, gcull=gsingle).astype(bool)
+            kv = int(ZAP_VIEWS_BIND if k == 0 else ZAP_VIEWS_PRESET)
+            nd = needed(Bp, BT, Gp, [T for _, _, T in G], fib_dirs(kv) if kv > 0 else dirs, tri_acc=ts,
+                        gcull=gsingle).astype(bool)
             ts = ts.astype(bool) if ts is not None else None
             if zone is not None and (nd & zone).any():
                 pk = _poking_through(Bp, BT, Gp, [T for _, _, T in G], np.flatnonzero(nd & zone), len(BV))
