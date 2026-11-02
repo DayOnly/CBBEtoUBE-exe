@@ -49,10 +49,8 @@ ZAP_PRESETS_NAME = "CBBEtoUBE_zap_presets.txt"
 ZAP_VIEWS = _knob("CBBE2UBE_ZAP_VIEWS", 48, int)
 ZAP_PIXEL = _knob("CBBE2UBE_ZAP_PIXEL", 0.6)
 ZAP_VIEW_ANGLE = _knob("CBBE2UBE_ZAP_VIEW_ANGLE", 70.0)
-# Views per pose, when the rest pose and the presets should not share ZAP_VIEWS (0 = ZAP_VIEWS): the rest pose
-# is where narrow sight lines show skin at every body; a preset's bigger shape opens wide ones.
-ZAP_VIEWS_BIND = _knob("CBBE2UBE_ZAP_VIEWS_BIND", 0, int)
-ZAP_VIEWS_PRESET = _knob("CBBE2UBE_ZAP_VIEWS_PRESET", 0, int)
+# REJECTED 2026-11-01: more views at rest and fewer per preset at the same total (96 / 32): holes +5.3%, 11 better /
+# 11 worse. Each extra view, angle or pixel lever kept more skin and traded holes for poke under sliders (log 11-01).
 # REJECTED 2026-11-01: spreading the views over elevations >= -20 deg only (where game cameras are, ~1.5x denser): 34
 # pre-zap replays, holes 14 pieces better / 14 worse, poke +6% -- the views from below see skin the cameras see.
 # #zap-cull (DEFAULT ON since 2026-11-01; CBBE2UBE_NO_ZAP_CULL=1 off): a single-sided cover shape covers only where its
@@ -112,22 +110,10 @@ ZAP_NIPPLE_HIDE = not _flag("CBBE2UBE_NO_ZAP_NIPPLE_HIDE", False)
 ZAP_HIDE_CORE_R = 2.5
 # The lowering never brings the cloth within ZAP_HIDE_KEEP_GAP of skin the zap keeps (nor closer than it already was).
 ZAP_HIDE_KEEP_GAP = 0.1
-# #zap-nipple-poke (CBBE2UBE_NO_ZAP_NIPPLE_POKE=1 off): within ZAP_NIPPLE_R of an apex, skin seen only because it pokes
-# THROUGH cover cloth -- cloth within ZAP_POKE_DEPTH under it along its own normal (or level with it) -- counts as
-# covered. In game 10-22: pointed nipples on coarse plates at rest, one plate vertex over the apex 1-2u above its ring.
-# The source and the authors' UBE builds run the plate straight over the breast, 0.5-2.6u UNDER its tip, the poking
-# nipple deleted; ours kept that skin (seen from oblique views) and #min-push lifted the plate over it (~+1u, the warp
-# another 0.2-0.6u). With the skin gone the view sees the cloth that lay just under it. Pairs with #min-push-zap-nipple.
-# REJECTED 10-22: lowering a coarse plate's point onto its ring after the fact (ring fits 0.6-1.25 edges wide, or the
-# body's breast + the ring's stand-off): vertex for vertex against 240 author tips it traded points for dents at every
-# width (points > 0.3u 141 -> 89..124, dents 1 -> 17..55).
-# OFF since 2026-11-01 (CBBE2UBE_ZAP_NIPPLE_POKE=1 on): judged along the skin's own normal it took breast skin that rises
-# over a cuirass edge (hide, 3.5-5u from the apex), and from above the camera then saw the cuirass's undrawn inside --
-# the top of the breast missing in game. #zap-cull makes the views judge it per line of sight instead; a tip in front
-# of drawn cloth still goes.
-ZAP_NIPPLE_POKE = _flag("CBBE2UBE_ZAP_NIPPLE_POKE", False)
-ZAP_POKE_DEPTH = 4.0      # Too Big pushes the tip 3.1-3.7u through a plate that clears it by 0.5u at rest
-ZAP_POKE_LEVEL = 0.3      # cloth this far ABOVE the skin still counts: level with it, seen edge-on
+# REMOVED 2026-11-02: #zap-nipple-poke (off since 11-01). Within 5u of an apex it counted skin that pokes through cover
+# cloth -- judged along the skin's own normal -- as covered; that took breast skin rising over a cuirass edge, and the
+# camera then saw the cuirass's undrawn inside (the hide cuirass, in game). #zap-cull judges every line of sight: a tip
+# in front of drawn cloth still goes. The 10-22 pointed-nipple case stays covered by #min-push-zap-nipple + the cull.
 # #zap-nipple-hide-covered (CBBE2UBE_NO_ZAP_NIPPLE_HIDE_COVERED=1 = the whole ring must go): a nipple core no pose shows
 # is hidden too when skin in its ring is kept. A cup edge 4-5u from the apex keeps the skin above it (visible, right)
 # plus its ZAP_BAND, and that alone refused the lowering: the witch top kept a +0.4u bump over a nipple no pose sees.
@@ -182,8 +168,7 @@ ZAP_NIPPLE_R = 5.0     # = sliderset_gen.NIPPLE_MORPH_BRIDGE_R_OUT: past this a 
 # pre-zap snapshots: summed worst-camera hole 265 -> 159 u^2, 17 pieces better / 1 worse, +153 kept triangles per
 # piece, no extra views (96 / 192 views: 247 / 240 at 2x / 4x the work; an 85 deg limit or a 3u band: 232 / 222 with
 # 13x more skin kept). Seen triangles obey the vertex rules: when #zap-preset-keep's prune is set, a preset-only one
-# far from bind-visible skin goes; one whose corners poke through the cloth at a nipple counts as covered
-# (#zap-nipple-poke); and a seen one blocks #zap-nipple-hide.
+# far from bind-visible skin goes; and a seen one blocks #zap-nipple-hide.
 ZAP_TRI_VIS = not _flag("CBBE2UBE_NO_ZAP_TRI_VIS", False)
 # REMOVED 2026-10-30: #zap-preset-nipples (the zap's presets kept their nipple-local sliders). In game it drew a nipple
 # outline through opaque armour (iron cuirass: the cloth's nipple sliders pushed it out 0.35u where they had been
@@ -213,18 +198,22 @@ ZAP_NIPPLE_ALPHA_PAD = 2.0
 # keeping skin only beside the edge were both measured worse or no better.
 ZAP_EDGE_LIFT = not _flag("CBBE2UBE_NO_ZAP_EDGE_LIFT", False)
 ZAP_EDGE_LIFT_CAP = _knob("CBBE2UBE_ZAP_EDGE_LIFT_CAP", 0.2)
-# #zap-edge-lift-recheck (OFF; CBBE2UBE_ZAP_EDGE_LIFT_RECHECK=1 on): the lift moves cloth edges AFTER the views chose the
-# skin, so a raised neckline can open a sight line onto skin deleted under it (2026-11-01: farm dress / merchant torso
-# cleavage, 4 of the 8 pieces worse than the pre-10-30 build; with the lift off they match it exactly). On, the rest
-# pose is rendered again with the lifted cloth and any body triangle now seen is kept.
-ZAP_EDGE_LIFT_RECHECK = _flag("CBBE2UBE_ZAP_EDGE_LIFT_RECHECK", False)
-# The lift's blanket keep of the skin under every lifted edge (CBBE2UBE_ZAP_EDGE_LIFT_KEEP=0 off: with the recheck on,
-# only skin a view sees after the lift is kept). Experiment switch, default = today's behaviour.
-ZAP_EDGE_LIFT_KEEP = bool(_knob("CBBE2UBE_ZAP_EDGE_LIFT_KEEP", 1, int))
-# #zap-edge-keep (OFF; CBBE2UBE_ZAP_EDGE_KEEP_R=<u> on): keep the skin within this radius of the foot of every cloth
-# edge vert that borders kept skin -- the edge lift's skin keep WITHOUT moving any cloth, for when the cloth's own rows
-# follow the skin at its edges (#tri-follow-edge). Experiment switch.
-ZAP_EDGE_KEEP_R = _knob("CBBE2UBE_ZAP_EDGE_KEEP_R", 0.0)
+# REMOVED 2026-11-02 (experiment switches, all off): #zap-edge-lift-recheck (re-render rest after the lift), turning off
+# the lift's skin keep, and #zap-edge-keep (the lift's skin keep without moving cloth). A lift-free zap traded gaps for
+# buried edges at every keep radius (skin beside an edge rises at different rates; only a rest gap absorbs it); with
+# #tri-follow the lift stays as that margin and moves ~1/3 fewer verts (log 11-01).
+# #zap-rest-clear (DEFAULT ON since 2026-11-02; CBBE2UBE_NO_ZAP_REST_CLEAR=1 off): user-approved 11-02. A coarse cloth
+# face can cut through the rounder UBE breast at rest while every one of its verts sits outside the skin (the LOTD bard
+# tunic: 1802 skin verts 0.56u through its front, median; every vert ~0.3u out). The zap cannot delete that skin --
+# grazing sight lines through the breast find no cloth behind it -- so before the views run, each cloth face with skin
+# poking through its INSIDE at rest has its corners moved out along the body normal by the most any skin point under
+# it pokes, + ZAP_REST_CLEAR_M; cloth that clears is untouched. Faces within ZAP_REST_CLEAR_EDGE of an open cloth edge are
+# left alone (skin over a neckline's edge is the source's design), as are simulated verts. Moves at most ZAP_REST_CLEAR_CAP.
+ZAP_REST_CLEAR = not _flag("CBBE2UBE_NO_ZAP_REST_CLEAR", False)
+ZAP_REST_CLEAR_M = 0.05
+ZAP_REST_CLEAR_D = 2.5         # skin this far outside a face (along its normal) is looked at
+ZAP_REST_CLEAR_EDGE = 2.0
+ZAP_REST_CLEAR_CAP = 2.0
 ZAP_EDGE_LIFT_FEATHER = _knob("CBBE2UBE_ZAP_EDGE_LIFT_FEATHER", 2.0)
 ZAP_EDGE_LIFT_NEAR = 4.0       # edge verts this close to the body (along its normal) are candidates
 ZAP_EDGE_LIFT_R = 1.5          # kept skin within this of an edge vert's foot point borders it
@@ -724,41 +713,14 @@ def _seen_tri_keep(tri_need, tri_bind, bind_vis, full, Vref) -> np.ndarray:
     return keep
 
 
-def _keep_edge_band(de, bind_vis, Vref, poked=None) -> np.ndarray:
-    """Un-delete the skin within ZAP_BAND of skin visible at bind (a margin round every opening). Skin let go for
-    poking through cloth (`poked`, #zap-nipple-poke) stays deleted: that cloth lies just under it, not a hole -- the
-    band brought it back beside visible skin and it poked through again (357 replay: 5 pieces, up to 48 u^2)."""
+def _keep_edge_band(de, bind_vis, Vref) -> np.ndarray:
+    """Un-delete the skin within ZAP_BAND of skin visible at bind (a margin round every opening)."""
     if not (bind_vis.any() and de.any() and float(ZAP_BAND) > 0):
         return de
     dk, _ = cKDTree(Vref[bind_vis]).query(Vref[de])
     band = np.flatnonzero(de)[dk < float(ZAP_BAND)]
-    if poked is not None:
-        band = band[~poked[band]]
     de = de.copy(); de[band] = False
     return de
-
-
-def _poking_through(B, BT, Gvs, Gts, idx, n) -> np.ndarray:
-    """Bool per body vertex: the vertices `idx` that have cover cloth within ZAP_POKE_DEPTH UNDER them along their own
-    outward normal (the skin pokes through that cloth) -- #zap-nipple-poke."""
-    B = np.asarray(B, np.float64); BT = np.asarray(BT, np.int64)
-    fn = np.cross(B[BT[:, 1]] - B[BT[:, 0]], B[BT[:, 2]] - B[BT[:, 0]])
-    vn = np.zeros_like(B)
-    for k in range(3):
-        np.add.at(vn, BT[:, k], fn)
-    vn /= np.linalg.norm(vn, axis=1, keepdims=True) + 1e-12
-    if ((B[BT].mean(1) - B.mean(0)) * fn).sum(1).mean() < 0:
-        vn = -vn                                          # outward
-    out = np.zeros(n, bool)
-    idx = np.asarray(idx, np.int64)
-    O = B[idx] + float(ZAP_POKE_LEVEL) * vn[idx]; D = -vn[idx]
-    for V, T in zip(Gvs, Gts):
-        if not len(T):
-            continue
-        tst = _fm().ClipTester(np.asarray(V, np.float64), np.asarray(T, np.int64), tmax=float(ZAP_POKE_DEPTH + ZAP_POKE_LEVEL) + 1.0)
-        t = tst.cast(O, D)
-        out[idx[np.isfinite(t) & (t <= float(ZAP_POKE_DEPTH + ZAP_POKE_LEVEL))]] = True
-    return out
 
 
 def _keep_skin_scale(V, T, ci, dh, nA, A, ea, eb, kept_skin, reach) -> float:
@@ -1013,51 +975,61 @@ def _open_edge_verts(V, T) -> "tuple[np.ndarray, np.ndarray]":
     return mask, W
 
 
-def _edge_keep(loaded, kept, coll, radius) -> "np.ndarray | None":
-    """#zap-edge-keep: bool per body vert -- the skin within `radius` of the foot of each cloth edge vert (within
-    ZAP_EDGE_LIFT_NEAR of the body, not simulated) whose foot borders kept skin. No cloth moves."""
+def _rest_clear(nf, body, full, coll, body_bones) -> "dict[str, np.ndarray]":
+    """#zap-rest-clear: {shape: new rest verts} for the cloth shapes whose faces have skin poking through their inside
+    at rest; {} when none."""
     from . import nif_convert as nc
     from . import sliderset_gen as sg
-    keep_v = None
-    for w, (nf, _p) in loaded.items():
-        body = next((s for s in nf.shapes if s.name == BODY_NAME), None)
-        if body is None:
+    from . import fit_metrics as fm
+    BV = np.asarray(body.verts, np.float64); full = np.asarray(full, np.int64)
+    fn = np.cross(BV[full[:, 1]] - BV[full[:, 0]], BV[full[:, 2]] - BV[full[:, 0]])
+    fs = 1.0 if ((BV[full].mean(1) - BV.mean(0)) * fn).sum(1).mean() >= 0 else -1.0
+    bn = _body_normals(BV, full)
+    used = np.zeros(len(BV), bool); used[full.ravel()] = True
+    pts = np.flatnonzero(used)
+    out = {}
+    for s in nf.shapes:
+        if s.name in nc.UBE_BODY_INJECT_NAMES or s.name in coll or not len(s.tris):
             continue
-        full, _ = full_body_tris(w or "_1")
-        full = np.asarray(full, np.int64)
-        BV = np.asarray(body.verts, np.float64)
-        bn = _body_normals(BV, full)
-        keptv = np.zeros(len(BV), bool); keptv[np.asarray(kept, np.int64).ravel()] = True
-        if not keptv.any():
+        try:
+            if int(s.flags) & 1:
+                continue
+        except Exception:
+            pass
+        V = np.asarray(s.verts, np.float64); T = np.asarray(s.tris, np.int64).reshape(-1, 3)
+        tst = fm._ClipTester(V, T, tmax=ZAP_REST_CLEAR_D + 0.1)
+        O = BV[pts] - 1e-3 * bn[pts]
+        ri, ti = tst._pairs(O)
+        t, who = tst._cast(O, -bn[pts], ri, ti, len(pts), want_tri=True)
+        hit = np.isfinite(t) & (who >= 0) & (t <= ZAP_REST_CLEAR_D)
+        if not hit.any():
             continue
-        ktree = cKDTree(BV[keptv]); btree = cKDTree(BV)
-        body_bones = set(body.bone_names or [])
-        for s in nf.shapes:
-            if s.name in nc.UBE_BODY_INJECT_NAMES or s.name in coll or not len(s.tris):
-                continue
-            try:
-                if int(s.flags) & 1:
-                    continue
-            except Exception:
-                pass
-            V = np.asarray(s.verts, np.float64); T = np.asarray(s.tris, np.int64).reshape(-1, 3)
-            edge, _ = _open_edge_verts(V, T)
-            corners, bary = sg._closest_surface_bary(V, BV, full)
-            foot = (BV[corners] * bary[:, :, None]).sum(1)
-            n = (bn[corners] * bary[:, :, None]).sum(1); n /= np.linalg.norm(n, axis=1, keepdims=True) + 1e-12
-            g = np.einsum("ij,ij->i", V - foot, n)
-            ev = np.flatnonzero(edge & (np.abs(g) < ZAP_EDGE_LIFT_NEAR) & ~_free_verts(s, body_bones))
-            if not len(ev):
-                continue
-            near = ktree.query(foot[ev], distance_upper_bound=ZAP_EDGE_LIFT_R)[0]
-            ev = ev[np.isfinite(near)]
-            if not len(ev):
-                continue
-            kb = np.zeros(len(BV), bool)
-            for lst in btree.query_ball_point(foot[ev], float(radius)):
-                kb[lst] = True
-            keep_v = kb if keep_v is None else (keep_v | kb)
-    return keep_v
+        p_, t_, f_ = pts[hit], t[hit], who[hit]
+        gfn = np.cross(V[T[f_, 1]] - V[T[f_, 0]], V[T[f_, 2]] - V[T[f_, 0]]) * fs
+        outward = np.einsum("ij,ij->i", gfn, bn[p_]) > 0          # the skin is outside a face that faces out
+        p_, t_, f_ = p_[outward], t_[outward], f_[outward]
+        if not len(f_):
+            continue
+        edge, _ = _open_edge_verts(V, T)
+        if edge.any():
+            de, _ = cKDTree(V[edge]).query(V)
+            away = (de[T[f_]] >= ZAP_REST_CLEAR_EDGE).all(1)
+            p_, t_, f_ = p_[away], t_[away], f_[away]
+        if not len(f_):
+            continue
+        lift = np.zeros(len(V))
+        for k in range(3):
+            np.maximum.at(lift, T[f_, k], t_ + ZAP_REST_CLEAR_M)
+        lift = np.minimum(lift, ZAP_REST_CLEAR_CAP)
+        lift[_free_verts(s, body_bones)] = 0.0
+        mv = lift > 1e-4
+        if not mv.any():
+            continue
+        corners, bary = sg._closest_surface_bary(V[mv], BV, full)
+        n = (bn[corners] * bary[:, :, None]).sum(1); n /= np.linalg.norm(n, axis=1, keepdims=True) + 1e-12
+        newV = V.copy(); newV[mv] += lift[mv, None] * n
+        out[s.name] = newV
+    return out
 
 
 def _edge_lift(loaded, kept, tri, vert_over, coll) -> "tuple[int, np.ndarray | None]":
@@ -1238,9 +1210,9 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
     tri = {s.name: s for s in tf.shapes} if tf is not None else {}
     presets = preset_paths()
     loaded, need, bind_vis = {}, None, None
-    apexes, nip_local, gverts, poked = None, set(), {}, None
+    apexes, nip_local, gverts = None, set(), {}
     alpha_pts = []                             # #zap-nipple-opaque: centroids of see-through cover triangles
-    gcache = {}                                # per weight: the cover set the views used (#zap-edge-lift-recheck)
+    pre_over = {}                              # per weight: #zap-rest-clear's moved cloth, used by the views and written
     tri_need = tri_bind = None                 # #zap-tri-vis: triangles seen in any pose / at bind
     # #zap-fp-armature: the planner's answer (an ARMA uses this mesh only as a first-person model) or the name rule
     first_person = bool(first_person) and ZAP_FP_ARMATURE; arm = None
@@ -1270,6 +1242,14 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
         except Exception:
             coll = set()
         body_bones = set(body.bone_names or [])
+        pre = {}
+        if ZAP_REST_CLEAR:
+            try:
+                pre = _rest_clear(nf, body, full, coll, body_bones)
+            except Exception as e:
+                nc._note_pass_failure("zap-rest-clear", e, p)
+                pre = {}
+        pre_over[w] = pre
         G, gsingle = [], []
         for s in nf.shapes:
             if s.name in nc.UBE_BODY_INJECT_NAMES or not len(s.tris):
@@ -1288,34 +1268,19 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
                         alpha_pts.append(np.asarray(s.verts, np.float64)[T[~_om]].mean(1))
                     T = T[_om]
             if len(T):
-                G.append((s.name, np.asarray(s.verts, np.float64), T))
+                G.append((s.name, np.asarray(pre.get(s.name, s.verts), np.float64), T))
                 gsingle.append(ZAP_CULL and _single_sided(s))
         gverts.update({s.name: np.asarray(s.verts, np.float64) for s in nf.shapes if s.name not in gverts})
         BV = np.asarray(body.verts, np.float64); BT = full
-        gcache[w] = (G, gsingle, BV, BT)
         # nipple-local sliders left out: #zap-nipple-flat drops them from the cloth afterwards, and the answer must
         # not depend on whether that already happened (a re-run reads the flattened .tri)
         poses = [()] + [tuple(kv for kv in _preset(pp, w != "_0") if kv[0] not in nip_local) for pp in presets]
-        zone = None
-        if ZAP_NIPPLE_POKE and apexes and not first_person:
-            zone = np.min([np.linalg.norm(BV - BV[a], axis=1) for a in apexes], axis=0) < ZAP_NIPPLE_R
         for k, sl in enumerate(poses):
             Bp = _morphed(BV, tri.get(BODY_NAME), sl)
             Gp = [_morphed(V, tri.get(nm), sl) for nm, V, T in G]
             ts = np.zeros(len(BT), np.uint8) if ZAP_TRI_VIS else None
-            kv = int(ZAP_VIEWS_BIND if k == 0 else ZAP_VIEWS_PRESET)
-            nd = needed(Bp, BT, Gp, [T for _, _, T in G], fib_dirs(kv) if kv > 0 else dirs, tri_acc=ts,
-                        gcull=gsingle).astype(bool)
+            nd = needed(Bp, BT, Gp, [T for _, _, T in G], dirs, tri_acc=ts, gcull=gsingle).astype(bool)
             ts = ts.astype(bool) if ts is not None else None
-            if zone is not None and (nd & zone).any():
-                pk = _poking_through(Bp, BT, Gp, [T for _, _, T in G], np.flatnonzero(nd & zone), len(BV))
-                poked = pk if poked is None else (poked | pk)
-                nd &= ~pk
-            if zone is not None and ts is not None and ts.any():
-                tv = np.zeros(len(BV), bool); tv[BT[ts].ravel()] = True; tv &= zone
-                if tv.any():                               # poking through the cloth: covered, as for the vertices
-                    pkt = _poking_through(Bp, BT, Gp, [T for _, _, T in G], np.flatnonzero(tv), len(BV))
-                    ts &= pkt[BT].sum(1) < 2
             need = nd if need is None else (need | nd)
             if ts is not None:
                 tri_need = ts if tri_need is None else (tri_need | ts)
@@ -1346,7 +1311,7 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
                 if len(AP) and (np.linalg.norm(AP - Vref[a], axis=1) < ZAP_NIPPLE_R + ZAP_NIPPLE_ALPHA_PAD).any():
                     continue                               # see-through cloth near this nipple: its sliders stay
                 opaque_apex.append(int(a))
-        de = _keep_edge_band(de, bind_vis, Vref, poked)
+        de = _keep_edge_band(de, bind_vis, Vref)
     tri_keep = None
     if not first_person and tri_need is not None and tri_need.any():
         tri_keep = _seen_tri_keep(tri_need, tri_bind, bind_vis, full, Vref)
@@ -1385,7 +1350,11 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
         n = _envelope_kept_nipples(tf, loaded, kept, coll)
         if n:
             tf.save(tri_path); out["nipple_rows_lifted"] = n
-    vert_over = {}
+    vert_over = {w: dict(v) for w, v in pre_over.items() if v}
+    if vert_over:
+        out["rest_clear_moved"] = int(sum(int((np.linalg.norm(V - np.asarray(next(x for x in loaded[w][0].shapes
+                                                                                  if x.name == nm).verts), axis=1)
+                                                > 1e-4).sum()) for w, d in vert_over.items() for nm, V in d.items()))
     if hide_apex:
         try:
             coll = set()
@@ -1406,7 +1375,8 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
                         continue
                 except Exception:
                     pass
-                new = _flatten_cloth_bump(np.asarray(s.verts, np.float64), np.asarray(s.tris, np.int64), BV, fw,
+                new = _flatten_cloth_bump(np.asarray((vert_over.get(w) or {}).get(s.name, s.verts), np.float64),
+                                          np.asarray(s.tris, np.int64), BV, fw,
                                           hide_apex, kept_skin=kept_skin)
                 if new is not None:
                     vert_over.setdefault(w, {})[s.name] = new
@@ -1445,42 +1415,11 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
             moved, keep_v = 0, None
         if moved:
             out["edge_lift_moved"] = moved
-        if moved and ZAP_EDGE_LIFT_RECHECK:
-            # #zap-edge-lift-recheck: the rest pose again, with the lifted cloth
-            seen_now = np.zeros(len(full), bool)
-            for w, (G0, gs0, BV0, BT0) in gcache.items():
-                lifted = vert_over.get(w) or {}
-                Gl = [np.asarray(lifted.get(nm, V), np.float64) for nm, V, T in G0]
-                ts = np.zeros(len(BT0), np.uint8); nd = np.zeros(len(BV0), np.uint8)
-                needed(BV0, BT0, Gl, [T for _, _, T in G0], dirs, acc=nd, tri_acc=ts, gcull=gs0)
-                seen_now |= ts.astype(bool) | (nd.astype(bool)[BT0].sum(1) >= 2)
-            back = gone & seen_now
-            for a in hide_apex:                            # a hidden nipple core stays zapped
-                back &= ~(np.linalg.norm(Vref[full] - Vref[a], axis=2) < ZAP_HIDE_CORE_R).any(1)
-            if back.any():
-                gone = gone & ~back
-                kept = full[~gone]
-                out["deleted_tris"], out["kept_tris"] = int(gone.sum()), int(len(kept))
-                out["edge_lift_recheck_kept"] = int(back.sum())
-        if keep_v is not None and ZAP_EDGE_LIFT_KEEP:
+        if keep_v is not None:
             if hide_apex:                                  # a hidden nipple core stays zapped
                 for a in hide_apex:
                     keep_v &= np.linalg.norm(Vref - Vref[a], axis=1) >= ZAP_HIDE_CORE_R
             gone = gone & ~keep_v[full].any(1)
-            kept = full[~gone]
-            out["deleted_tris"], out["kept_tris"] = int(gone.sum()), int(len(kept))
-    if float(ZAP_EDGE_KEEP_R) > 0 and not first_person:
-        coll = set()
-        for _w, (_nf, _p) in loaded.items():
-            try:
-                coll |= set(nc._hdt_collider_shape_names(_p, nif=_nf, stem_scan=nc._dst_xml_stem_scan()))
-            except Exception:
-                pass
-        ek = _edge_keep(loaded, kept, coll, float(ZAP_EDGE_KEEP_R))
-        if ek is not None:
-            for a in hide_apex:                            # a hidden nipple core stays zapped
-                ek &= np.linalg.norm(Vref - Vref[a], axis=1) >= ZAP_HIDE_CORE_R
-            gone = gone & ~ek[full].any(1)
             kept = full[~gone]
             out["deleted_tris"], out["kept_tris"] = int(gone.sum()), int(len(kept))
     for w, (nf, p) in loaded.items():

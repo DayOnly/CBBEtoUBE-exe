@@ -13225,8 +13225,9 @@ PANEL_RIGIDITY = _knob("CBBE2UBE_PANEL_RIGIDITY", 0.0)
 # 0.134 -> 0.100u (authors keep it to 0.04u); conversion time -35..-49%; walk/run about neutral.
 _ZAP_WARP_ONLY = not _flag("CBBE2UBE_NO_ZAP_WARP_ONLY", False)
 # #min-push-zap-nipple (ON with #zap-lean; CBBE2UBE_NO_MIN_PUSH_ZAP_NIPPLE=1 judges it): on a zapped piece #min-push
-# does not judge skin within body_zap.ZAP_NIPPLE_R of a nipple apex -- the zap deletes the nipple that pokes through
-# cover cloth (#zap-nipple-poke), so lifting the cloth over it only drew a cone at every coarse tip (in game 10-22:
+# does not judge skin within body_zap.ZAP_NIPPLE_R of a nipple apex -- the zap deletes a nipple tip in front of drawn
+# cover cloth (#zap-cull; it was #zap-nipple-poke until 11-02), so lifting the cloth over it only drew a cone at every
+# coarse tip (in game 10-22:
 # ~+1u on the apex vertex; the source and the authors' builds run the plate under the breast's tip).
 _MIN_PUSH_ZAP_NIPPLE = not _flag("CBBE2UBE_NO_MIN_PUSH_ZAP_NIPPLE", False)
 

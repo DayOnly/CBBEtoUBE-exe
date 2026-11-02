@@ -126,3 +126,31 @@ def test_preset_nipples_is_removed():
     # 2026-10-30: judging the presets with their nipple sliders drew a nipple outline through opaque armour in game
     assert not hasattr(bz, "ZAP_PRESET_NIPPLES")
     assert "CBBE2UBE_NO_ZAP_PRESET_NIPPLES" not in Path(bz.__file__).read_text(encoding="utf-8")
+
+
+def test_rest_clear_lifts_a_face_the_skin_pokes_through_and_nothing_else(monkeypatch):
+    """#zap-rest-clear: a panel whose middle dips 0.4u under the skin (the skin pokes through its face at rest) has
+    the dip lifted out over the skin by the poke + margin; the rest of the panel and its open edges stay put."""
+    _normals_plus_y(monkeypatch)
+    BV, BT = _sheet(25, 12.0, 0.0)
+    GV, GT = _sheet(19, 9.0, 0.3)
+    dip = (np.abs(GV[:, 0]) < 2.5) & (np.abs(GV[:, 2] - 100.0) < 2.5)
+    GV = GV.copy(); GV[dip, 1] = -0.4
+    nf = SimpleNamespace(shapes=[_shape(bz.BODY_NAME, BV, BT), _shape("Panel", GV, GT)])
+    out = bz._rest_clear(nf, nf.shapes[0], BT, set(), {"NPC Spine2 [Spn2]"})
+    assert set(out) == {"Panel"}
+    lift = out["Panel"][:, 1] - GV[:, 1]
+    assert np.allclose(out["Panel"][:, [0, 2]], GV[:, [0, 2]]), "along the body normal only"
+    assert (out["Panel"][dip, 1] > 0.0).all(), "the dip now clears the skin"
+    assert lift.max() <= 0.4 + bz.ZAP_REST_CLEAR_M + 1e-9, "no more than the poke + margin"
+    edge, _ = bz._open_edge_verts(GV, GT)
+    assert np.allclose(lift[edge], 0.0), "open edges stay put"
+
+
+def test_rest_clear_leaves_cloth_that_clears_alone(monkeypatch):
+    _normals_plus_y(monkeypatch)
+    BV, BT = _sheet(25, 12.0, 0.0)
+    GV, GT = _sheet(19, 9.0, 0.3)
+    nf = SimpleNamespace(shapes=[_shape(bz.BODY_NAME, BV, BT), _shape("Panel", GV, GT)])
+    assert bz._rest_clear(nf, nf.shapes[0], BT, set(), {"NPC Spine2 [Spn2]"}) == {}
+    assert bz.ZAP_REST_CLEAR

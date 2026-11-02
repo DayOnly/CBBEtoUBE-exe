@@ -86,8 +86,10 @@ def test_the_cull_does_not_need_the_triangle_pass():
     assert bz.needed(B, BT, [G], [GT], bz.fib_dirs(48), gcull=[True]).astype(bool)[B[:, 2] > 59.9].any()
 
 
-def test_the_nipple_poke_rule_is_off_by_default():
-    assert not bz.ZAP_NIPPLE_POKE and bz.ZAP_CULL
+def test_the_nipple_poke_rule_and_the_experiment_switches_are_gone():
+    gone = ("ZAP_NIPPLE_POKE", "_poking_through", "ZAP_VIEWS_BIND", "ZAP_VIEWS_PRESET", "ZAP_EDGE_LIFT_RECHECK",
+            "ZAP_EDGE_LIFT_KEEP", "ZAP_EDGE_KEEP_R", "_edge_keep")
+    assert not [n for n in gone if hasattr(bz, n)] and bz.ZAP_CULL
 
 
 def _slit_lid(h=11, n=10, c=(0, 0, 50)):

@@ -12463,24 +12463,25 @@ PAIRS = (
          tests=('tests/test_readable_run_log.py',),
          expect=('test_the_window_does_not_read_past_the_end_marker',),
     ),
-    # #zap-nipple-poke / #min-push-zap-nipple / #zap-nipple-hide-covered (in game 10-22: pointed nipples on coarse plates)
-    Pair('ZNP-a', 'the poke test looks outward instead of under the skin',
+    # #min-push-zap-nipple / #zap-nipple-hide-covered (in game 10-22: pointed nipples on coarse plates)
+    # ZNP-a/b/c retired 2026-11-02 with #zap-nipple-poke; #zap-rest-clear / the edge band seeded in their place.
+    Pair('ZRC-a', 'the rest clearance lifts the dip by nothing',
          edits=(
              ('src/body_zap.py',
-              '    O = B[idx] + float(ZAP_POKE_LEVEL) * vn[idx]; D = -vn[idx]\n',
-              '    O = B[idx] + float(ZAP_POKE_LEVEL) * vn[idx]; D = vn[idx]  # MUTATED\n', 1),
+              '            np.maximum.at(lift, T[f_, k], t_ + ZAP_REST_CLEAR_M)\n',
+              '            np.maximum.at(lift, T[f_, k], 0.0 * t_)  # MUTATED\n', 1),
          ),
-         tests=('tests/test_zap_hide_alpha.py',),
-         expect=('test_skin_poking_through_cloth_just_under_it_counts_as_covered',),
+         tests=('tests/test_zap_edge_lift.py',),
+         expect=('test_rest_clear_lifts_a_face_the_skin_pokes_through_and_nothing_else',),
     ),
-    Pair('ZNP-b', 'cloth level with the skin is not counted',
+    Pair('ZEB-a', 'the edge band keeps no skin',
          edits=(
              ('src/body_zap.py',
-              '    O = B[idx] + float(ZAP_POKE_LEVEL) * vn[idx]; D = -vn[idx]\n',
-              '    O = B[idx] + 1e-3 * vn[idx]; D = -vn[idx]  # MUTATED\n', 1),
+              '    de = de.copy(); de[band] = False\n',
+              '    de = de.copy()  # MUTATED\n', 1),
          ),
          tests=('tests/test_zap_hide_alpha.py',),
-         expect=('test_cloth_level_with_the_skin_counts',),
+         expect=('test_the_edge_band_keeps_the_skin_next_to_an_opening',),
     ),
     Pair('MPZ-a', '#min-push judges the zapped nipple again',
          edits=(
@@ -12499,15 +12500,6 @@ PAIRS = (
          ),
          tests=('tests/test_zap_hide_alpha.py',),
          expect=('test_the_lowering_stops_short_of_kept_skin',),
-    ),
-    Pair('ZNP-c', 'the edge band brings back skin that poked through cloth',
-         edits=(
-             ('src/body_zap.py',
-              '        band = band[~poked[band]]\n',
-              '        pass  # MUTATED\n', 1),
-         ),
-         tests=('tests/test_zap_hide_alpha.py',),
-         expect=('test_the_edge_band_does_not_bring_back_skin_that_poked_through',),
     ),
     # #settings-source-line: the window's child is who applied the settings,
     # not a skipped settings file.

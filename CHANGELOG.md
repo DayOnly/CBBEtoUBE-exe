@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed — breasts through a coarse garment's front at rest
+
+- A low-poly garment's large flat faces can cut through the rounder UBE breast while every one of its vertices sits
+  outside the skin (LOTD bard tunic: 1802 skin vertices through its front, 0.56u median). The zap could not delete
+  that skin: from grazing angles nothing would be behind it. Before the zap's views run, each cloth face with skin
+  poking through its inside at rest now has its corners moved out along the body normal by the most the skin pokes,
+  plus 0.05u (#zap-rest-clear; `CBBE2UBE_NO_ZAP_REST_CLEAR=1` turns it off). Cloth that already clears is untouched;
+  faces within 2u of an open edge (skin over a neckline, the source's design) and simulated cloth are left alone; at
+  most 2u. Bard tunic: skin through the cloth at rest 76.7 -> 4.1 u^2 (breasts 1448 -> 0 vertices), holes at rest
+  0.52 -> 0.09; 193 of 1347 vertices moved, median 0.18u.
+
 ### Fixed — cloth follows the body sliders at weight 100, at its edges, and across its faces
 
 - The armour's .tri is built from the weight-0 meshes, and the same slider rows drive the weight-100 mesh, where each
@@ -40,7 +51,7 @@ In game: the top of the breasts missing under the hide cuirass, seen from above.
 - The zap's views now treat a single-sided cover shape as cover only where its front faces the view, as the game
   draws it (#zap-cull; `CBBE2UBE_NO_ZAP_CULL=1` turns it off). A shape flagged double-sided still covers from both
   sides. Skin in front of cloth is deleted only where the cloth behind it is drawn.
-- #zap-nipple-poke is off (`CBBE2UBE_ZAP_NIPPLE_POKE=1` turns it back on). It judged skin within 5u of a nipple along
+- #zap-nipple-poke is removed. It judged skin within 5u of a nipple along
   the skin's own normal, so it deleted breast skin rising over the cuirass's edge, and from above the camera then saw
   the cuirass's undrawn inside. The views now judge each line of sight; a nipple tip in front of drawn cloth still goes.
 - 34 pieces replayed from their pre-zap state vs the previous build: worst-camera holes -27% (15 pieces better, 1
@@ -81,6 +92,14 @@ Holes in the skin under some armours, seen in game.
   skin under opaque armour, and the cloth over it kept its nipple sliders: an outline in game (iron cuirass).
 - A first version also deleted all nipple-zone skin the rest pose does not see: in game a blatant chest hole under the
   hide cuirass on a big body. Replaced the same day.
+
+### Removed — the nipple poke rule and this round's losing experiment switches
+
+None was on in a build. `CBBE2UBE_ZAP_NIPPLE_POKE` (off since the cull), and the switches added while testing:
+per-pose view counts (`CBBE2UBE_ZAP_VIEWS_BIND` / `_PRESET`), the edge-lift re-check, turning off the edge lift's skin
+keep, and a skin keep without the lift (`CBBE2UBE_ZAP_EDGE_KEEP_R`). Each lost on the 34-piece replay: more views or a
+wider angle traded holes for skin poking through under sliders, and every lift-free version traded gaps for buried
+edges.
 
 ### Removed — four disproven opt-in options
 

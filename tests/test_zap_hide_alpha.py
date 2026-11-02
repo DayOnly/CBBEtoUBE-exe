@@ -132,43 +132,11 @@ def _sphere(R, n=48):
     return V, F, top
 
 
-def _cap(R, half=6.0, n=13):
-    """a cloth patch on the sphere of radius R over the +y pole"""
-    xs = np.linspace(-half, half, n); X, Z = np.meshgrid(xs, xs)
-    Y = np.sqrt(np.clip(R * R - X ** 2 - Z ** 2, 0.0, None))
-    V = np.c_[X.ravel(), Y.ravel(), Z.ravel()]
-    _, T = _sheet(n, half, 0.0)
-    return V, T
-
-
-def test_skin_poking_through_cloth_just_under_it_counts_as_covered():
-    B, BT, top = _sphere(10.0)
-    G, GT = _cap(9.0)                                              # the cloth 1u under the skin at the pole
-    out = bz._poking_through(B, BT, [G], [GT], np.array([top]), len(B))
-    assert out[top]
-
-
-def test_cloth_above_the_skin_or_far_under_it_does_not():
-    B, BT, top = _sphere(10.0)
-    for R in (11.0, 10.0 - bz.ZAP_POKE_DEPTH - 1.0):               # over the skin (seen around it) / far inside
-        G, GT = _cap(R)
-        assert not bz._poking_through(B, BT, [G], [GT], np.array([top]), len(B))[top], R
-
-
-def test_cloth_level_with_the_skin_counts():
-    B, BT, top = _sphere(10.0)
-    G, GT = _cap(10.0 + 0.5 * bz.ZAP_POKE_LEVEL)
-    assert bz._poking_through(B, BT, [G], [GT], np.array([top]), len(B))[top]
-
-
-def test_the_edge_band_does_not_bring_back_skin_that_poked_through():
+def test_the_edge_band_keeps_the_skin_next_to_an_opening():
     V = np.c_[np.arange(6, dtype=float), np.zeros(6), np.zeros(6)]  # verts 1u apart in a row
     vis = np.array([True, False, False, False, False, False])        # vert 0 seen at bind
-    de = ~vis
-    kept = bz._keep_edge_band(de, vis, V)
-    assert not kept[1] and kept[3], "the band keeps the skin next to an opening"
-    poked = np.zeros(6, bool); poked[1] = True
-    assert bz._keep_edge_band(de, vis, V, poked)[1], "skin that poked through cloth stays deleted"
+    kept = bz._keep_edge_band(~vis, vis, V)
+    assert not kept[1] and kept[3], "the band keeps the skin within ZAP_BAND of an opening"
 
 
 def test_min_push_leaves_the_zapped_nipple_alone(monkeypatch):
@@ -190,5 +158,5 @@ def test_min_push_leaves_the_zapped_nipple_alone(monkeypatch):
 def test_all_are_on_by_default():
     from src import nif_convert as nc
     assert bz.ZAP_ALPHA and bz.ZAP_NIPPLE_HIDE and bz.ZAP_NIPPLE_HIDE_COVERED
-    assert not bz.ZAP_NIPPLE_POKE          # off since 2026-11-01: #zap-cull judges the nipple per line of sight
+    assert not hasattr(bz, "ZAP_NIPPLE_POKE")   # removed 2026-11-02: #zap-cull judges the nipple per line of sight
     assert nc._MIN_PUSH_ZAP_NIPPLE
