@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Added — a Live steps tab that shows each step of the piece converting now, in 3D
+
+- While a run converts, the new Live steps tab shows the newest piece as a large lit 3D view that turns once every
+  10 seconds and steps through the conversion by itself: Source, Warp and Fit coloured by how far that step moved
+  each vert, Weights coloured by each vert's strongest bone (magenta = no weight), and Zap with the written body in
+  skin tone under the cloth, so kept skin shows through it and removed skin is see-through. The UBE body stands in
+  grey behind the cloth from the warp on. A strip of the five steps sits under the view with the one on show
+  highlighted, and the three pieces before it are small cards (#live-steps).
+- A step gets a red border, and the view holds it longer, when a pass failed on the piece, a vert moved more than 10u
+  in one step, verts are not finite, a vert has no weight, or the zap left a hole in view.
+- It does not slow the conversion: a worker copies three snapshots per fitted shape at the stage hook the chain
+  already has and writes one small file per piece (about 75 KB) after the zap. The window reads the written NIF,
+  draws the view with its own renderer (`native/liveview.dll`, built by `native/build_liveview.bat`) on its own
+  thread, and draws only while the tab is on screen. The converted files are the same with it on or off.
+- On by default; Diagnostics > Window > "Show each step on the Live steps tab" turns it off (the run then records
+  nothing). The records live in `_live_steps` in the tool folder and the window deletes what it reads.
+
 ### Fixed — the body zap no longer deletes skin in front of cloth the game does not draw
 
 In game: the top of the breasts missing under the hide cuirass, seen from above.

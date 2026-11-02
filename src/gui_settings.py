@@ -1571,6 +1571,16 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "to 1.3 s, when the scan ran inside it) and the memory the scan "
                     "used (330 MB) is returned when it ends. The list is the same."),
 
+    Setting("live_steps", "Show each step on the Live steps tab",
+            "Diagnostics", "Window", default=True, env=None,
+            hint="Untick to stop the step pictures (the run then records none).",
+            tooltip="While a run converts, the Live steps tab shows the newest piece "
+                    "as a slowly turning 3D view that steps through source, warp, "
+                    "fit, weights and the body zap, with a red border on a step to "
+                    "check. The workers only copy a few arrays per piece into a "
+                    "folder in the tool folder; the window does the drawing, and "
+                    "only while the tab is on screen. The converted files are the "
+                    "same with this on or off. #live-steps"),
     # ---- UI-only (persisted, no env; not shown in the generated tabs -- the
     #      window renders a dedicated control for it) --------------------------
     Setting("theme", "Window theme", "Appearance", "Appearance",

@@ -128,7 +128,7 @@ def pass_failure_summary() -> "dict[str, int]":
 
 
 def make_stage_hook(*, tracer=None, chain=None, surv=None, dump=None,
-                    skip_none: bool = False):
+                    skip_none: bool = False, live=None):
     """ONE pass-boundary hook for BOTH convert paths, with the per-path
     contract stated instead of implied by which copy you happen to read.
 
@@ -156,7 +156,8 @@ def make_stage_hook(*, tracer=None, chain=None, surv=None, dump=None,
     capture this replaces. If that ever stops being true, this factory must be
     called after the last rebinding, or the capture will go stale.
 
-    Order is preserved exactly: tracer, chain, survival, dump.
+    Order is preserved exactly: tracer, chain, survival, dump. `live` (the
+    window's Live steps panel, #live-steps) comes last and only copies.
     """
     def _stage(label, v):
         if skip_none and v is None:
@@ -169,4 +170,6 @@ def make_stage_hook(*, tracer=None, chain=None, surv=None, dump=None,
             surv.checkpoint(label, v)
         if dump is not None:
             dump.checkpoint(label, v)
+        if live is not None:
+            live(label, v)
     return _stage

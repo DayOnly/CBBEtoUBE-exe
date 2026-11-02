@@ -102,6 +102,9 @@ def _nif_convert_worker(item: tuple) -> "nif_convert.ConvertResult":
     alt_tex = item[4] if len(item) > 4 else None
     variant_sources = item[5] if len(item) > 5 else None
     first_person = bool(item[6]) if len(item) > 6 else False     # #zap-fp-armature
+    from . import live_steps
+    live_steps.begin()                  # #live-steps
+    _zs = None
     try:
         result = nif_convert.convert_nif(
             src, dst,
@@ -135,6 +138,13 @@ def _nif_convert_worker(item: tuple) -> "nif_convert.ConvertResult":
                           f"{', first-person' if _zs['first_person'] else ''})")
             except Exception as _ze:
                 nif_convert._note_pass_failure("body-zap", _ze, result.dst_path)
+        if live_steps.live_dir() is not None and result is not None:
+            # #live-steps: the window's picture of this piece. Copies only, after the zap.
+            live_steps.flush(
+                result, failures=nif_convert._piece_pass_failures(), zap=_zs,
+                zap_pending=bool(body_zap.active() and result.dst_path is not None
+                                 and body_zap.partner_pending(
+                                     result.dst_path, bool(_vs.get("_0") and _vs.get("_1")))))
         return result
     except Exception as e:
         # The whole traceback goes to this worker's output, which rides home with
@@ -146,12 +156,14 @@ def _nif_convert_worker(item: tuple) -> "nif_convert.ConvertResult":
              consequence="the traceback follows; the piece is counted as an error",
              file=sys.stderr)
         traceback.print_exc()
-        return nif_convert.ConvertResult(
+        result = nif_convert.ConvertResult(
             src_path=src, dst_path=None,
             status="error",
             # Distinct from "skipped" (benign no-op); errors count as failures.
             reason=f"error: {type(e).__name__}: {e}",
         )
+        live_steps.flush(result)                     # #live-steps
+        return result
 
 
 def _warmup_worker(barrier, ube_body_ref_path: "str | None") -> "tuple[int, float]":
@@ -1336,6 +1348,8 @@ _FINGERPRINT_PLUMBING_WHY = {
                                 "(src/run_log.py); no mesh reads it",
     "CBBE2UBE_GLOW_LOG": "where the glow diagnostic appends its lines",
     "CBBE2UBE_STANDOFF_LOG": "where the standoff audit's JSONL goes",
+    "CBBE2UBE_LIVE_STEPS": "where the window's Live steps pictures go (#live-steps); copies "
+                           "taken after each pass, never written back",
     "CBBE2UBE_CONFIG": "where the settings file lives; its values arrive as "
                        "their own variables, which are hashed",
     "CBBE2UBE_EXCLUSIONS": "where the exclusions file lives; exclusions choose "

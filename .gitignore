@@ -35,6 +35,8 @@ _tmp_regen*/
 CBBEtoUBE_last_failures.json
 CBBEtoUBE_previous_failures.json
 CBBEtoUBE_last_run_units.tsv
+# The Live steps tab's per-piece records (#live-steps); the window deletes what it reads.
+_live_steps/
 
 # Packaged release archives
 CBBEtoUBE-*.zip

@@ -63,6 +63,7 @@ ALLOWLIST = {
     "CBBE2UBE_ZAP_PRESETS": "paths of the BodySlide presets the #body-zap holds under",
     "CBBE2UBE_STANDOFF_LOG": "path of the standoff audit log",
     "CBBE2UBE_STAGE_DUMP": "folder for stage dumps",
+    "CBBE2UBE_LIVE_STEPS": "folder for the Live steps tab's records",
     "CBBE2UBE_CONFIG": "path of the settings file",
     "CBBE2UBE_BACK_DUMP_DISP": "a display-name filter for the back-residual dump",
     "CBBE2UBE_CBBE_BODY{…}": "path of a CBBE body reference, per weight",

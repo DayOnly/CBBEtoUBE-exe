@@ -86,6 +86,9 @@ a = Analysis(
     binaries=[(".pynifly/NiflyDLL.dll", "."),
               # the body-zap visibility rasteriser (native/zraster.c, built by native/build_zraster.bat)
               ("native/zraster.dll", "."),
+              # the Live steps tab's 3D view (native/liveview.c, built by native/build_liveview.bat;
+              # the window only, #live-steps)
+              ("native/liveview.dll", "."),
               # the numpy large-block cache (native/npcache.c, built by native/build_npcache.bat;
               # #numpy-block-cache, off unless CBBE2UBE_NUMPY_BLOCK_CACHE_MB is set)
               ("native/npcache.pyd", ".")],

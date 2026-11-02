@@ -771,6 +771,9 @@ def body_dialog_wanted(settings: dict, dry_run: bool) -> bool:
     return not dry_run and bool((settings or {}).get("zeroed_body_refs", True))
 
 
+LIVE_ENV = "CBBE2UBE_LIVE_STEPS"     # the Live steps tab's folder (live_steps.py) #live-steps
+
+
 def child_env(settings: dict, body_env, log_path: str, base_env=None) -> dict:
     """The environment a conversion child runs with.
 
@@ -790,6 +793,9 @@ def child_env(settings: dict, body_env, log_path: str, base_env=None) -> dict:
     # than what this window holds (a failed save). #settings-everywhere
     env[gui_settings.APPLIED_MARKER] = "the settings window"
     env.update(body_env or {})
+    # The Live steps tab's folder is set per run by the worker, never inherited:
+    # unset = the run records no pictures. #live-steps
+    env.pop(LIVE_ENV, None)
     return env
 
 
@@ -2088,6 +2094,12 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         # than this function, so it cannot close over them directly -- but it
         # runs again on every theme switch, and a menu left at the Tk default is
         # the same white-on-dark bug the canvases above are pruned for.
+        _lp = state.get("live_panel")            # #live-steps, built later
+        if _lp is not None:
+            try:
+                _lp.apply_theme(p)
+            except Exception:
+                pass
         _tm = state.get("theme_menus")
         if _tm is not None:
             try:
@@ -3353,6 +3365,13 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     # underneath instead of grabbing the window.
     results_tab = ttk.Frame(nb)
     nb.add(results_tab, text="Results")
+    # ---- Live steps tab: each step of the pieces converting now. #live-steps
+    from .gui_live import LivePanel, FOLDER_NAME as _LIVE_FOLDER
+    live_tab = ttk.Frame(nb)
+    nb.add(live_tab, text="Live steps")
+    live_panel = LivePanel(tk, ttk, live_tab, root.after, font=_SEMI)
+    live_panel.set_off(not state["settings"].get("live_steps", True))
+    state["live_panel"] = live_panel
     _res_head = ttk.Label(results_tab, text="Last run", font=_SEMI)
     _res_head.pack(anchor="w", padx=12, pady=(12, 4))
     _res_mid = ttk.Frame(results_tab)
@@ -3635,6 +3654,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             state["fail_path"] = fail_path
             # Registry settings, then this run's Reference bodies -- see child_env.
             env = child_env(state.get("settings") or {}, body_env, log_path)
+            if state.get("live_dir"):       # #live-steps: this run's picture folder
+                env[LIVE_ENV] = state["live_dir"]
             kw = {"stdin": subprocess.DEVNULL,
                   "stdout": subprocess.DEVNULL,
                   "stderr": subprocess.DEVNULL,
@@ -3749,6 +3770,17 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     def _lock_for_run():
         state["running"] = True
         state["output_dir"] = _path_text(out_var) or default_out
+        # #live-steps: a fresh folder per run, only when the setting is on.
+        state["live_dir"] = None
+        _live_on = bool((state.get("settings") or {}).get("live_steps", True))
+        live_panel.set_off(not _live_on)
+        if _live_on:
+            try:
+                _ld = tool_folder() / _LIVE_FOLDER
+                live_panel.start(_ld)
+                state["live_dir"] = str(_ld)
+            except Exception:
+                state["live_dir"] = None
         run_btn.configure(state="disabled")
         cancel_btn.configure(state="normal")
         open_out_btn.configure(state="disabled")
@@ -3833,6 +3865,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             return   # app quit while the worker was still live; nothing to update
         state["running"] = False
         state["result"] = rc
+        live_panel.stop()                 # #live-steps: a few more polls, then idle
         prog.stop()
         try:
             prog.configure(mode="indeterminate", value=0)   # reset for next run

@@ -67,7 +67,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import fit_metrics, nif_io, nif_patch
+from . import fit_metrics, live_steps, nif_io, nif_patch
 from .atomic_io import atomic_nif_save, atomic_copy, atomic_tri_save
 from .correspondence import MeshIndex, compute_deformation
 # The way a CBBE2UBE_* env flag/knob SHOULD be read -- 287 inline spellings in 12
@@ -4198,7 +4198,8 @@ def _fit_shapes_copy(ctx) -> None:
         # NO chain: the chain is the rollback checkpoint, and this path has
         # never had it (see make_stage_hook).
         _stage_p1 = make_stage_hook(surv=_surv_p1, dump=_dump_p1,
-                                    skip_none=True)
+                                    skip_none=True,
+                                    live=live_steps.shape(s.name, s.tris, sv_world))
 
         try:
             if (cbbe_verts_for_warp is not None
@@ -14405,7 +14406,8 @@ def _fit_shapes_swap(ctx) -> None:
         # `_chain.checkpoint`, and changing that changes when the rollback
         # chain records one.
         _stage = make_stage_hook(tracer=_tracer, chain=_chain, surv=_surv,
-                                 dump=_dump, skip_none=False)
+                                 dump=_dump, skip_none=False,
+                                 live=live_steps.shape(s.name, s.tris, _sv_body))
 
         if preset_template_verts is not None and preset_user_verts is not None:
             try:
