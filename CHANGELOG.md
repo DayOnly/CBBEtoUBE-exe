@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed — cloth follows the body sliders at weight 100, at its edges, and across its faces
+
+- The armour's .tri is built from the weight-0 meshes, and the same slider rows drive the weight-100 mesh, where each
+  cloth vertex covers other skin. Measured on a cuirass, cloth lagging the skin under sliders: 6 at weight 0 against
+  1997 at weight 100. Once both weights are written, the rows are checked again at weight 100 and lifted where they
+  fall short (#tri-follow-floor), open cloth edges near the skin get the skin's own motion on every slider
+  (#tri-follow-edge), and each cloth face is lifted per slider so the skin inside it at rest stays inside at +1
+  without the face digging in at -1 (#tri-follow-chord). No vertex moves at rest. Off switches:
+  `CBBE2UBE_NO_TRI_FOLLOW_FLOOR`, `CBBE2UBE_NO_TRI_FOLLOW_EDGE`, `CBBE2UBE_NO_TRI_FOLLOW_CHORD`.
+- The cuirass converted end to end: weight-100 lag 1997 -> 457. 34 pieces replayed from their pre-zap state: holes
+  -13.8% (25 better / 8 worse), cloth edges buried under sliders -10.1% (22 / 8), slider-caused poke -6.0%, gap skin
+  +1.0% in total (23 pieces better, 11 worse). #zap-edge-lift stays: skin beside an edge rises at different rates,
+  and only its small rest gap absorbs that; with the rows following, it moves about a third fewer verts.
+
 ### Added — a Live steps tab that shows each step of the piece converting now, in 3D
 
 - While a run converts, the new Live steps tab shows the newest piece as a large lit 3D view that turns once every

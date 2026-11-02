@@ -126,6 +126,16 @@ def _nif_convert_worker(item: tuple) -> "nif_convert.ConvertResult":
                 _ncw._pair_weight_parity(result.dst_path, _vs)
             except Exception as _pe:
                 nif_convert._note_pass_failure("pair-weight-parity", _pe, result.dst_path)
+            # #tri-follow: the shared .tri's cloth rows follow the skin at both weights (before the zap reads it)
+            try:
+                from . import tri_follow as _tfo
+                _tf = _tfo.follow_pair(result.dst_path)
+                if _tf and any(_tf.values()):
+                    print(f"  tri-follow: {Path(result.dst_path).name}: cloth slider rows made to follow the skin "
+                          f"(floor at weight 100 {_tf.get('floor_rows', 0)}, edges {_tf.get('edge_rows', 0)}, "
+                          f"chord {_tf.get('chord_rows', 0)})")
+            except Exception as _fe:
+                nif_convert._note_pass_failure("tri-follow", _fe, result.dst_path)
         if (body_zap.active() and result is not None and result.dst_path is not None
                 and str(result.status).startswith("converted")
                 and not body_zap.partner_pending(result.dst_path, bool(_vs.get("_0") and _vs.get("_1")))):

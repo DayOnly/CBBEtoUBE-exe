@@ -213,6 +213,18 @@ ZAP_NIPPLE_ALPHA_PAD = 2.0
 # keeping skin only beside the edge were both measured worse or no better.
 ZAP_EDGE_LIFT = not _flag("CBBE2UBE_NO_ZAP_EDGE_LIFT", False)
 ZAP_EDGE_LIFT_CAP = _knob("CBBE2UBE_ZAP_EDGE_LIFT_CAP", 0.2)
+# #zap-edge-lift-recheck (OFF; CBBE2UBE_ZAP_EDGE_LIFT_RECHECK=1 on): the lift moves cloth edges AFTER the views chose the
+# skin, so a raised neckline can open a sight line onto skin deleted under it (2026-11-01: farm dress / merchant torso
+# cleavage, 4 of the 8 pieces worse than the pre-10-30 build; with the lift off they match it exactly). On, the rest
+# pose is rendered again with the lifted cloth and any body triangle now seen is kept.
+ZAP_EDGE_LIFT_RECHECK = _flag("CBBE2UBE_ZAP_EDGE_LIFT_RECHECK", False)
+# The lift's blanket keep of the skin under every lifted edge (CBBE2UBE_ZAP_EDGE_LIFT_KEEP=0 off: with the recheck on,
+# only skin a view sees after the lift is kept). Experiment switch, default = today's behaviour.
+ZAP_EDGE_LIFT_KEEP = bool(_knob("CBBE2UBE_ZAP_EDGE_LIFT_KEEP", 1, int))
+# #zap-edge-keep (OFF; CBBE2UBE_ZAP_EDGE_KEEP_R=<u> on): keep the skin within this radius of the foot of every cloth
+# edge vert that borders kept skin -- the edge lift's skin keep WITHOUT moving any cloth, for when the cloth's own rows
+# follow the skin at its edges (#tri-follow-edge). Experiment switch.
+ZAP_EDGE_KEEP_R = _knob("CBBE2UBE_ZAP_EDGE_KEEP_R", 0.0)
 ZAP_EDGE_LIFT_FEATHER = _knob("CBBE2UBE_ZAP_EDGE_LIFT_FEATHER", 2.0)
 ZAP_EDGE_LIFT_NEAR = 4.0       # edge verts this close to the body (along its normal) are candidates
 ZAP_EDGE_LIFT_R = 1.5          # kept skin within this of an edge vert's foot point borders it
@@ -1001,6 +1013,53 @@ def _open_edge_verts(V, T) -> "tuple[np.ndarray, np.ndarray]":
     return mask, W
 
 
+def _edge_keep(loaded, kept, coll, radius) -> "np.ndarray | None":
+    """#zap-edge-keep: bool per body vert -- the skin within `radius` of the foot of each cloth edge vert (within
+    ZAP_EDGE_LIFT_NEAR of the body, not simulated) whose foot borders kept skin. No cloth moves."""
+    from . import nif_convert as nc
+    from . import sliderset_gen as sg
+    keep_v = None
+    for w, (nf, _p) in loaded.items():
+        body = next((s for s in nf.shapes if s.name == BODY_NAME), None)
+        if body is None:
+            continue
+        full, _ = full_body_tris(w or "_1")
+        full = np.asarray(full, np.int64)
+        BV = np.asarray(body.verts, np.float64)
+        bn = _body_normals(BV, full)
+        keptv = np.zeros(len(BV), bool); keptv[np.asarray(kept, np.int64).ravel()] = True
+        if not keptv.any():
+            continue
+        ktree = cKDTree(BV[keptv]); btree = cKDTree(BV)
+        body_bones = set(body.bone_names or [])
+        for s in nf.shapes:
+            if s.name in nc.UBE_BODY_INJECT_NAMES or s.name in coll or not len(s.tris):
+                continue
+            try:
+                if int(s.flags) & 1:
+                    continue
+            except Exception:
+                pass
+            V = np.asarray(s.verts, np.float64); T = np.asarray(s.tris, np.int64).reshape(-1, 3)
+            edge, _ = _open_edge_verts(V, T)
+            corners, bary = sg._closest_surface_bary(V, BV, full)
+            foot = (BV[corners] * bary[:, :, None]).sum(1)
+            n = (bn[corners] * bary[:, :, None]).sum(1); n /= np.linalg.norm(n, axis=1, keepdims=True) + 1e-12
+            g = np.einsum("ij,ij->i", V - foot, n)
+            ev = np.flatnonzero(edge & (np.abs(g) < ZAP_EDGE_LIFT_NEAR) & ~_free_verts(s, body_bones))
+            if not len(ev):
+                continue
+            near = ktree.query(foot[ev], distance_upper_bound=ZAP_EDGE_LIFT_R)[0]
+            ev = ev[np.isfinite(near)]
+            if not len(ev):
+                continue
+            kb = np.zeros(len(BV), bool)
+            for lst in btree.query_ball_point(foot[ev], float(radius)):
+                kb[lst] = True
+            keep_v = kb if keep_v is None else (keep_v | kb)
+    return keep_v
+
+
 def _edge_lift(loaded, kept, tri, vert_over, coll) -> "tuple[int, np.ndarray | None]":
     """#zap-edge-lift: lift cloth edges off the kept skin they border (updates `vert_over`); returns (verts moved, bool
     per body vert to keep -- the skin under the lifted cloth, or None)."""
@@ -1181,6 +1240,7 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
     loaded, need, bind_vis = {}, None, None
     apexes, nip_local, gverts, poked = None, set(), {}, None
     alpha_pts = []                             # #zap-nipple-opaque: centroids of see-through cover triangles
+    gcache = {}                                # per weight: the cover set the views used (#zap-edge-lift-recheck)
     tri_need = tri_bind = None                 # #zap-tri-vis: triangles seen in any pose / at bind
     # #zap-fp-armature: the planner's answer (an ARMA uses this mesh only as a first-person model) or the name rule
     first_person = bool(first_person) and ZAP_FP_ARMATURE; arm = None
@@ -1232,6 +1292,7 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
                 gsingle.append(ZAP_CULL and _single_sided(s))
         gverts.update({s.name: np.asarray(s.verts, np.float64) for s in nf.shapes if s.name not in gverts})
         BV = np.asarray(body.verts, np.float64); BT = full
+        gcache[w] = (G, gsingle, BV, BT)
         # nipple-local sliders left out: #zap-nipple-flat drops them from the cloth afterwards, and the answer must
         # not depend on whether that already happened (a re-run reads the flattened .tri)
         poses = [()] + [tuple(kv for kv in _preset(pp, w != "_0") if kv[0] not in nip_local) for pp in presets]
@@ -1384,11 +1445,42 @@ def zap_pair(dst_path, first_person: bool = False) -> "dict | None":
             moved, keep_v = 0, None
         if moved:
             out["edge_lift_moved"] = moved
-        if keep_v is not None:
+        if moved and ZAP_EDGE_LIFT_RECHECK:
+            # #zap-edge-lift-recheck: the rest pose again, with the lifted cloth
+            seen_now = np.zeros(len(full), bool)
+            for w, (G0, gs0, BV0, BT0) in gcache.items():
+                lifted = vert_over.get(w) or {}
+                Gl = [np.asarray(lifted.get(nm, V), np.float64) for nm, V, T in G0]
+                ts = np.zeros(len(BT0), np.uint8); nd = np.zeros(len(BV0), np.uint8)
+                needed(BV0, BT0, Gl, [T for _, _, T in G0], dirs, acc=nd, tri_acc=ts, gcull=gs0)
+                seen_now |= ts.astype(bool) | (nd.astype(bool)[BT0].sum(1) >= 2)
+            back = gone & seen_now
+            for a in hide_apex:                            # a hidden nipple core stays zapped
+                back &= ~(np.linalg.norm(Vref[full] - Vref[a], axis=2) < ZAP_HIDE_CORE_R).any(1)
+            if back.any():
+                gone = gone & ~back
+                kept = full[~gone]
+                out["deleted_tris"], out["kept_tris"] = int(gone.sum()), int(len(kept))
+                out["edge_lift_recheck_kept"] = int(back.sum())
+        if keep_v is not None and ZAP_EDGE_LIFT_KEEP:
             if hide_apex:                                  # a hidden nipple core stays zapped
                 for a in hide_apex:
                     keep_v &= np.linalg.norm(Vref - Vref[a], axis=1) >= ZAP_HIDE_CORE_R
             gone = gone & ~keep_v[full].any(1)
+            kept = full[~gone]
+            out["deleted_tris"], out["kept_tris"] = int(gone.sum()), int(len(kept))
+    if float(ZAP_EDGE_KEEP_R) > 0 and not first_person:
+        coll = set()
+        for _w, (_nf, _p) in loaded.items():
+            try:
+                coll |= set(nc._hdt_collider_shape_names(_p, nif=_nf, stem_scan=nc._dst_xml_stem_scan()))
+            except Exception:
+                pass
+        ek = _edge_keep(loaded, kept, coll, float(ZAP_EDGE_KEEP_R))
+        if ek is not None:
+            for a in hide_apex:                            # a hidden nipple core stays zapped
+                ek &= np.linalg.norm(Vref - Vref[a], axis=1) >= ZAP_HIDE_CORE_R
+            gone = gone & ~ek[full].any(1)
             kept = full[~gone]
             out["deleted_tris"], out["kept_tris"] = int(gone.sum()), int(len(kept))
     for w, (nf, p) in loaded.items():
